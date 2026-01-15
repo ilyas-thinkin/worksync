@@ -1564,3 +1564,38 @@ curl http://localhost:3000/api/products/1
 
 ### Service Reliability
 - Service set to always restart with no start‑limit throttling
+
+---
+
+## 26. Supervisor Panel, Camera Scan, and QR Expansion (January 2026)
+
+### Supervisor Panel
+- Added supervisor page route: `/supervisor`
+- UI supports line selection, process scan, employee scan, and attendance marking
+- Added hourly progress entry for line + process
+- Mobile camera QR scanning (BarcodeDetector/jsQR fallback)
+
+### Hourly Progress Tracking
+- Added table: `line_process_hourly_progress`
+- Script: `/home/worksync/worksync/scripts/add_line_process_hourly_progress.sql`
+- Added API endpoint: `POST /api/supervisor/progress`
+
+### Operation QR Codes
+- Added `operations.qr_code_path` column
+- Script: `/home/worksync/worksync/scripts/add_operation_qr_column.sql`
+- Added operation QR viewing in Admin (operations list + process flow tables)
+
+### QR Generation Improvements
+- Added QR generation for operations
+- Added QR regeneration script:
+  - `/home/worksync/worksync/scripts/regenerate_qr_codes.js`
+- QR codes stored for employees, lines, processes, operations
+
+### HTTPS for Camera Permissions
+- HTTPS enabled on `https://0.0.0.0:3443`
+- Self‑signed certs used (accept browser warning)
+- Opened firewall for 3443:
+  - `sudo ufw allow 3443/tcp`
+- Supervisor camera access requires HTTPS; use:
+  - `https://192.168.1.9:3443/supervisor`
+

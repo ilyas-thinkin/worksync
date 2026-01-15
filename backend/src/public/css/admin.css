@@ -29,6 +29,60 @@ body {
     line-height: 1.6;
 }
 
+.sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.35);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    z-index: 900;
+}
+
+.sidebar-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.mobile-header {
+    display: none;
+    position: sticky;
+    top: 0;
+    z-index: 950;
+    background: #f8fafc;
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    align-items: center;
+    gap: 12px;
+}
+
+.mobile-title {
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--dark);
+}
+
+.hamburger-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.hamburger-btn span {
+    display: block;
+    width: 18px;
+    height: 2px;
+    background: var(--dark);
+    border-radius: 999px;
+}
+
 /* Layout */
 .app-container {
     display: flex;
@@ -760,6 +814,10 @@ select.form-control {
 
 /* Responsive */
 @media (max-width: 768px) {
+    .mobile-header {
+        display: flex;
+    }
+
     .sidebar {
         transform: translateX(-100%);
     }
@@ -825,6 +883,11 @@ select.form-control {
     color: white;
 }
 
+.role-badge.management {
+    background: linear-gradient(135deg, #14b8a6, #0f766e);
+    color: white;
+}
+
 /* Switch Panel Link */
 .nav-link-switch {
     background: rgba(255, 255, 255, 0.05);
@@ -854,6 +917,30 @@ select.form-control {
 .view-only-notice svg {
     width: 18px;
     height: 18px;
+}
+
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    background: #e2e8f0;
+    color: #334155;
+}
+
+.ie-settings {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    align-items: end;
+}
+
+.ie-settings-action {
+    display: flex;
+    justify-content: flex-end;
 }
 
 /* Process Flow Table Improvements */

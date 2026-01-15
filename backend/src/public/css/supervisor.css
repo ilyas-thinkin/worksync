@@ -39,6 +39,51 @@
     min-height: 70px;
 }
 
+.scan-status {
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    background: #f8fafc;
+    display: grid;
+    gap: 8px;
+}
+
+.scan-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 14px;
+}
+
+.scan-label {
+    font-weight: 600;
+    color: var(--secondary);
+}
+
+.scan-value {
+    font-weight: 600;
+    color: var(--text);
+    text-align: right;
+}
+
+.scan-input {
+    max-width: 120px;
+}
+
+.scan-hint {
+    font-size: 13px;
+    color: var(--secondary);
+}
+
+.scan-callout {
+    padding: 12px;
+    border-radius: 10px;
+    background: #eef2ff;
+    color: #3730a3;
+    font-weight: 600;
+    font-size: 14px;
+}
+
 .camera-panel {
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -96,8 +141,155 @@
     color: var(--text);
 }
 
+.progress-scan-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.progress-entry {
+    display: grid;
+    gap: 12px;
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    align-items: end;
+}
+
+.metrics-action {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.progress-scan-shell {
+    display: grid;
+    grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.progress-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    z-index: 1100;
+}
+
+.progress-modal-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.progress-modal {
+    width: min(420px, 92vw);
+    background: #fff;
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: var(--shadow-lg);
+}
+
+.progress-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.progress-modal-header h3 {
+    font-size: 18px;
+}
+
+.progress-modal-body {
+    display: grid;
+    gap: 12px;
+}
+
+.progress-modal-info {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    background: #f8fafc;
+    padding: 10px 12px;
+    border-radius: 10px;
+}
+
+.progress-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.progress-log {
+    display: grid;
+    gap: 10px;
+}
+
+.progress-log-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 80px;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fff;
+}
+
+.progress-log-hour {
+    font-weight: 700;
+    color: var(--text);
+}
+
+.progress-log-work {
+    color: var(--secondary);
+    font-weight: 600;
+}
+
+.progress-log-qty {
+    text-align: right;
+    font-weight: 700;
+    color: var(--text);
+}
+
 @media (max-width: 960px) {
+    .supervisor-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .supervisor-controls > div {
+        width: 100%;
+    }
+
     .progress-row {
         grid-template-columns: 1fr;
+    }
+
+    .progress-scan-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .progress-scan-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .progress-log-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+
+    #camera-preview {
+        height: 200px;
     }
 }

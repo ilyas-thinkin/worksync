@@ -3,6 +3,32 @@ const router = express.Router();
 const pool = require('../config/db.config');
 const realtime = require('../realtime');
 
+const getSettingValue = async (key, fallback) => {
+    const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
+    return result.rows[0]?.value || fallback;
+};
+
+const isDayLocked = async (workDate) => {
+    if (!workDate) return false;
+    const result = await pool.query(
+        'SELECT 1 FROM production_day_locks WHERE work_date = $1',
+        [workDate]
+    );
+    return result.rowCount > 0;
+};
+
+const logAudit = async (tableName, recordId, action, newValues = null, oldValues = null) => {
+    try {
+        await pool.query(
+            `INSERT INTO audit_logs (table_name, record_id, action, old_values, new_values)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [tableName, recordId, action, oldValues, newValues]
+        );
+    } catch (err) {
+        // audit failures should not block main flow
+    }
+};
+
 // ============================================================================
 // DASHBOARD STATS
 // ============================================================================
@@ -22,18 +48,304 @@ router.get('/dashboard/stats', async (req, res) => {
 });
 
 // ============================================================================
+// SETTINGS
+// ============================================================================
+router.get('/settings', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT key, value FROM app_settings');
+        const settings = result.rows.reduce((acc, row) => {
+            acc[row.key] = row.value;
+            return acc;
+        }, {});
+        res.json({ success: true, data: settings });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.put('/settings', async (req, res) => {
+    const { default_in_time, default_out_time } = req.body;
+    try {
+        await pool.query(
+            `INSERT INTO app_settings (key, value)
+             VALUES ('default_in_time', $1)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+            [default_in_time]
+        );
+        await pool.query(
+            `INSERT INTO app_settings (key, value)
+             VALUES ('default_out_time', $1)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+            [default_out_time]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// USERS (Admin)
+// ============================================================================
+router.get('/users', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, username, full_name, role, is_active, created_at
+             FROM users
+             ORDER BY created_at DESC`
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/users', async (req, res) => {
+    const { username, full_name, role } = req.body;
+    try {
+        const result = await pool.query(
+            `INSERT INTO users (username, full_name, role, is_active)
+             VALUES ($1, $2, $3, true) RETURNING *`,
+            [username, full_name, role]
+        );
+        await logAudit('users', result.rows[0].id, 'create', result.rows[0], null);
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.put('/users/:id', async (req, res) => {
+    const { id } = req.params;
+    const { username, full_name, role, is_active } = req.body;
+    try {
+        const before = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+        const result = await pool.query(
+            `UPDATE users
+             SET username = $1,
+                 full_name = $2,
+                 role = $3,
+                 is_active = $4,
+                 updated_at = NOW()
+             WHERE id = $5
+             RETURNING *`,
+            [username, full_name, role, is_active, id]
+        );
+        await logAudit('users', id, 'update', result.rows[0], before.rows[0] || null);
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.delete('/users/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const before = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+        const result = await pool.query(
+            `UPDATE users SET is_active = false, updated_at = NOW() WHERE id = $1 RETURNING *`,
+            [id]
+        );
+        await logAudit('users', id, 'deactivate', result.rows[0], before.rows[0] || null);
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// PRODUCTION DAY LOCKS
+// ============================================================================
+router.get('/production-days/status', async (req, res) => {
+    const { date } = req.query;
+    try {
+        const result = await pool.query(
+            `SELECT work_date, locked_by, locked_at, notes
+             FROM production_day_locks
+             WHERE work_date = $1`,
+            [date]
+        );
+        res.json({ success: true, data: result.rows[0] || null });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/production-days/lock', async (req, res) => {
+    const { work_date, locked_by, notes } = req.body;
+    try {
+        await pool.query(
+            `INSERT INTO production_day_locks (work_date, locked_by, notes)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (work_date)
+             DO UPDATE SET locked_by = EXCLUDED.locked_by, locked_at = NOW(), notes = EXCLUDED.notes`,
+            [work_date, locked_by || null, notes || null]
+        );
+        await logAudit('production_day_locks', 0, 'lock', { work_date, locked_by, notes }, null);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/production-days/unlock', async (req, res) => {
+    const { work_date } = req.body;
+    try {
+        const before = await pool.query(
+            `SELECT * FROM production_day_locks WHERE work_date = $1`,
+            [work_date]
+        );
+        await pool.query('DELETE FROM production_day_locks WHERE work_date = $1', [work_date]);
+        await logAudit('production_day_locks', 0, 'unlock', null, before.rows[0] || null);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// DAILY LINE PLANS (IE)
+// ============================================================================
+router.get('/daily-plans', async (req, res) => {
+    const { date } = req.query;
+    try {
+        const plansResult = await pool.query(
+            `SELECT lp.id, lp.line_id, lp.product_id, lp.work_date, lp.target_units,
+                    pl.line_code, pl.line_name,
+                    p.product_code, p.product_name
+             FROM line_daily_plans lp
+             JOIN production_lines pl ON lp.line_id = pl.id
+             JOIN products p ON lp.product_id = p.id
+             WHERE lp.work_date = $1
+             ORDER BY pl.line_name`,
+            [date]
+        );
+        const linesResult = await pool.query(
+            `SELECT id, line_code, line_name FROM production_lines WHERE is_active = true ORDER BY line_name`
+        );
+        const productsResult = await pool.query(
+            `SELECT id, product_code, product_name FROM products WHERE is_active = true ORDER BY product_code`
+        );
+        res.json({
+            success: true,
+            data: {
+                plans: plansResult.rows,
+                lines: linesResult.rows,
+                products: productsResult.rows
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/daily-plans', async (req, res) => {
+    const { line_id, product_id, work_date, target_units, user_id } = req.body;
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    try {
+        const before = await pool.query(
+            `SELECT * FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        const result = await pool.query(
+            `INSERT INTO line_daily_plans (line_id, product_id, work_date, target_units, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $5, $5)
+             ON CONFLICT (line_id, work_date)
+             DO UPDATE SET product_id = EXCLUDED.product_id,
+                           target_units = EXCLUDED.target_units,
+                           updated_by = EXCLUDED.updated_by,
+                           updated_at = NOW()
+             RETURNING *`,
+            [line_id, product_id, work_date, target_units || 0, user_id || null]
+        );
+        await logAudit('line_daily_plans', result.rows[0].id, before.rowCount ? 'update' : 'create', result.rows[0], before.rows[0] || null);
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// LINE DAILY METRICS (Supervisor)
+// ============================================================================
+router.get('/line-metrics', async (req, res) => {
+    const { line_id, date } = req.query;
+    try {
+        const result = await pool.query(
+            `SELECT * FROM line_daily_metrics WHERE line_id = $1 AND work_date = $2`,
+            [line_id, date]
+        );
+        res.json({ success: true, data: result.rows[0] || null });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/line-metrics', async (req, res) => {
+    const { line_id, work_date, forwarded_quantity, remaining_wip, materials_issued, user_id } = req.body;
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    try {
+        const before = await pool.query(
+            `SELECT * FROM line_daily_metrics WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        const result = await pool.query(
+            `INSERT INTO line_daily_metrics (line_id, work_date, forwarded_quantity, remaining_wip, materials_issued, updated_by, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW())
+             ON CONFLICT (line_id, work_date)
+             DO UPDATE SET forwarded_quantity = EXCLUDED.forwarded_quantity,
+                           remaining_wip = EXCLUDED.remaining_wip,
+                           materials_issued = EXCLUDED.materials_issued,
+                           updated_by = EXCLUDED.updated_by,
+                           updated_at = NOW()
+             RETURNING *`,
+            [line_id, work_date, forwarded_quantity || 0, remaining_wip || 0, materials_issued || 0, user_id || null]
+        );
+        await logAudit('line_daily_metrics', result.rows[0].id, before.rowCount ? 'update' : 'create', result.rows[0], before.rows[0] || null);
+        realtime.broadcast('data_change', { entity: 'line_metrics', action: 'update', line_id, work_date });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// AUDIT LOGS
+// ============================================================================
+router.get('/audit-logs', async (req, res) => {
+    const { limit = 100 } = req.query;
+    try {
+        const result = await pool.query(
+            `SELECT * FROM audit_logs ORDER BY changed_at DESC LIMIT $1`,
+            [limit]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
 // PRODUCTION LINES
 // ============================================================================
 router.get('/lines', async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT pl.*,
-                   p_current.product_code as current_product_code,
-                   p_current.product_name as current_product_name,
+                   COALESCE(p_plan.product_code, p_current.product_code) as current_product_code,
+                   COALESCE(p_plan.product_name, p_current.product_name) as current_product_name,
+                   ldp.target_units as daily_target_units,
                    (SELECT COUNT(DISTINCT a.employee_id)
                     FROM employee_process_assignments a
                     WHERE a.line_id = pl.id) as employee_count
             FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = CURRENT_DATE
+            LEFT JOIN products p_plan ON ldp.product_id = p_plan.id
             LEFT JOIN products p_current ON pl.current_product_id = p_current.id
             ORDER BY pl.id
         `);
@@ -451,12 +763,29 @@ router.get('/product-processes/:productId', async (req, res) => {
 });
 
 router.post('/product-processes', async (req, res) => {
-    const { product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required } = req.body;
+    const {
+        product_id,
+        operation_id,
+        sequence_number,
+        operation_sah,
+        cycle_time_seconds,
+        manpower_required,
+        target_units
+    } = req.body;
     try {
         const result = await pool.query(
-            `INSERT INTO product_processes (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active)
-             VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING *`,
-            [product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required || 1]
+            `INSERT INTO product_processes
+             (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`,
+            [
+                product_id,
+                operation_id,
+                sequence_number,
+                operation_sah,
+                cycle_time_seconds,
+                manpower_required || 1,
+                target_units || 0
+            ]
         );
         realtime.broadcast('data_change', { entity: 'product_processes', action: 'create', product_id });
         res.json({ success: true, data: result.rows[0] });
@@ -467,13 +796,18 @@ router.post('/product-processes', async (req, res) => {
 
 router.put('/product-processes/:id', async (req, res) => {
     const { id } = req.params;
-    const { sequence_number, operation_sah, cycle_time_seconds, manpower_required } = req.body;
+    const { sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units } = req.body;
     try {
         const result = await pool.query(
             `UPDATE product_processes
-             SET sequence_number = $1, operation_sah = $2, cycle_time_seconds = $3, manpower_required = $4, updated_at = NOW()
-             WHERE id = $5 RETURNING *`,
-            [sequence_number, operation_sah, cycle_time_seconds, manpower_required, id]
+             SET sequence_number = $1,
+                 operation_sah = $2,
+                 cycle_time_seconds = $3,
+                 manpower_required = $4,
+                 target_units = $5,
+                 updated_at = NOW()
+             WHERE id = $6 RETURNING *`,
+            [sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units || 0, id]
         );
         realtime.broadcast('data_change', { entity: 'product_processes', action: 'update', id });
         res.json({ success: true, data: result.rows[0] });
@@ -591,6 +925,9 @@ router.post('/ie/attendance', async (req, res) => {
         return res.status(400).json({ success: false, error: 'employee_id and date are required' });
     }
     try {
+        if (await isDayLocked(date)) {
+            return res.status(403).json({ success: false, error: 'Production day is locked' });
+        }
         const result = await pool.query(
             `INSERT INTO employee_attendance (employee_id, attendance_date, in_time, out_time, status, notes)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -613,11 +950,88 @@ router.post('/ie/attendance', async (req, res) => {
 // ============================================================================
 // Line Supervisor
 // ============================================================================
+const parseSupervisorQr = (payload) => {
+    if (!payload) return null;
+    if (typeof payload === 'object') {
+        return payload;
+    }
+    try {
+        const parsed = JSON.parse(payload);
+        if (parsed && typeof parsed === 'object') return parsed;
+    } catch (err) {
+        // ignore
+    }
+    const raw = String(payload).trim();
+    if (!raw) return null;
+    const numeric = parseInt(raw, 10);
+    if (Number.isFinite(numeric)) {
+        return { id: numeric };
+    }
+    return { raw };
+};
+
+const resolveProcessForLine = async (lineId, processPayload, workDate = null) => {
+    const dateValue = workDate || new Date().toISOString().slice(0, 10);
+    const planResult = await pool.query(
+        `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+        [lineId, dateValue]
+    );
+    const plan = planResult.rows[0];
+    let productId = plan?.product_id;
+
+    if (!productId) {
+        const lineResult = await pool.query(
+            `SELECT current_product_id FROM production_lines WHERE id = $1`,
+            [lineId]
+        );
+        productId = lineResult.rows[0]?.current_product_id;
+    }
+
+    if (!productId) {
+        throw new Error('Line has no product assigned for this date');
+    }
+
+    if (processPayload.type === 'operation') {
+        const result = await pool.query(
+            `SELECT pp.id, pp.sequence_number, pp.target_units, o.id AS operation_id, o.operation_code, o.operation_name
+             FROM product_processes pp
+             JOIN operations o ON pp.operation_id = o.id
+             WHERE pp.product_id = $1 AND pp.operation_id = $2
+             ORDER BY pp.sequence_number
+             LIMIT 1`,
+            [productId, processPayload.id]
+        );
+        if (!result.rows[0]) {
+            throw new Error('Operation not found in current product process');
+        }
+        return result.rows[0];
+    }
+
+    const result = await pool.query(
+        `SELECT pp.id, pp.sequence_number, pp.target_units, o.id AS operation_id, o.operation_code, o.operation_name
+         FROM product_processes pp
+         JOIN operations o ON pp.operation_id = o.id
+         WHERE pp.id = $1 AND pp.product_id = $2
+         LIMIT 1`,
+        [processPayload.id, productId]
+    );
+    if (!result.rows[0]) {
+        throw new Error('Process not found for current line product');
+    }
+    return result.rows[0];
+};
+
 router.get('/supervisor/lines', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT pl.id, pl.line_code, pl.line_name, pl.current_product_id, p.product_code
+            SELECT pl.id,
+                   pl.line_code,
+                   pl.line_name,
+                   COALESCE(ldp.product_id, pl.current_product_id) as current_product_id,
+                   COALESCE(p_plan.product_code, p.product_code) as product_code
             FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = CURRENT_DATE
+            LEFT JOIN products p_plan ON ldp.product_id = p_plan.id
             LEFT JOIN products p ON pl.current_product_id = p.id
             WHERE pl.is_active = true
             ORDER BY pl.line_name
@@ -631,12 +1045,19 @@ router.get('/supervisor/lines', async (req, res) => {
 router.get('/supervisor/processes/:lineId', async (req, res) => {
     const { lineId } = req.params;
     try {
-        const lineResult = await pool.query(
-            `SELECT current_product_id FROM production_lines WHERE id = $1`,
+        const planResult = await pool.query(
+            `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = CURRENT_DATE`,
             [lineId]
         );
-        const line = lineResult.rows[0];
-        if (!line || !line.current_product_id) {
+        let productId = planResult.rows[0]?.product_id;
+        if (!productId) {
+            const lineResult = await pool.query(
+                `SELECT current_product_id FROM production_lines WHERE id = $1`,
+                [lineId]
+            );
+            productId = lineResult.rows[0]?.current_product_id;
+        }
+        if (!productId) {
             return res.json({ success: true, data: [] });
         }
         const result = await pool.query(`
@@ -645,9 +1066,231 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             JOIN operations o ON pp.operation_id = o.id
             WHERE pp.product_id = $1
             ORDER BY pp.sequence_number
-        `, [line.current_product_id]);
+        `, [productId]);
         res.json({ success: true, data: result.rows });
     } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/supervisor/resolve-process', async (req, res) => {
+    const { line_id, process_qr, work_date } = req.body;
+    if (!line_id || !process_qr) {
+        return res.status(400).json({ success: false, error: 'line_id and process_qr are required' });
+    }
+
+    const processParsed = parseSupervisorQr(process_qr);
+    if (!processParsed || !processParsed.id) {
+        return res.status(400).json({ success: false, error: 'Invalid process QR payload' });
+    }
+
+    try {
+        const process = await resolveProcessForLine(line_id, processParsed, work_date);
+        const employeeResult = await pool.query(
+            `SELECT e.id, e.emp_code, e.emp_name
+             FROM employee_process_assignments a
+             JOIN employees e ON e.id = a.employee_id
+             WHERE a.line_id = $1 AND a.process_id = $2
+             LIMIT 1`,
+            [line_id, process.id]
+        );
+        res.json({
+            success: true,
+            data: {
+                process: {
+                    id: process.id,
+                    sequence_number: process.sequence_number,
+                    operation_id: process.operation_id,
+                    operation_code: process.operation_code,
+                    operation_name: process.operation_name,
+                    target_units: process.target_units || 0
+                },
+                employee: employeeResult.rows[0] || null
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/supervisor/assign', async (req, res) => {
+    const { line_id, process_id, employee_qr, quantity_completed, work_date, materials_at_link, confirm_change } = req.body;
+    if (!line_id || !process_id || !employee_qr) {
+        return res.status(400).json({ success: false, error: 'line_id, process_id and employee_qr are required' });
+    }
+    const effectiveDate = work_date || new Date().toISOString().slice(0, 10);
+    if (await isDayLocked(effectiveDate)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+
+    const employeeParsed = parseSupervisorQr(employee_qr);
+    if (!employeeParsed) {
+        return res.status(400).json({ success: false, error: 'Invalid employee QR payload' });
+    }
+
+    let startedTransaction = false;
+    try {
+        const process = await resolveProcessForLine(line_id, { id: process_id, type: 'process' }, effectiveDate);
+
+        let employeeId = employeeParsed.id;
+        let employee = null;
+        if (!employeeId) {
+            const rawCode = employeeParsed.code || employeeParsed.emp_code || employeeParsed.raw;
+            if (!rawCode) {
+                return res.status(400).json({ success: false, error: 'Invalid employee QR payload' });
+            }
+            const empResult = await pool.query(
+                `SELECT id, emp_code, emp_name FROM employees WHERE emp_code = $1 AND is_active = true`,
+                [rawCode]
+            );
+            employee = empResult.rows[0];
+            if (!employee) {
+                return res.status(404).json({ success: false, error: 'Employee not found' });
+            }
+            employeeId = employee.id;
+        } else {
+            const empResult = await pool.query(
+                `SELECT id, emp_code, emp_name FROM employees WHERE id = $1 AND is_active = true`,
+                [employeeId]
+            );
+            employee = empResult.rows[0];
+            if (!employee) {
+                return res.status(404).json({ success: false, error: 'Employee not found' });
+            }
+        }
+
+        const currentAssignmentResult = await pool.query(
+            `SELECT employee_id FROM employee_process_assignments WHERE line_id = $1 AND process_id = $2`,
+            [line_id, process.id]
+        );
+        const currentAssignment = currentAssignmentResult.rows[0];
+
+        if (currentAssignment && currentAssignment.employee_id === employeeId) {
+            const now = new Date();
+            const date = effectiveDate;
+            const inTime = now.toTimeString().slice(0, 5);
+            await pool.query(
+                `INSERT INTO employee_attendance (employee_id, attendance_date, in_time, out_time, status, notes)
+                 VALUES ($1, $2, $3, $4, 'present', 'Supervisor scan')
+                 ON CONFLICT (employee_id, attendance_date)
+                 DO UPDATE SET in_time = COALESCE(employee_attendance.in_time, EXCLUDED.in_time),
+                               status = 'present',
+                               updated_at = NOW()`,
+                [employeeId, date, inTime, '17:00']
+            );
+            realtime.broadcast('data_change', { entity: 'attendance', action: 'update', employee_id: employeeId, date });
+            return res.json({
+                success: true,
+                data: {
+                    process: {
+                        id: process.id,
+                        sequence_number: process.sequence_number,
+                        operation_id: process.operation_id,
+                        operation_code: process.operation_code,
+                        operation_name: process.operation_name,
+                        target_units: process.target_units || 0
+                    },
+                    employee
+                }
+            });
+        }
+
+        if (currentAssignment && currentAssignment.employee_id !== employeeId) {
+            if (!confirm_change) {
+                return res.status(400).json({ success: false, error: 'Confirm change required' });
+            }
+            const qtyValue = Number.isFinite(parseInt(quantity_completed, 10))
+                ? parseInt(quantity_completed, 10)
+                : null;
+            if (qtyValue === null || qtyValue < 0) {
+                return res.status(400).json({ success: false, error: 'Quantity completed is required to change employee' });
+            }
+        }
+
+        const existingEmployeeAssignment = await pool.query(
+            `SELECT line_id, process_id FROM employee_process_assignments WHERE employee_id = $1`,
+            [employeeId]
+        );
+        const existing = existingEmployeeAssignment.rows[0];
+        if (existing && (existing.line_id !== Number(line_id) || existing.process_id !== Number(process_id))) {
+            if (!confirm_change) {
+                return res.status(400).json({ success: false, error: 'Confirm change required' });
+            }
+        }
+
+        await pool.query('BEGIN');
+        startedTransaction = true;
+
+        if (currentAssignment && currentAssignment.employee_id !== employeeId) {
+            const qtyValue = parseInt(quantity_completed, 10);
+            const updateResult = await pool.query(
+                `UPDATE process_assignment_history
+                 SET end_time = NOW(), quantity_completed = $1
+                 WHERE line_id = $2 AND process_id = $3 AND employee_id = $4 AND end_time IS NULL`,
+                [qtyValue, line_id, process.id, currentAssignment.employee_id]
+            );
+            if (updateResult.rowCount === 0) {
+                await pool.query(
+                    `INSERT INTO process_assignment_history
+                     (line_id, process_id, employee_id, start_time, end_time, quantity_completed, changed_by)
+                     VALUES ($1, $2, $3, NOW(), NOW(), $4, $5)`,
+                    [line_id, process.id, currentAssignment.employee_id, qtyValue, null]
+                );
+            }
+        }
+        await pool.query(
+            `DELETE FROM employee_process_assignments WHERE employee_id = $1`,
+            [employeeId]
+        );
+        await pool.query(
+            `DELETE FROM employee_process_assignments WHERE line_id = $1 AND process_id = $2`,
+            [line_id, process.id]
+        );
+        await pool.query(
+            `INSERT INTO employee_process_assignments (line_id, process_id, employee_id)
+             VALUES ($1, $2, $3)`,
+            [line_id, process.id, employeeId]
+        );
+        await pool.query(
+            `INSERT INTO process_assignment_history
+             (line_id, process_id, employee_id, start_time, quantity_completed, materials_at_link, changed_by)
+             VALUES ($1, $2, $3, NOW(), 0, $4, $5)`,
+            [line_id, process.id, employeeId, materials_at_link || 0, null]
+        );
+
+        const now = new Date();
+        const date = effectiveDate;
+        const inTime = now.toTimeString().slice(0, 5);
+        await pool.query(
+            `INSERT INTO employee_attendance (employee_id, attendance_date, in_time, out_time, status, notes)
+             VALUES ($1, $2, $3, $4, 'present', 'Supervisor scan')
+             ON CONFLICT (employee_id, attendance_date)
+             DO UPDATE SET in_time = COALESCE(employee_attendance.in_time, EXCLUDED.in_time),
+                           status = 'present',
+                           updated_at = NOW()`,
+            [employeeId, date, inTime, '17:00']
+        );
+
+        await pool.query('COMMIT');
+        realtime.broadcast('data_change', { entity: 'attendance', action: 'update', employee_id: employeeId, date });
+        res.json({
+            success: true,
+            data: {
+                process: {
+                    id: process.id,
+                    sequence_number: process.sequence_number,
+                    operation_id: process.operation_id,
+                    operation_code: process.operation_code,
+                    operation_name: process.operation_name,
+                    target_units: process.target_units || 0
+                },
+                employee
+            }
+        });
+    } catch (err) {
+        if (startedTransaction) {
+            await pool.query('ROLLBACK');
+        }
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -658,50 +1301,16 @@ router.post('/supervisor/scan', async (req, res) => {
         return res.status(400).json({ success: false, error: 'line_id, employee_qr and process_qr are required' });
     }
 
-    const parseQr = (payload) => {
-        try {
-            const parsed = JSON.parse(payload);
-            if (parsed && parsed.id) return parsed;
-        } catch (err) {
-            // ignore
-        }
-        const numeric = parseInt(String(payload).trim(), 10);
-        return Number.isFinite(numeric) ? { id: numeric } : null;
-    };
-
-    const employeeParsed = parseQr(employee_qr);
-    const processParsed = parseQr(process_qr);
+    const employeeParsed = parseSupervisorQr(employee_qr);
+    const processParsed = parseSupervisorQr(process_qr);
     if (!employeeParsed || !employeeParsed.id || !processParsed || !processParsed.id) {
         return res.status(400).json({ success: false, error: 'Invalid QR payload' });
     }
 
     try {
         const employeeId = employeeParsed.id;
-        let processId = null;
-
-        if (processParsed.type === 'operation') {
-            const lineResult = await pool.query(
-                `SELECT current_product_id FROM production_lines WHERE id = $1`,
-                [line_id]
-            );
-            const line = lineResult.rows[0];
-            if (!line || !line.current_product_id) {
-                return res.status(400).json({ success: false, error: 'Line has no current product' });
-            }
-            const processResult = await pool.query(
-                `SELECT id FROM product_processes
-                 WHERE product_id = $1 AND operation_id = $2
-                 ORDER BY sequence_number
-                 LIMIT 1`,
-                [line.current_product_id, processParsed.id]
-            );
-            if (!processResult.rows[0]) {
-                return res.status(400).json({ success: false, error: 'Operation not found in current product process' });
-            }
-            processId = processResult.rows[0].id;
-        } else {
-            processId = processParsed.id;
-        }
+        const process = await resolveProcessForLine(line_id, processParsed);
+        const processId = process.id;
 
         const assignment = await pool.query(
             `SELECT 1 FROM employee_process_assignments
@@ -714,6 +1323,9 @@ router.post('/supervisor/scan', async (req, res) => {
 
         const now = new Date();
         const date = now.toISOString().slice(0, 10);
+        if (await isDayLocked(date)) {
+            return res.status(403).json({ success: false, error: 'Production day is locked' });
+        }
         const inTime = now.toTimeString().slice(0, 5);
         await pool.query(
             `INSERT INTO employee_attendance (employee_id, attendance_date, in_time, out_time, status, notes)
@@ -737,17 +1349,60 @@ router.post('/supervisor/progress', async (req, res) => {
     if (!line_id || !process_id || !work_date || hour_slot === undefined) {
         return res.status(400).json({ success: false, error: 'line_id, process_id, work_date, hour_slot are required' });
     }
+    const hourValue = parseInt(hour_slot, 10);
+    if (!Number.isFinite(hourValue) || hourValue < 8 || hourValue > 19) {
+        return res.status(400).json({ success: false, error: 'hour_slot must be between 8 and 19' });
+    }
     try {
+        if (await isDayLocked(work_date)) {
+            return res.status(403).json({ success: false, error: 'Production day is locked' });
+        }
+        const assignmentResult = await pool.query(
+            `SELECT employee_id FROM employee_process_assignments WHERE line_id = $1 AND process_id = $2`,
+            [line_id, process_id]
+        );
+        const assignment = assignmentResult.rows[0];
+        if (!assignment) {
+            return res.status(400).json({ success: false, error: 'No employee assigned to this line/process' });
+        }
         const result = await pool.query(
-            `INSERT INTO line_process_hourly_progress (line_id, process_id, work_date, hour_slot, quantity)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO line_process_hourly_progress (line_id, process_id, employee_id, work_date, hour_slot, quantity)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (line_id, process_id, work_date, hour_slot)
-             DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = NOW()
+             DO UPDATE SET quantity = EXCLUDED.quantity,
+                           employee_id = EXCLUDED.employee_id,
+                           updated_at = NOW()
              RETURNING *`,
-            [line_id, process_id, work_date, hour_slot, quantity || 0]
+            [line_id, process_id, assignment.employee_id, work_date, hourValue, quantity || 0]
         );
         realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, process_id, work_date, hour_slot });
         res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/supervisor/progress', async (req, res) => {
+    const { line_id, work_date } = req.query;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT lpp.id,
+                    lpp.process_id,
+                    lpp.hour_slot,
+                    lpp.quantity,
+                    o.operation_code,
+                    o.operation_name
+             FROM line_process_hourly_progress lpp
+             JOIN product_processes pp ON lpp.process_id = pp.id
+             JOIN operations o ON pp.operation_id = o.id
+             WHERE lpp.line_id = $1 AND lpp.work_date = $2
+             ORDER BY lpp.hour_slot, o.operation_code`,
+            [line_id, work_date]
+        );
+        res.json({ success: true, data: result.rows });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -760,8 +1415,14 @@ router.get('/lines/:id/details', async (req, res) => {
     const { id } = req.params;
     try {
         const lineResult = await pool.query(`
-            SELECT pl.*, p.product_code, p.product_name
+            SELECT pl.*,
+                   COALESCE(ldp.product_id, pl.current_product_id) as active_product_id,
+                   COALESCE(p_plan.product_code, p.product_code) as product_code,
+                   COALESCE(p_plan.product_name, p.product_name) as product_name,
+                   ldp.target_units as daily_target_units
             FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = CURRENT_DATE
+            LEFT JOIN products p_plan ON ldp.product_id = p_plan.id
             LEFT JOIN products p ON pl.current_product_id = p.id
             WHERE pl.id = $1
         `, [id]);
@@ -779,14 +1440,15 @@ router.get('/lines/:id/details', async (req, res) => {
         const employees = employeesResult.rows;
 
         let processes = [];
-        if (line.current_product_id) {
+        const productId = line.active_product_id || line.current_product_id;
+        if (productId) {
             const processesResult = await pool.query(`
                 SELECT pp.*, o.operation_code, o.operation_name, o.operation_category, o.qr_code_path
                 FROM product_processes pp
                 JOIN operations o ON pp.operation_id = o.id
                 WHERE pp.product_id = $1
                 ORDER BY pp.sequence_number
-            `, [line.current_product_id]);
+            `, [productId]);
             processes = processesResult.rows;
         }
 

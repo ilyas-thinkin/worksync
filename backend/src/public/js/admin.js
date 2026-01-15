@@ -6,13 +6,45 @@ let currentSection = 'dashboard';
 let currentView = { type: 'section', section: 'dashboard' };
 let realtimeRefreshTimer = null;
 const isIeMode = typeof window !== 'undefined' && window.IS_IE;
+let ieDefaultIn = '08:00';
+let ieDefaultOut = '17:00';
 
 // Initialize on page load
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    const ok = await requireAuth();
+    if (!ok) return;
     loadSection('dashboard');
     setupNavigation();
+    setupMobileSidebar();
     setupRealtime();
 });
+
+async function requireAuth() {
+    try {
+        const response = await fetch('/auth/session');
+        if (!response.ok) {
+            window.location.href = '/';
+            return false;
+        }
+        const result = await response.json();
+        if (!result.success) {
+            window.location.href = '/';
+            return false;
+        }
+        const required = window.REQUIRED_ROLE;
+        if (required) {
+            const roles = Array.isArray(required) ? required : [required];
+            if (!roles.includes(result.role)) {
+                window.location.href = '/';
+                return false;
+            }
+        }
+        return true;
+    } catch (err) {
+        window.location.href = '/';
+        return false;
+    }
+}
 
 // Setup navigation
 function setupNavigation() {
@@ -25,8 +57,35 @@ function setupNavigation() {
             // Update active state
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             link.classList.add('active');
+            closeMobileSidebar();
         });
     });
+}
+
+function setupMobileSidebar() {
+    const toggle = document.getElementById('sidebar-toggle');
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    if (!toggle || !sidebar || !overlay) return;
+
+    toggle.addEventListener('click', () => {
+        const isOpen = sidebar.classList.toggle('open');
+        overlay.classList.toggle('active', isOpen);
+    });
+
+    overlay.addEventListener('click', closeMobileSidebar);
+    window.addEventListener('resize', () => {
+        if (window.innerWidth > 768) {
+            closeMobileSidebar();
+        }
+    });
+}
+
+function closeMobileSidebar() {
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    if (sidebar) sidebar.classList.remove('open');
+    if (overlay) overlay.classList.remove('active');
 }
 
 // Load section content
@@ -42,6 +101,9 @@ async function loadSection(section) {
         case 'attendance':
             await loadAttendanceSection();
             break;
+        case 'daily-plan':
+            await loadDailyPlans();
+            break;
         case 'lines':
             await loadLines();
             break;
@@ -53,6 +115,15 @@ async function loadSection(section) {
             break;
         case 'operations':
             await loadOperations();
+            break;
+        case 'users':
+            await loadUsers();
+            break;
+        case 'audit-logs':
+            await loadAuditLogs();
+            break;
+        case 'production-days':
+            await loadProductionDays();
             break;
     }
 }
@@ -400,7 +471,7 @@ async function viewLineDetails(lineId) {
                 </div>
                 <div class="stat-card">
                     <div class="stat-info">
-                        <h3>${line.target_units || 0}</h3>
+                        <h3>${line.daily_target_units ?? line.target_units ?? 0}</h3>
                         <p>Target (units)</p>
                     </div>
                 </div>
@@ -439,6 +510,7 @@ async function viewLineDetails(lineId) {
                                         <th>QR</th>
                                         <th>Cycle Time</th>
                                         <th>SAH</th>
+                                        <th>Target</th>
                                         <th>Employee</th>
                                     </tr>
                                 </thead>
@@ -455,6 +527,7 @@ async function viewLineDetails(lineId) {
                                                 </td>
                                                 <td>${proc.cycle_time_seconds || 0}s</td>
                                                 <td>${parseFloat(proc.operation_sah || 0).toFixed(4)}</td>
+                                                <td>${proc.target_units || 0}</td>
                                                 <td>
                                                     <div class="employee-dropdown" data-process-id="${proc.id}">
                                                         <button type="button" class="form-control dropdown-toggle" onclick="toggleEmployeeDropdown(${proc.id})">
@@ -1350,6 +1423,7 @@ async function viewProductProcess(productId) {
                                     <th>QR</th>
                                     <th>Cycle Time</th>
                                     <th>SAH</th>
+                                    <th>Target</th>
                                     <th>Manpower</th>
                                     <th>Actions</th>
                                 </tr>
@@ -1366,6 +1440,7 @@ async function viewProductProcess(productId) {
                                         </td>
                                         <td>${proc.cycle_time_seconds || 0}s</td>
                                         <td>${parseFloat(proc.operation_sah || 0).toFixed(4)}</td>
+                                        <td>${proc.target_units || 0}</td>
                                         <td>${proc.manpower_required || 1}</td>
                                         <td>
                                             <div class="action-btns">
@@ -1444,6 +1519,10 @@ function scheduleRealtimeRefresh(payload) {
             loadAttendanceSection();
             return;
         }
+        if (currentSection === 'daily-plan' && payload.entity === 'daily_plans') {
+            loadDailyPlans();
+            return;
+        }
         if (currentSection === 'lines' && ['lines', 'products', 'employees'].includes(entity)) {
             loadLines();
             return;
@@ -1500,6 +1579,10 @@ function showAddProcessModal(productId) {
                     <div class="form-group">
                         <label class="form-label">SAH (calculated)</label>
                         <input type="number" class="form-control" name="operation_sah" step="0.0001" required readonly>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Target (units)</label>
+                        <input type="number" class="form-control" name="target_units" min="0" value="0">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Manpower Required</label>
@@ -1610,6 +1693,10 @@ function editProcess(proc, productId) {
                     <div class="form-group">
                         <label class="form-label">SAH</label>
                         <input type="number" class="form-control" name="operation_sah" step="0.0001" value="${proc.operation_sah}" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Target (units)</label>
+                        <input type="number" class="form-control" name="target_units" min="0" value="${proc.target_units || 0}">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Manpower Required</label>
@@ -1968,6 +2055,26 @@ async function loadAttendanceSection() {
             </div>
             <div class="card">
                 <div class="card-header">
+                    <h3 class="card-title">Default Working Hours</h3>
+                </div>
+                <div class="card-body">
+                    <div class="ie-settings">
+                        <div>
+                            <label class="form-label">Default In</label>
+                            <input type="time" class="form-control" id="default-in-time" value="${ieDefaultIn}">
+                        </div>
+                        <div>
+                            <label class="form-label">Default Out</label>
+                            <input type="time" class="form-control" id="default-out-time" value="${ieDefaultOut}">
+                        </div>
+                        <div class="ie-settings-action">
+                            <button class="btn btn-secondary" id="save-settings-btn">Update Default</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">
                     <h3 class="card-title">Employee Attendance</h3>
                 </div>
                 <div class="card-body">
@@ -1982,11 +2089,50 @@ async function loadAttendanceSection() {
     const dateInput = document.getElementById('ie-date');
     dateInput.addEventListener('change', loadAttendanceData);
     document.getElementById('save-all-btn').addEventListener('click', saveAllAttendance);
+    document.getElementById('save-settings-btn').addEventListener('click', saveIeSettings);
+    await loadIeSettings();
     loadAttendanceData();
 }
 
-const IE_DEFAULT_IN = '08:00';
-const IE_DEFAULT_OUT = '17:00';
+async function loadIeSettings() {
+    try {
+        const response = await fetch('/api/settings');
+        const result = await response.json();
+        if (result.success) {
+            ieDefaultIn = result.data.default_in_time || ieDefaultIn;
+            ieDefaultOut = result.data.default_out_time || ieDefaultOut;
+            const inInput = document.getElementById('default-in-time');
+            const outInput = document.getElementById('default-out-time');
+            if (inInput) inInput.value = ieDefaultIn;
+            if (outInput) outInput.value = ieDefaultOut;
+        }
+    } catch (err) {
+        showToast('Failed to load default hours', 'error');
+    }
+}
+
+async function saveIeSettings() {
+    const inValue = document.getElementById('default-in-time').value;
+    const outValue = document.getElementById('default-out-time').value;
+    try {
+        const response = await fetch('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ default_in_time: inValue, default_out_time: outValue })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        ieDefaultIn = inValue;
+        ieDefaultOut = outValue;
+        loadAttendanceData();
+        showToast('Default hours updated', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
 
 async function loadAttendanceData() {
     const date = document.getElementById('ie-date').value;
@@ -2041,8 +2187,8 @@ function renderAttendanceRow(row, index) {
         row.operation_name ? `• ${row.operation_name}` : '',
         row.line_name ? `(${row.line_name})` : ''
     ].filter(Boolean).join(' ');
-    const inTime = row.in_time || IE_DEFAULT_IN;
-    const outTime = row.out_time || IE_DEFAULT_OUT;
+    const inTime = row.in_time || ieDefaultIn;
+    const outTime = row.out_time || ieDefaultOut;
     const status = row.status || 'present';
 
     return `
@@ -2127,5 +2273,402 @@ async function saveAttendance(employeeId, date, inTime, outTime, status, notes, 
         if (!silent) showToast('Saved', 'success');
     } catch (err) {
         showToast(err.message, 'error');
+    }
+}
+
+// ============================================================================
+// Daily Line Plan (IE)
+// ============================================================================
+async function loadDailyPlans() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="ie-section">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Daily Line Plan</h1>
+                    <p class="page-subtitle">Assign products and targets per line for the day</p>
+                </div>
+                <div class="ie-actions">
+                    <div class="ie-date">
+                        <label for="plan-date">Date</label>
+                        <input type="date" id="plan-date" value="${today}">
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Line Plans</h3>
+                </div>
+                <div class="card-body">
+                    <div id="daily-plan-table" class="table-container">
+                        <div class="loading-overlay"><div class="spinner"></div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('plan-date').addEventListener('change', loadDailyPlanData);
+    loadDailyPlanData();
+}
+
+async function loadDailyPlanData() {
+    const date = document.getElementById('plan-date').value;
+    const container = document.getElementById('daily-plan-table');
+    container.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    try {
+        const response = await fetch(`/api/daily-plans?date=${date}`);
+        const result = await response.json();
+        if (!result.success) {
+            container.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
+            return;
+        }
+        const { plans, lines, products } = result.data;
+        window.dailyPlanProducts = products;
+        const planMap = new Map(plans.map(plan => [String(plan.line_id), plan]));
+        container.innerHTML = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Line</th>
+                        <th>Product</th>
+                        <th>Daily Target</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${lines.map(line => {
+                        const plan = planMap.get(String(line.id));
+                        return `
+                            <tr>
+                                <td><strong>${line.line_code}</strong><div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div></td>
+                                <td>
+                                    <select class="form-control" id="plan-product-${line.id}">
+                                        <option value="">Select product</option>
+                                        ${products.map(product => `
+                                            <option value="${product.id}" ${plan?.product_id === product.id ? 'selected' : ''}>
+                                                ${product.product_code} - ${product.product_name}
+                                            </option>
+                                        `).join('')}
+                                    </select>
+                                </td>
+                                <td>
+                                    <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${plan?.target_units || 0}">
+                                </td>
+                                <td>
+                                    <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})">Save</button>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+async function saveDailyPlan(lineId) {
+    const date = document.getElementById('plan-date').value;
+    const productId = document.getElementById(`plan-product-${lineId}`).value;
+    const targetUnits = document.getElementById(`plan-target-${lineId}`).value;
+    if (!productId) {
+        showToast('Select a product for the line', 'error');
+        return;
+    }
+    try {
+        const response = await fetch('/api/daily-plans', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: lineId,
+                product_id: productId,
+                work_date: date,
+                target_units: targetUnits
+            })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Daily plan saved', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ============================================================================
+// Production Day Lock (Admin)
+// ============================================================================
+async function loadProductionDays() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Production Day Lock</h1>
+                <p class="page-subtitle">Lock or unlock daily execution</p>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-body">
+                <div class="ie-settings">
+                    <div>
+                        <label class="form-label">Date</label>
+                        <input type="date" class="form-control" id="lock-date" value="${today}">
+                    </div>
+                    <div>
+                        <label class="form-label">Status</label>
+                        <div class="status-badge" id="lock-status">Checking...</div>
+                    </div>
+                    <div class="ie-settings-action">
+                        <button class="btn btn-danger" id="lock-btn">Lock</button>
+                        <button class="btn btn-secondary" id="unlock-btn">Unlock</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('lock-date').addEventListener('change', refreshLockStatus);
+    document.getElementById('lock-btn').addEventListener('click', () => updateLock(true));
+    document.getElementById('unlock-btn').addEventListener('click', () => updateLock(false));
+    refreshLockStatus();
+}
+
+async function refreshLockStatus() {
+    const date = document.getElementById('lock-date').value;
+    const status = document.getElementById('lock-status');
+    try {
+        const response = await fetch(`/api/production-days/status?date=${date}`);
+        const result = await response.json();
+        if (result.success && result.data) {
+            status.textContent = 'Locked';
+            status.style.background = '#fee2e2';
+            status.style.color = '#b91c1c';
+        } else {
+            status.textContent = 'Open';
+            status.style.background = '#dcfce7';
+            status.style.color = '#15803d';
+        }
+    } catch (err) {
+        status.textContent = 'Unknown';
+    }
+}
+
+async function updateLock(isLock) {
+    const date = document.getElementById('lock-date').value;
+    try {
+        const response = await fetch(`/api/production-days/${isLock ? 'lock' : 'unlock'}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast(isLock ? 'Day locked' : 'Day unlocked', 'success');
+        refreshLockStatus();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ============================================================================
+// Users (Admin)
+// ============================================================================
+async function loadUsers() {
+    const content = document.getElementById('main-content');
+    content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    try {
+        const response = await fetch('/api/users');
+        const result = await response.json();
+        if (!result.success) {
+            content.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
+            return;
+        }
+        const users = result.data;
+        content.innerHTML = `
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Users</h1>
+                    <p class="page-subtitle">Manage system access</p>
+                </div>
+                <button class="btn btn-primary" onclick="showUserModal()">Add User</button>
+            </div>
+            <div class="card">
+                <div class="card-body table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Name</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${users.map(user => `
+                                <tr>
+                                    <td><strong>${user.username}</strong></td>
+                                    <td>${user.full_name}</td>
+                                    <td>${user.role}</td>
+                                    <td>${user.is_active ? 'Active' : 'Inactive'}</td>
+                                    <td>
+                                        <div class="action-btns">
+                                            <button class="btn btn-secondary btn-sm" onclick='showUserModal(${JSON.stringify(user)})'>Edit</button>
+                                            <button class="btn btn-danger btn-sm" onclick="deactivateUser(${user.id})">Deactivate</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    } catch (err) {
+        content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function showUserModal(user = null) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-backdrop';
+    modal.id = 'user-modal';
+    modal.innerHTML = `
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">${user ? 'Edit User' : 'Add User'}</h3>
+                <button class="modal-close" onclick="closeModal('user-modal')">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form id="user-form">
+                    <div class="form-group">
+                        <label class="form-label">Username</label>
+                        <input type="text" class="form-control" name="username" value="${user?.username || ''}" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Full Name</label>
+                        <input type="text" class="form-control" name="full_name" value="${user?.full_name || ''}" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Role</label>
+                        <select class="form-control" name="role">
+                            ${['admin', 'ie', 'supervisor'].map(role => `
+                                <option value="${role}" ${user?.role === role ? 'selected' : ''}>${role.toUpperCase()}</option>
+                            `).join('')}
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('user-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveUser(${user?.id || 'null'})">${user ? 'Update' : 'Save'}</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    setTimeout(() => modal.classList.add('active'), 10);
+}
+
+async function saveUser(id) {
+    const form = document.getElementById('user-form');
+    const formData = new FormData(form);
+    const data = Object.fromEntries(formData);
+    const url = id ? `/api/users/${id}` : '/api/users';
+    const method = id ? 'PUT' : 'POST';
+    try {
+        const response = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('User saved', 'success');
+        closeModal('user-modal');
+        loadUsers();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function deactivateUser(id) {
+    if (!confirm('Deactivate this user?')) return;
+    try {
+        const response = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('User deactivated', 'success');
+        loadUsers();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ============================================================================
+// Audit Logs (Admin)
+// ============================================================================
+async function loadAuditLogs() {
+    const content = document.getElementById('main-content');
+    content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    try {
+        const response = await fetch('/api/audit-logs?limit=200');
+        const result = await response.json();
+        if (!result.success) {
+            content.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
+            return;
+        }
+        const logs = result.data;
+        content.innerHTML = `
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Audit Logs</h1>
+                    <p class="page-subtitle">Recent changes across the system</p>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-body table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Table</th>
+                                <th>Record</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${logs.map(log => `
+                                <tr>
+                                    <td>${new Date(log.changed_at).toLocaleString()}</td>
+                                    <td>${log.table_name}</td>
+                                    <td>${log.record_id}</td>
+                                    <td>${log.action}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    } catch (err) {
+        content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
 }
