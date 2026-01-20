@@ -99,6 +99,12 @@ app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/users') || req.path.startsWith('/production-days') || req.path.startsWith('/audit-logs')) {
     return requireAnyRole(['admin'])(req, res, next);
   }
+  if (req.path.startsWith('/line-shifts')) {
+    return requireAnyRole(['admin'])(req, res, next);
+  }
+  if (req.path.startsWith('/reports')) {
+    return requireAnyRole(['admin', 'management'])(req, res, next);
+  }
   if (req.path.startsWith('/daily-plans') || req.path.startsWith('/ie') || req.path.startsWith('/settings')) {
     return requireAnyRole(['ie', 'admin'])(req, res, next);
   }

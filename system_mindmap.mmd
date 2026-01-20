@@ -1,0 +1,114 @@
+mindmap
+  root((WorkSync System))
+    Access & Auth
+      Login Hub (/)
+      Role Sessions (cookie)
+      Routes
+        Admin (/admin)
+        IE (/ie)
+        Supervisor (/supervisor)
+        Management (/management)
+      Role Passwords
+        admin1234
+        ie1234
+        sup1234
+        manage1234
+    Admin
+      Master Data
+        Production Lines
+        Employees
+        Products
+        Operations
+      Process Flow
+        Define sequence
+        SAH per operation
+        Targets per process
+      Users
+        Create
+        Edit
+        Deactivate
+      Production Day Locks
+        Lock day
+        Unlock day
+      Audit Logs
+        View changes
+      Shift Unlock
+        Line shift unlock
+      Reports
+        Daily Excel
+        Historical download
+    IE (Industrial Engineering)
+      Daily Line Plan
+        Product per line/day
+        Daily target
+        Lock plan
+      Process Standards
+        SAH per operation
+        Cycle time
+        Manpower
+        Target units
+      Employee Assignment
+        Line + Process mapping
+      Attendance Control
+        Default hours
+        Per-employee in/out
+        Half-day support
+    Supervisor
+      Scan & Attendance
+        Line selection
+        Process QR
+        Employee QR
+        Validate placement
+        Change employee
+          Quantity handoff
+          Materials at link
+      Hourly Progress
+        Process QR scan
+        Quantity completed
+        Forwarded quantity
+        Remaining quantity
+        Validation rule
+      Line Metrics
+        Materials issued
+        Forwarded
+        Remaining WIP
+      Shift Close
+        Close line/day
+    Management
+      Dashboard
+        Line performance
+        Employee efficiency
+      Excel Download
+    Data Model
+      Core Tables
+        production_lines
+        products
+        operations
+        product_processes
+        employees
+      Execution Tables
+        employee_process_assignments
+        process_assignment_history
+        line_process_hourly_progress
+        line_daily_plans
+        line_daily_metrics
+        employee_attendance
+        line_shift_closures
+        production_day_locks
+      Support Tables
+        users
+        audit_logs
+        app_settings
+      Material Tracking
+        material_transactions
+        process_material_wip
+        v_daily_material_summary
+    Realtime
+      SSE /events
+      DB LISTEN/NOTIFY
+    QR System
+      Employees QR
+      Lines QR
+      Process QR
+      Operation QR
+      Auto-generate

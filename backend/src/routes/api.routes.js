@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db.config');
 const realtime = require('../realtime');
+const ExcelJS = require('exceljs');
 
 const getSettingValue = async (key, fallback) => {
     const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -13,6 +14,25 @@ const isDayLocked = async (workDate) => {
     const result = await pool.query(
         'SELECT 1 FROM production_day_locks WHERE work_date = $1',
         [workDate]
+    );
+    return result.rowCount > 0;
+};
+
+const isLineClosed = async (lineId, workDate) => {
+    if (!lineId || !workDate) return false;
+    const result = await pool.query(
+        'SELECT 1 FROM line_shift_closures WHERE line_id = $1 AND work_date = $2',
+        [lineId, workDate]
+    );
+    return result.rowCount > 0;
+};
+
+const isProductLocked = async (productId, workDate) => {
+    if (!productId || !workDate) return false;
+    const result = await pool.query(
+        `SELECT 1 FROM line_daily_plans
+         WHERE product_id = $1 AND work_date = $2 AND is_locked = true`,
+        [productId, workDate]
     );
     return result.rowCount > 0;
 };
@@ -210,7 +230,7 @@ router.get('/daily-plans', async (req, res) => {
     const { date } = req.query;
     try {
         const plansResult = await pool.query(
-            `SELECT lp.id, lp.line_id, lp.product_id, lp.work_date, lp.target_units,
+            `SELECT lp.id, lp.line_id, lp.product_id, lp.work_date, lp.target_units, lp.is_locked,
                     pl.line_code, pl.line_name,
                     p.product_code, p.product_name
              FROM line_daily_plans lp
@@ -245,6 +265,13 @@ router.post('/daily-plans', async (req, res) => {
         return res.status(403).json({ success: false, error: 'Production day is locked' });
     }
     try {
+        const lockCheck = await pool.query(
+            `SELECT is_locked FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        if (lockCheck.rows[0]?.is_locked) {
+            return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
         const before = await pool.query(
             `SELECT * FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
             [line_id, work_date]
@@ -260,8 +287,63 @@ router.post('/daily-plans', async (req, res) => {
              RETURNING *`,
             [line_id, product_id, work_date, target_units || 0, user_id || null]
         );
+        const prevProduct = before.rows[0]?.product_id;
+        if (prevProduct && parseInt(prevProduct, 10) !== parseInt(product_id, 10)) {
+            await pool.query(
+                `DELETE FROM employee_process_assignments WHERE line_id = $1`,
+                [line_id]
+            );
+        }
         await logAudit('line_daily_plans', result.rows[0].id, before.rowCount ? 'update' : 'create', result.rows[0], before.rows[0] || null);
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/daily-plans/lock', async (req, res) => {
+    const { line_id, work_date } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE line_daily_plans
+             SET is_locked = true, updated_at = NOW()
+             WHERE line_id = $1 AND work_date = $2
+             RETURNING *`,
+            [line_id, work_date]
+        );
+        if (!result.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Daily plan not found' });
+        }
+        await logAudit('line_daily_plans', result.rows[0].id, 'lock', result.rows[0], null);
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'lock', line_id, work_date });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/daily-plans/unlock', async (req, res) => {
+    const { line_id, work_date } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE line_daily_plans
+             SET is_locked = false, updated_at = NOW()
+             WHERE line_id = $1 AND work_date = $2
+             RETURNING *`,
+            [line_id, work_date]
+        );
+        if (!result.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Daily plan not found' });
+        }
+        await logAudit('line_daily_plans', result.rows[0].id, 'unlock', result.rows[0], null);
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'unlock', line_id, work_date });
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -288,6 +370,9 @@ router.post('/line-metrics', async (req, res) => {
     const { line_id, work_date, forwarded_quantity, remaining_wip, materials_issued, user_id } = req.body;
     if (await isDayLocked(work_date)) {
         return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    if (await isLineClosed(line_id, work_date)) {
+        return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
     }
     try {
         const before = await pool.query(
@@ -325,6 +410,210 @@ router.get('/audit-logs', async (req, res) => {
             [limit]
         );
         res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// Reports (Excel)
+// ============================================================================
+router.get('/reports/daily', async (req, res) => {
+    const { date } = req.query;
+    if (!date) {
+        return res.status(400).json({ success: false, error: 'date is required (YYYY-MM-DD)' });
+    }
+    try {
+        const [materialsResult, processOutputResult, linesResult, metricsResponse] = await Promise.all([
+            pool.query(
+                `SELECT * FROM v_daily_material_summary WHERE work_date = $1`,
+                [date]
+            ),
+            pool.query(
+                `SELECT pl.line_name,
+                        o.operation_code,
+                        o.operation_name,
+                        SUM(lph.quantity) as total_output
+                 FROM line_process_hourly_progress lph
+                 JOIN production_lines pl ON pl.id = lph.line_id
+                 JOIN product_processes pp ON pp.id = lph.process_id
+                 JOIN operations o ON o.id = pp.operation_id
+                 WHERE lph.work_date = $1
+                 GROUP BY pl.line_name, o.operation_code, o.operation_name
+                 ORDER BY pl.line_name, o.operation_code`,
+                [date]
+            ),
+            pool.query(
+                `SELECT id, line_name FROM production_lines WHERE is_active = true ORDER BY id`
+            ),
+            pool.query(
+            `SELECT
+                pl.id as line_id,
+                pl.line_name,
+                pl.line_code,
+                COALESCE(ldp.target_units, pl.target_units, 0) as target,
+                COALESCE(p.product_code, '') as product_code,
+                COALESCE(p.product_name, '') as product_name,
+                COALESCE(
+                    (SELECT SUM(pp.operation_sah)
+                     FROM product_processes pp
+                     WHERE pp.product_id = COALESCE(ldp.product_id, pl.current_product_id)
+                     AND pp.is_active = true), 0
+                ) as total_sah,
+                COALESCE(
+                    (SELECT COUNT(DISTINCT a.employee_id)
+                     FROM employee_process_assignments a
+                     WHERE a.line_id = pl.id), 0
+                ) as manpower,
+                COALESCE(
+                    (SELECT SUM(h.quantity)
+                     FROM line_process_hourly_progress h
+                     WHERE h.line_id = pl.id AND h.work_date = $1), 0
+                ) as actual_output
+            FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $1
+            LEFT JOIN products p ON COALESCE(ldp.product_id, pl.current_product_id) = p.id
+            WHERE pl.is_active = true
+            ORDER BY pl.id`,
+            [date]
+        )
+        ]);
+
+        const inTime = await getSettingValue('default_in_time', '08:00');
+        const outTime = await getSettingValue('default_out_time', '17:00');
+        const [inH, inM] = inTime.split(':').map(Number);
+        const [outH, outM] = outTime.split(':').map(Number);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const workingSeconds = workingHours * 3600;
+
+        const lineMetrics = metricsResponse.rows.map(row => {
+            const target = parseInt(row.target) || 0;
+            const manpower = parseInt(row.manpower) || 0;
+            const totalSAH = parseFloat(row.total_sah) || 0;
+            const actualOutput = parseInt(row.actual_output) || 0;
+            const taktTime = target > 0 ? Math.round(workingSeconds / target) : 0;
+            let efficiency = 0;
+            if (manpower > 0 && workingHours > 0 && totalSAH > 0) {
+                const earnedHours = actualOutput * totalSAH;
+                const availableHours = manpower * workingHours;
+                efficiency = Math.round((earnedHours / availableHours) * 100 * 100) / 100;
+            }
+            return {
+                line_id: row.line_id,
+                line_name: row.line_name,
+                line_code: row.line_code,
+                product_code: row.product_code,
+                product_name: row.product_name,
+                target,
+                manpower,
+                total_sah: totalSAH,
+                actual_output: actualOutput,
+                takt_time_seconds: taktTime,
+                efficiency_percent: efficiency,
+                completion_percent: target > 0 ? Math.round((actualOutput / target) * 100) : 0
+            };
+        });
+
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = 'WorkSync';
+        workbook.created = new Date();
+
+        const lineSheet = workbook.addWorksheet('Line Summary');
+        lineSheet.columns = [
+            { header: 'Line', key: 'line', width: 24 },
+            { header: 'Product', key: 'product', width: 26 },
+            { header: 'Target', key: 'target', width: 12 },
+            { header: 'Output', key: 'output', width: 12 },
+            { header: 'Efficiency %', key: 'efficiency', width: 14 },
+            { header: 'Completion %', key: 'completion', width: 14 }
+        ];
+        lineMetrics.forEach(row => {
+            lineSheet.addRow({
+                line: `${row.line_name} (${row.line_code})`,
+                product: `${row.product_code} ${row.product_name}`.trim(),
+                target: row.target,
+                output: row.actual_output,
+                efficiency: row.efficiency_percent,
+                completion: row.completion_percent
+            });
+        });
+
+        const materialsSheet = workbook.addWorksheet('Materials');
+        materialsSheet.columns = [
+            { header: 'Line ID', key: 'line_id', width: 10 },
+            { header: 'Work Date', key: 'work_date', width: 12 },
+            { header: 'Issued', key: 'total_issued', width: 12 },
+            { header: 'Used', key: 'total_used', width: 12 },
+            { header: 'Returned', key: 'total_returned', width: 12 },
+            { header: 'Forwarded', key: 'total_forwarded', width: 12 }
+        ];
+        (materialsResult.rows || []).forEach(row => materialsSheet.addRow(row));
+
+        const processSheet = workbook.addWorksheet('Process Output');
+        processSheet.columns = [
+            { header: 'Line', key: 'line_name', width: 24 },
+            { header: 'Operation Code', key: 'operation_code', width: 16 },
+            { header: 'Operation Name', key: 'operation_name', width: 28 },
+            { header: 'Output', key: 'total_output', width: 12 }
+        ];
+        (processOutputResult.rows || []).forEach(row => processSheet.addRow(row));
+
+        const employeeSheet = workbook.addWorksheet('Employee Efficiency');
+        employeeSheet.columns = [
+            { header: 'Line', key: 'line_name', width: 24 },
+            { header: 'Employee Code', key: 'emp_code', width: 14 },
+            { header: 'Employee Name', key: 'emp_name', width: 22 },
+            { header: 'Operation', key: 'operation', width: 28 },
+            { header: 'Output', key: 'output', width: 12 },
+            { header: 'Efficiency %', key: 'efficiency', width: 14 }
+        ];
+        for (const line of linesResult.rows) {
+            const shift = await pool.query(
+                `SELECT e.emp_code, e.emp_name,
+                        o.operation_code, o.operation_name,
+                        COALESCE(SUM(lph.quantity), 0) as total_output,
+                        pp.operation_sah,
+                        att.in_time, att.out_time
+                 FROM employees e
+                 JOIN employee_process_assignments epa ON e.id = epa.employee_id AND epa.line_id = $1
+                 JOIN product_processes pp ON epa.process_id = pp.id
+                 JOIN operations o ON pp.operation_id = o.id
+                 LEFT JOIN employee_attendance att ON e.id = att.employee_id AND att.attendance_date = $2
+                 LEFT JOIN line_process_hourly_progress lph
+                    ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
+                 WHERE e.is_active = true
+                 GROUP BY e.emp_code, e.emp_name, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
+                 ORDER BY e.emp_code`,
+                [line.id, date]
+            );
+            shift.rows.forEach(row => {
+                let hours = workingHours;
+                if (row.in_time && row.out_time) {
+                    const [inH, inM] = row.in_time.split(':').map(Number);
+                    const [outH, outM] = row.out_time.split(':').map(Number);
+                    const diff = (outH + outM / 60) - (inH + inM / 60);
+                    if (diff > 0) hours = diff;
+                }
+                const output = parseInt(row.total_output || 0);
+                const sah = parseFloat(row.operation_sah || 0);
+                const efficiency = hours > 0 && sah > 0
+                    ? Math.round(((output * sah) / hours) * 100 * 100) / 100
+                    : 0;
+                employeeSheet.addRow({
+                    line_name: line.line_name,
+                    emp_code: row.emp_code,
+                    emp_name: row.emp_name,
+                    operation: `${row.operation_code} - ${row.operation_name}`,
+                    output: output,
+                    efficiency: efficiency
+                });
+            });
+        }
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=\"daily_report_${date}.xlsx\"`);
+        res.send(buffer);
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -393,6 +682,212 @@ router.delete('/lines/:id', async (req, res) => {
         await pool.query(`UPDATE production_lines SET is_active = false WHERE id = $1`, [id]);
         realtime.broadcast('data_change', { entity: 'lines', action: 'delete', id });
         res.json({ success: true, message: 'Line deactivated successfully' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// LINE PRODUCTION METRICS (Takt Time & Efficiency)
+// ============================================================================
+router.get('/lines/:id/metrics', async (req, res) => {
+    const { id } = req.params;
+    const { date } = req.query;
+    const workDate = date || new Date().toISOString().split('T')[0];
+
+    try {
+        // Get line info with daily plan
+        const lineResult = await pool.query(`
+            SELECT pl.*,
+                   COALESCE(ldp.target_units, pl.target_units, 0) as target,
+                   COALESCE(ldp.product_id, pl.current_product_id) as product_id,
+                   COALESCE(p.product_code, '') as product_code,
+                   COALESCE(p.product_name, '') as product_name
+            FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
+            LEFT JOIN products p ON COALESCE(ldp.product_id, pl.current_product_id) = p.id
+            WHERE pl.id = $1
+        `, [id, workDate]);
+
+        if (lineResult.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+
+        const line = lineResult.rows[0];
+        const productId = line.product_id;
+        const target = parseInt(line.target) || 0;
+
+        // Get SAH for the product (sum of all process steps)
+        let totalSAH = 0;
+        if (productId) {
+            const sahResult = await pool.query(`
+                SELECT COALESCE(SUM(operation_sah), 0) as total_sah
+                FROM product_processes
+                WHERE product_id = $1 AND is_active = true
+            `, [productId]);
+            totalSAH = parseFloat(sahResult.rows[0].total_sah) || 0;
+        }
+
+        // Get manpower (assigned employees count for this line)
+        const mpResult = await pool.query(`
+            SELECT COUNT(DISTINCT employee_id) as manpower
+            FROM employee_process_assignments
+            WHERE line_id = $1
+        `, [id]);
+        const manpower = parseInt(mpResult.rows[0].manpower) || 0;
+
+        // Get working hours from settings
+        const inTime = await getSettingValue('default_in_time', '08:00');
+        const outTime = await getSettingValue('default_out_time', '17:00');
+
+        // Calculate working hours in decimal
+        const [inH, inM] = inTime.split(':').map(Number);
+        const [outH, outM] = outTime.split(':').map(Number);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const workingSeconds = workingHours * 3600;
+
+        // Get actual output for the day (sum of hourly progress)
+        const outputResult = await pool.query(`
+            SELECT COALESCE(SUM(quantity), 0) as actual_output
+            FROM line_process_hourly_progress
+            WHERE line_id = $1 AND work_date = $2
+        `, [id, workDate]);
+        const actualOutput = parseInt(outputResult.rows[0].actual_output) || 0;
+
+        // Calculate Takt Time (seconds per unit)
+        // Takt Time = Available Working Time / Target
+        const taktTime = target > 0 ? Math.round(workingSeconds / target) : 0;
+
+        // Calculate Efficiency
+        // Efficiency (%) = (Actual Output × SAH) / (Manpower × Working Hours) × 100
+        let efficiency = 0;
+        if (manpower > 0 && workingHours > 0 && totalSAH > 0) {
+            const earnedHours = actualOutput * totalSAH;
+            const availableHours = manpower * workingHours;
+            efficiency = Math.round((earnedHours / availableHours) * 100 * 100) / 100; // 2 decimal places
+        }
+
+        // Calculate target efficiency (if target was met)
+        let targetEfficiency = 0;
+        if (manpower > 0 && workingHours > 0 && totalSAH > 0 && target > 0) {
+            const targetEarnedHours = target * totalSAH;
+            const availableHours = manpower * workingHours;
+            targetEfficiency = Math.round((targetEarnedHours / availableHours) * 100 * 100) / 100;
+        }
+
+        res.json({
+            success: true,
+            data: {
+                line_id: parseInt(id),
+                line_name: line.line_name,
+                work_date: workDate,
+                product_code: line.product_code,
+                product_name: line.product_name,
+
+                // Inputs
+                target: target,
+                manpower: manpower,
+                working_hours: workingHours,
+                working_seconds: workingSeconds,
+                total_sah: totalSAH,
+
+                // Outputs
+                actual_output: actualOutput,
+
+                // Calculated Metrics
+                takt_time_seconds: taktTime,
+                takt_time_display: taktTime > 0 ? `${taktTime}s` : '-',
+                efficiency_percent: efficiency,
+                target_efficiency_percent: targetEfficiency,
+
+                // Progress
+                completion_percent: target > 0 ? Math.round((actualOutput / target) * 100) : 0
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Get metrics for all lines
+router.get('/lines-metrics', async (req, res) => {
+    const { date } = req.query;
+    const workDate = date || new Date().toISOString().split('T')[0];
+
+    try {
+        // Get working hours from settings
+        const inTime = await getSettingValue('default_in_time', '08:00');
+        const outTime = await getSettingValue('default_out_time', '17:00');
+        const [inH, inM] = inTime.split(':').map(Number);
+        const [outH, outM] = outTime.split(':').map(Number);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const workingSeconds = workingHours * 3600;
+
+        const result = await pool.query(`
+            SELECT
+                pl.id as line_id,
+                pl.line_name,
+                pl.line_code,
+                COALESCE(ldp.target_units, pl.target_units, 0) as target,
+                COALESCE(p.product_code, '') as product_code,
+                COALESCE(p.product_name, '') as product_name,
+                COALESCE(
+                    (SELECT SUM(pp.operation_sah)
+                     FROM product_processes pp
+                     WHERE pp.product_id = COALESCE(ldp.product_id, pl.current_product_id)
+                     AND pp.is_active = true), 0
+                ) as total_sah,
+                COALESCE(
+                    (SELECT COUNT(DISTINCT a.employee_id)
+                     FROM employee_process_assignments a
+                     WHERE a.line_id = pl.id), 0
+                ) as manpower,
+                COALESCE(
+                    (SELECT SUM(h.quantity)
+                     FROM line_process_hourly_progress h
+                     WHERE h.line_id = pl.id AND h.work_date = $1), 0
+                ) as actual_output
+            FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $1
+            LEFT JOIN products p ON COALESCE(ldp.product_id, pl.current_product_id) = p.id
+            WHERE pl.is_active = true
+            ORDER BY pl.id
+        `, [workDate]);
+
+        const metrics = result.rows.map(row => {
+            const target = parseInt(row.target) || 0;
+            const manpower = parseInt(row.manpower) || 0;
+            const totalSAH = parseFloat(row.total_sah) || 0;
+            const actualOutput = parseInt(row.actual_output) || 0;
+
+            // Takt Time
+            const taktTime = target > 0 ? Math.round(workingSeconds / target) : 0;
+
+            // Efficiency
+            let efficiency = 0;
+            if (manpower > 0 && workingHours > 0 && totalSAH > 0) {
+                const earnedHours = actualOutput * totalSAH;
+                const availableHours = manpower * workingHours;
+                efficiency = Math.round((earnedHours / availableHours) * 100 * 100) / 100;
+            }
+
+            return {
+                line_id: row.line_id,
+                line_name: row.line_name,
+                line_code: row.line_code,
+                product_code: row.product_code,
+                product_name: row.product_name,
+                target: target,
+                manpower: manpower,
+                total_sah: totalSAH,
+                actual_output: actualOutput,
+                takt_time_seconds: taktTime,
+                efficiency_percent: efficiency,
+                completion_percent: target > 0 ? Math.round((actualOutput / target) * 100) : 0
+            };
+        });
+
+        res.json({ success: true, data: metrics, work_date: workDate, working_hours: workingHours });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -773,6 +1268,10 @@ router.post('/product-processes', async (req, res) => {
         target_units
     } = req.body;
     try {
+        const today = new Date().toISOString().slice(0, 10);
+        if (await isProductLocked(product_id, today)) {
+            return res.status(403).json({ success: false, error: 'Process flow is locked for today' });
+        }
         const result = await pool.query(
             `INSERT INTO product_processes
              (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units, is_active)
@@ -798,6 +1297,15 @@ router.put('/product-processes/:id', async (req, res) => {
     const { id } = req.params;
     const { sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units } = req.body;
     try {
+        const productResult = await pool.query(
+            `SELECT product_id FROM product_processes WHERE id = $1`,
+            [id]
+        );
+        const productId = productResult.rows[0]?.product_id;
+        const today = new Date().toISOString().slice(0, 10);
+        if (productId && await isProductLocked(productId, today)) {
+            return res.status(403).json({ success: false, error: 'Process flow is locked for today' });
+        }
         const result = await pool.query(
             `UPDATE product_processes
              SET sequence_number = $1,
@@ -819,6 +1327,15 @@ router.put('/product-processes/:id', async (req, res) => {
 router.delete('/product-processes/:id', async (req, res) => {
     const { id } = req.params;
     try {
+        const productResult = await pool.query(
+            `SELECT product_id FROM product_processes WHERE id = $1`,
+            [id]
+        );
+        const productId = productResult.rows[0]?.product_id;
+        const today = new Date().toISOString().slice(0, 10);
+        if (productId && await isProductLocked(productId, today)) {
+            return res.status(403).json({ success: false, error: 'Process flow is locked for today' });
+        }
         await pool.query(`DELETE FROM product_processes WHERE id = $1`, [id]);
         realtime.broadcast('data_change', { entity: 'product_processes', action: 'delete', id });
         res.json({ success: true, message: 'Process removed successfully' });
@@ -1122,6 +1639,9 @@ router.post('/supervisor/assign', async (req, res) => {
     if (await isDayLocked(effectiveDate)) {
         return res.status(403).json({ success: false, error: 'Production day is locked' });
     }
+    if (await isLineClosed(line_id, effectiveDate)) {
+        return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
+    }
 
     const employeeParsed = parseSupervisorQr(employee_qr);
     if (!employeeParsed) {
@@ -1344,8 +1864,73 @@ router.post('/supervisor/scan', async (req, res) => {
     }
 });
 
+// Close shift for a line
+router.post('/supervisor/close-shift', async (req, res) => {
+    const { line_id, work_date, notes } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    try {
+        const result = await pool.query(
+            `INSERT INTO line_shift_closures (line_id, work_date, notes)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (line_id, work_date)
+             DO UPDATE SET closed_at = NOW(), notes = EXCLUDED.notes
+             RETURNING *`,
+            [line_id, work_date, notes || null]
+        );
+        await logAudit('line_shift_closures', result.rows[0].id, 'close', result.rows[0], null);
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Admin unlock shift
+router.post('/line-shifts/unlock', async (req, res) => {
+    const { line_id, work_date } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    try {
+        const before = await pool.query(
+            `SELECT * FROM line_shift_closures WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        await pool.query(
+            `DELETE FROM line_shift_closures WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        await logAudit('line_shift_closures', 0, 'unlock', null, before.rows[0] || null);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/line-shifts', async (req, res) => {
+    const { date } = req.query;
+    if (!date) {
+        return res.status(400).json({ success: false, error: 'date is required (YYYY-MM-DD)' });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT lsc.line_id, lsc.work_date, lsc.closed_at, lsc.notes,
+                    pl.line_name, pl.line_code
+             FROM line_shift_closures lsc
+             JOIN production_lines pl ON pl.id = lsc.line_id
+             WHERE lsc.work_date = $1
+             ORDER BY pl.line_name`,
+            [date]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 router.post('/supervisor/progress', async (req, res) => {
-    const { line_id, process_id, work_date, hour_slot, quantity } = req.body;
+    const { line_id, process_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity } = req.body;
     if (!line_id || !process_id || !work_date || hour_slot === undefined) {
         return res.status(400).json({ success: false, error: 'line_id, process_id, work_date, hour_slot are required' });
     }
@@ -1353,10 +1938,13 @@ router.post('/supervisor/progress', async (req, res) => {
     if (!Number.isFinite(hourValue) || hourValue < 8 || hourValue > 19) {
         return res.status(400).json({ success: false, error: 'hour_slot must be between 8 and 19' });
     }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    if (await isLineClosed(line_id, work_date)) {
+        return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
+    }
     try {
-        if (await isDayLocked(work_date)) {
-            return res.status(403).json({ success: false, error: 'Production day is locked' });
-        }
         const assignmentResult = await pool.query(
             `SELECT employee_id FROM employee_process_assignments WHERE line_id = $1 AND process_id = $2`,
             [line_id, process_id]
@@ -1365,15 +1953,24 @@ router.post('/supervisor/progress', async (req, res) => {
         if (!assignment) {
             return res.status(400).json({ success: false, error: 'No employee assigned to this line/process' });
         }
+        const completed = parseInt(quantity || 0, 10);
+        const forwarded = parseInt(forwarded_quantity || 0, 10);
+        const remaining = parseInt(remaining_quantity || 0, 10);
+        if (completed !== forwarded + remaining) {
+            return res.status(400).json({ success: false, error: 'Completed must equal Forwarded + Remaining' });
+        }
         const result = await pool.query(
-            `INSERT INTO line_process_hourly_progress (line_id, process_id, employee_id, work_date, hour_slot, quantity)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            `INSERT INTO line_process_hourly_progress
+             (line_id, process_id, employee_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (line_id, process_id, work_date, hour_slot)
              DO UPDATE SET quantity = EXCLUDED.quantity,
                            employee_id = EXCLUDED.employee_id,
+                           forwarded_quantity = EXCLUDED.forwarded_quantity,
+                           remaining_quantity = EXCLUDED.remaining_quantity,
                            updated_at = NOW()
              RETURNING *`,
-            [line_id, process_id, assignment.employee_id, work_date, hourValue, quantity || 0]
+            [line_id, process_id, assignment.employee_id, work_date, hourValue, completed, forwarded, remaining]
         );
         realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, process_id, work_date, hour_slot });
         res.json({ success: true, data: result.rows[0] });
@@ -1478,6 +2075,365 @@ router.get('/lines/:id/details', async (req, res) => {
                 processes,
                 assignments,
                 allAssignments
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// MATERIAL TRACKING (Supervisor)
+// ============================================================================
+
+// Get material summary for a line on a date
+router.get('/supervisor/materials', async (req, res) => {
+    const { line_id, date } = req.query;
+    if (!line_id || !date) {
+        return res.status(400).json({ success: false, error: 'line_id and date are required' });
+    }
+    try {
+        // Get summary from view
+        const summaryResult = await pool.query(`
+            SELECT * FROM v_daily_material_summary
+            WHERE line_id = $1 AND work_date = $2
+        `, [line_id, date]);
+        const summary = summaryResult.rows[0] || {
+            total_issued: 0,
+            total_used: 0,
+            total_returned: 0,
+            total_forwarded: 0,
+            total_received: 0
+        };
+
+        // Get transactions for the day
+        const transactionsResult = await pool.query(`
+            SELECT mt.*,
+                   p_from.sequence_number as from_sequence,
+                   o_from.operation_name as from_operation,
+                   p_to.sequence_number as to_sequence,
+                   o_to.operation_name as to_operation,
+                   u.full_name as recorded_by_name
+            FROM material_transactions mt
+            LEFT JOIN product_processes p_from ON mt.from_process_id = p_from.id
+            LEFT JOIN operations o_from ON p_from.operation_id = o_from.id
+            LEFT JOIN product_processes p_to ON mt.to_process_id = p_to.id
+            LEFT JOIN operations o_to ON p_to.operation_id = o_to.id
+            LEFT JOIN users u ON mt.recorded_by = u.id
+            WHERE mt.line_id = $1 AND mt.work_date = $2
+            ORDER BY mt.created_at DESC
+        `, [line_id, date]);
+
+        // Get WIP by process
+        const wipResult = await pool.query(`
+            SELECT pmw.*, pp.sequence_number, o.operation_code, o.operation_name
+            FROM process_material_wip pmw
+            JOIN product_processes pp ON pmw.process_id = pp.id
+            JOIN operations o ON pp.operation_id = o.id
+            WHERE pmw.line_id = $1 AND pmw.work_date = $2
+            ORDER BY pp.sequence_number
+        `, [line_id, date]);
+
+        // Get line metrics for opening stock reference
+        const metricsResult = await pool.query(`
+            SELECT materials_issued, forwarded_quantity, remaining_wip
+            FROM line_daily_metrics
+            WHERE line_id = $1 AND work_date = $2
+        `, [line_id, date]);
+        const metrics = metricsResult.rows[0] || {};
+
+        res.json({
+            success: true,
+            data: {
+                summary: {
+                    ...summary,
+                    opening_stock: metrics.materials_issued || 0,
+                    forwarded: metrics.forwarded_quantity || 0,
+                    wip: metrics.remaining_wip || 0
+                },
+                transactions: transactionsResult.rows,
+                wip_by_process: wipResult.rows
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Record a material transaction
+router.post('/supervisor/materials', async (req, res) => {
+    const { line_id, work_date, transaction_type, quantity, from_process_id, to_process_id, notes, user_id } = req.body;
+    if (!line_id || !work_date || !transaction_type || quantity === undefined) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date, transaction_type and quantity are required' });
+    }
+    const validTypes = ['issued', 'used', 'returned', 'forwarded', 'received'];
+    if (!validTypes.includes(transaction_type)) {
+        return res.status(400).json({ success: false, error: `Invalid transaction_type. Must be one of: ${validTypes.join(', ')}` });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    try {
+        const result = await pool.query(
+            `INSERT INTO material_transactions
+             (line_id, work_date, transaction_type, quantity, from_process_id, to_process_id, notes, recorded_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING *`,
+            [line_id, work_date, transaction_type, quantity, from_process_id || null, to_process_id || null, notes || null, user_id || null]
+        );
+
+        // Update process WIP if forwarding between processes
+        if ((transaction_type === 'forwarded' || transaction_type === 'used') && from_process_id) {
+            await pool.query(`
+                INSERT INTO process_material_wip (line_id, process_id, work_date, materials_out, wip_quantity)
+                VALUES ($1, $2, $3, $4, -$4)
+                ON CONFLICT (line_id, process_id, work_date)
+                DO UPDATE SET
+                    materials_out = process_material_wip.materials_out + EXCLUDED.materials_out,
+                    wip_quantity = process_material_wip.wip_quantity - $4,
+                    updated_at = NOW()
+            `, [line_id, from_process_id, work_date, quantity]);
+        }
+
+        if ((transaction_type === 'received' || transaction_type === 'issued') && to_process_id) {
+            await pool.query(`
+                INSERT INTO process_material_wip (line_id, process_id, work_date, materials_in, wip_quantity)
+                VALUES ($1, $2, $3, $4, $4)
+                ON CONFLICT (line_id, process_id, work_date)
+                DO UPDATE SET
+                    materials_in = process_material_wip.materials_in + EXCLUDED.materials_in,
+                    wip_quantity = process_material_wip.wip_quantity + $4,
+                    updated_at = NOW()
+            `, [line_id, to_process_id, work_date, quantity]);
+        }
+
+        await logAudit('material_transactions', result.rows[0].id, 'create', result.rows[0], null);
+        realtime.broadcast('data_change', { entity: 'materials', action: 'create', line_id, work_date });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Get processes for material forwarding dropdown
+router.get('/supervisor/materials/processes/:lineId', async (req, res) => {
+    const { lineId } = req.params;
+    const { date } = req.query;
+    const workDate = date || new Date().toISOString().slice(0, 10);
+    try {
+        // Get product for the line on this date
+        const planResult = await pool.query(
+            `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [lineId, workDate]
+        );
+        let productId = planResult.rows[0]?.product_id;
+        if (!productId) {
+            const lineResult = await pool.query(
+                `SELECT current_product_id FROM production_lines WHERE id = $1`,
+                [lineId]
+            );
+            productId = lineResult.rows[0]?.current_product_id;
+        }
+        if (!productId) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const result = await pool.query(`
+            SELECT pp.id, pp.sequence_number, o.operation_code, o.operation_name
+            FROM product_processes pp
+            JOIN operations o ON pp.operation_id = o.id
+            WHERE pp.product_id = $1 AND pp.is_active = true
+            ORDER BY pp.sequence_number
+        `, [productId]);
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// END-OF-SHIFT SUMMARY (Supervisor)
+// ============================================================================
+
+// Get end-of-shift summary for a line
+router.get('/supervisor/shift-summary', async (req, res) => {
+    const { line_id, date } = req.query;
+    if (!line_id || !date) {
+        return res.status(400).json({ success: false, error: 'line_id and date are required' });
+    }
+    try {
+        // Get line info
+        const lineResult = await pool.query(`
+            SELECT pl.*,
+                   COALESCE(ldp.product_id, pl.current_product_id) as product_id,
+                   COALESCE(p.product_code, '') as product_code,
+                   COALESCE(p.product_name, '') as product_name,
+                   COALESCE(ldp.target_units, pl.target_units, 0) as target
+            FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
+            LEFT JOIN products p ON COALESCE(ldp.product_id, pl.current_product_id) = p.id
+            WHERE pl.id = $1
+        `, [line_id, date]);
+        const line = lineResult.rows[0];
+        if (!line) {
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+
+        // Get total SAH for product
+        let totalSAH = 0;
+        if (line.product_id) {
+            const sahResult = await pool.query(`
+                SELECT COALESCE(SUM(operation_sah), 0) as total_sah
+                FROM product_processes
+                WHERE product_id = $1 AND is_active = true
+            `, [line.product_id]);
+            totalSAH = parseFloat(sahResult.rows[0].total_sah) || 0;
+        }
+
+        // Get hourly output summary
+        const hourlyResult = await pool.query(`
+            SELECT hour_slot, SUM(quantity) as total_quantity
+            FROM line_process_hourly_progress
+            WHERE line_id = $1 AND work_date = $2
+            GROUP BY hour_slot
+            ORDER BY hour_slot
+        `, [line_id, date]);
+        const hourlyOutput = hourlyResult.rows;
+        const totalOutput = hourlyOutput.reduce((sum, h) => sum + parseInt(h.total_quantity || 0), 0);
+
+        // Get output by process
+        const processOutputResult = await pool.query(`
+            SELECT pp.id as process_id,
+                   pp.sequence_number,
+                   o.operation_code,
+                   o.operation_name,
+                   COALESCE(SUM(lph.quantity), 0) as total_quantity
+            FROM product_processes pp
+            JOIN operations o ON pp.operation_id = o.id
+            LEFT JOIN line_process_hourly_progress lph
+                ON lph.process_id = pp.id AND lph.line_id = $1 AND lph.work_date = $2
+            WHERE pp.product_id = $3 AND pp.is_active = true
+            GROUP BY pp.id, pp.sequence_number, o.operation_code, o.operation_name
+            ORDER BY pp.sequence_number
+        `, [line_id, date, line.product_id]);
+
+        // Get employee attendance and output
+        const employeeResult = await pool.query(`
+            SELECT e.id, e.emp_code, e.emp_name,
+                   att.in_time, att.out_time, att.status,
+                   COALESCE(SUM(lph.quantity), 0) as total_output,
+                   pp.sequence_number,
+                   pp.operation_sah,
+                   o.operation_code,
+                   o.operation_name
+            FROM employees e
+            JOIN employee_process_assignments epa ON e.id = epa.employee_id AND epa.line_id = $1
+            JOIN product_processes pp ON epa.process_id = pp.id
+            JOIN operations o ON pp.operation_id = o.id
+            LEFT JOIN employee_attendance att ON e.id = att.employee_id AND att.attendance_date = $2
+            LEFT JOIN line_process_hourly_progress lph
+                ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
+            WHERE e.is_active = true
+            GROUP BY e.id, e.emp_code, e.emp_name, att.in_time, att.out_time, att.status,
+                     pp.sequence_number, pp.operation_sah, o.operation_code, o.operation_name
+            ORDER BY pp.sequence_number, e.emp_code
+        `, [line_id, date]);
+
+        // Get material summary
+        const materialResult = await pool.query(`
+            SELECT * FROM v_daily_material_summary
+            WHERE line_id = $1 AND work_date = $2
+        `, [line_id, date]);
+        const materials = materialResult.rows[0] || {
+            total_issued: 0,
+            total_used: 0,
+            total_returned: 0,
+            total_forwarded: 0
+        };
+
+        // Get line metrics
+        const metricsResult = await pool.query(`
+            SELECT * FROM line_daily_metrics
+            WHERE line_id = $1 AND work_date = $2
+        `, [line_id, date]);
+        const metrics = metricsResult.rows[0] || {
+            forwarded_quantity: 0,
+            remaining_wip: 0,
+            materials_issued: 0
+        };
+
+        // Get working hours
+        const inTime = await getSettingValue('default_in_time', '08:00');
+        const outTime = await getSettingValue('default_out_time', '17:00');
+        const [inH, inM] = inTime.split(':').map(Number);
+        const [outH, outM] = outTime.split(':').map(Number);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const workingSeconds = workingHours * 3600;
+
+        // Calculate metrics
+        const manpower = employeeResult.rows.length;
+        const target = parseInt(line.target) || 0;
+        const taktTime = target > 0 ? Math.round(workingSeconds / target) : 0;
+
+        let efficiency = 0;
+        if (manpower > 0 && workingHours > 0 && totalSAH > 0) {
+            const earnedHours = totalOutput * totalSAH;
+            const availableHours = manpower * workingHours;
+            efficiency = Math.round((earnedHours / availableHours) * 100 * 100) / 100;
+        }
+
+        const completion = target > 0 ? Math.round((totalOutput / target) * 100 * 10) / 10 : 0;
+
+        const employees = employeeResult.rows.map(row => {
+            const output = parseInt(row.total_output || 0);
+            const sah = parseFloat(row.operation_sah || 0);
+            let hours = workingHours;
+            if (row.in_time && row.out_time) {
+                const [inH, inM] = row.in_time.split(':').map(Number);
+                const [outH, outM] = row.out_time.split(':').map(Number);
+                const diff = (outH + outM / 60) - (inH + inM / 60);
+                if (diff > 0) hours = diff;
+            }
+            const efficiency = hours > 0 && sah > 0
+                ? Math.round(((output * sah) / hours) * 100 * 100) / 100
+                : 0;
+            return {
+                ...row,
+                efficiency_percent: efficiency
+            };
+        });
+
+        res.json({
+            success: true,
+            data: {
+                line: {
+                    id: line.id,
+                    line_code: line.line_code,
+                    line_name: line.line_name,
+                    product_code: line.product_code,
+                    product_name: line.product_name
+                },
+                date: date,
+                metrics: {
+                    target: target,
+                    total_output: totalOutput,
+                    manpower: manpower,
+                    working_hours: workingHours,
+                    total_sah: totalSAH,
+                    takt_time_seconds: taktTime,
+                    takt_time_display: taktTime > 0 ? `${Math.floor(taktTime / 60)}m ${taktTime % 60}s` : '-',
+                    efficiency_percent: efficiency,
+                    completion_percent: completion
+                },
+                hourly_output: hourlyOutput,
+                process_output: processOutputResult.rows,
+                employees: employees,
+                materials: {
+                    ...materials,
+                    opening_stock: metrics.materials_issued,
+                    forwarded_to_next: metrics.forwarded_quantity,
+                    remaining_wip: metrics.remaining_wip
+                }
             }
         });
     } catch (err) {

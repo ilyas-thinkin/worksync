@@ -1599,3 +1599,235 @@ curl http://localhost:3000/api/products/1
 - Supervisor camera access requires HTTPS; use:
   - `https://192.168.1.9:3443/supervisor`
 
+
+---
+
+## 27. Daily Plans, Locks, Execution Logs, and Auth (January 2026)
+
+### Daily Production Planning (IE)
+- Added daily line plan table: `line_daily_plans` (line + product + target per date)
+- UI: IE → Daily Plan section with product and daily target per line
+- Line views now use daily plan (fallback to current product if no plan)
+
+### Default Working Hours (IE)
+- Added `app_settings` table with default in/out times
+- UI: IE Attendance includes default working hours card with update
+
+### Production Day Lock (Admin)
+- Added `production_day_locks` table
+- UI: Admin → Production Days with lock/unlock by date
+- Lock enforcement for:
+  - IE attendance updates
+  - Daily plans
+  - Supervisor assign/progress
+  - Line metrics
+
+### Supervisor Execution Inputs
+- Added `line_daily_metrics` table for forwarded qty, remaining WIP, materials issued
+- Supervisor Hourly Progress now includes Line Metrics section
+- Hourly progress restricted to 08:00–19:00
+- Process QR scan required before logging hourly output
+
+### Assignment Change Logging
+- Added `process_assignment_history` with start/end time and quantity
+- Employee change requires quantity completed
+- Added materials-at-link tracking on assignment
+- Script: `/home/worksync/worksync/scripts/add_assignment_materials.sql`
+
+### Users + Audit Logs
+- Added `users` table and Admin Users UI
+- Added Audit Logs API + Admin view
+- Basic audit log writes for users, daily plans, line metrics, day locks
+
+### Auth & Role Routing
+- Added login home page with role buttons and password prompt
+- Admin moved to `/admin`
+- Added `/management` page
+- Protected routes and APIs via role cookie auth
+- Session check before page load (redirects to `/` if not authenticated)
+- Passwords (temporary):
+  - admin: admin1234
+  - ie: ie1234
+  - supervisor: sup1234
+  - management: manage1234
+
+
+### Detailed Notes (Implementation Summary)
+
+**Database migrations**
+- Created tables:
+  - `users` (username, full_name, role, is_active)
+  - `production_day_locks` (work_date, locked_by, notes)
+  - `line_daily_plans` (line_id, product_id, work_date, target_units)
+  - `line_daily_metrics` (forwarded_quantity, remaining_wip, materials_issued)
+  - `process_assignment_history` (start/end timestamps + quantity + materials_at_link)
+  - `app_settings` (default_in_time/default_out_time)
+- Modified tables:
+  - `product_processes` → added `target_units`
+  - `line_process_hourly_progress` → added `employee_id` + hour constraint 08–19
+
+**API changes**
+- Added endpoints:
+  - Auth: `POST /auth/login`, `GET /auth/session`, `POST /auth/logout`
+  - Admin: `/api/users`, `/api/production-days/*`, `/api/audit-logs`
+  - IE: `/api/daily-plans`, `/api/settings`
+  - Supervisor: `/api/line-metrics`, `/api/supervisor/resolve-process`, `/api/supervisor/assign`, `/api/supervisor/progress`
+- Enforcement:
+  - Day locks block IE attendance, daily plans, supervisor assign/progress, line metrics
+  - Supervisor hourly progress requires process QR scan and assigned employee
+  - Employee change requires quantity handoff (and confirmation) with history logged
+
+**UI changes**
+- Home (`/`) replaced by login hub with role buttons and password prompt
+- Admin moved to `/admin`; IE `/ie`; Supervisor `/supervisor`; Management `/management`
+- Admin UI:
+  - Users section (add/edit/deactivate)
+  - Production Days lock/unlock page
+  - Audit Logs table view
+- IE UI:
+  - Daily Plan section (line + product + daily target)
+  - Default working hours editor (08:00–17:00)
+- Supervisor UI:
+  - Process-first QR scan to log hourly output
+  - Popup for quantity with target shown
+  - Line metrics inputs (forwarded qty, remaining WIP, materials issued)
+  - Employee change prompts quantity + confirmation + materials at link
+- Mobile:
+  - Hamburger sidebar on admin/ie/supervisor pages
+
+**Behavior rules implemented**
+- One employee can be assigned to only one process/line at a time
+- Employee changes require quantity completed and log close/start timestamps
+- Daily product assignment per line overrides current product
+- Targets supported at line/day and process-step levels
+
+---
+
+## 24. Production Metrics API (Takt Time & Efficiency)
+
+**New API Endpoints Created:**
+
+### GET `/api/lines/:id/metrics`
+Returns production metrics for a single line including Takt Time and Efficiency calculations.
+
+**Query Parameters:**
+- `date` (optional): Work date in YYYY-MM-DD format. Defaults to today.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "line_id": 2,
+    "line_name": "HALL A GAFOOR LINE",
+    "work_date": "2026-01-19",
+    "product_code": "CY405",
+    "product_name": "ACCORDION WALLET",
+    "target": 200,
+    "manpower": 71,
+    "working_hours": 9,
+    "working_seconds": 32400,
+    "total_sah": 1.4881,
+    "actual_output": 150,
+    "takt_time_seconds": 162,
+    "takt_time_display": "2m 42s",
+    "efficiency_percent": 85.50,
+    "target_efficiency_percent": 70,
+    "completion_percent": 75.0
+  }
+}
+```
+
+### GET `/api/lines-metrics`
+Returns metrics summary for all active lines.
+
+**Query Parameters:**
+- `date` (optional): Work date in YYYY-MM-DD format. Defaults to today.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "line_id": 2,
+      "line_name": "HALL A GAFOOR LINE",
+      "line_code": "GAFOOR_LINE",
+      "product_code": "CY405",
+      "product_name": "ACCORDION WALLET",
+      "target": 200,
+      "manpower": 71,
+      "total_sah": 1.4881,
+      "actual_output": 150,
+      "takt_time_seconds": 162,
+      "efficiency_percent": 85.50,
+      "completion_percent": 75.0
+    }
+  ],
+  "work_date": "2026-01-19",
+  "working_hours": 9
+}
+```
+
+**Formulas Used:**
+
+1. **Takt Time** = Available Working Time (seconds) / Target
+   - Formula: `working_seconds / target`
+   - Display format: "Xm Ys" (e.g., "2m 42s") or "Xs" for under 60 seconds
+
+2. **Efficiency (%)** = (Actual Output × SAH) / (Manpower × Working Hours) × 100
+   - Formula: `(actual_output * total_sah) / (manpower * working_hours) * 100`
+   - Represents earned hours vs available hours
+
+3. **Completion (%)** = (Actual Output / Target) × 100
+
+**UI Updates:**
+
+- **IE Line Management**: Added Takt Time and Efficiency stats cards in line details view
+- **IE Lines List**: Added Output, Takt Time, and Efficiency columns to table
+- **Supervisor Hourly Progress**: Added stats grid showing Target, Output, Takt Time, Efficiency, and Completion
+
+
+---
+
+## 28. Management Dashboard, Reports, Locks, and Shift Close (January 2026)
+
+### Management Dashboard
+- Added read‑only management dashboard with:
+  - Line performance (target/output/efficiency/completion)
+  - Employee efficiency per line
+  - Date selector
+- File: `/home/worksync/worksync/backend/src/public/js/management.js`
+- Page: `/management` (role‑protected)
+
+### Excel Daily Reports
+- Added endpoint: `GET /api/reports/daily?date=YYYY-MM-DD`
+- Generates Excel with:
+  - Line Summary
+  - Materials Summary
+  - Process Output
+  - Employee Efficiency
+- Management UI includes “Download Excel” button
+
+### Daily Plan Lock (Process/SAH lock)
+- Added `line_daily_plans.is_locked`
+- IE Daily Plan UI shows lock status and lock/unlock actions
+- Process flow edits blocked for locked products (current day)
+
+### Shift Close + Unlock
+- Added `line_shift_closures` table
+- Supervisor can close shift per line (locks execution for that line/date)
+- Admin can view and unlock closed shifts (Production Days section)
+- APIs:
+  - `POST /api/supervisor/close-shift`
+  - `GET /api/line-shifts?date=YYYY-MM-DD`
+  - `POST /api/line-shifts/unlock`
+
+### Hourly Validation + WIP Handoff
+- `line_process_hourly_progress` now stores forwarded/remaining quantities
+- Validation enforced: Completed = Forwarded + Remaining (UI + API)
+- Assignment handoff logs quantity/time and materials at link
+
+### Scripts Added
+- `/home/worksync/worksync/scripts/add_shift_locks_and_hourly_validation.sql`
+

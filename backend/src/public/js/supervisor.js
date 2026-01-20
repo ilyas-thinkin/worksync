@@ -93,6 +93,14 @@ async function loadSection(section) {
         await loadProgressSection();
         return;
     }
+    if (section === 'materials') {
+        await loadMaterialsSection();
+        return;
+    }
+    if (section === 'shift-summary') {
+        await loadShiftSummarySection();
+        return;
+    }
     await loadScanSection();
 }
 
@@ -530,6 +538,43 @@ async function loadProgressSection() {
                             }).join('')}
                         </select>
                     </div>
+                    <div>
+                        <label class="form-label">&nbsp;</label>
+                        <button class="btn btn-danger" id="close-shift-btn">Close Shift</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stats-grid" id="production-stats" style="grid-template-columns: repeat(5, 1fr);">
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-target">-</h3>
+                        <p>Target</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-output">-</h3>
+                        <p>Actual Output</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-takt">-</h3>
+                        <p>Takt Time</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-efficiency">-</h3>
+                        <p>Efficiency</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-completion">-</h3>
+                        <p>Completion</p>
+                    </div>
                 </div>
             </div>
 
@@ -586,13 +631,19 @@ async function loadProgressSection() {
             resetProgressProcess();
             loadProgressLog();
             loadLineMetrics();
+            loadProductionStats();
         });
-        document.getElementById('progress-date').addEventListener('change', loadProgressLog);
-        document.getElementById('progress-date').addEventListener('change', loadLineMetrics);
+        document.getElementById('progress-date').addEventListener('change', () => {
+            loadProgressLog();
+            loadLineMetrics();
+            loadProductionStats();
+        });
         document.getElementById('metrics-save').addEventListener('click', saveLineMetrics);
+        document.getElementById('close-shift-btn').addEventListener('click', closeShift);
         progressState.lineId = '';
         resetProgressProcess();
         loadLineMetrics();
+        loadProductionStats();
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -639,12 +690,21 @@ async function saveProgress() {
     const date = document.getElementById('progress-date').value;
     const hour = document.getElementById('progress-hour').value;
     const qty = document.getElementById('progress-quantity').value;
+    const forwarded = document.getElementById('progress-forwarded')?.value || 0;
+    const remaining = document.getElementById('progress-remaining')?.value || 0;
     if (!lineId || !date) {
         showToast('Line and date are required', 'error');
         return;
     }
     if (!progressState.process) {
         showToast('Scan a work process first', 'error');
+        return;
+    }
+    const completed = parseInt(qty || 0, 10);
+    const forwardedNum = parseInt(forwarded || 0, 10);
+    const remainingNum = parseInt(remaining || 0, 10);
+    if (completed !== forwardedNum + remainingNum) {
+        showToast('Completed must equal Forwarded + Remaining', 'error');
         return;
     }
     try {
@@ -656,7 +716,9 @@ async function saveProgress() {
                 process_id: progressState.process.id,
                 work_date: date,
                 hour_slot: hour,
-                quantity: qty
+                quantity: completed,
+                forwarded_quantity: forwardedNum,
+                remaining_quantity: remainingNum
             })
         });
         const result = await response.json();
@@ -819,6 +881,10 @@ function showProgressEntryModal() {
                 </div>
                 <label class="form-label">Quantity (units)</label>
                 <input type="number" class="form-control" id="progress-quantity" min="0" value="0">
+                <label class="form-label">Forwarded Quantity</label>
+                <input type="number" class="form-control" id="progress-forwarded" min="0" value="0">
+                <label class="form-label">Remaining Quantity</label>
+                <input type="number" class="form-control" id="progress-remaining" min="0" value="0">
             </div>
             <div class="progress-modal-footer">
                 <button class="btn btn-secondary" type="button" id="progress-modal-cancel">Cancel</button>
@@ -928,8 +994,80 @@ async function saveLineMetrics() {
             return;
         }
         showToast('Metrics saved', 'success');
+        loadProductionStats();
     } catch (err) {
         showToast(err.message, 'error');
+    }
+}
+
+async function closeShift() {
+    const lineId = document.getElementById('progress-line').value;
+    const date = document.getElementById('progress-date').value;
+    if (!lineId) {
+        showToast('Select a line first', 'error');
+        return;
+    }
+    const confirmClose = window.confirm('Close shift for this line? This will lock entries.');
+    if (!confirmClose) return;
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/close-shift`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Shift closed', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function loadProductionStats() {
+    const lineId = document.getElementById('progress-line')?.value;
+    const date = document.getElementById('progress-date')?.value;
+
+    const targetEl = document.getElementById('stat-target');
+    const outputEl = document.getElementById('stat-output');
+    const taktEl = document.getElementById('stat-takt');
+    const efficiencyEl = document.getElementById('stat-efficiency');
+    const completionEl = document.getElementById('stat-completion');
+
+    if (!lineId) {
+        if (targetEl) targetEl.textContent = '-';
+        if (outputEl) outputEl.textContent = '-';
+        if (taktEl) taktEl.textContent = '-';
+        if (efficiencyEl) efficiencyEl.textContent = '-';
+        if (completionEl) completionEl.textContent = '-';
+        return;
+    }
+
+    try {
+        const url = date
+            ? `${API_BASE}/lines/${lineId}/metrics?date=${date}`
+            : `${API_BASE}/lines/${lineId}/metrics`;
+        const response = await fetch(url);
+        const result = await response.json();
+
+        if (result.success && result.data) {
+            const data = result.data;
+            if (targetEl) targetEl.textContent = data.target || 0;
+            if (outputEl) outputEl.textContent = data.actual_output || 0;
+            if (taktEl) taktEl.textContent = data.takt_time_display || '-';
+            if (efficiencyEl) efficiencyEl.textContent = `${Number(data.efficiency_percent || 0).toFixed(2)}%`;
+            if (completionEl) completionEl.textContent = `${Number(data.completion_percent || 0).toFixed(1)}%`;
+        } else {
+            if (targetEl) targetEl.textContent = '-';
+            if (outputEl) outputEl.textContent = '-';
+            if (taktEl) taktEl.textContent = '-';
+            if (efficiencyEl) efficiencyEl.textContent = '-';
+            if (completionEl) completionEl.textContent = '-';
+        }
+    } catch (err) {
+        console.warn('Failed to load production stats:', err);
     }
 }
 
@@ -951,11 +1089,618 @@ function setupRealtime() {
         if (payload.entity === 'progress') {
             // no-op for now
         }
+        if (payload.entity === 'materials') {
+            const active = document.querySelector('.nav-link.active')?.dataset.section;
+            if (active === 'materials') {
+                loadMaterialData();
+            }
+        }
     });
     source.onerror = () => {
         source.close();
         setTimeout(setupRealtime, 3000);
     };
+}
+
+// ============================================================================
+// MATERIAL TRACKING SECTION
+// ============================================================================
+
+const materialState = {
+    lineId: '',
+    processes: []
+};
+
+async function loadMaterialsSection() {
+    const content = document.getElementById('supervisor-content');
+    content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/lines`);
+        const result = await response.json();
+        const lines = result.data || [];
+        const date = new Date().toISOString().slice(0, 10);
+
+        content.innerHTML = `
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Material Tracking</h1>
+                    <p class="page-subtitle">Track materials issued, used, and forwarded</p>
+                </div>
+                <div class="supervisor-controls">
+                    <div>
+                        <label class="form-label">Line</label>
+                        <select class="form-control" id="material-line">
+                            <option value="">Select Line</option>
+                            ${lines.map(line => `
+                                <option value="${line.id}">
+                                    ${line.line_name} (${line.line_code})
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">Date</label>
+                        <input type="date" class="form-control" id="material-date" value="${date}">
+                    </div>
+                </div>
+            </div>
+
+            <div class="stats-grid" id="material-stats" style="grid-template-columns: repeat(5, 1fr);">
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-issued">0</h3>
+                        <p>Total Issued</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-used">0</h3>
+                        <p>Total Used</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-returned">0</h3>
+                        <p>Returned</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-forwarded">0</h3>
+                        <p>Forwarded</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3 id="stat-wip">0</h3>
+                        <p>WIP</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Record Material Transaction</h3>
+                </div>
+                <div class="card-body">
+                    <div class="material-form-grid">
+                        <div>
+                            <label class="form-label">Transaction Type</label>
+                            <select class="form-control" id="material-type">
+                                <option value="issued">Issued (to line)</option>
+                                <option value="used">Used (consumed)</option>
+                                <option value="returned">Returned (to store)</option>
+                                <option value="forwarded">Forwarded (between processes)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Quantity</label>
+                            <input type="number" class="form-control" id="material-quantity" min="1" value="1">
+                        </div>
+                        <div id="from-process-wrapper" style="display: none;">
+                            <label class="form-label">From Process</label>
+                            <select class="form-control" id="material-from-process">
+                                <option value="">Select Process</option>
+                            </select>
+                        </div>
+                        <div id="to-process-wrapper" style="display: none;">
+                            <label class="form-label">To Process</label>
+                            <select class="form-control" id="material-to-process">
+                                <option value="">Select Process</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Notes (optional)</label>
+                            <input type="text" class="form-control" id="material-notes" placeholder="Optional notes">
+                        </div>
+                        <div class="material-form-action">
+                            <button class="btn btn-primary" id="material-submit">Record Transaction</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">WIP by Process</h3>
+                </div>
+                <div class="card-body">
+                    <div id="wip-list" class="wip-list">
+                        <div class="alert alert-info">Select a line to view WIP by process.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Transaction History</h3>
+                </div>
+                <div class="card-body">
+                    <div id="transaction-list" class="transaction-list">
+                        <div class="alert alert-info">Select a line to view transactions.</div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('material-line').addEventListener('change', async () => {
+            materialState.lineId = document.getElementById('material-line').value;
+            await loadMaterialProcesses();
+            await loadMaterialData();
+        });
+        document.getElementById('material-date').addEventListener('change', loadMaterialData);
+        document.getElementById('material-type').addEventListener('change', updateMaterialFormVisibility);
+        document.getElementById('material-submit').addEventListener('click', submitMaterialTransaction);
+
+        materialState.lineId = '';
+        updateMaterialFormVisibility();
+    } catch (err) {
+        content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+async function loadMaterialProcesses() {
+    if (!materialState.lineId) {
+        materialState.processes = [];
+        return;
+    }
+    const date = document.getElementById('material-date').value;
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/materials/processes/${materialState.lineId}?date=${date}`);
+        const result = await response.json();
+        materialState.processes = result.data || [];
+
+        const options = materialState.processes.map(p =>
+            `<option value="${p.id}">${p.sequence_number}. ${p.operation_code} - ${p.operation_name}</option>`
+        ).join('');
+
+        document.getElementById('material-from-process').innerHTML = `<option value="">Select Process</option>${options}`;
+        document.getElementById('material-to-process').innerHTML = `<option value="">Select Process</option>${options}`;
+    } catch (err) {
+        showToast('Failed to load processes', 'error');
+    }
+}
+
+function updateMaterialFormVisibility() {
+    const type = document.getElementById('material-type').value;
+    const fromWrapper = document.getElementById('from-process-wrapper');
+    const toWrapper = document.getElementById('to-process-wrapper');
+
+    // Show/hide based on transaction type
+    if (type === 'forwarded' || type === 'used') {
+        fromWrapper.style.display = 'block';
+    } else {
+        fromWrapper.style.display = 'none';
+    }
+
+    if (type === 'forwarded' || type === 'issued') {
+        toWrapper.style.display = 'block';
+    } else {
+        toWrapper.style.display = 'none';
+    }
+}
+
+async function loadMaterialData() {
+    const lineId = document.getElementById('material-line')?.value;
+    const date = document.getElementById('material-date')?.value;
+
+    if (!lineId) {
+        document.getElementById('stat-issued').textContent = '0';
+        document.getElementById('stat-used').textContent = '0';
+        document.getElementById('stat-returned').textContent = '0';
+        document.getElementById('stat-forwarded').textContent = '0';
+        document.getElementById('stat-wip').textContent = '0';
+        document.getElementById('wip-list').innerHTML = '<div class="alert alert-info">Select a line to view WIP.</div>';
+        document.getElementById('transaction-list').innerHTML = '<div class="alert alert-info">Select a line to view transactions.</div>';
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/materials?line_id=${lineId}&date=${date}`);
+        const result = await response.json();
+
+        if (result.success && result.data) {
+            const { summary, transactions, wip_by_process } = result.data;
+
+            // Update stats
+            document.getElementById('stat-issued').textContent = summary.total_issued || 0;
+            document.getElementById('stat-used').textContent = summary.total_used || 0;
+            document.getElementById('stat-returned').textContent = summary.total_returned || 0;
+            document.getElementById('stat-forwarded').textContent = summary.total_forwarded || 0;
+            document.getElementById('stat-wip').textContent = summary.wip || 0;
+
+            // WIP by process
+            if (wip_by_process.length) {
+                document.getElementById('wip-list').innerHTML = `
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Process</th>
+                                <th>In</th>
+                                <th>Out</th>
+                                <th>WIP</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${wip_by_process.map(w => `
+                                <tr>
+                                    <td>${w.sequence_number}</td>
+                                    <td>${w.operation_code} - ${w.operation_name}</td>
+                                    <td>${w.materials_in || 0}</td>
+                                    <td>${w.materials_out || 0}</td>
+                                    <td><strong>${w.wip_quantity || 0}</strong></td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } else {
+                document.getElementById('wip-list').innerHTML = '<div class="alert alert-warning">No WIP data recorded yet.</div>';
+            }
+
+            // Transactions
+            if (transactions.length) {
+                document.getElementById('transaction-list').innerHTML = `
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Type</th>
+                                <th>Qty</th>
+                                <th>From</th>
+                                <th>To</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${transactions.map(t => `
+                                <tr>
+                                    <td>${new Date(t.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+                                    <td><span class="badge badge-${getTransactionBadgeClass(t.transaction_type)}">${t.transaction_type}</span></td>
+                                    <td>${t.quantity}</td>
+                                    <td>${t.from_operation ? `${t.from_sequence}. ${t.from_operation}` : '-'}</td>
+                                    <td>${t.to_operation ? `${t.to_sequence}. ${t.to_operation}` : '-'}</td>
+                                    <td>${t.notes || '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } else {
+                document.getElementById('transaction-list').innerHTML = '<div class="alert alert-warning">No transactions recorded yet.</div>';
+            }
+        }
+    } catch (err) {
+        showToast('Failed to load material data', 'error');
+    }
+}
+
+function getTransactionBadgeClass(type) {
+    switch (type) {
+        case 'issued': return 'blue';
+        case 'used': return 'orange';
+        case 'returned': return 'green';
+        case 'forwarded': return 'purple';
+        default: return 'secondary';
+    }
+}
+
+async function submitMaterialTransaction() {
+    const lineId = document.getElementById('material-line').value;
+    const date = document.getElementById('material-date').value;
+    const type = document.getElementById('material-type').value;
+    const quantity = document.getElementById('material-quantity').value;
+    const fromProcess = document.getElementById('material-from-process').value;
+    const toProcess = document.getElementById('material-to-process').value;
+    const notes = document.getElementById('material-notes').value;
+
+    if (!lineId) {
+        showToast('Select a line first', 'error');
+        return;
+    }
+    if (!quantity || quantity < 1) {
+        showToast('Quantity must be at least 1', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/materials`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: lineId,
+                work_date: date,
+                transaction_type: type,
+                quantity: parseInt(quantity),
+                from_process_id: fromProcess || null,
+                to_process_id: toProcess || null,
+                notes: notes || null
+            })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Transaction recorded', 'success');
+        document.getElementById('material-quantity').value = '1';
+        document.getElementById('material-notes').value = '';
+        await loadMaterialData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ============================================================================
+// SHIFT SUMMARY SECTION
+// ============================================================================
+
+async function loadShiftSummarySection() {
+    const content = document.getElementById('supervisor-content');
+    content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/lines`);
+        const result = await response.json();
+        const lines = result.data || [];
+        const date = new Date().toISOString().slice(0, 10);
+
+        content.innerHTML = `
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">End-of-Shift Summary</h1>
+                    <p class="page-subtitle">Daily production summary and metrics</p>
+                </div>
+                <div class="supervisor-controls">
+                    <div>
+                        <label class="form-label">Line</label>
+                        <select class="form-control" id="summary-line">
+                            <option value="">Select Line</option>
+                            ${lines.map(line => `
+                                <option value="${line.id}">
+                                    ${line.line_name} (${line.line_code})
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">Date</label>
+                        <input type="date" class="form-control" id="summary-date" value="${date}">
+                    </div>
+                    <div class="summary-controls-action">
+                        <button class="btn btn-primary" id="summary-load">Load Summary</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="summary-content">
+                <div class="alert alert-info">Select a line and date, then click "Load Summary" to view the shift report.</div>
+            </div>
+        `;
+
+        document.getElementById('summary-load').addEventListener('click', loadShiftSummaryData);
+    } catch (err) {
+        content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+async function loadShiftSummaryData() {
+    const lineId = document.getElementById('summary-line').value;
+    const date = document.getElementById('summary-date').value;
+    const container = document.getElementById('summary-content');
+
+    if (!lineId) {
+        showToast('Select a line first', 'error');
+        return;
+    }
+
+    container.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/shift-summary?line_id=${lineId}&date=${date}`);
+        const result = await response.json();
+
+        if (!result.success) {
+            container.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
+            return;
+        }
+
+        const data = result.data;
+        const { line, metrics, hourly_output, process_output, employees, materials } = data;
+
+        container.innerHTML = `
+            <div class="summary-header">
+                <div class="summary-line-info">
+                    <h2>${line.line_name}</h2>
+                    <p>${line.product_code} - ${line.product_name}</p>
+                    <p class="summary-date">${new Date(date).toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                </div>
+            </div>
+
+            <div class="stats-grid" style="grid-template-columns: repeat(5, 1fr);">
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>${metrics.target}</h3>
+                        <p>Target</p>
+                    </div>
+                </div>
+                <div class="stat-card ${metrics.completion_percent >= 100 ? 'stat-success' : ''}">
+                    <div class="stat-info">
+                        <h3>${metrics.total_output}</h3>
+                        <p>Actual Output</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>${metrics.takt_time_display}</h3>
+                        <p>Takt Time</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>${metrics.efficiency_percent.toFixed(2)}%</h3>
+                        <p>Efficiency</p>
+                    </div>
+                </div>
+                <div class="stat-card ${metrics.completion_percent >= 100 ? 'stat-success' : metrics.completion_percent >= 80 ? 'stat-warning' : 'stat-danger'}">
+                    <div class="stat-info">
+                        <h3>${metrics.completion_percent.toFixed(1)}%</h3>
+                        <p>Completion</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="summary-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Hourly Output</h3>
+                    </div>
+                    <div class="card-body">
+                        ${hourly_output.length ? `
+                            <div class="hourly-chart">
+                                ${hourly_output.map(h => `
+                                    <div class="hourly-bar-container">
+                                        <div class="hourly-bar" style="height: ${Math.min((h.total_quantity / (metrics.target / 9)) * 100, 100)}%">
+                                            <span class="hourly-value">${h.total_quantity}</span>
+                                        </div>
+                                        <span class="hourly-label">${String(h.hour_slot).padStart(2, '0')}:00</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : '<div class="alert alert-warning">No hourly data recorded.</div>'}
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Materials Summary</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="material-summary-grid">
+                            <div class="material-summary-item">
+                                <span class="label">Opening Stock</span>
+                                <span class="value">${materials.opening_stock || 0}</span>
+                            </div>
+                            <div class="material-summary-item">
+                                <span class="label">Total Issued</span>
+                                <span class="value">${materials.total_issued || 0}</span>
+                            </div>
+                            <div class="material-summary-item">
+                                <span class="label">Total Used</span>
+                                <span class="value">${materials.total_used || 0}</span>
+                            </div>
+                            <div class="material-summary-item">
+                                <span class="label">Returned</span>
+                                <span class="value">${materials.total_returned || 0}</span>
+                            </div>
+                            <div class="material-summary-item">
+                                <span class="label">Forwarded</span>
+                                <span class="value">${materials.forwarded_to_next || 0}</span>
+                            </div>
+                            <div class="material-summary-item">
+                                <span class="label">Remaining WIP</span>
+                                <span class="value">${materials.remaining_wip || 0}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Employee Output</h3>
+                    <span class="badge badge-blue">${employees.length} workers</span>
+                </div>
+                <div class="card-body">
+                    ${employees.length ? `
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Code</th>
+                                    <th>Name</th>
+                                    <th>Operation</th>
+                                    <th>In</th>
+                                    <th>Out</th>
+                                    <th>Status</th>
+                                    <th>Output</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${employees.map(e => `
+                                    <tr>
+                                        <td>${e.emp_code}</td>
+                                        <td>${e.emp_name}</td>
+                                        <td>${e.sequence_number}. ${e.operation_code}</td>
+                                        <td>${e.in_time || '-'}</td>
+                                        <td>${e.out_time || '-'}</td>
+                                        <td><span class="badge badge-${e.status === 'present' ? 'green' : e.status === 'absent' ? 'red' : 'secondary'}">${e.status || 'N/A'}</span></td>
+                                        <td><strong>${e.total_output || 0}</strong></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    ` : '<div class="alert alert-warning">No employees assigned to this line.</div>'}
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Output by Process</h3>
+                </div>
+                <div class="card-body">
+                    ${process_output.length ? `
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Operation</th>
+                                    <th>Total Output</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${process_output.map(p => `
+                                    <tr>
+                                        <td>${p.sequence_number}</td>
+                                        <td>${p.operation_code} - ${p.operation_name}</td>
+                                        <td><strong>${p.total_quantity || 0}</strong></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    ` : '<div class="alert alert-warning">No process output data.</div>'}
+                </div>
+            </div>
+
+            <div class="summary-footer">
+                <p>Report generated: ${new Date().toLocaleString('en-IN')}</p>
+                <p>Working Hours: ${metrics.working_hours}h | Manpower: ${metrics.manpower} | SAH: ${metrics.total_sah.toFixed(4)}</p>
+            </div>
+        `;
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
 }
 
 function showToast(message, type = 'success') {

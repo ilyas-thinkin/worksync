@@ -235,9 +235,23 @@ async function loadLines() {
     content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
 
     try {
-        const response = await fetch(`${API_BASE}/lines`);
-        const result = await response.json();
+        const [linesResponse, metricsResponse] = await Promise.all([
+            fetch(`${API_BASE}/lines`),
+            fetch(`${API_BASE}/lines-metrics`)
+        ]);
+        const result = await linesResponse.json();
         const lines = result.data;
+
+        // Build metrics map by line_id
+        let metricsMap = new Map();
+        try {
+            const metricsResult = await metricsResponse.json();
+            if (metricsResult.success) {
+                metricsResult.data.forEach(m => metricsMap.set(m.line_id, m));
+            }
+        } catch (err) {
+            console.warn('Could not load metrics:', err);
+        }
 
         content.innerHTML = `
             <div class="page-header">
@@ -265,21 +279,27 @@ async function loadLines() {
                                     <th>Hall</th>
                                     <th>Product</th>
                                     <th>Target</th>
+                                    <th>Output</th>
+                                    <th>Takt Time</th>
                                     <th>Efficiency</th>
                                     <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${lines.map(line => `
+                                ${lines.map(line => {
+                                    const m = metricsMap.get(line.id) || {};
+                                    return `
                                     <tr>
                                         <td>${line.id}</td>
                                         <td><strong>${line.line_code}</strong></td>
                                         <td>${line.line_name}</td>
                                         <td>${line.hall_location || '-'}</td>
                                         <td>${line.current_product_code ? `${line.current_product_code} - ${line.current_product_name || ''}` : '-'}</td>
-                                        <td>${line.target_units || 0}</td>
-                                        <td>${Number(line.efficiency || 0).toFixed(2)}</td>
+                                        <td>${m.target || line.target_units || 0}</td>
+                                        <td>${m.actual_output || 0}</td>
+                                        <td>${m.takt_time_display || '-'}</td>
+                                        <td>${Number(m.efficiency_percent || 0).toFixed(2)}%</td>
                                         <td><span class="badge ${line.is_active ? 'badge-success' : 'badge-danger'}">${line.is_active ? 'Active' : 'Inactive'}</span></td>
                                         <td>
                                             <div class="action-btns">
@@ -289,7 +309,8 @@ async function loadLines() {
                                             </div>
                                         </td>
                                     </tr>
-                                `).join('')}
+                                    `;
+                                }).join('')}
                             </tbody>
                         </table>
                     </div>
@@ -413,9 +434,10 @@ async function viewLineDetails(lineId) {
     content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
 
     try {
-        const [detailsResponse, assignmentsResponse] = await Promise.all([
+        const [detailsResponse, assignmentsResponse, metricsResponse] = await Promise.all([
             fetch(`${API_BASE}/lines/${lineId}/details`),
-            fetch(`${API_BASE}/process-assignments`)
+            fetch(`${API_BASE}/process-assignments`),
+            fetch(`${API_BASE}/lines/${lineId}/metrics`)
         ]);
         const result = await detailsResponse.json();
         if (!result.success) {
@@ -423,6 +445,18 @@ async function viewLineDetails(lineId) {
             return;
         }
         let { line, processes, assignments, employees, allAssignments } = result.data;
+
+        // Parse metrics
+        let metrics = { takt_time_display: '-', efficiency_percent: 0, actual_output: 0, completion_percent: 0 };
+        try {
+            const metricsResult = await metricsResponse.json();
+            if (metricsResult.success) {
+                metrics = metricsResult.data;
+            }
+        } catch (err) {
+            console.warn('Could not load metrics:', err);
+        }
+
         try {
             const assignmentsResult = await assignmentsResponse.json();
             if (assignmentsResult.success) {
@@ -462,7 +496,7 @@ async function viewLineDetails(lineId) {
                 </div>
             </div>
 
-            <div class="stats-grid" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="stats-grid" style="grid-template-columns: repeat(6, 1fr);">
                 <div class="stat-card">
                     <div class="stat-info">
                         <h3>${line.product_code ? `${line.product_code}` : '-'}</h3>
@@ -471,13 +505,25 @@ async function viewLineDetails(lineId) {
                 </div>
                 <div class="stat-card">
                     <div class="stat-info">
-                        <h3>${line.daily_target_units ?? line.target_units ?? 0}</h3>
+                        <h3>${metrics.target || line.daily_target_units || line.target_units || 0}</h3>
                         <p>Target (units)</p>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-info">
-                        <h3>${Number(line.efficiency || 0).toFixed(2)}</h3>
+                        <h3>${metrics.actual_output || 0}</h3>
+                        <p>Actual Output</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>${metrics.takt_time_display || '-'}</h3>
+                        <p>Takt Time</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>${Number(metrics.efficiency_percent || 0).toFixed(2)}%</h3>
                         <p>Efficiency</p>
                     </div>
                 </div>
@@ -2333,17 +2379,19 @@ async function loadDailyPlanData() {
                         <th>Line</th>
                         <th>Product</th>
                         <th>Daily Target</th>
+                        <th>Status</th>
                         <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${lines.map(line => {
                         const plan = planMap.get(String(line.id));
+                        const locked = plan?.is_locked;
                         return `
                             <tr>
                                 <td><strong>${line.line_code}</strong><div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div></td>
                                 <td>
-                                    <select class="form-control" id="plan-product-${line.id}">
+                                    <select class="form-control" id="plan-product-${line.id}" ${locked ? 'disabled' : ''}>
                                         <option value="">Select product</option>
                                         ${products.map(product => `
                                             <option value="${product.id}" ${plan?.product_id === product.id ? 'selected' : ''}>
@@ -2353,10 +2401,19 @@ async function loadDailyPlanData() {
                                     </select>
                                 </td>
                                 <td>
-                                    <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${plan?.target_units || 0}">
+                                    <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${plan?.target_units || 0}" ${locked ? 'disabled' : ''}>
                                 </td>
                                 <td>
-                                    <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})">Save</button>
+                                    <span class="status-badge" style="${locked ? 'background:#fee2e2;color:#b91c1c;' : 'background:#dcfce7;color:#15803d;'}">
+                                        ${locked ? 'Locked' : 'Open'}
+                                    </span>
+                                </td>
+                                <td>
+                                    <div class="action-btns">
+                                        <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Save</button>
+                                        <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!plan?.product_id || locked ? 'disabled' : ''}>Lock</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!locked ? 'disabled' : ''}>Unlock</button>
+                                    </div>
                                 </td>
                             </tr>
                         `;
@@ -2400,6 +2457,46 @@ async function saveDailyPlan(lineId) {
     }
 }
 
+async function lockDailyPlan(lineId) {
+    const date = document.getElementById('plan-date').value;
+    try {
+        const response = await fetch('/api/daily-plans/lock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Plan locked', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function unlockDailyPlan(lineId) {
+    const date = document.getElementById('plan-date').value;
+    try {
+        const response = await fetch('/api/daily-plans/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Plan unlocked', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 // ============================================================================
 // Production Day Lock (Admin)
 // ============================================================================
@@ -2431,11 +2528,32 @@ async function loadProductionDays() {
                 </div>
             </div>
         </div>
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Closed Shifts (Per Line)</h3>
+            </div>
+            <div class="card-body table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Line</th>
+                            <th>Closed At</th>
+                            <th>Notes</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="line-shift-body">
+                        <tr><td colspan="4">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     `;
     document.getElementById('lock-date').addEventListener('change', refreshLockStatus);
     document.getElementById('lock-btn').addEventListener('click', () => updateLock(true));
     document.getElementById('unlock-btn').addEventListener('click', () => updateLock(false));
     refreshLockStatus();
+    loadLineShiftClosures();
 }
 
 async function refreshLockStatus() {
@@ -2456,6 +2574,7 @@ async function refreshLockStatus() {
     } catch (err) {
         status.textContent = 'Unknown';
     }
+    loadLineShiftClosures();
 }
 
 async function updateLock(isLock) {
@@ -2473,6 +2592,57 @@ async function updateLock(isLock) {
         }
         showToast(isLock ? 'Day locked' : 'Day unlocked', 'success');
         refreshLockStatus();
+        loadLineShiftClosures();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function loadLineShiftClosures() {
+    const date = document.getElementById('lock-date').value;
+    const body = document.getElementById('line-shift-body');
+    try {
+        const response = await fetch(`/api/line-shifts?date=${date}`);
+        const result = await response.json();
+        if (!result.success) {
+            body.innerHTML = `<tr><td colspan="4">${result.error}</td></tr>`;
+            return;
+        }
+        const rows = result.data || [];
+        if (!rows.length) {
+            body.innerHTML = '<tr><td colspan="4">No closed shifts</td></tr>';
+            return;
+        }
+        body.innerHTML = rows.map(row => `
+            <tr>
+                <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
+                <td>${new Date(row.closed_at).toLocaleString()}</td>
+                <td>${row.notes || '-'}</td>
+                <td>
+                    <button class="btn btn-secondary btn-sm" onclick="unlockLineShift(${row.line_id})">Unlock</button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (err) {
+        body.innerHTML = `<tr><td colspan="4">${err.message}</td></tr>`;
+    }
+}
+
+async function unlockLineShift(lineId) {
+    const date = document.getElementById('lock-date').value;
+    try {
+        const response = await fetch('/api/line-shifts/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Shift unlocked', 'success');
+        loadLineShiftClosures();
     } catch (err) {
         showToast(err.message, 'error');
     }
