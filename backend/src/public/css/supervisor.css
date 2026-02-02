@@ -35,6 +35,23 @@
     gap: 12px;
 }
 
+.scan-action-buttons {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+}
+
+.progress-scan-actions {
+    margin-top: 12px;
+}
+
+.scan-actions-row {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
 .scan-inputs textarea {
     min-height: 70px;
 }
@@ -82,6 +99,15 @@
     color: #3730a3;
     font-weight: 600;
     font-size: 14px;
+}
+
+.scan-box.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.camera-panel.hidden {
+    display: none;
 }
 
 .camera-panel {
@@ -286,6 +312,40 @@
 .badge-purple { background: #ede9fe; color: #7c3aed; }
 .badge-red { background: #fee2e2; color: #dc2626; }
 .badge-secondary { background: #f1f5f9; color: #64748b; }
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 999px;
+}
+
+.material-log-title {
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 12px;
+}
+
+.progress-modal {
+    width: min(92vw, 760px);
+}
+
+.material-log-table {
+    max-height: 50vh;
+    overflow: auto;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.material-log-table .data-table {
+    min-width: 680px;
+}
+
+.material-log-table .data-table td,
+.material-log-table .data-table th {
+    vertical-align: top;
+    white-space: normal;
+    word-break: break-word;
+}
 
 /* Shift Summary Styles */
 .summary-header {

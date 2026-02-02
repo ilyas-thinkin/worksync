@@ -1831,3 +1831,44 @@ Returns metrics summary for all active lines.
 ### Scripts Added
 - `/home/worksync/worksync/scripts/add_shift_locks_and_hourly_validation.sql`
 
+
+---
+
+## 29. QA Output Tracking + Range Reports + Shift Summary Status (January 2026)
+
+### QA Output Tracking (Line Metrics)
+- Added `qa_output` to `line_daily_metrics` via `/home/worksync/worksync/scripts/add_qa_output.sql`.
+- Supervisor Line Metrics form now includes **QA Output** input.
+- `/api/line-metrics` now saves and returns `qa_output`.
+- Line performance calculations now **prefer QA Output** when provided, otherwise fall back to hourly totals.
+- Affects:
+  - `/api/lines/:id/metrics`
+  - `/api/lines-metrics`
+  - `/api/supervisor/shift-summary`
+  - `/api/reports/daily`
+
+### Shift Summary Status + Close Shift (Supervisor)
+- End-of-Shift Summary now shows **Shift Open/Closed** badge and close time (if closed).
+- Added **Close Shift** action in the summary header when open.
+- Backend summary payload now includes:
+  - `shift.is_closed`
+  - `shift.closed_at`
+
+### Excel Reports (Range Download)
+- Added endpoint: `GET /api/reports/range?start=YYYY-MM-DD&end=YYYY-MM-DD`.
+- Generates a multi-day Excel workbook with **Date** column on every sheet:
+  - Line Summary (includes QA Output + Hourly Output)
+  - Materials Summary
+  - Process Output
+  - Employee Efficiency
+
+### Management Dashboard Updates
+- Added **Start / End** date inputs.
+- Added **Download Range** button.
+- Daily download button retained (now labeled **Download Daily**).
+
+### Files Updated
+- `/home/worksync/worksync/backend/src/routes/api.routes.js`
+- `/home/worksync/worksync/backend/src/public/js/supervisor.js`
+- `/home/worksync/worksync/backend/src/public/js/management.js`
+- `/home/worksync/worksync/scripts/add_qa_output.sql`

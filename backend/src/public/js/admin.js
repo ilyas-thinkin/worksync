@@ -564,7 +564,7 @@ async function viewLineDetails(lineId) {
                                     ${processes.map(proc => {
                                         const assignment = assignmentMap.get(proc.id);
                                         return `
-                                            <tr>
+                                            <tr data-process-id="${proc.id}">
                                                 <td><span class="process-step-num">${proc.sequence_number}</span></td>
                                                 <td>${proc.operation_code} - ${proc.operation_name}</td>
                                                 <td><span class="badge badge-info">${proc.operation_category}</span></td>
@@ -587,6 +587,9 @@ async function viewLineDetails(lineId) {
                                                             </div>
                                                         </div>
                                                     </div>
+                                                    <div class="mt-2">
+                                                        <button class="btn btn-secondary btn-sm employee-qr-btn" data-process-id="${proc.id}" type="button">View QR</button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         `;
@@ -599,6 +602,7 @@ async function viewLineDetails(lineId) {
             </div>
         `;
         recomputeEmployeeDropdownOptions();
+        processes.forEach(proc => updateEmployeeQrButton(proc.id));
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">Error loading line details: ${err.message}</div>`;
     }
@@ -634,6 +638,7 @@ function recomputeEmployeeDropdownOptions() {
             options.innerHTML = buildEmployeeOptions(processId);
         }
         updateEmployeeDropdownLabel(processId);
+        updateEmployeeQrButton(processId);
     });
 }
 
@@ -709,6 +714,28 @@ function updateEmployeeDropdownLabel(processId) {
     }
     const emp = (window.currentLineEmployees || []).find(e => String(e.id) === String(assignedId));
     button.textContent = emp ? `${emp.emp_code} - ${emp.emp_name}` : 'Unassigned';
+}
+
+function updateEmployeeQrButton(processId) {
+    const button = document.querySelector(`.employee-qr-btn[data-process-id="${processId}"]`);
+    if (!button) return;
+    const assignedId = window.currentLineAssignmentMap?.get(String(processId));
+    const emp = assignedId
+        ? (window.currentLineEmployees || []).find(e => String(e.id) === String(assignedId))
+        : null;
+    if (!emp || !emp.qr_code_path) {
+        button.disabled = true;
+        button.removeAttribute('onclick');
+        return;
+    }
+    const payload = {
+        id: emp.id,
+        emp_code: emp.emp_code,
+        emp_name: emp.emp_name,
+        qr_code_path: emp.qr_code_path
+    };
+    button.disabled = false;
+    button.onclick = () => showEmployeeQrModal(payload);
 }
 
 function toggleEmployeeDropdown(processId) {
@@ -812,6 +839,7 @@ function renderEmployeesTable(employees) {
                                 <th>Code</th>
                                 <th>Name</th>
                                 <th>Designation</th>
+                                <th>MP</th>
                                 <th>Efficiency</th>
                                 <th>Current Work</th>
                                 <th>QR Code</th>
@@ -826,6 +854,7 @@ function renderEmployeesTable(employees) {
                                     <td><strong>${emp.emp_code}</strong></td>
                                     <td>${emp.emp_name}</td>
                                     <td>${emp.designation || '-'}</td>
+                                    <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
                                     <td>${Number(emp.efficiency || 0).toFixed(2)}</td>
                                     <td>${formatEmployeeWork(emp) || '-'}</td>
                                     <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
@@ -872,6 +901,7 @@ function updateEmployeesTableBody(employees) {
             <td><strong>${emp.emp_code}</strong></td>
             <td>${emp.emp_name}</td>
             <td>${emp.designation || '-'}</td>
+            <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
             <td>${Number(emp.efficiency || 0).toFixed(2)}</td>
             <td>${formatEmployeeWork(emp) || '-'}</td>
             <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
@@ -924,6 +954,10 @@ function showEmployeeModal(emp = null) {
                     <div class="form-group">
                         <label class="form-label">Designation</label>
                         <input type="text" class="form-control" name="designation" value="${emp?.designation || ''}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">MP Override</label>
+                        <input type="number" class="form-control" name="manpower_factor" min="0.1" step="0.1" value="${emp?.manpower_factor || 1}">
                     </div>
                     ${isEdit ? `
                     <div class="form-group">
@@ -2387,6 +2421,9 @@ async function loadDailyPlanData() {
                     ${lines.map(line => {
                         const plan = planMap.get(String(line.id));
                         const locked = plan?.is_locked;
+                        const selectedProduct = plan?.product_id || line.current_product_id || '';
+                        const selectedTarget = plan?.target_units ?? line.target_units ?? 0;
+                        const planExists = Boolean(plan?.id);
                         return `
                             <tr>
                                 <td><strong>${line.line_code}</strong><div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div></td>
@@ -2394,14 +2431,14 @@ async function loadDailyPlanData() {
                                     <select class="form-control" id="plan-product-${line.id}" ${locked ? 'disabled' : ''}>
                                         <option value="">Select product</option>
                                         ${products.map(product => `
-                                            <option value="${product.id}" ${plan?.product_id === product.id ? 'selected' : ''}>
+                                            <option value="${product.id}" ${Number(selectedProduct) === product.id ? 'selected' : ''}>
                                                 ${product.product_code} - ${product.product_name}
                                             </option>
                                         `).join('')}
                                     </select>
                                 </td>
                                 <td>
-                                    <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${plan?.target_units || 0}" ${locked ? 'disabled' : ''}>
+                                    <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${selectedTarget}" ${locked ? 'disabled' : ''}>
                                 </td>
                                 <td>
                                     <span class="status-badge" style="${locked ? 'background:#fee2e2;color:#b91c1c;' : 'background:#dcfce7;color:#15803d;'}">
@@ -2411,8 +2448,8 @@ async function loadDailyPlanData() {
                                 <td>
                                     <div class="action-btns">
                                         <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Save</button>
-                                        <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!plan?.product_id || locked ? 'disabled' : ''}>Lock</button>
-                                        <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!locked ? 'disabled' : ''}>Unlock</button>
+                                        <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!planExists || locked ? 'disabled' : ''}>Lock</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!planExists || !locked ? 'disabled' : ''}>Unlock</button>
                                     </div>
                                 </td>
                             </tr>

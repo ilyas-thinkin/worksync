@@ -40,12 +40,21 @@ const scanState = {
     lineId: '',
     process: null,
     assignedEmployee: null,
-    stage: 'process'
+    processAssignedEmployee: null,
+    employee: null,
+    employeeQrRaw: null,
+    processQrRaw: null,
+    employeeDirectory: null,
+    employeeAssignment: null,
+    scanTarget: null,
+    stage: 'idle'
 };
 
 const progressState = {
     lineId: '',
-    process: null
+    process: null,
+    employee: null,
+    scanTarget: null
 };
 
 function setupNavigation() {
@@ -118,7 +127,7 @@ async function loadScanSection() {
             <div class="page-header">
                 <div>
                     <h1 class="page-title">Scan & Attendance</h1>
-                    <p class="page-subtitle">Scan employee and process QR to mark attendance</p>
+                    <p class="page-subtitle">Scan process and employee QR to mark attendance</p>
                 </div>
                 <span class="status-badge">Live • ${date}</span>
             </div>
@@ -136,29 +145,18 @@ async function loadScanSection() {
                                 </option>
                             `).join('')}
                         </select>
-                        <div class="scan-status">
-                            <div class="scan-row">
-                                <span class="scan-label">Work Process</span>
-                                <span class="scan-value" id="scan-process-text">Not scanned</span>
-                            </div>
-                            <div class="scan-row">
-                                <span class="scan-label">Assigned Employee</span>
-                                <span class="scan-value" id="scan-employee-text">Not assigned</span>
-                            </div>
-                            <div class="scan-row">
-                                <span class="scan-label">Materials at Link</span>
-                                <input type="number" class="form-control scan-input" id="scan-materials" min="0" value="0">
-                            </div>
-                            <div class="scan-hint" id="scan-hint">Step 1: Scan the work process QR.</div>
-                            <button class="btn btn-secondary btn-sm" id="scan-reset" type="button">Change Process</button>
-                        </div>
+                        <div class="scan-hint" id="scan-line-hint">Select a line to start scanning.</div>
                     </div>
                 </div>
 
-                <div class="scan-box">
+                <div class="scan-box" id="scan-actions">
                     <h3>QR Scan</h3>
                     <div class="scan-inputs">
-                        <div class="camera-panel">
+                        <div class="scan-action-buttons">
+                            <button class="btn btn-primary btn-sm" id="scan-process-btn">Scan Process QR</button>
+                            <button class="btn btn-secondary btn-sm" id="scan-employee-btn">Scan Employee QR</button>
+                        </div>
+                        <div class="camera-panel hidden" id="scan-camera-panel">
                             <div class="camera-header">
                                 <span class="status-badge" id="camera-status">Camera Idle</span>
                                 <div class="camera-actions">
@@ -168,16 +166,31 @@ async function loadScanSection() {
                             </div>
                             <video id="camera-preview" playsinline muted></video>
                         </div>
-                        <div class="scan-callout" id="scan-status-text">Waiting for process scan...</div>
+                        <div class="scan-callout" id="scan-status-text">Select a line to begin.</div>
                     </div>
                 </div>
 
-                <div class="scan-box">
-                    <h3>Help</h3>
-                    <p style="color: var(--secondary); font-size: 14px;">
-                        Select a line, then scan the work process QR. The assigned employee appears here.
-                        Scan an employee QR to confirm or change the assignment and mark attendance.
-                    </p>
+                <div class="scan-box" id="scan-summary">
+                    <h3>Scan Details</h3>
+                    <div class="scan-status">
+                        <div class="scan-row">
+                            <span class="scan-label">Work Process</span>
+                            <span class="scan-value" id="scan-process-text">Not scanned</span>
+                        </div>
+                        <div class="scan-row">
+                            <span class="scan-label">Assigned Employee</span>
+                            <span class="scan-value" id="scan-assigned-text">Not assigned</span>
+                        </div>
+                        <div class="scan-row">
+                            <span class="scan-label">Scanned Employee</span>
+                            <span class="scan-value" id="scan-employee-text">Not scanned</span>
+                        </div>
+                        <div class="scan-hint" id="scan-hint">Scan a process or employee to continue.</div>
+                        <div class="scan-actions-row">
+                            <button class="btn btn-secondary btn-sm" id="scan-reset" type="button">Reset</button>
+                            <button class="btn btn-primary btn-sm" id="scan-submit" type="button" disabled>Submit</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         `;
@@ -186,6 +199,9 @@ async function loadScanSection() {
         document.getElementById('camera-stop').addEventListener('click', stopCameraScan);
         document.getElementById('scan-line').addEventListener('change', handleLineChange);
         document.getElementById('scan-reset').addEventListener('click', resetProcessScan);
+        document.getElementById('scan-process-btn').addEventListener('click', () => startScanTarget('process'));
+        document.getElementById('scan-employee-btn').addEventListener('click', () => startScanTarget('employee'));
+        document.getElementById('scan-submit').addEventListener('click', finalizeScan);
         scanState.lineId = '';
         resetProcessScan();
     } catch (err) {
@@ -197,20 +213,35 @@ function handleLineChange() {
     const lineId = document.getElementById('scan-line').value;
     scanState.lineId = lineId;
     resetProcessScan();
+    if (lineId) {
+        preloadEmployees();
+    }
 }
 
 function resetProcessScan() {
     scanState.process = null;
     scanState.assignedEmployee = null;
-    scanState.stage = 'process';
+    scanState.processAssignedEmployee = null;
+    scanState.employee = null;
+    scanState.employeeQrRaw = null;
+    scanState.processQrRaw = null;
+    scanState.employeeAssignment = null;
+    scanState.scanTarget = null;
+    scanState.stage = 'idle';
     updateScanDisplay();
 }
 
 function updateScanDisplay() {
     const processText = document.getElementById('scan-process-text');
     const employeeText = document.getElementById('scan-employee-text');
+    const assignedText = document.getElementById('scan-assigned-text');
     const hint = document.getElementById('scan-hint');
     const statusText = document.getElementById('scan-status-text');
+    const summaryBox = document.getElementById('scan-summary');
+    const actionsBox = document.getElementById('scan-actions');
+    const cameraPanel = document.getElementById('scan-camera-panel');
+    const submitBtn = document.getElementById('scan-submit');
+    const lineHint = document.getElementById('scan-line-hint');
 
     if (scanState.process) {
         processText.textContent = `${scanState.process.operation_code} - ${scanState.process.operation_name} (ID ${scanState.process.id})`;
@@ -218,25 +249,111 @@ function updateScanDisplay() {
         processText.textContent = 'Not scanned';
     }
 
-    if (scanState.assignedEmployee) {
-        employeeText.textContent = `${scanState.assignedEmployee.emp_code} - ${scanState.assignedEmployee.emp_name} (ID ${scanState.assignedEmployee.id})`;
+    if (scanState.processAssignedEmployee) {
+        assignedText.textContent = `${scanState.processAssignedEmployee.emp_code} - ${scanState.processAssignedEmployee.emp_name} (ID ${scanState.processAssignedEmployee.id})`;
     } else {
-        employeeText.textContent = 'Not assigned';
+        assignedText.textContent = 'Not assigned';
+    }
+
+    if (scanState.employee) {
+        employeeText.textContent = `${scanState.employee.emp_code} - ${scanState.employee.emp_name} (ID ${scanState.employee.id})`;
+    } else {
+        employeeText.textContent = 'Not scanned';
     }
 
     if (!scanState.lineId) {
+        if (lineHint) lineHint.textContent = 'Select a line to start scanning.';
         hint.textContent = 'Select a line before scanning.';
         statusText.textContent = 'Waiting for line selection...';
+        if (summaryBox) summaryBox.style.display = 'none';
+        if (actionsBox) {
+            actionsBox.classList.add('disabled');
+            actionsBox.style.display = 'none';
+        }
+        if (cameraPanel) cameraPanel.classList.add('hidden');
+        if (submitBtn) submitBtn.disabled = true;
         return;
     }
 
-    if (scanState.stage === 'process') {
-        hint.textContent = 'Step 1: Scan the work process QR.';
-        statusText.textContent = 'Waiting for process scan...';
-    } else {
-        hint.textContent = 'Step 2: Scan the employee QR to confirm or change.';
-        statusText.textContent = 'Waiting for employee scan...';
+    if (lineHint) lineHint.textContent = 'Line selected. Start scanning.';
+    if (summaryBox) summaryBox.style.display = 'block';
+    if (actionsBox) {
+        actionsBox.classList.remove('disabled');
+        actionsBox.style.display = 'block';
     }
+
+    if (!scanState.process && !scanState.employee) {
+        hint.textContent = 'Scan a process or employee to begin.';
+        statusText.textContent = 'Waiting for scan...';
+    } else if (!scanState.process) {
+        hint.textContent = 'Scan the work process QR next.';
+        statusText.textContent = 'Waiting for process scan...';
+    } else if (!scanState.employee) {
+        hint.textContent = 'Scan the employee QR next.';
+        statusText.textContent = 'Waiting for employee scan...';
+    } else {
+        hint.textContent = 'Both scanned. Submit to confirm assignment.';
+        statusText.textContent = 'Ready to submit.';
+    }
+
+    if (submitBtn) {
+        submitBtn.disabled = !(scanState.process && scanState.employee);
+    }
+}
+
+async function preloadEmployees() {
+    if (scanState.employeeDirectory) return;
+    try {
+        const response = await fetch(`${API_BASE}/employees`);
+        const result = await response.json();
+        if (!result.success) return;
+        const byId = new Map();
+        const byCode = new Map();
+        result.data.forEach(emp => {
+            byId.set(String(emp.id), emp);
+            if (emp.emp_code) {
+                byCode.set(String(emp.emp_code).trim(), emp);
+            }
+        });
+        scanState.employeeDirectory = { byId, byCode, all: result.data };
+    } catch (err) {
+        // ignore preload errors
+    }
+}
+
+function parseScanPayload(rawValue) {
+    if (!rawValue) return null;
+    try {
+        const parsed = JSON.parse(rawValue);
+        if (parsed && typeof parsed === 'object') return parsed;
+    } catch (err) {
+        // ignore
+    }
+    const raw = String(rawValue).trim();
+    if (!raw) return null;
+    const numeric = parseInt(raw, 10);
+    if (Number.isFinite(numeric)) {
+        return { id: numeric };
+    }
+    return { raw };
+}
+
+function startScanTarget(target) {
+    if (!scanState.lineId) {
+        showToast('Select a line first', 'error');
+        return;
+    }
+    scanState.scanTarget = target;
+    const statusText = document.getElementById('scan-status-text');
+    if (statusText) {
+        statusText.textContent = target === 'process'
+            ? 'Scan the work process QR...'
+            : 'Scan the employee QR...';
+    }
+    const cameraPanel = document.getElementById('scan-camera-panel');
+    if (cameraPanel) cameraPanel.classList.remove('hidden');
+    startCameraScan();
+    updateScanDisplay();
 }
 
 let cameraStream = null;
@@ -325,12 +442,7 @@ async function scanFrame() {
 }
 
 function handleQrValue(rawValue) {
-    let parsed = null;
-    try {
-        parsed = JSON.parse(rawValue);
-    } catch (err) {
-        parsed = null;
-    }
+    const parsed = parseScanPayload(rawValue);
     const lineSelect = document.getElementById('scan-line');
     if (!scanState.lineId) {
         showToast('Select a line first', 'error');
@@ -342,18 +454,23 @@ function handleQrValue(rawValue) {
         scanState.lineId = parsed.id;
         resetProcessScan();
         showToast('Line QR captured', 'success');
-    } else {
-        const isProcessType = parsed && (parsed.type === 'process' || parsed.type === 'operation');
-        if (parsed && parsed.type === 'employee' && scanState.stage === 'process') {
-            showToast('Scan the work process first', 'error');
-            return;
-        }
-        if (isProcessType || scanState.stage === 'process') {
-            resolveProcessScan(rawValue);
-        } else {
-            assignEmployeeScan(rawValue);
-        }
+        return;
     }
+
+    const isProcessType = parsed && (parsed.type === 'process' || parsed.type === 'operation');
+    const isEmployeeType = parsed && parsed.type === 'employee';
+
+    if (scanState.scanTarget === 'process' || isProcessType) {
+        resolveProcessScan(rawValue);
+        return;
+    }
+
+    if (scanState.scanTarget === 'employee' || isEmployeeType) {
+        resolveEmployeeScan(rawValue);
+        return;
+    }
+
+    showToast('Choose scan type first', 'error');
 }
 
 async function resolveProcessScan(processQr) {
@@ -373,31 +490,183 @@ async function resolveProcessScan(processQr) {
             return;
         }
         scanState.process = result.data.process;
+        scanState.processAssignedEmployee = result.data.employee || null;
         scanState.assignedEmployee = result.data.employee || null;
-        scanState.stage = 'employee';
+        scanState.processQrRaw = processQr;
+        scanState.scanTarget = null;
+        scanState.stage = 'process';
         updateScanDisplay();
         showToast('Process scanned', 'success');
+        stopCameraScan();
+        if (scanState.process && scanState.employee) {
+            finalizeScan();
+        }
     } catch (err) {
         showToast(err.message, 'error');
     }
 }
 
-async function assignEmployeeScan(employeeQr) {
+async function resolveEmployeeScan(employeeQr) {
     if (!scanState.lineId) {
         showToast('Select a line first', 'error');
         return;
     }
-    if (!scanState.process) {
-        showToast('Scan a work process first', 'error');
-        scanState.stage = 'process';
-        updateScanDisplay();
+    if (!scanState.employeeDirectory) {
+        await preloadEmployees();
+    }
+    const parsed = parseScanPayload(employeeQr);
+    let employee = null;
+    if (parsed?.id && scanState.employeeDirectory?.byId) {
+        employee = scanState.employeeDirectory.byId.get(String(parsed.id));
+    }
+    if (!employee) {
+        const code = parsed?.emp_code || parsed?.code || parsed?.raw;
+        if (code && scanState.employeeDirectory?.byCode) {
+            employee = scanState.employeeDirectory.byCode.get(String(code).trim());
+        }
+    }
+    if (!employee) {
+        showToast('Employee not found', 'error');
         return;
     }
-    await submitEmployeeAssignment(employeeQr, null);
+    scanState.employee = employee;
+    scanState.employeeQrRaw = employeeQr;
+    scanState.employeeAssignment = {
+        line_name: employee.line_name || null,
+        process_id: employee.process_id || null,
+        operation_code: employee.operation_code || null,
+        operation_name: employee.operation_name || null,
+        product_code: employee.product_code || null
+    };
+    scanState.scanTarget = null;
+    scanState.stage = 'employee';
+    updateScanDisplay();
+    showToast('Employee scanned', 'success');
+    stopCameraScan();
+    if (scanState.process && scanState.employee) {
+        finalizeScan();
+    }
 }
 
-async function submitEmployeeAssignment(employeeQr, quantityCompleted, confirmChange = false) {
-    const materialsAtLink = document.getElementById('scan-materials')?.value || 0;
+function buildAssignmentWarning() {
+    const warnings = [];
+    const scanned = scanState.employee;
+    const processAssigned = scanState.processAssignedEmployee;
+    const assignment = scanState.employeeAssignment;
+
+    if (processAssigned && processAssigned.id !== scanned.id) {
+        warnings.push(`Process is currently assigned to ${processAssigned.emp_code} - ${processAssigned.emp_name}.`);
+    }
+
+    if (assignment?.process_id && assignment.process_id !== scanState.process.id) {
+        const opLabel = assignment.operation_code
+            ? `${assignment.operation_code}${assignment.operation_name ? ` - ${assignment.operation_name}` : ''}`
+            : 'another process';
+        const lineLabel = assignment.line_name ? ` on ${assignment.line_name}` : '';
+        warnings.push(`Employee is currently assigned to ${opLabel}${lineLabel}.`);
+    }
+
+    return warnings;
+}
+
+function showMaterialsModal({ requiresQuantity, onSubmit }) {
+    const existing = document.getElementById('materials-modal');
+    if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.className = 'progress-modal-backdrop';
+    modal.id = 'materials-modal';
+    modal.innerHTML = `
+        <div class="progress-modal">
+            <div class="progress-modal-header">
+                <h3>Confirm Assignment</h3>
+                <button class="modal-close" type="button" id="materials-modal-close">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="progress-modal-body">
+                <div class="progress-modal-info">
+                    <div>
+                        <div class="scan-label">Process</div>
+                        <div class="scan-value">${scanState.process.operation_code} - ${scanState.process.operation_name}</div>
+                    </div>
+                    <div>
+                        <div class="scan-label">Employee</div>
+                        <div class="scan-value">${scanState.employee.emp_code} - ${scanState.employee.emp_name}</div>
+                    </div>
+                </div>
+                ${requiresQuantity ? `
+                    <label class="form-label">Quantity Completed (before change)</label>
+                    <input type="number" class="form-control" id="materials-quantity" min="0" value="0">
+                ` : ''}
+                <label class="form-label">Initial Materials Provided</label>
+                <input type="number" class="form-control" id="materials-input" min="0" value="0">
+                <label class="form-label">Materials Already at Process (Unworked)</label>
+                <input type="number" class="form-control" id="materials-existing" min="0" value="0">
+            </div>
+            <div class="progress-modal-footer">
+                <button class="btn btn-secondary" type="button" id="materials-modal-cancel">Cancel</button>
+                <button class="btn btn-primary" type="button" id="materials-modal-save">Submit</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    setTimeout(() => modal.classList.add('active'), 10);
+
+    document.getElementById('materials-modal-save').addEventListener('click', async () => {
+        const materials = document.getElementById('materials-input').value;
+        const existing = document.getElementById('materials-existing').value;
+        const quantity = requiresQuantity ? document.getElementById('materials-quantity').value : null;
+        await onSubmit(materials, existing, quantity);
+        closeMaterialsModal();
+    });
+    document.getElementById('materials-modal-cancel').addEventListener('click', closeMaterialsModal);
+    document.getElementById('materials-modal-close').addEventListener('click', closeMaterialsModal);
+}
+
+function closeMaterialsModal() {
+    const modal = document.getElementById('materials-modal');
+    if (!modal) return;
+    modal.classList.remove('active');
+    setTimeout(() => modal.remove(), 150);
+}
+
+async function finalizeScan() {
+    if (!scanState.process || !scanState.employee) {
+        showToast('Scan process and employee first', 'error');
+        return;
+    }
+
+    const warnings = buildAssignmentWarning();
+    let confirmChange = false;
+    if (warnings.length) {
+        const message = `${warnings.join('\n')}\n\nDo you want to assign this employee to the scanned process?`;
+        const confirmed = window.confirm(message);
+        if (!confirmed) return;
+        confirmChange = true;
+    }
+
+    const requiresQuantity = Boolean(
+        scanState.processAssignedEmployee &&
+        scanState.processAssignedEmployee.id !== scanState.employee.id
+    );
+
+    showMaterialsModal({
+        requiresQuantity,
+        onSubmit: async (materials, existing, quantity) => {
+            await submitEmployeeAssignment(
+                scanState.employeeQrRaw,
+                requiresQuantity ? quantity : null,
+                confirmChange,
+                materials,
+                existing
+            );
+        }
+    });
+}
+
+async function submitEmployeeAssignment(employeeQr, quantityCompleted, confirmChange = false, materialsAtLink = 0, existingMaterials = 0) {
     try {
         const response = await fetch(`${API_BASE}/supervisor/assign`, {
             method: 'POST',
@@ -408,6 +677,7 @@ async function submitEmployeeAssignment(employeeQr, quantityCompleted, confirmCh
                 employee_qr: employeeQr,
                 quantity_completed: quantityCompleted,
                 materials_at_link: materialsAtLink,
+                existing_materials: existingMaterials,
                 confirm_change: confirmChange
             })
         });
@@ -416,17 +686,31 @@ async function submitEmployeeAssignment(employeeQr, quantityCompleted, confirmCh
             if (result.error && result.error.includes('Confirm change')) {
                 const confirmChange = window.confirm('This will change the current employee assignment. Continue?');
                 if (!confirmChange) return;
-                return submitEmployeeAssignment(employeeQr, quantityCompleted, true);
+                return submitEmployeeAssignment(employeeQr, quantityCompleted, true, materialsAtLink);
             }
             if (result.error && result.error.includes('Quantity completed')) {
-                showAssignmentChangeModal(employeeQr);
+                showMaterialsModal({
+                    requiresQuantity: true,
+                    onSubmit: async (materials, existing, quantity) => {
+                        await submitEmployeeAssignment(employeeQr, quantity, true, materials, existing);
+                    }
+                });
                 return;
             }
             showToast(result.error, 'error');
             return;
         }
         scanState.assignedEmployee = result.data.employee;
-        scanState.stage = 'employee';
+        scanState.processAssignedEmployee = result.data.employee;
+        scanState.employee = result.data.employee;
+        scanState.employeeAssignment = {
+            line_name: null,
+            process_id: scanState.process?.id || null,
+            operation_code: scanState.process?.operation_code || null,
+            operation_name: scanState.process?.operation_name || null,
+            product_code: null
+        };
+        scanState.stage = 'complete';
         updateScanDisplay();
         showToast('Employee linked and attendance marked', 'success');
     } catch (err) {
@@ -465,6 +749,8 @@ function showAssignmentChangeModal(employeeQr) {
                 <input type="number" class="form-control" id="assignment-quantity" min="0" value="0">
                 <label class="form-label">Materials at Link</label>
                 <input type="number" class="form-control" id="assignment-materials" min="0" value="0">
+                <label class="form-label">Materials Already at Process (Unworked)</label>
+                <input type="number" class="form-control" id="assignment-existing" min="0" value="0">
             </div>
             <div class="progress-modal-footer">
                 <button class="btn btn-secondary" type="button" id="assignment-modal-cancel">Cancel</button>
@@ -477,9 +763,8 @@ function showAssignmentChangeModal(employeeQr) {
     document.getElementById('assignment-modal-save').addEventListener('click', async () => {
         const qty = document.getElementById('assignment-quantity').value;
         const materials = document.getElementById('assignment-materials').value;
-        const scanMaterials = document.getElementById('scan-materials');
-        if (scanMaterials) scanMaterials.value = materials;
-        await submitEmployeeAssignment(employeeQr, qty);
+        const existing = document.getElementById('assignment-existing').value;
+        await submitEmployeeAssignment(employeeQr, qty, true, materials, existing);
         closeAssignmentModal();
     });
     document.getElementById('assignment-modal-cancel').addEventListener('click', closeAssignmentModal);
@@ -545,82 +830,13 @@ async function loadProgressSection() {
                 </div>
             </div>
 
-            <div class="stats-grid" id="production-stats" style="grid-template-columns: repeat(5, 1fr);">
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-target">-</h3>
-                        <p>Target</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-output">-</h3>
-                        <p>Actual Output</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-takt">-</h3>
-                        <p>Takt Time</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-efficiency">-</h3>
-                        <p>Efficiency</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-completion">-</h3>
-                        <p>Completion</p>
-                    </div>
-                </div>
-            </div>
-
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Process Output</h3>
                 </div>
                 <div class="card-body">
                     <div id="progress-list" class="progress-grid">
-                        <div class="alert alert-info">Scan a work process to record hourly output.</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Line Metrics</h3>
-                </div>
-                <div class="card-body">
-                    <div class="metrics-grid">
-                        <div>
-                            <label class="form-label">Forwarded Quantity</label>
-                            <input type="number" class="form-control" id="metrics-forwarded" min="0" value="0">
-                        </div>
-                        <div>
-                            <label class="form-label">Remaining WIP</label>
-                            <input type="number" class="form-control" id="metrics-wip" min="0" value="0">
-                        </div>
-                        <div>
-                            <label class="form-label">Initial Materials Issued</label>
-                            <input type="number" class="form-control" id="metrics-materials" min="0" value="0">
-                        </div>
-                        <div class="metrics-action">
-                            <button class="btn btn-primary" id="metrics-save">Save Metrics</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Logged Progress</h3>
-                </div>
-                <div class="card-body">
-                    <div id="progress-log" class="progress-log">
-                        <div class="alert alert-info">Select a line to view hourly progress.</div>
+                        <div class="alert alert-info">Select a line, then scan a process or employee QR.</div>
                     </div>
                 </div>
             </div>
@@ -634,16 +850,11 @@ async function loadProgressSection() {
             loadProductionStats();
         });
         document.getElementById('progress-date').addEventListener('change', () => {
-            loadProgressLog();
-            loadLineMetrics();
-            loadProductionStats();
+            resetProgressProcess();
         });
-        document.getElementById('metrics-save').addEventListener('click', saveLineMetrics);
         document.getElementById('close-shift-btn').addEventListener('click', closeShift);
         progressState.lineId = '';
         resetProgressProcess();
-        loadLineMetrics();
-        loadProductionStats();
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -651,11 +862,32 @@ async function loadProgressSection() {
 
 function resetProgressProcess() {
     progressState.process = null;
+    progressState.employee = null;
+    progressState.scanTarget = null;
     const list = document.getElementById('progress-list');
     if (list) {
         list.innerHTML = progressState.lineId
             ? `<div class="progress-scan-shell">
-                    <div class="camera-panel">
+                    <div class="scan-status">
+                        <div class="scan-row">
+                            <span class="scan-label">Work Process</span>
+                            <span class="scan-value" id="progress-process-text">Not scanned</span>
+                        </div>
+                        <div class="scan-row">
+                            <span class="scan-label">Employee</span>
+                            <span class="scan-value" id="progress-employee-text">Not scanned</span>
+                        </div>
+                        <div class="scan-row">
+                            <span class="scan-label">Target</span>
+                            <span class="scan-value" id="progress-target-text">-</span>
+                        </div>
+                        <div class="scan-hint" id="progress-hint">Scan process or employee QR to begin.</div>
+                    </div>
+                    <div class="scan-action-buttons progress-scan-actions">
+                        <button class="btn btn-primary btn-sm" id="progress-scan-process">Scan Process QR</button>
+                        <button class="btn btn-secondary btn-sm" id="progress-scan-employee">Scan Employee QR</button>
+                    </div>
+                    <div class="camera-panel hidden" id="progress-camera-panel">
                         <div class="camera-header">
                             <span class="status-badge" id="progress-camera-status">Camera Idle</span>
                             <div class="camera-actions">
@@ -665,23 +897,14 @@ function resetProgressProcess() {
                         </div>
                         <video id="progress-camera-preview" playsinline muted></video>
                     </div>
-                    <div class="scan-status">
-                        <div class="scan-row">
-                            <span class="scan-label">Work Process</span>
-                            <span class="scan-value" id="progress-process-text">Scan the QR</span>
-                        </div>
-                        <div class="scan-row">
-                            <span class="scan-label">Target</span>
-                            <span class="scan-value" id="progress-target-text">-</span>
-                        </div>
-                        <div class="scan-hint" id="progress-hint">Scan the work process QR to log output.</div>
-                    </div>
                </div>`
             : '<div class="alert alert-info">Select a line to start scanning.</div>';
     }
     if (progressState.lineId) {
         document.getElementById('progress-camera-start').addEventListener('click', startProgressCameraScan);
         document.getElementById('progress-camera-stop').addEventListener('click', stopProgressCameraScan);
+        document.getElementById('progress-scan-process').addEventListener('click', () => startProgressScanTarget('process'));
+        document.getElementById('progress-scan-employee').addEventListener('click', () => startProgressScanTarget('employee'));
     }
 }
 
@@ -697,7 +920,7 @@ async function saveProgress() {
         return;
     }
     if (!progressState.process) {
-        showToast('Scan a work process first', 'error');
+        showToast('Scan a work process or employee first', 'error');
         return;
     }
     const completed = parseInt(qty || 0, 10);
@@ -727,7 +950,7 @@ async function saveProgress() {
             return;
         }
         showToast('Saved', 'success');
-        loadProgressLog();
+        resetProgressProcess();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -823,12 +1046,44 @@ async function handleProgressQrValue(rawValue) {
         showToast('Select a line first', 'error');
         return;
     }
+    const parsed = parseScanPayload(rawValue);
+    const isProcessType = parsed && (parsed.type === 'process' || parsed.type === 'operation');
+    const isEmployeeType = parsed && parsed.type === 'employee';
+    if (progressState.scanTarget === 'employee' || isEmployeeType) {
+        await resolveProgressEmployee(rawValue);
+        return;
+    }
+    if (progressState.scanTarget === 'process' || isProcessType) {
+        await resolveProgressProcess(rawValue);
+        return;
+    }
+    showToast('Choose scan type first', 'error');
+}
+
+function startProgressScanTarget(target) {
+    if (!progressState.lineId) {
+        showToast('Select a line first', 'error');
+        return;
+    }
+    progressState.scanTarget = target;
+    const cameraPanel = document.getElementById('progress-camera-panel');
+    if (cameraPanel) cameraPanel.classList.remove('hidden');
+    const hint = document.getElementById('progress-hint');
+    if (hint) {
+        hint.textContent = target === 'process'
+            ? 'Scan the work process QR.'
+            : 'Scan the employee QR.';
+    }
+    startProgressCameraScan();
+}
+
+async function resolveProgressProcess(processQr) {
     try {
         const date = document.getElementById('progress-date').value;
         const response = await fetch(`${API_BASE}/supervisor/resolve-process`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: progressState.lineId, process_qr: rawValue, work_date: date })
+            body: JSON.stringify({ line_id: progressState.lineId, process_qr: processQr, work_date: date })
         });
         const result = await response.json();
         if (!result.success) {
@@ -836,18 +1091,58 @@ async function handleProgressQrValue(rawValue) {
             return;
         }
         progressState.process = result.data.process;
-        const processText = document.getElementById('progress-process-text');
-        const targetText = document.getElementById('progress-target-text');
-        if (processText) {
-            processText.textContent = `${progressState.process.operation_code} - ${progressState.process.operation_name}`;
-        }
-        if (targetText) {
-            targetText.textContent = String(progressState.process.target_units || 0);
-        }
-        showProgressEntryModal();
+        progressState.employee = result.data.employee || null;
+        updateProgressScanDisplay();
+        stopProgressCameraScan();
         showToast('Process scanned', 'success');
+        showProgressEntryModal();
     } catch (err) {
         showToast(err.message, 'error');
+    }
+}
+
+async function resolveProgressEmployee(employeeQr) {
+    try {
+        const date = document.getElementById('progress-date').value;
+        const response = await fetch(`${API_BASE}/supervisor/resolve-employee`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: progressState.lineId, employee_qr: employeeQr, work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        progressState.process = result.data.process;
+        progressState.employee = result.data.employee;
+        updateProgressScanDisplay();
+        stopProgressCameraScan();
+        showToast('Employee scanned', 'success');
+        showProgressEntryModal();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function updateProgressScanDisplay() {
+    const processText = document.getElementById('progress-process-text');
+    const employeeText = document.getElementById('progress-employee-text');
+    const targetText = document.getElementById('progress-target-text');
+    if (processText) {
+        processText.textContent = progressState.process
+            ? `${progressState.process.operation_code} - ${progressState.process.operation_name}`
+            : 'Not scanned';
+    }
+    if (employeeText) {
+        employeeText.textContent = progressState.employee
+            ? `${progressState.employee.emp_code} - ${progressState.employee.emp_name}`
+            : 'Not scanned';
+    }
+    if (targetText) {
+        targetText.textContent = progressState.process
+            ? String(progressState.process.target_units || 0)
+            : '-';
     }
 }
 
@@ -875,15 +1170,19 @@ function showProgressEntryModal() {
                         <div class="scan-value">${progressState.process.operation_code} - ${progressState.process.operation_name}</div>
                     </div>
                     <div>
+                        <div class="scan-label">Employee</div>
+                        <div class="scan-value">${progressState.employee ? `${progressState.employee.emp_code} - ${progressState.employee.emp_name}` : 'Not assigned'}</div>
+                    </div>
+                    <div>
                         <div class="scan-label">Target</div>
                         <div class="scan-value">${targetUnits}</div>
                     </div>
                 </div>
-                <label class="form-label">Quantity (units)</label>
+                <label class="form-label">Total Completed Units</label>
                 <input type="number" class="form-control" id="progress-quantity" min="0" value="0">
-                <label class="form-label">Forwarded Quantity</label>
+                <label class="form-label">Units Forwarded</label>
                 <input type="number" class="form-control" id="progress-forwarded" min="0" value="0">
-                <label class="form-label">Remaining Quantity</label>
+                <label class="form-label">Completed Units remaining with u / Units to be forwared</label>
                 <input type="number" class="form-control" id="progress-remaining" min="0" value="0">
             </div>
             <div class="progress-modal-footer">
@@ -944,9 +1243,11 @@ async function loadLineMetrics() {
         const forwarded = document.getElementById('metrics-forwarded');
         const wip = document.getElementById('metrics-wip');
         const materials = document.getElementById('metrics-materials');
+        const qaOutput = document.getElementById('metrics-qa');
         if (forwarded) forwarded.value = 0;
         if (wip) wip.value = 0;
         if (materials) materials.value = 0;
+        if (qaOutput) qaOutput.value = 0;
         return;
     }
     try {
@@ -956,10 +1257,12 @@ async function loadLineMetrics() {
             document.getElementById('metrics-forwarded').value = result.data.forwarded_quantity || 0;
             document.getElementById('metrics-wip').value = result.data.remaining_wip || 0;
             document.getElementById('metrics-materials').value = result.data.materials_issued || 0;
+            document.getElementById('metrics-qa').value = result.data.qa_output || 0;
         } else {
             document.getElementById('metrics-forwarded').value = 0;
             document.getElementById('metrics-wip').value = 0;
             document.getElementById('metrics-materials').value = 0;
+            document.getElementById('metrics-qa').value = 0;
         }
     } catch (err) {
         showToast('Failed to load metrics', 'error');
@@ -976,6 +1279,7 @@ async function saveLineMetrics() {
     const forwarded = document.getElementById('metrics-forwarded').value;
     const wip = document.getElementById('metrics-wip').value;
     const materials = document.getElementById('metrics-materials').value;
+    const qaOutput = document.getElementById('metrics-qa').value;
     try {
         const response = await fetch(`${API_BASE}/line-metrics`, {
             method: 'POST',
@@ -985,7 +1289,8 @@ async function saveLineMetrics() {
                 work_date: date,
                 forwarded_quantity: forwarded,
                 remaining_wip: wip,
-                materials_issued: materials
+                materials_issued: materials,
+                qa_output: qaOutput
             })
         });
         const result = await response.json();
@@ -1007,8 +1312,12 @@ async function closeShift() {
         showToast('Select a line first', 'error');
         return;
     }
+    await submitCloseShift(lineId, date);
+}
+
+async function submitCloseShift(lineId, date) {
     const confirmClose = window.confirm('Close shift for this line? This will lock entries.');
-    if (!confirmClose) return;
+    if (!confirmClose) return false;
     try {
         const response = await fetch(`${API_BASE}/supervisor/close-shift`, {
             method: 'POST',
@@ -1018,11 +1327,13 @@ async function closeShift() {
         const result = await response.json();
         if (!result.success) {
             showToast(result.error, 'error');
-            return;
+            return false;
         }
         showToast('Shift closed', 'success');
+        return true;
     } catch (err) {
         showToast(err.message, 'error');
+        return false;
     }
 }
 
@@ -1125,7 +1436,7 @@ async function loadMaterialsSection() {
             <div class="page-header">
                 <div>
                     <h1 class="page-title">Material Tracking</h1>
-                    <p class="page-subtitle">Track materials issued, used, and forwarded</p>
+                    <p class="page-subtitle">Auto-synced from process progress</p>
                 </div>
                 <div class="supervisor-controls">
                     <div>
@@ -1143,102 +1454,31 @@ async function loadMaterialsSection() {
                         <label class="form-label">Date</label>
                         <input type="date" class="form-control" id="material-date" value="${date}">
                     </div>
-                </div>
-            </div>
-
-            <div class="stats-grid" id="material-stats" style="grid-template-columns: repeat(5, 1fr);">
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-issued">0</h3>
-                        <p>Total Issued</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-used">0</h3>
-                        <p>Total Used</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-returned">0</h3>
-                        <p>Returned</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-forwarded">0</h3>
-                        <p>Forwarded</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-info">
-                        <h3 id="stat-wip">0</h3>
-                        <p>WIP</p>
+                    <div class="summary-controls-action">
+                        <button class="btn btn-secondary" id="material-add">Add Materials</button>
+                        <button class="btn btn-primary" id="material-load">Refresh</button>
                     </div>
                 </div>
             </div>
 
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Record Material Transaction</h3>
-                </div>
-                <div class="card-body">
-                    <div class="material-form-grid">
-                        <div>
-                            <label class="form-label">Transaction Type</label>
-                            <select class="form-control" id="material-type">
-                                <option value="issued">Issued (to line)</option>
-                                <option value="used">Used (consumed)</option>
-                                <option value="returned">Returned (to store)</option>
-                                <option value="forwarded">Forwarded (between processes)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="form-label">Quantity</label>
-                            <input type="number" class="form-control" id="material-quantity" min="1" value="1">
-                        </div>
-                        <div id="from-process-wrapper" style="display: none;">
-                            <label class="form-label">From Process</label>
-                            <select class="form-control" id="material-from-process">
-                                <option value="">Select Process</option>
-                            </select>
-                        </div>
-                        <div id="to-process-wrapper" style="display: none;">
-                            <label class="form-label">To Process</label>
-                            <select class="form-control" id="material-to-process">
-                                <option value="">Select Process</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="form-label">Notes (optional)</label>
-                            <input type="text" class="form-control" id="material-notes" placeholder="Optional notes">
-                        </div>
-                        <div class="material-form-action">
-                            <button class="btn btn-primary" id="material-submit">Record Transaction</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">WIP by Process</h3>
+                    <h3 class="card-title">Process Materials Snapshot</h3>
                 </div>
                 <div class="card-body">
                     <div id="wip-list" class="wip-list">
-                        <div class="alert alert-info">Select a line to view WIP by process.</div>
+                        <div class="alert alert-info">Select a line to view material flow.</div>
                     </div>
                 </div>
             </div>
 
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Transaction History</h3>
+                    <h3 class="card-title">Material Events</h3>
                 </div>
                 <div class="card-body">
                     <div id="transaction-list" class="transaction-list">
-                        <div class="alert alert-info">Select a line to view transactions.</div>
+                        <div class="alert alert-info">Select a line to view material events.</div>
                     </div>
                 </div>
             </div>
@@ -1250,11 +1490,10 @@ async function loadMaterialsSection() {
             await loadMaterialData();
         });
         document.getElementById('material-date').addEventListener('change', loadMaterialData);
-        document.getElementById('material-type').addEventListener('change', updateMaterialFormVisibility);
-        document.getElementById('material-submit').addEventListener('click', submitMaterialTransaction);
+        document.getElementById('material-load').addEventListener('click', loadMaterialData);
+        document.getElementById('material-add').addEventListener('click', openMaterialAddModal);
 
         materialState.lineId = '';
-        updateMaterialFormVisibility();
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -1282,36 +1521,12 @@ async function loadMaterialProcesses() {
     }
 }
 
-function updateMaterialFormVisibility() {
-    const type = document.getElementById('material-type').value;
-    const fromWrapper = document.getElementById('from-process-wrapper');
-    const toWrapper = document.getElementById('to-process-wrapper');
-
-    // Show/hide based on transaction type
-    if (type === 'forwarded' || type === 'used') {
-        fromWrapper.style.display = 'block';
-    } else {
-        fromWrapper.style.display = 'none';
-    }
-
-    if (type === 'forwarded' || type === 'issued') {
-        toWrapper.style.display = 'block';
-    } else {
-        toWrapper.style.display = 'none';
-    }
-}
-
 async function loadMaterialData() {
     const lineId = document.getElementById('material-line')?.value;
     const date = document.getElementById('material-date')?.value;
 
     if (!lineId) {
-        document.getElementById('stat-issued').textContent = '0';
-        document.getElementById('stat-used').textContent = '0';
-        document.getElementById('stat-returned').textContent = '0';
-        document.getElementById('stat-forwarded').textContent = '0';
-        document.getElementById('stat-wip').textContent = '0';
-        document.getElementById('wip-list').innerHTML = '<div class="alert alert-info">Select a line to view WIP.</div>';
+        document.getElementById('wip-list').innerHTML = '<div class="alert alert-info">Select a line to view material flow.</div>';
         document.getElementById('transaction-list').innerHTML = '<div class="alert alert-info">Select a line to view transactions.</div>';
         return;
     }
@@ -1321,46 +1536,69 @@ async function loadMaterialData() {
         const result = await response.json();
 
         if (result.success && result.data) {
-            const { summary, transactions, wip_by_process } = result.data;
+            const { transactions, wip_by_process } = result.data;
+            const rows = wip_by_process || [];
+            const latestByProcess = new Map();
 
-            // Update stats
-            document.getElementById('stat-issued').textContent = summary.total_issued || 0;
-            document.getElementById('stat-used').textContent = summary.total_used || 0;
-            document.getElementById('stat-returned').textContent = summary.total_returned || 0;
-            document.getElementById('stat-forwarded').textContent = summary.total_forwarded || 0;
-            document.getElementById('stat-wip').textContent = summary.wip || 0;
+            (transactions || []).forEach((transaction) => {
+                const processIds = [];
+                if (transaction.from_process_id) processIds.push(String(transaction.from_process_id));
+                if (transaction.to_process_id) processIds.push(String(transaction.to_process_id));
+                processIds.forEach((processId) => {
+                    if (!latestByProcess.has(processId)) {
+                        latestByProcess.set(processId, transaction);
+                    }
+                });
+            });
 
-            // WIP by process
-            if (wip_by_process.length) {
+            if (rows.length) {
                 document.getElementById('wip-list').innerHTML = `
                     <table class="data-table">
                         <thead>
                             <tr>
-                                <th>#</th>
                                 <th>Process</th>
-                                <th>In</th>
-                                <th>Out</th>
-                                <th>WIP</th>
+                                <th>Materials Received</th>
+                                <th>Units Forwarded</th>
+                                <th>WIP materials - Remaining</th>
+                                <th>Latest Update</th>
+                                <th></th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${wip_by_process.map(w => `
+                            ${rows.map(w => `
                                 <tr>
-                                    <td>${w.sequence_number}</td>
-                                    <td>${w.operation_code} - ${w.operation_name}</td>
+                                    <td>${w.sequence_number}. ${w.operation_code} - ${w.operation_name}</td>
                                     <td>${w.materials_in || 0}</td>
                                     <td>${w.materials_out || 0}</td>
                                     <td><strong>${w.wip_quantity || 0}</strong></td>
+                                    <td>${formatMaterialUpdate(latestByProcess.get(String(w.process_id)))}</td>
+                                    <td>
+                                        <button class="btn btn-secondary btn-sm material-details-btn"
+                                            data-process-id="${w.process_id}"
+                                            data-process-label="${w.sequence_number}. ${w.operation_code} - ${w.operation_name}">
+                                            Details
+                                        </button>
+                                    </td>
                                 </tr>
                             `).join('')}
                         </tbody>
                     </table>
                 `;
+                document.querySelectorAll('.material-details-btn').forEach((button) => {
+                    button.addEventListener('click', (event) => {
+                        const { processId, processLabel } = event.currentTarget.dataset;
+                        openMaterialDetailsModal({
+                            lineId,
+                            date,
+                            processId,
+                            processLabel
+                        });
+                    });
+                });
             } else {
-                document.getElementById('wip-list').innerHTML = '<div class="alert alert-warning">No WIP data recorded yet.</div>';
+                document.getElementById('wip-list').innerHTML = '<div class="alert alert-warning">No material data recorded yet.</div>';
             }
 
-            // Transactions
             if (transactions.length) {
                 document.getElementById('transaction-list').innerHTML = `
                     <table class="data-table">
@@ -1389,12 +1627,187 @@ async function loadMaterialData() {
                     </table>
                 `;
             } else {
-                document.getElementById('transaction-list').innerHTML = '<div class="alert alert-warning">No transactions recorded yet.</div>';
+                document.getElementById('transaction-list').innerHTML = '<div class="alert alert-warning">No material events recorded yet.</div>';
             }
         }
     } catch (err) {
         showToast('Failed to load material data', 'error');
     }
+}
+
+function formatMaterialUpdate(update) {
+    if (!update) return '-';
+    const timeLabel = new Date(update.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    return `${timeLabel} · ${update.transaction_type} ${update.quantity}`;
+}
+
+function openMaterialDetailsModal({ lineId, date, processId, processLabel }) {
+    const existing = document.getElementById('material-details-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.className = 'progress-modal-backdrop';
+    modal.id = 'material-details-modal';
+    modal.innerHTML = `
+        <div class="progress-modal">
+            <div class="progress-modal-header">
+                <h3>Material Log</h3>
+                <button class="modal-close" type="button" id="material-details-close">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="progress-modal-body">
+                <div class="material-log-title">${processLabel}</div>
+                <div id="material-details-body">
+                    <div class="alert alert-info">Loading log...</div>
+                </div>
+            </div>
+            <div class="progress-modal-footer">
+                <button class="btn btn-secondary" type="button" id="material-details-dismiss">Close</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    setTimeout(() => modal.classList.add('active'), 10);
+
+    const close = () => {
+        modal.classList.remove('active');
+        setTimeout(() => modal.remove(), 150);
+    };
+    document.getElementById('material-details-close').addEventListener('click', close);
+    document.getElementById('material-details-dismiss').addEventListener('click', close);
+
+    fetch(`${API_BASE}/supervisor/materials/log?line_id=${lineId}&date=${date}&process_id=${processId}`)
+        .then((response) => response.json())
+        .then((result) => {
+            if (!result.success) {
+                document.getElementById('material-details-body').innerHTML = `<div class="alert alert-danger">${result.error || 'Unable to load log'}</div>`;
+                return;
+            }
+            const logs = result.data || [];
+            if (!logs.length) {
+                document.getElementById('material-details-body').innerHTML = '<div class="alert alert-warning">No material events recorded for this process.</div>';
+                return;
+            }
+            document.getElementById('material-details-body').innerHTML = `
+                <div class="material-log-table">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Type</th>
+                                <th>Qty</th>
+                                <th>From</th>
+                                <th>To</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${logs.map(log => `
+                                <tr>
+                                    <td>${new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+                                    <td><span class="badge badge-${getTransactionBadgeClass(log.transaction_type)}">${log.transaction_type}</span></td>
+                                    <td>${log.quantity}</td>
+                                    <td>${log.from_operation ? `${log.from_sequence}. ${log.from_operation}` : '-'}</td>
+                                    <td>${log.to_operation ? `${log.to_sequence}. ${log.to_operation}` : '-'}</td>
+                                    <td>${log.notes || '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        })
+        .catch(() => {
+            document.getElementById('material-details-body').innerHTML = '<div class="alert alert-danger">Unable to load log.</div>';
+        });
+}
+
+function openMaterialAddModal() {
+    const lineId = document.getElementById('material-line')?.value;
+    const date = document.getElementById('material-date')?.value;
+    if (!lineId || !date) {
+        showToast('Select a line and date first', 'error');
+        return;
+    }
+    if (!materialState.processes.length) {
+        showToast('No process flow found for this line', 'error');
+        return;
+    }
+    const existing = document.getElementById('material-add-modal');
+    if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.className = 'progress-modal-backdrop';
+    modal.id = 'material-add-modal';
+    modal.innerHTML = `
+        <div class="progress-modal">
+            <div class="progress-modal-header">
+                <h3>Add Materials</h3>
+                <button class="modal-close" type="button" id="material-add-close">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="progress-modal-body">
+                <label class="form-label">Process</label>
+                <select class="form-control" id="material-add-process">
+                    ${materialState.processes.map(p => `
+                        <option value="${p.id}">${p.sequence_number}. ${p.operation_code} - ${p.operation_name}</option>
+                    `).join('')}
+                </select>
+                <label class="form-label">Quantity</label>
+                <input type="number" class="form-control" id="material-add-qty" min="1" value="1">
+            </div>
+            <div class="progress-modal-footer">
+                <button class="btn btn-secondary" type="button" id="material-add-cancel">Cancel</button>
+                <button class="btn btn-primary" type="button" id="material-add-save">Add</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    setTimeout(() => modal.classList.add('active'), 10);
+
+    const close = () => {
+        modal.classList.remove('active');
+        setTimeout(() => modal.remove(), 150);
+    };
+    document.getElementById('material-add-close').addEventListener('click', close);
+    document.getElementById('material-add-cancel').addEventListener('click', close);
+    document.getElementById('material-add-save').addEventListener('click', async () => {
+        const processId = document.getElementById('material-add-process').value;
+        const qty = document.getElementById('material-add-qty').value;
+        if (!processId || !qty || Number(qty) <= 0) {
+            showToast('Enter a valid quantity', 'error');
+            return;
+        }
+        try {
+            const response = await fetch(`${API_BASE}/supervisor/materials`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    line_id: lineId,
+                    work_date: date,
+                    transaction_type: 'issued',
+                    quantity: parseInt(qty, 10),
+                    to_process_id: processId,
+                    notes: 'Manual material add'
+                })
+            });
+            const result = await response.json();
+            if (!result.success) {
+                showToast(result.error, 'error');
+                return;
+            }
+            showToast('Materials added', 'success');
+            close();
+            loadMaterialData();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    });
 }
 
 function getTransactionBadgeClass(type) {
@@ -1528,7 +1941,7 @@ async function loadShiftSummaryData() {
         }
 
         const data = result.data;
-        const { line, metrics, hourly_output, process_output, employees, materials } = data;
+        const { line, metrics, hourly_output, process_output, employees, materials, shift } = data;
 
         container.innerHTML = `
             <div class="summary-header">
@@ -1537,9 +1950,18 @@ async function loadShiftSummaryData() {
                     <p>${line.product_code} - ${line.product_name}</p>
                     <p class="summary-date">${new Date(date).toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
                 </div>
+                <div style="display:flex; gap:12px; align-items:center; margin-top:8px;">
+                    <span class="badge ${shift?.is_closed ? 'badge-green' : 'badge-orange'}">
+                        ${shift?.is_closed ? 'Shift Closed' : 'Shift Open'}
+                    </span>
+                    ${shift?.is_closed
+                        ? `<span style="color: var(--secondary); font-size: 12px;">${shift?.closed_at ? new Date(shift.closed_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}</span>`
+                        : `<button class="btn btn-danger btn-sm" id="summary-close-shift">Close Shift</button>`
+                    }
+                </div>
             </div>
 
-            <div class="stats-grid" style="grid-template-columns: repeat(5, 1fr);">
+            <div class="stats-grid" style="grid-template-columns: repeat(6, 1fr);">
                 <div class="stat-card">
                     <div class="stat-info">
                         <h3>${metrics.target}</h3>
@@ -1550,6 +1972,12 @@ async function loadShiftSummaryData() {
                     <div class="stat-info">
                         <h3>${metrics.total_output}</h3>
                         <p>Actual Output</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <h3>${metrics.qa_output || 0}</h3>
+                        <p>QA Output</p>
                     </div>
                 </div>
                 <div class="stat-card">
@@ -1698,6 +2126,18 @@ async function loadShiftSummaryData() {
                 <p>Working Hours: ${metrics.working_hours}h | Manpower: ${metrics.manpower} | SAH: ${metrics.total_sah.toFixed(4)}</p>
             </div>
         `;
+
+        if (!shift?.is_closed) {
+            const closeBtn = document.getElementById('summary-close-shift');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', async () => {
+                    const closed = await submitCloseShift(lineId, date);
+                    if (closed) {
+                        await loadShiftSummaryData();
+                    }
+                });
+            }
+        }
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }

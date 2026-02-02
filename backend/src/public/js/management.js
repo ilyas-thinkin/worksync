@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function requireAuth() {
     try {
-        const response = await fetch('/auth/session');
+        const response = await fetch('/auth/session', { credentials: 'include' });
         if (!response.ok) {
             window.location.href = '/';
             return false;
@@ -57,7 +57,16 @@ async function loadManagementDashboard() {
                     <label for="mgmt-date">Date</label>
                     <input type="date" id="mgmt-date" value="${today}">
                 </div>
-                <button class="btn btn-secondary" id="mgmt-download">Download Excel</button>
+                <button class="btn btn-secondary" id="mgmt-download">Download Daily</button>
+                <div class="ie-date">
+                    <label for="mgmt-start">Start</label>
+                    <input type="date" id="mgmt-start" value="${today}">
+                </div>
+                <div class="ie-date">
+                    <label for="mgmt-end">End</label>
+                    <input type="date" id="mgmt-end" value="${today}">
+                </div>
+                <button class="btn btn-secondary" id="mgmt-download-range">Download Range</button>
             </div>
         </div>
 
@@ -114,6 +123,7 @@ async function loadManagementDashboard() {
 
     document.getElementById('mgmt-date').addEventListener('change', refreshManagementData);
     document.getElementById('mgmt-download').addEventListener('click', downloadReport);
+    document.getElementById('mgmt-download-range').addEventListener('click', downloadRangeReport);
     await loadLineOptions();
     refreshManagementData();
 }
@@ -123,10 +133,24 @@ function downloadReport() {
     window.location.href = `${API_BASE}/reports/daily?date=${date}`;
 }
 
+function downloadRangeReport() {
+    const start = document.getElementById('mgmt-start').value;
+    const end = document.getElementById('mgmt-end').value;
+    if (!start || !end) {
+        alert('Select start and end dates.');
+        return;
+    }
+    if (end < start) {
+        alert('End date must be on or after start date.');
+        return;
+    }
+    window.location.href = `${API_BASE}/reports/range?start=${start}&end=${end}`;
+}
+
 async function loadLineOptions() {
     const select = document.getElementById('mgmt-line-select');
     if (!select) return;
-    const response = await fetch(`${API_BASE}/lines`);
+    const response = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
     const result = await response.json();
     if (!result.success) return;
     select.innerHTML = result.data
@@ -147,7 +171,7 @@ async function loadLineMetrics() {
     const date = document.getElementById('mgmt-date').value;
     const stats = document.getElementById('mgmt-stats');
     const body = document.getElementById('mgmt-lines');
-    const response = await fetch(`${API_BASE}/lines-metrics?date=${date}`);
+    const response = await fetch(`${API_BASE}/lines-metrics?date=${date}`, { credentials: 'include' });
     const result = await response.json();
     if (!result.success) return;
 
@@ -205,7 +229,7 @@ async function refreshEmployeeEfficiency() {
         tbody.innerHTML = '<tr><td colspan="4">Select a line</td></tr>';
         return;
     }
-    const response = await fetch(`${API_BASE}/supervisor/shift-summary?line_id=${lineId}&date=${date}`);
+    const response = await fetch(`${API_BASE}/supervisor/shift-summary?line_id=${lineId}&date=${date}`, { credentials: 'include' });
     const result = await response.json();
     if (!result.success) {
         tbody.innerHTML = `<tr><td colspan="4">${result.error || 'No data'}</td></tr>`;
