@@ -1,75 +1,103 @@
+/* WorkSync Supervisor Panel - Mobile-First Responsive CSS */
+
+/* ================================
+   Supervisor Header & Controls
+   ================================ */
 .supervisor-header {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 20px;
-    margin-bottom: 20px;
+    flex-direction: column;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
 }
 
 .supervisor-controls {
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: flex-end;
+    flex-direction: column;
+    gap: var(--space-md);
 }
 
+.supervisor-controls > div {
+    width: 100%;
+}
+
+/* ================================
+   Supervisor Panel Grid
+   ================================ */
 .supervisor-panel {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 16px;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
 }
 
+/* ================================
+   Scan Box
+   ================================ */
 .scan-box {
-    background: #fff;
+    background: var(--surface-strong);
     border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 16px;
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
 }
 
 .scan-box h3 {
-    margin-bottom: 8px;
+    margin-bottom: var(--space-md);
+    font-size: 16px;
+    font-weight: 600;
 }
 
 .scan-inputs {
     display: grid;
-    gap: 12px;
+    gap: var(--space-md);
 }
 
 .scan-action-buttons {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 10px;
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
+}
+
+.scan-action-buttons .btn {
+    width: 100%;
 }
 
 .progress-scan-actions {
-    margin-top: 12px;
+    margin-top: var(--space-md);
 }
 
 .scan-actions-row {
     display: flex;
-    gap: 10px;
-    justify-content: flex-end;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.scan-actions-row .btn {
+    width: 100%;
 }
 
 .scan-inputs textarea {
-    min-height: 70px;
+    min-height: 80px;
+    font-size: 16px;
 }
 
+/* ================================
+   Scan Status
+   ================================ */
 .scan-status {
     border: 1px dashed var(--border);
-    border-radius: 12px;
-    padding: 12px;
-    background: #f8fafc;
+    border-radius: var(--radius);
+    padding: var(--space-md);
+    background: var(--light);
     display: grid;
-    gap: 8px;
+    gap: var(--space-sm);
 }
 
 .scan-row {
     display: flex;
     justify-content: space-between;
-    gap: 12px;
-    font-size: 14px;
+    align-items: center;
+    gap: var(--space-md);
+    font-size: 13px;
+    padding: var(--space-xs) 0;
 }
 
 .scan-label {
@@ -84,131 +112,164 @@
 }
 
 .scan-input {
-    max-width: 120px;
+    max-width: 100px;
+    min-height: 36px;
 }
 
 .scan-hint {
-    font-size: 13px;
+    font-size: 12px;
     color: var(--secondary);
+    line-height: 1.4;
 }
 
 .scan-callout {
-    padding: 12px;
-    border-radius: 10px;
+    padding: var(--space-md);
+    border-radius: var(--radius);
     background: #eef2ff;
     color: #3730a3;
     font-weight: 600;
-    font-size: 14px;
+    font-size: 13px;
+    text-align: center;
 }
 
 .scan-box.disabled {
-    opacity: 0.6;
+    opacity: 0.5;
     pointer-events: none;
 }
 
+/* ================================
+   Camera Panel
+   ================================ */
 .camera-panel.hidden {
     display: none;
 }
 
 .camera-panel {
     border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 10px;
-    background: #f8fafc;
+    border-radius: var(--radius);
+    padding: var(--space-md);
+    background: var(--light);
 }
 
 .camera-header {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 8px;
+    flex-direction: column;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
 }
 
 .camera-actions {
     display: flex;
-    gap: 8px;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
 }
 
-#camera-preview {
+.camera-actions .btn {
+    flex: 1;
+    min-width: 100px;
+}
+
+#camera-preview,
+#progress-camera-preview {
     width: 100%;
-    height: 220px;
+    height: 200px;
     background: #0f172a;
-    border-radius: 10px;
+    border-radius: var(--radius);
     object-fit: cover;
 }
 
+/* ================================
+   Status Badge (Supervisor)
+   ================================ */
 .status-badge {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
-    border-radius: 999px;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-full);
     font-size: 12px;
     font-weight: 600;
     background: #ecfeff;
     color: #0e7490;
 }
 
+/* ================================
+   Progress Grid
+   ================================ */
 .progress-grid {
     display: grid;
-    gap: 12px;
+    gap: var(--space-md);
 }
 
 .progress-row {
     display: grid;
-    grid-template-columns: 1fr 120px 120px;
-    gap: 12px;
-    align-items: center;
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
 }
 
 .progress-row label {
     font-weight: 600;
     color: var(--text);
+    font-size: 13px;
 }
 
+/* ================================
+   Progress Scan Grid
+   ================================ */
 .progress-scan-grid {
     display: grid;
-    grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
-    gap: 16px;
-    align-items: start;
+    grid-template-columns: 1fr;
+    gap: var(--space-lg);
 }
 
 .progress-entry {
     display: grid;
-    gap: 12px;
+    gap: var(--space-md);
 }
 
+/* ================================
+   Metrics Grid
+   ================================ */
 .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 12px;
-    align-items: end;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
 }
 
 .metrics-action {
+    grid-column: 1 / -1;
     display: flex;
-    justify-content: flex-end;
+    justify-content: stretch;
 }
 
+.metrics-action .btn {
+    width: 100%;
+}
+
+/* ================================
+   Progress Scan Shell
+   ================================ */
 .progress-scan-shell {
     display: grid;
-    grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr);
-    gap: 16px;
-    align-items: start;
+    grid-template-columns: 1fr;
+    gap: var(--space-lg);
 }
 
+/* ================================
+   Progress Modal
+   ================================ */
 .progress-modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(15, 23, 42, 0.4);
+    background: rgba(15, 23, 42, 0.5);
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: center;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.2s ease;
+    transition: opacity 0.25s ease;
     z-index: 1100;
+    padding: 0;
 }
 
 .progress-modal-backdrop.active {
@@ -217,95 +278,132 @@
 }
 
 .progress-modal {
-    width: min(420px, 92vw);
-    background: #fff;
-    border-radius: 16px;
-    padding: 16px;
+    width: 100%;
+    max-height: 90vh;
+    max-height: 90dvh;
+    background: var(--surface-strong);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    padding: var(--space-lg);
     box-shadow: var(--shadow-lg);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.progress-modal-backdrop.active .progress-modal {
+    transform: translateY(0);
 }
 
 .progress-modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-md);
+    position: sticky;
+    top: 0;
+    background: var(--surface-strong);
+    padding-bottom: var(--space-sm);
+    z-index: 1;
 }
 
 .progress-modal-header h3 {
     font-size: 18px;
+    font-weight: 600;
 }
 
 .progress-modal-body {
     display: grid;
-    gap: 12px;
+    gap: var(--space-md);
 }
 
 .progress-modal-info {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    background: #f8fafc;
-    padding: 10px 12px;
-    border-radius: 10px;
+    gap: var(--space-md);
+    background: var(--light);
+    padding: var(--space-md);
+    border-radius: var(--radius);
 }
 
 .progress-modal-footer {
     display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 12px;
+    flex-direction: column;
+    gap: var(--space-sm);
+    margin-top: var(--space-lg);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+.progress-modal-footer .btn {
+    width: 100%;
+}
+
+/* ================================
+   Progress Log
+   ================================ */
 .progress-log {
     display: grid;
-    gap: 10px;
+    gap: var(--space-sm);
 }
 
 .progress-log-row {
     display: grid;
-    grid-template-columns: 80px 1fr 80px;
-    gap: 10px;
+    grid-template-columns: 60px 1fr 60px;
+    gap: var(--space-sm);
     align-items: center;
-    padding: 10px 12px;
+    padding: var(--space-md);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    background: #fff;
+    border-radius: var(--radius);
+    background: var(--surface-strong);
 }
 
 .progress-log-hour {
     font-weight: 700;
     color: var(--text);
+    font-size: 13px;
 }
 
 .progress-log-work {
     color: var(--secondary);
-    font-weight: 600;
+    font-weight: 500;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .progress-log-qty {
     text-align: right;
     font-weight: 700;
     color: var(--text);
+    font-size: 14px;
 }
 
-/* Material Tracking Styles */
+/* ================================
+   Material Tracking Styles
+   ================================ */
 .material-form-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 12px;
-    align-items: end;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
 }
 
 .material-form-action {
     display: flex;
-    justify-content: flex-end;
+    justify-content: stretch;
+}
+
+.material-form-action .btn {
+    width: 100%;
 }
 
 .wip-list,
 .transaction-list {
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
+/* Badge Colors */
 .badge-blue { background: #dbeafe; color: #1d4ed8; }
 .badge-green { background: #d1fae5; color: #059669; }
 .badge-orange { background: #ffedd5; color: #c2410c; }
@@ -313,31 +411,23 @@
 .badge-red { background: #fee2e2; color: #dc2626; }
 .badge-secondary { background: #f1f5f9; color: #64748b; }
 
-.btn-sm {
-    padding: 6px 12px;
-    font-size: 12px;
-    border-radius: 999px;
-}
-
 .material-log-title {
     font-weight: 700;
     color: var(--text);
-    margin-bottom: 12px;
-}
-
-.progress-modal {
-    width: min(92vw, 760px);
+    margin-bottom: var(--space-md);
+    font-size: 15px;
 }
 
 .material-log-table {
     max-height: 50vh;
     overflow: auto;
-    border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.25);
+    -webkit-overflow-scrolling: touch;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
 }
 
 .material-log-table .data-table {
-    min-width: 680px;
+    min-width: 600px;
 }
 
 .material-log-table .data-table td,
@@ -345,38 +435,43 @@
     vertical-align: top;
     white-space: normal;
     word-break: break-word;
+    padding: var(--space-sm) var(--space-md);
 }
 
-/* Shift Summary Styles */
+/* ================================
+   Shift Summary Styles
+   ================================ */
 .summary-header {
-    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
-    border-radius: 16px;
-    padding: 24px;
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
     color: #fff;
-    margin-bottom: 20px;
+    margin-bottom: var(--space-lg);
 }
 
 .summary-line-info h2 {
-    font-size: 24px;
-    margin-bottom: 4px;
+    font-size: 20px;
+    margin-bottom: var(--space-xs);
+    font-family: var(--font-display);
 }
 
 .summary-line-info p {
     opacity: 0.9;
     margin: 0;
+    font-size: 13px;
 }
 
 .summary-date {
-    margin-top: 8px;
-    font-size: 14px;
+    margin-top: var(--space-sm);
+    font-size: 13px;
     opacity: 0.8;
 }
 
 .summary-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 16px;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
 }
 
 .summary-controls-action {
@@ -384,17 +479,26 @@
     align-items: flex-end;
 }
 
-/* Hourly Chart */
+.summary-controls-action .btn {
+    width: 100%;
+}
+
+/* ================================
+   Hourly Chart
+   ================================ */
 .hourly-chart {
     display: flex;
-    gap: 8px;
-    height: 180px;
+    gap: var(--space-sm);
+    height: 160px;
     align-items: flex-end;
-    padding: 10px 0;
+    padding: var(--space-sm) 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .hourly-bar-container {
-    flex: 1;
+    flex: 0 0 auto;
+    min-width: 36px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -404,10 +508,10 @@
 
 .hourly-bar {
     width: 100%;
-    max-width: 50px;
-    background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%);
+    max-width: 40px;
+    background: linear-gradient(180deg, var(--primary-light) 0%, var(--primary) 100%);
     border-radius: 6px 6px 0 0;
-    min-height: 10px;
+    min-height: 8px;
     display: flex;
     align-items: flex-start;
     justify-content: center;
@@ -416,49 +520,55 @@
 
 .hourly-value {
     position: absolute;
-    top: -22px;
-    font-size: 12px;
+    top: -20px;
+    font-size: 11px;
     font-weight: 700;
     color: var(--text);
 }
 
 .hourly-label {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--secondary);
-    margin-top: 6px;
+    margin-top: var(--space-xs);
 }
 
-/* Material Summary Grid */
+/* ================================
+   Material Summary Grid
+   ================================ */
 .material-summary-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-sm);
 }
 
 .material-summary-item {
-    background: #f8fafc;
-    border-radius: 10px;
-    padding: 12px;
+    background: var(--light);
+    border-radius: var(--radius);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--space-xs);
 }
 
 .material-summary-item .label {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--secondary);
     font-weight: 600;
+    text-transform: uppercase;
 }
 
 .material-summary-item .value {
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 700;
     color: var(--text);
+    font-family: var(--font-display);
 }
 
-/* Stat Card Variants */
+/* ================================
+   Stat Card Variants
+   ================================ */
 .stat-card.stat-success {
-    border: 2px solid #10b981;
+    border: 2px solid var(--success);
 }
 
 .stat-card.stat-success .stat-info h3 {
@@ -466,7 +576,7 @@
 }
 
 .stat-card.stat-warning {
-    border: 2px solid #f59e0b;
+    border: 2px solid var(--warning);
 }
 
 .stat-card.stat-warning .stat-info h3 {
@@ -474,85 +584,196 @@
 }
 
 .stat-card.stat-danger {
-    border: 2px solid #ef4444;
+    border: 2px solid var(--danger);
 }
 
 .stat-card.stat-danger .stat-info h3 {
     color: #dc2626;
 }
 
-/* Summary Footer */
+/* ================================
+   Summary Footer
+   ================================ */
 .summary-footer {
     text-align: center;
-    padding: 16px;
+    padding: var(--space-lg);
     color: var(--secondary);
-    font-size: 13px;
+    font-size: 12px;
     border-top: 1px solid var(--border);
-    margin-top: 20px;
+    margin-top: var(--space-lg);
 }
 
 .summary-footer p {
-    margin: 4px 0;
+    margin: var(--space-xs) 0;
 }
 
-/* Progress Camera Preview */
-#progress-camera-preview {
-    width: 100%;
-    height: 200px;
-    background: #0f172a;
-    border-radius: 10px;
-    object-fit: cover;
-}
-
-@media (max-width: 960px) {
-    .supervisor-controls {
-        flex-direction: column;
-        align-items: stretch;
-    }
-
-    .supervisor-controls > div {
-        width: 100%;
-    }
-
-    .progress-row {
-        grid-template-columns: 1fr;
-    }
-
-    .progress-scan-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .progress-scan-shell {
-        grid-template-columns: 1fr;
-    }
-
-    .progress-log-row {
-        grid-template-columns: 1fr;
-        gap: 6px;
-    }
-
-    #camera-preview {
-        height: 200px;
-    }
-
-    .summary-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .material-summary-grid {
+/* ================================
+   TABLET BREAKPOINT (min-width: 640px)
+   ================================ */
+@media (min-width: 640px) {
+    .supervisor-panel {
         grid-template-columns: repeat(2, 1fr);
     }
 
-    .material-form-grid {
-        grid-template-columns: 1fr;
+    .scan-action-buttons {
+        grid-template-columns: repeat(2, 1fr);
     }
 
-    .hourly-chart {
-        overflow-x: auto;
-        justify-content: flex-start;
+    .scan-actions-row {
+        flex-direction: row;
+        justify-content: flex-end;
+    }
+
+    .scan-actions-row .btn {
+        width: auto;
+    }
+
+    .camera-header {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .camera-actions .btn {
+        flex: none;
+    }
+
+    .progress-row {
+        grid-template-columns: 1fr 120px 120px;
+        gap: var(--space-md);
+        align-items: center;
+    }
+
+    .progress-scan-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .metrics-grid {
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+
+    .metrics-action {
+        grid-column: auto;
+        justify-content: flex-end;
+    }
+
+    .metrics-action .btn {
+        width: auto;
+    }
+
+    .progress-scan-shell {
+        grid-template-columns: 1.2fr 1fr;
+    }
+
+    .progress-modal-footer {
+        flex-direction: row;
+        justify-content: flex-end;
+    }
+
+    .progress-modal-footer .btn {
+        width: auto;
+    }
+
+    .progress-log-row {
+        grid-template-columns: 80px 1fr 80px;
+        gap: var(--space-md);
+    }
+
+    .material-form-grid {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        align-items: end;
+    }
+
+    .material-form-action {
+        justify-content: flex-end;
+    }
+
+    .material-form-action .btn {
+        width: auto;
+    }
+
+    .summary-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .material-summary-grid {
+        grid-template-columns: repeat(3, 1fr);
     }
 
     .hourly-bar-container {
-        min-width: 40px;
+        min-width: 44px;
+    }
+
+    .hourly-chart {
+        height: 180px;
+    }
+}
+
+/* ================================
+   DESKTOP BREAKPOINT (min-width: 1024px)
+   ================================ */
+@media (min-width: 1024px) {
+    .supervisor-header {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: flex-start;
+    }
+
+    .supervisor-controls {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: flex-end;
+    }
+
+    .supervisor-controls > div {
+        width: auto;
+    }
+
+    .supervisor-panel {
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: var(--space-lg);
+    }
+
+    #camera-preview,
+    #progress-camera-preview {
+        height: 240px;
+    }
+
+    .progress-modal-backdrop {
+        align-items: center;
+        padding: var(--space-xl);
+    }
+
+    .progress-modal {
+        width: min(92vw, 800px);
+        max-height: 85vh;
+        border-radius: var(--radius-xl);
+    }
+
+    .hourly-chart {
+        justify-content: center;
+        overflow-x: visible;
+    }
+
+    .hourly-bar-container {
+        flex: 1;
+        max-width: 60px;
+    }
+
+    .hourly-bar {
+        max-width: 50px;
+    }
+}
+
+/* ================================
+   LARGE DESKTOP (min-width: 1280px)
+   ================================ */
+@media (min-width: 1280px) {
+    .supervisor-panel {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .progress-modal {
+        width: min(92vw, 900px);
     }
 }

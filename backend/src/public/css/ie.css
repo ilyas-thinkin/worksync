@@ -1,57 +1,78 @@
+/* WorkSync IE Panel - Mobile-First Responsive CSS */
+
+/* ================================
+   IE Container
+   ================================ */
 .ie-container {
-    padding: 32px;
-    max-width: 1280px;
+    padding: var(--space-lg);
+    max-width: 1400px;
     margin: 0 auto;
 }
 
+/* ================================
+   IE Header
+   ================================ */
 .ie-header {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 20px;
-    margin-bottom: 24px;
+    flex-direction: column;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
 }
 
 .ie-actions {
     display: flex;
-    align-items: flex-end;
-    gap: 12px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: var(--space-md);
+    width: 100%;
+}
+
+.ie-actions > * {
+    width: 100%;
 }
 
 .ie-date {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--space-sm);
     font-size: 13px;
     color: var(--secondary);
 }
 
-.ie-date input {
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 14px;
+.ie-date label {
+    font-weight: 600;
 }
 
+.ie-date input {
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 16px;
+    min-height: var(--touch-target);
+}
+
+/* ================================
+   IE Table Header
+   ================================ */
 .ie-table-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-    gap: 12px;
+    flex-direction: column;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
 }
 
 .ie-table-header .search-box {
-    max-width: 320px;
+    width: 100%;
 }
 
+/* ================================
+   IE Pills & Status
+   ================================ */
 .ie-pill {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
-    border-radius: 999px;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-full);
     background: #eef2ff;
     color: #3730a3;
     font-size: 12px;
@@ -59,21 +80,364 @@
 }
 
 .ie-status {
-    min-width: 130px;
+    min-width: 100px;
 }
 
+/* ================================
+   IE Row Actions
+   ================================ */
 .ie-row-actions {
     display: flex;
-    gap: 8px;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
 }
 
 .ie-note {
-    width: 160px;
+    width: 100%;
+    max-width: 200px;
 }
 
-@media (max-width: 960px) {
+/* ================================
+   IE Line Card
+   ================================ */
+.ie-line-card {
+    background: var(--surface-strong);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    margin-bottom: var(--space-lg);
+}
+
+.ie-line-header {
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    color: white;
+    padding: var(--space-lg);
+}
+
+.ie-line-header h3 {
+    font-size: 18px;
+    font-family: var(--font-display);
+    margin-bottom: var(--space-xs);
+}
+
+.ie-line-header p {
+    font-size: 13px;
+    opacity: 0.9;
+}
+
+.ie-line-body {
+    padding: var(--space-lg);
+}
+
+/* ================================
+   IE Process Table
+   ================================ */
+.ie-process-table {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.ie-process-table table {
+    min-width: 700px;
+}
+
+.ie-process-table th,
+.ie-process-table td {
+    padding: var(--space-sm) var(--space-md);
+    font-size: 13px;
+}
+
+.ie-process-table .operation-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.ie-process-table .sah-value {
+    font-family: var(--font-display);
+    font-weight: 600;
+    color: var(--primary);
+}
+
+/* ================================
+   IE Metrics Row
+   ================================ */
+.ie-metrics-row {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-md);
+    padding: var(--space-lg);
+    background: var(--light);
+    border-bottom: 1px solid var(--border);
+}
+
+.ie-metric-item {
+    text-align: center;
+}
+
+.ie-metric-item .value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--primary);
+    font-family: var(--font-display);
+}
+
+.ie-metric-item .label {
+    font-size: 11px;
+    color: var(--secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* ================================
+   IE Form Section
+   ================================ */
+.ie-form-section {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+    padding: var(--space-lg);
+    background: var(--light);
+    border-radius: var(--radius);
+    margin-bottom: var(--space-lg);
+}
+
+.ie-form-section .form-group {
+    margin-bottom: 0;
+}
+
+.ie-form-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    justify-content: flex-end;
+}
+
+.ie-form-actions .btn {
+    width: 100%;
+}
+
+/* ================================
+   IE Summary Cards
+   ================================ */
+.ie-summary-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+}
+
+.ie-summary-card {
+    background: var(--surface-strong);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+}
+
+.ie-summary-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.ie-summary-icon svg {
+    width: 24px;
+    height: 24px;
+    color: white;
+}
+
+.ie-summary-info h4 {
+    font-size: 22px;
+    font-weight: 700;
+    font-family: var(--font-display);
+    color: var(--text);
+}
+
+.ie-summary-info p {
+    font-size: 13px;
+    color: var(--secondary);
+}
+
+/* ================================
+   IE Daily Plan
+   ================================ */
+.ie-daily-plan {
+    background: var(--surface-strong);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.ie-daily-plan-header {
+    padding: var(--space-lg);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.ie-daily-plan-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.ie-daily-plan-body {
+    padding: var(--space-lg);
+}
+
+.ie-plan-form {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+}
+
+.ie-plan-form .btn {
+    width: 100%;
+}
+
+/* ================================
+   IE Tabs
+   ================================ */
+.ie-tabs {
+    display: flex;
+    gap: var(--space-xs);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 1px;
+    margin-bottom: var(--space-lg);
+    border-bottom: 1px solid var(--border);
+}
+
+.ie-tab {
+    padding: var(--space-md) var(--space-lg);
+    min-height: var(--touch-target);
+    border: none;
+    background: none;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--secondary);
+    cursor: pointer;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all 0.2s ease;
+}
+
+.ie-tab:active {
+    color: var(--dark);
+}
+
+.ie-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+/* ================================
+   TABLET BREAKPOINT (min-width: 640px)
+   ================================ */
+@media (min-width: 640px) {
+    .ie-container {
+        padding: var(--space-xl);
+    }
+
+    .ie-actions {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: flex-end;
+    }
+
+    .ie-actions > * {
+        width: auto;
+    }
+
+    .ie-table-header {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .ie-table-header .search-box {
+        max-width: 300px;
+    }
+
+    .ie-metrics-row {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .ie-form-section {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .ie-form-actions {
+        flex-direction: row;
+    }
+
+    .ie-form-actions .btn {
+        width: auto;
+    }
+
+    .ie-summary-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .ie-daily-plan-header {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .ie-plan-form {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        align-items: end;
+    }
+
+    .ie-plan-form .btn {
+        width: auto;
+    }
+}
+
+/* ================================
+   DESKTOP BREAKPOINT (min-width: 1024px)
+   ================================ */
+@media (min-width: 1024px) {
+    .ie-container {
+        padding: var(--space-2xl);
+    }
+
     .ie-header {
-        flex-direction: column;
+        flex-direction: row;
+        justify-content: space-between;
         align-items: flex-start;
+    }
+
+    .ie-metrics-row {
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    }
+
+    .ie-form-section {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .ie-summary-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+
+    .ie-note {
+        width: 160px;
+    }
+}
+
+/* ================================
+   LARGE DESKTOP (min-width: 1280px)
+   ================================ */
+@media (min-width: 1280px) {
+    .ie-summary-grid {
+        grid-template-columns: repeat(4, 1fr);
     }
 }

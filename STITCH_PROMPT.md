@@ -1,8 +1,3 @@
-# Google Stitch Prompt for WorkSync Factory Production Tracking System
-
-Use the following detailed prompts in Google Stitch (stitch.withgoogle.com) to generate responsive web app UI designs for the WorkSync system.
-
----
 
 ## MASTER PROMPT (Full System Overview)
 
@@ -1503,8 +1498,3 @@ CREATE TABLE line_daily_metrics (
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-*Generated for WorkSync Factory Production Tracking System*
-*Use at: stitch.withgoogle.com*
-*Last Updated: February 2026*
