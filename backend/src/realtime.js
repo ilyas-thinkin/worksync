@@ -2,6 +2,7 @@ const clients = new Set();
 const qr = require('./utils/qr');
 
 let dbListenerStarted = false;
+let dbClient = null;
 
 function handleEvents(req, res) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -30,10 +31,29 @@ setInterval(() => {
     }
 }, 25000);
 
+function closeAllConnections() {
+    // Close all SSE client connections
+    for (const res of clients) {
+        try {
+            res.end();
+        } catch (err) {
+            // ignore
+        }
+    }
+    clients.clear();
+
+    // Close database listener
+    if (dbClient) {
+        dbClient.end().catch(() => {});
+        dbClient = null;
+    }
+}
+
 module.exports = {
     handleEvents,
     broadcast,
-    startDbListener
+    startDbListener,
+    closeAllConnections
 };
 
 function startDbListener() {
@@ -41,7 +61,7 @@ function startDbListener() {
     dbListenerStarted = true;
 
     const { Client } = require('pg');
-    const client = new Client({
+    dbClient = new Client({
         host: process.env.DB_HOST || '127.0.0.1',
         port: process.env.DB_PORT || 5432,
         database: process.env.DB_NAME || 'worksync_db',
@@ -49,12 +69,12 @@ function startDbListener() {
         password: process.env.DB_PASSWORD || 'worksync_secure_2026',
     });
 
-    client.on('error', (err) => {
+    dbClient.on('error', (err) => {
         console.error('DB notify listener error:', err.message);
     });
 
-    client.connect()
-        .then(() => client.query('LISTEN data_change'))
+    dbClient.connect()
+        .then(() => dbClient.query('LISTEN data_change'))
         .then(() => {
             console.log('DB notify listener connected (LISTEN data_change)');
         })
@@ -62,7 +82,7 @@ function startDbListener() {
             console.error('Failed to start DB notify listener:', err.message);
         });
 
-    client.on('notification', (msg) => {
+    dbClient.on('notification', (msg) => {
         if (msg.channel !== 'data_change') return;
         try {
             const payload = msg.payload ? JSON.parse(msg.payload) : {};

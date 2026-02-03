@@ -3,6 +3,12 @@ const router = express.Router();
 const pool = require('../config/db.config');
 const realtime = require('../realtime');
 const ExcelJS = require('exceljs');
+const { validateBody, validateQuery, sanitizeInputs, schemas } = require('../middleware/validation');
+const { logAudit: enhancedLogAudit, AuditAction, getAuditSummary, searchAuditLogs } = require('../middleware/audit');
+const { withTransaction, withRetry, lockForUpdate } = require('../middleware/transaction');
+
+// Apply sanitization to all routes
+router.use(sanitizeInputs);
 
 const getSettingValue = async (key, fallback) => {
     const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -37,16 +43,16 @@ const isProductLocked = async (productId, workDate) => {
     return result.rowCount > 0;
 };
 
-const logAudit = async (tableName, recordId, action, newValues = null, oldValues = null) => {
-    try {
-        await pool.query(
-            `INSERT INTO audit_logs (table_name, record_id, action, old_values, new_values)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [tableName, recordId, action, oldValues, newValues]
-        );
-    } catch (err) {
-        // audit failures should not block main flow
-    }
+// Enhanced audit logging wrapper for backward compatibility
+const logAudit = async (tableName, recordId, action, newValues = null, oldValues = null, req = null) => {
+    await enhancedLogAudit({
+        tableName,
+        recordId,
+        action,
+        newValues,
+        oldValues,
+        req
+    });
 };
 
 // ============================================================================
@@ -431,6 +437,35 @@ router.get('/audit-logs', async (req, res) => {
             [limit]
         );
         res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/audit-logs/summary', async (req, res) => {
+    const { days = 7 } = req.query;
+    try {
+        const result = await getAuditSummary(parseInt(days));
+        res.json({ success: true, data: result });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/audit-logs/search', async (req, res) => {
+    const { table_name, action, user_id, start_date, end_date, ip_address, limit = 100, offset = 0 } = req.query;
+    try {
+        const result = await searchAuditLogs({
+            tableName: table_name,
+            action,
+            userId: user_id ? parseInt(user_id) : null,
+            startDate: start_date,
+            endDate: end_date,
+            ipAddress: ip_address,
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+        });
+        res.json({ success: true, data: result });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -944,7 +979,7 @@ router.get('/lines', async (req, res) => {
     }
 });
 
-router.post('/lines', async (req, res) => {
+router.post('/lines', validateBody(schemas.line.partial()), async (req, res) => {
     const { line_code, line_name, hall_location, current_product_id, target_units, efficiency } = req.body;
     try {
         const result = await pool.query(
@@ -1325,7 +1360,7 @@ router.get('/employees/:id/work-options', async (req, res) => {
     }
 });
 
-router.post('/employees', async (req, res) => {
+router.post('/employees', validateBody(schemas.employee.partial()), async (req, res) => {
     const { emp_code, emp_name, designation, default_line_id, manpower_factor } = req.body;
     try {
         const result = await pool.query(
@@ -1412,7 +1447,7 @@ router.get('/products/:id', async (req, res) => {
     }
 });
 
-router.post('/products', async (req, res) => {
+router.post('/products', validateBody(schemas.product.partial()), async (req, res) => {
     const { product_code, product_name, product_description, category, line_ids } = req.body;
     const normalizedLineIds = Array.isArray(line_ids)
         ? line_ids.map((id) => parseInt(id, 10)).filter(Boolean)
@@ -1533,7 +1568,7 @@ router.get('/operations/categories', async (req, res) => {
     }
 });
 
-router.post('/operations', async (req, res) => {
+router.post('/operations', validateBody(schemas.operation.partial()), async (req, res) => {
     const { operation_code, operation_name, operation_description, operation_category } = req.body;
     try {
         const result = await pool.query(

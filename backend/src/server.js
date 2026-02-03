@@ -232,3 +232,68 @@ function setupSystemdNotify() {
     setInterval(() => send(['--watchdog']), intervalMs).unref();
   }
 }
+
+// ============================================================================
+// GRACEFUL SHUTDOWN HANDLING (PM2 Cluster Mode)
+// ============================================================================
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`\n⚠️  Received ${signal}. Starting graceful shutdown...`);
+
+  // Stop accepting new connections
+  httpServer.close((err) => {
+    if (err) {
+      console.error('Error closing HTTP server:', err);
+    } else {
+      console.log('✅ HTTP server closed');
+    }
+  });
+
+  // Close database pool
+  try {
+    const pool = require('./config/db.config');
+    await pool.end();
+    console.log('✅ Database pool closed');
+  } catch (err) {
+    console.error('Error closing database pool:', err);
+  }
+
+  // Close SSE connections
+  try {
+    realtime.closeAllConnections();
+    console.log('✅ SSE connections closed');
+  } catch (err) {
+    // realtime may not have closeAllConnections
+  }
+
+  // Give some time for cleanup
+  setTimeout(() => {
+    console.log('👋 Shutdown complete. Goodbye!');
+    process.exit(0);
+  }, 1000);
+}
+
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions (log and exit)
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err);
+  gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// PM2 graceful reload
+process.on('message', (msg) => {
+  if (msg === 'shutdown') {
+    gracefulShutdown('PM2 shutdown');
+  }
+});

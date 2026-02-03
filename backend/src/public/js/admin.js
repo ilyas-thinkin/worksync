@@ -1548,22 +1548,31 @@ async function viewProductProcess(productId) {
 }
 
 function setupRealtime() {
-    const source = new EventSource('/events');
-    source.addEventListener('data_change', (event) => {
-        let payload = {};
-        try {
-            payload = JSON.parse(event.data || '{}');
-        } catch (err) {
-            return;
-        }
-
-        scheduleRealtimeRefresh(payload);
-    });
-    source.onerror = () => {
-        source.close();
-        setTimeout(setupRealtime, 3000);
-    };
-    window.realtimeSource = source;
+    // Use SSE Manager if available, fallback to direct EventSource
+    if (typeof SSEManager !== 'undefined') {
+        SSEManager.init('/events');
+        SSEManager.on('data_change', (data) => {
+            scheduleRealtimeRefresh(data || {});
+        });
+        window.realtimeSource = SSEManager;
+    } else {
+        // Fallback for older browsers
+        const source = new EventSource('/events');
+        source.addEventListener('data_change', (event) => {
+            let payload = {};
+            try {
+                payload = JSON.parse(event.data || '{}');
+            } catch (err) {
+                return;
+            }
+            scheduleRealtimeRefresh(payload);
+        });
+        source.onerror = () => {
+            source.close();
+            setTimeout(setupRealtime, 3000);
+        };
+        window.realtimeSource = source;
+    }
 }
 
 function scheduleRealtimeRefresh(payload) {

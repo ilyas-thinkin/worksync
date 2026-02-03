@@ -1383,14 +1383,8 @@ async function loadProductionStats() {
 }
 
 function setupRealtime() {
-    const source = new EventSource('/events');
-    source.addEventListener('data_change', (event) => {
-        let payload = {};
-        try {
-            payload = JSON.parse(event.data || '{}');
-        } catch (err) {
-            return;
-        }
+    const handleDataChange = (payload) => {
+        if (!payload) return;
         if (payload.entity === 'attendance') {
             const active = document.querySelector('.nav-link.active')?.dataset.section;
             if (active === 'scan') {
@@ -1406,11 +1400,29 @@ function setupRealtime() {
                 loadMaterialData();
             }
         }
-    });
-    source.onerror = () => {
-        source.close();
-        setTimeout(setupRealtime, 3000);
     };
+
+    // Use SSE Manager if available
+    if (typeof SSEManager !== 'undefined') {
+        SSEManager.init('/events');
+        SSEManager.on('data_change', handleDataChange);
+    } else {
+        // Fallback to direct EventSource
+        const source = new EventSource('/events');
+        source.addEventListener('data_change', (event) => {
+            let payload = {};
+            try {
+                payload = JSON.parse(event.data || '{}');
+            } catch (err) {
+                return;
+            }
+            handleDataChange(payload);
+        });
+        source.onerror = () => {
+            source.close();
+            setTimeout(setupRealtime, 3000);
+        };
+    }
 }
 
 // ============================================================================

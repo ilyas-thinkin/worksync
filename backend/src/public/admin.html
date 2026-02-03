@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/admin.css">
+    <link rel="stylesheet" href="css/offline.css">
 </head>
 <body>
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
@@ -133,6 +134,10 @@
     <!-- Toast Container -->
     <div class="toast-container" id="toast-container"></div>
 
+    <script src="js/offline-db.js"></script>
+    <script src="js/offline-sync.js"></script>
+    <script src="js/sw-register.js"></script>
+    <script src="js/sse-manager.js"></script>
     <script src="js/admin.js"></script>
 </body>
 </html>
