@@ -1872,3 +1872,195 @@ Returns metrics summary for all active lines.
 - `/home/worksync/worksync/backend/src/public/js/supervisor.js`
 - `/home/worksync/worksync/backend/src/public/js/management.js`
 - `/home/worksync/worksync/scripts/add_qa_output.sql`
+
+---
+
+## 30. Infrastructure & Stability Improvements - Phase 1 (February 3, 2026)
+
+### PM2 Process Manager (Cluster Mode)
+- Switched from systemd to PM2 for process management
+- Configured **4 cluster instances** (one per CPU core on Raspberry Pi 5)
+- Features enabled:
+  - Auto-restart on crash with exponential backoff
+  - Memory limit monitoring (400MB per instance)
+  - Log rotation via `pm2-logrotate` module
+  - Graceful shutdown handling for zero-downtime deployments
+  - Boot persistence via `pm2 startup systemd`
+
+**Files Created:**
+- `/home/worksync/worksync/backend/ecosystem.config.js` - PM2 ecosystem configuration
+- `/home/worksync/worksync/scripts/setup-pm2.sh` - PM2 setup script
+
+**Server Updates:**
+- Added graceful shutdown handlers (`SIGTERM`, `SIGINT`, `uncaughtException`)
+- Added PM2 shutdown message listener
+- Updated `realtime.js` with `closeAllConnections()` for clean SSE shutdown
+
+### Database Performance Indexing
+- Added **16 new performance indexes** for common query patterns
+- Migration: `/home/worksync/worksync/backend/src/migrations/007_add_performance_indexes.sql`
+- Indexes cover:
+  - `line_process_hourly_progress` (work_date, line+date, employee)
+  - `employee_attendance` (date, status)
+  - `process_assignment_history` (start_time, employee, open assignments)
+  - `line_daily_plans` (product+date)
+  - `line_daily_metrics` (line+date)
+  - `material_transactions` (line+date+type)
+  - `production_day_locks` (date)
+  - `line_shift_closures` (date)
+  - `process_material_wip` (line+process+date)
+  - `audit_logs` (user, table)
+- Total indexes increased from 57 to 73
+
+### Offline/IndexedDB Sync with Service Workers
+- Implemented complete offline support infrastructure
+
+**Files Created:**
+- `/home/worksync/worksync/backend/src/public/sw.js` - Service Worker for static caching
+- `/home/worksync/worksync/backend/src/public/js/offline-db.js` - IndexedDB wrapper
+- `/home/worksync/worksync/backend/src/public/js/offline-sync.js` - Sync queue manager
+- `/home/worksync/worksync/backend/src/public/js/sw-register.js` - SW registration
+- `/home/worksync/worksync/backend/src/public/css/offline.css` - Offline indicator styles
+
+**Features:**
+- Static asset caching (stale-while-revalidate)
+- API response caching for read operations
+- Offline action queueing with background sync
+- Visual offline/online status indicator
+- Auto-reconnect on network recovery
+
+### Input Validation (Zod Schemas)
+- Installed `zod` validation library
+- Created comprehensive validation schemas for all entities
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/middleware/validation.js`
+
+**Features:**
+- `validateBody()`, `validateQuery()`, `validateParams()` middleware factories
+- `sanitizeInputs()` middleware for XSS protection
+- Schemas for: users, lines, employees, products, operations, processes, attendance, materials, etc.
+- Applied validation to critical POST routes (lines, employees, products, operations)
+
+### Enhanced Audit Logging System
+- Extended audit_logs table with additional context columns
+- Migration: `/home/worksync/worksync/backend/src/migrations/008_enhanced_audit_logging.sql`
+
+**New Columns:**
+- `ip_address` - Client IP tracking
+- `user_agent` - Browser/client identification
+- `session_id` - Session tracking
+- `request_path` - API endpoint called
+- `http_method` - HTTP method used
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/middleware/audit.js`
+
+**Features:**
+- Enhanced `logAudit()` function with full request context
+- `auditMiddleware()` for route-level auditing
+- `getAuditHistory()`, `getAuditSummary()`, `searchAuditLogs()` functions
+- Database views: `v_audit_summary`, `v_recent_critical_changes`
+- New API endpoints: `/api/audit-logs/summary`, `/api/audit-logs/search`
+
+### Automated Database Backups
+- Created comprehensive backup script with retention policy
+
+**File Created:**
+- `/home/worksync/worksync/scripts/db-backup.sh`
+
+**Features:**
+- Daily backups with 7-day retention
+- Weekly backups with 4-week retention
+- Monthly backups with 3-month retention
+- Schema-only backup option
+- Backup verification with gzip integrity check
+- Cron job: Daily at 2:00 AM
+
+**Cron Configuration:**
+```bash
+0 2 * * * /home/worksync/worksync/scripts/db-backup.sh >> /home/worksync/worksync/logs/backup.log 2>&1
+```
+
+### Raspberry Pi Hardware Watchdog
+- Created setup script for BCM2835 hardware watchdog
+
+**File Created:**
+- `/home/worksync/worksync/scripts/setup-watchdog.sh`
+
+**Configuration:**
+- 15-second timeout
+- Load average monitoring
+- Temperature monitoring (85°C max)
+- Memory monitoring
+- Auto-reboot on system hang
+
+**Note:** Run with `sudo` to enable watchdog
+
+### SSE Reconnection with Exponential Backoff
+- Created robust SSE connection manager
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/public/js/sse-manager.js`
+
+**Features:**
+- Exponential backoff reconnection (1s base, 30s max)
+- Jitter for reconnection timing
+- Max 50 reconnection attempts
+- Visual connection status indicator (Live/Reconnecting/Disconnected)
+- Auto-reconnect on page visibility change
+- Auto-reconnect on network recovery
+- Updated `admin.js` and `supervisor.js` to use SSE Manager
+
+### Database Transaction Helpers
+- Created transaction utilities for ACID compliance
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/middleware/transaction.js`
+
+**Features:**
+- `withTransaction()` - Auto commit/rollback wrapper
+- `withRetry()` - Retry on serialization failures
+- `withIsolation()` - Custom isolation levels
+- `lockForUpdate()` - Pessimistic row locking
+- Savepoint support for partial rollback
+
+### HTML Files Updated
+All HTML files updated to include offline and SSE scripts:
+- `index.html`
+- `admin.html`
+- `ie.html`
+- `supervisor.html`
+- `management.html`
+
+### Git Commit
+```
+Commit: f16a650
+Message: Add stability and infrastructure improvements (Phase 1)
+Files: 28 files changed, 4,181 insertions(+), 50 deletions(-)
+```
+
+---
+
+## Remaining Tasks (Phase 2 - To Be Completed)
+
+### Infrastructure
+- [ ] Configure SD card protection (read-only mode + USB SSD)
+
+### Frontend Improvements
+- [ ] Implement optimistic UI updates
+- [ ] Improve UX with big buttons and visual feedback for shop floor
+
+### Backend Improvements
+- [ ] Implement streaming Excel exports (for large datasets)
+- [ ] Add strict RBAC middleware (role-based access control)
+- [ ] Implement session timeout and security enhancements
+
+### Feature Additions
+- [ ] Add defect and rework tracking
+- [ ] Add downtime reason codes
+
+---
+
+**Last Updated:** February 3, 2026
+**Status:** Phase 1 Infrastructure Complete (9/17 tasks)
