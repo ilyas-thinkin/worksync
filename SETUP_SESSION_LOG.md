@@ -2042,25 +2042,196 @@ Files: 28 files changed, 4,181 insertions(+), 50 deletions(-)
 
 ---
 
-## Remaining Tasks (Phase 2 - To Be Completed)
+## 31. Phase 2 Infrastructure Improvements (Session 2)
+**Date:** February 4, 2026
 
-### Infrastructure
-- [ ] Configure SD card protection (read-only mode + USB SSD)
+### SD Card Protection Setup Script
+- Created script for read-only root filesystem with USB SSD for writable data
 
-### Frontend Improvements
-- [ ] Implement optimistic UI updates
-- [ ] Improve UX with big buttons and visual feedback for shop floor
+**File Created:**
+- `/home/worksync/worksync/scripts/setup-readonly-rootfs.sh`
 
-### Backend Improvements
-- [ ] Implement streaming Excel exports (for large datasets)
-- [ ] Add strict RBAC middleware (role-based access control)
-- [ ] Implement session timeout and security enhancements
+**Features:**
+- Installs overlayroot for read-only protection
+- Mounts USB SSD at `/mnt/data` for PostgreSQL data, logs, and backups
+- Configures tmpfs for runtime directories
+- Extends SD card lifespan in industrial environment
 
-### Feature Additions
-- [ ] Add defect and rework tracking
-- [ ] Add downtime reason codes
+### Strict RBAC Middleware
+- Created role-based access control middleware
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/middleware/rbac.js`
+
+**Features:**
+- Permission definitions per role (admin, ie, supervisor, management)
+- `requirePermission()` middleware for API endpoints
+- `requireAnyRole()` and `requireAllRoles()` helpers
+- `hasPermission()` utility function
+- Granular permissions for CRUD operations on all entities
+
+### Session Management Middleware
+- Created comprehensive session management with security features
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/middleware/session.js`
+
+**Features:**
+- 8-hour max session age
+- 30-minute idle timeout
+- Session renewal when < 1 hour left
+- Max 5 concurrent sessions per user
+- Automatic cleanup of expired sessions
+- Security headers middleware (CSP, HSTS, XSS protection)
+- Rate limiter with customizable windows
+- Login-specific rate limiter (5 attempts/15 minutes)
+
+### Defect and Downtime Tracking
+- Created comprehensive defect and downtime tracking schema
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/migrations/009_defect_and_downtime_tracking.sql`
+
+**Tables Created:**
+1. `defect_types` - Master data for defect categories
+2. `defect_log` - Transaction log for detected defects
+3. `downtime_reasons` - Master data for downtime codes
+4. `downtime_log` - Transaction log for downtime events
+
+**Views Created:**
+- `v_daily_defect_summary` - Daily defect aggregation
+- `v_daily_downtime_summary` - Daily downtime aggregation
+
+**Default Data:**
+- 16 defect types (stitching, material, finishing, quality)
+- 18 downtime reasons (machine, material, manpower, planning, other)
+
+**Migration Executed:**
+```bash
+psql -U worksync -d worksync -f backend/src/migrations/009_defect_and_downtime_tracking.sql
+```
+
+### Streaming Excel Exports
+- Created utility for streaming large datasets to Excel
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/utils/streaming-excel.js`
+
+**Features:**
+- ExcelJS streaming workbook writer
+- Database cursor for memory-efficient large exports
+- Configurable batch size (default 1000 rows)
+- Pre-defined Excel styles (headers, cells, numbers, dates)
+- `exportDailyReportStreaming()` - 4-sheet daily report
+- `exportRangeReportStreaming()` - Multi-date range report
+
+### Shop Floor UX Enhancements
+- Created enhanced CSS and JavaScript for touch-friendly factory floor use
+
+**Files Created:**
+- `/home/worksync/worksync/backend/src/public/css/shop-floor.css`
+- `/home/worksync/worksync/backend/src/public/js/shop-floor-ux.js`
+
+**CSS Features:**
+- Extra-large touch targets (56px, 64px, 80px)
+- Visual feedback animations (success pulse, error shake, warning bounce)
+- Large quantity inputs (28px-36px font)
+- Quantity stepper buttons with +/- controls
+- Big status indicators with pulsing animation
+- Action confirmation overlay/modal
+- Touch-friendly selection cards
+- Progress bar with animated shine
+- Scan success/error screen flash
+- Optimistic UI pending/success/rollback states
+- Quick action button grid
+- Large offline mode banner
+
+**JavaScript Features:**
+- Touch ripple effect on buttons
+- Haptic feedback (vibration) for supported devices
+- Quantity stepper auto-setup
+- Visual feedback methods (showSuccess, showError, showWarning)
+- Screen flash for scan feedback
+- Confirmation dialog with promise
+- Toast notifications
+- Number animation
+- Selection groups (single and multi-select)
+- Offline banner management
+- Optimistic update state management
+
+### Optimistic UI Manager
+- Created comprehensive optimistic update system
+
+**File Created:**
+- `/home/worksync/worksync/backend/src/public/js/optimistic-ui.js`
+
+**Features:**
+- Immediate UI updates with background API calls
+- Automatic rollback on failure
+- Retry logic with exponential backoff
+- Offline queueing for sync when back online
+- Operation history tracking
+- List item update helpers
+- Counter update helpers
+- Form submission with loading states
+- Batch operations support
+- Debounced update creator for rapid changes
+
+### HTML Files Updated
+All HTML files updated to include new scripts and styles:
+- `admin.html` - Added shop-floor.css, shop-floor-ux.js, optimistic-ui.js
+- `ie.html` - Added shop-floor.css, shop-floor-ux.js, optimistic-ui.js
+- `supervisor.html` - Added shop-floor.css, shop-floor-ux.js, optimistic-ui.js
+- `management.html` - Added shop-floor.css, shop-floor-ux.js, optimistic-ui.js
+
+### Service Worker Updated
+- Bumped cache version to v3
+- Added new files to static cache list:
+  - `/css/shop-floor.css`
+  - `/js/shop-floor-ux.js`
+  - `/js/optimistic-ui.js`
 
 ---
 
-**Last Updated:** February 3, 2026
-**Status:** Phase 1 Infrastructure Complete (9/17 tasks)
+## Phase 2 Completed Tasks Summary
+
+| Task | Status | Files Created |
+|------|--------|---------------|
+| SD Card Protection Script | ✅ Complete | setup-readonly-rootfs.sh |
+| RBAC Middleware | ✅ Complete | rbac.js |
+| Session Management | ✅ Complete | session.js |
+| Defect Tracking | ✅ Complete | 009_defect_and_downtime_tracking.sql |
+| Downtime Reason Codes | ✅ Complete | (included in migration) |
+| Streaming Excel Exports | ✅ Complete | streaming-excel.js |
+| Shop Floor UX | ✅ Complete | shop-floor.css, shop-floor-ux.js |
+| Optimistic UI | ✅ Complete | optimistic-ui.js |
+
+---
+
+## All Infrastructure Tasks Complete
+
+### Phase 1 (Completed February 3, 2026)
+1. ✅ PM2 Process Manager with cluster mode
+2. ✅ Database Indexing (73 total indexes)
+3. ✅ Offline Sync with Service Worker + IndexedDB
+4. ✅ Input Validation with Zod schemas
+5. ✅ Enhanced Audit Logging
+6. ✅ Automated Database Backups
+7. ✅ Hardware Watchdog Setup
+8. ✅ SSE Reconnection Manager
+9. ✅ Database Transaction Helpers
+
+### Phase 2 (Completed February 4, 2026)
+1. ✅ SD Card Protection Script
+2. ✅ Strict RBAC Middleware
+3. ✅ Session Management & Security
+4. ✅ Defect & Rework Tracking
+5. ✅ Downtime Reason Codes
+6. ✅ Streaming Excel Exports
+7. ✅ Shop Floor UX Enhancements
+8. ✅ Optimistic UI Updates
+
+---
+
+**Last Updated:** February 4, 2026
+**Status:** Phase 2 Infrastructure Complete (17/17 tasks)

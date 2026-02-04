@@ -14,7 +14,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const AUTH_SECRET = process.env.AUTH_SECRET || crypto.randomBytes(32).toString('hex');
+const AUTH_SECRET = process.env.AUTH_SECRET || process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const AUTH_COOKIE = 'worksync_auth';
 const ROLE_PASSWORDS = {
   admin: 'admin1234',

@@ -331,7 +331,7 @@ body::before {
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
     margin-bottom: var(--space-xl);
-    overflow: hidden;
+    overflow: visible;
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
 }
@@ -1016,6 +1016,7 @@ textarea {
    ================================ */
 .employee-dropdown {
     position: relative;
+    display: inline-block;
 }
 
 .employee-dropdown .dropdown-toggle {
@@ -1023,20 +1024,27 @@ textarea {
     cursor: pointer;
     background: var(--surface-strong);
     min-width: 180px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.employee-dropdown .dropdown-toggle:hover {
+    border-color: var(--primary);
 }
 
 .employee-dropdown .dropdown-panel {
     display: none;
     position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    z-index: 30;
-    width: 100%;
-    min-width: 240px;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 9999;
+    width: 280px;
+    max-width: 90vw;
     background: var(--surface-strong);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    box-shadow: var(--shadow-lg);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
     padding: var(--space-sm);
 }
 
@@ -1046,14 +1054,17 @@ textarea {
 
 .employee-dropdown .dropdown-search {
     margin-bottom: var(--space-sm);
+    width: 100%;
 }
 
 .employee-dropdown .dropdown-options {
-    max-height: 200px;
-    overflow: auto;
+    max-height: 250px;
+    overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
+    -webkit-overflow-scrolling: touch;
 }
 
 .employee-dropdown .dropdown-option {
@@ -1067,17 +1078,36 @@ textarea {
     min-height: var(--touch-target);
     display: flex;
     align-items: center;
-    transition: border-color 0.2s ease;
+    transition: all 0.15s ease;
+    width: 100%;
+}
+
+.employee-dropdown .dropdown-option:hover {
+    border-color: var(--primary);
+    background: rgba(15, 118, 110, 0.05);
 }
 
 .employee-dropdown .dropdown-option:active {
     border-color: var(--primary);
-    background: rgba(15, 118, 110, 0.05);
+    background: rgba(15, 118, 110, 0.1);
 }
 
 .employee-dropdown .dropdown-option.disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+/* Allow dropdown to overflow table */
+.table-container {
+    overflow: visible;
+}
+
+.line-process-table {
+    overflow: visible;
+}
+
+td {
+    overflow: visible;
 }
 
 /* ================================

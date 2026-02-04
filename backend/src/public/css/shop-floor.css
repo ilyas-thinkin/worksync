@@ -1,0 +1,869 @@
+/* WorkSync Shop Floor UX - Enhanced Touch & Visual Feedback */
+
+/* ================================
+   SHOP FLOOR SPECIFIC VARIABLES
+   ================================ */
+:root {
+    /* Larger touch targets for gloved hands */
+    --touch-target-xl: 56px;
+    --touch-target-xxl: 64px;
+    --touch-target-giant: 80px;
+
+    /* High contrast colors */
+    --shop-success: #059669;
+    --shop-success-bg: #d1fae5;
+    --shop-success-border: #10b981;
+    --shop-danger: #dc2626;
+    --shop-danger-bg: #fee2e2;
+    --shop-danger-border: #ef4444;
+    --shop-warning: #d97706;
+    --shop-warning-bg: #fef3c7;
+    --shop-warning-border: #f59e0b;
+    --shop-info: #0284c7;
+    --shop-info-bg: #e0f2fe;
+    --shop-info-border: #0ea5e9;
+
+    /* Animation timings */
+    --feedback-duration: 200ms;
+    --pulse-duration: 1.5s;
+}
+
+/* ================================
+   SHOP FLOOR MODE TOGGLE
+   ================================ */
+body.shop-floor-mode {
+    --touch-target: var(--touch-target-xl);
+    --touch-target-lg: var(--touch-target-xxl);
+}
+
+/* ================================
+   EXTRA-LARGE BUTTONS FOR SHOP FLOOR
+   ================================ */
+.btn-xl {
+    padding: var(--space-lg) var(--space-2xl);
+    min-height: var(--touch-target-xl);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+.btn-xxl {
+    padding: var(--space-xl) var(--space-2xl);
+    min-height: var(--touch-target-xxl);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.btn-giant {
+    padding: var(--space-xl) var(--space-2xl);
+    min-height: var(--touch-target-giant);
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    width: 100%;
+    border-radius: var(--radius-lg);
+}
+
+/* Shop floor action buttons */
+.shop-btn-action {
+    position: relative;
+    overflow: hidden;
+    min-height: var(--touch-target-xxl);
+    font-size: 18px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.shop-btn-action::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    transition: width 0.3s ease, height 0.3s ease;
+}
+
+.shop-btn-action:active::after {
+    width: 200%;
+    height: 200%;
+}
+
+/* ================================
+   VISUAL FEEDBACK STATES
+   ================================ */
+/* Success state with animation */
+.feedback-success {
+    animation: successPulse 0.5s ease;
+    background-color: var(--shop-success-bg) !important;
+    border-color: var(--shop-success-border) !important;
+}
+
+@keyframes successPulse {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+    50% { transform: scale(1.02); box-shadow: 0 0 0 15px rgba(16, 185, 129, 0); }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+/* Error state with shake animation */
+.feedback-error {
+    animation: errorShake 0.4s ease;
+    background-color: var(--shop-danger-bg) !important;
+    border-color: var(--shop-danger-border) !important;
+}
+
+@keyframes errorShake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-10px); }
+    40% { transform: translateX(10px); }
+    60% { transform: translateX(-8px); }
+    80% { transform: translateX(8px); }
+}
+
+/* Warning state */
+.feedback-warning {
+    animation: warningBounce 0.4s ease;
+    background-color: var(--shop-warning-bg) !important;
+    border-color: var(--shop-warning-border) !important;
+}
+
+@keyframes warningBounce {
+    0%, 100% { transform: translateY(0); }
+    25% { transform: translateY(-5px); }
+    50% { transform: translateY(0); }
+    75% { transform: translateY(-3px); }
+}
+
+/* Loading/Processing state */
+.feedback-loading {
+    position: relative;
+    pointer-events: none;
+    opacity: 0.8;
+}
+
+.feedback-loading::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.4) 50%,
+        transparent 100%
+    );
+    animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+/* ================================
+   LARGE NUMBER INPUT FOR QUANTITIES
+   ================================ */
+.input-quantity {
+    font-size: 28px;
+    font-weight: 700;
+    font-family: var(--font-display);
+    text-align: center;
+    min-height: var(--touch-target-xl);
+    padding: var(--space-md) var(--space-lg);
+    border-radius: var(--radius-lg);
+    border: 2px solid var(--border);
+    background: var(--surface-strong);
+    transition: border-color var(--feedback-duration) ease,
+                box-shadow var(--feedback-duration) ease;
+}
+
+.input-quantity:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.2);
+}
+
+.input-quantity.input-success {
+    border-color: var(--shop-success-border);
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.2);
+}
+
+.input-quantity.input-error {
+    border-color: var(--shop-danger-border);
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2);
+}
+
+/* Extra-large quantity input */
+.input-quantity-xl {
+    font-size: 36px;
+    min-height: var(--touch-target-xxl);
+    padding: var(--space-lg) var(--space-xl);
+}
+
+/* Quantity input with +/- buttons */
+.quantity-stepper {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.quantity-stepper .input-quantity {
+    flex: 1;
+    min-width: 100px;
+}
+
+.quantity-stepper-btn {
+    width: var(--touch-target-xl);
+    height: var(--touch-target-xl);
+    border-radius: var(--radius);
+    border: 2px solid var(--border);
+    background: var(--surface-strong);
+    font-size: 28px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--feedback-duration) ease;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.quantity-stepper-btn:active {
+    transform: scale(0.95);
+    background: var(--light);
+}
+
+.quantity-stepper-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ================================
+   BIG STATUS INDICATORS
+   ================================ */
+.status-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-md);
+    padding: var(--space-lg) var(--space-xl);
+    border-radius: var(--radius-lg);
+    font-size: 18px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    min-height: var(--touch-target-xl);
+}
+
+.status-indicator svg {
+    width: 28px;
+    height: 28px;
+}
+
+.status-indicator-success {
+    background: var(--shop-success-bg);
+    color: var(--shop-success);
+    border: 2px solid var(--shop-success-border);
+}
+
+.status-indicator-danger {
+    background: var(--shop-danger-bg);
+    color: var(--shop-danger);
+    border: 2px solid var(--shop-danger-border);
+}
+
+.status-indicator-warning {
+    background: var(--shop-warning-bg);
+    color: var(--shop-warning);
+    border: 2px solid var(--shop-warning-border);
+}
+
+.status-indicator-info {
+    background: var(--shop-info-bg);
+    color: var(--shop-info);
+    border: 2px solid var(--shop-info-border);
+}
+
+/* Pulsing status indicator */
+.status-indicator-pulse {
+    animation: statusPulse var(--pulse-duration) ease infinite;
+}
+
+@keyframes statusPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* Large status card */
+.status-card-large {
+    padding: var(--space-xl);
+    border-radius: var(--radius-xl);
+    text-align: center;
+    min-height: 120px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-md);
+}
+
+.status-card-large .status-icon {
+    width: 56px;
+    height: 56px;
+}
+
+.status-card-large .status-title {
+    font-size: 24px;
+    font-weight: 700;
+    margin: 0;
+}
+
+.status-card-large .status-subtitle {
+    font-size: 16px;
+    opacity: 0.8;
+    margin: 0;
+}
+
+.status-card-success {
+    background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+    color: #065f46;
+    border: 2px solid var(--shop-success-border);
+}
+
+.status-card-danger {
+    background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+    color: #991b1b;
+    border: 2px solid var(--shop-danger-border);
+}
+
+/* ================================
+   ACTION CONFIRMATION OVERLAY
+   ================================ */
+.action-confirm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.7);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 4000;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.3s ease;
+}
+
+.action-confirm-overlay.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.action-confirm-card {
+    background: var(--surface-strong);
+    padding: var(--space-2xl);
+    border-radius: var(--radius-xl);
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: var(--shadow-lg);
+    transform: scale(0.9);
+    transition: transform 0.3s ease;
+}
+
+.action-confirm-overlay.active .action-confirm-card {
+    transform: scale(1);
+}
+
+.action-confirm-icon {
+    width: 72px;
+    height: 72px;
+    margin: 0 auto var(--space-lg);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.action-confirm-icon.success {
+    background: var(--shop-success-bg);
+    color: var(--shop-success);
+}
+
+.action-confirm-icon.danger {
+    background: var(--shop-danger-bg);
+    color: var(--shop-danger);
+}
+
+.action-confirm-icon.warning {
+    background: var(--shop-warning-bg);
+    color: var(--shop-warning);
+}
+
+.action-confirm-icon svg {
+    width: 40px;
+    height: 40px;
+}
+
+.action-confirm-title {
+    font-size: 24px;
+    font-weight: 700;
+    margin-bottom: var(--space-md);
+    color: var(--text);
+}
+
+.action-confirm-message {
+    font-size: 16px;
+    color: var(--secondary);
+    margin-bottom: var(--space-xl);
+}
+
+.action-confirm-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.action-confirm-buttons .btn {
+    min-height: var(--touch-target-xl);
+    font-size: 18px;
+}
+
+/* ================================
+   TOUCH-FRIENDLY SELECTION CARDS
+   ================================ */
+.selection-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-lg);
+    padding: var(--space-lg);
+    min-height: var(--touch-target-xxl);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-strong);
+    cursor: pointer;
+    transition: all var(--feedback-duration) ease;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.selection-card:active {
+    transform: scale(0.98);
+    background: var(--light);
+}
+
+.selection-card.selected {
+    border-color: var(--primary);
+    background: rgba(15, 118, 110, 0.08);
+}
+
+.selection-card.selected::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    border: 2px solid var(--primary);
+    border-radius: inherit;
+    animation: selectPulse 0.3s ease;
+}
+
+@keyframes selectPulse {
+    0% { opacity: 0; transform: scale(0.95); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+.selection-card-radio {
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--border);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all var(--feedback-duration) ease;
+}
+
+.selection-card.selected .selection-card-radio {
+    border-color: var(--primary);
+    background: var(--primary);
+}
+
+.selection-card.selected .selection-card-radio::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    background: white;
+    border-radius: 50%;
+}
+
+.selection-card-checkbox {
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all var(--feedback-duration) ease;
+}
+
+.selection-card.selected .selection-card-checkbox {
+    border-color: var(--primary);
+    background: var(--primary);
+}
+
+.selection-card.selected .selection-card-checkbox svg {
+    color: white;
+    width: 18px;
+    height: 18px;
+}
+
+.selection-card-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.selection-card-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: var(--space-xs);
+}
+
+.selection-card-subtitle {
+    font-size: 14px;
+    color: var(--secondary);
+}
+
+/* ================================
+   PROGRESS FEEDBACK
+   ================================ */
+.progress-bar-large {
+    height: 24px;
+    background: var(--light);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
+.progress-bar-large .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), var(--primary-light));
+    border-radius: var(--radius-full);
+    transition: width 0.3s ease;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: var(--space-md);
+}
+
+.progress-bar-large .progress-text {
+    font-size: 12px;
+    font-weight: 700;
+    color: white;
+    white-space: nowrap;
+}
+
+/* Animated progress */
+.progress-bar-animated .progress-fill {
+    background: linear-gradient(
+        90deg,
+        var(--primary) 0%,
+        var(--primary-light) 50%,
+        var(--primary) 100%
+    );
+    background-size: 200% 100%;
+    animation: progressShine 1.5s ease infinite;
+}
+
+@keyframes progressShine {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* ================================
+   SCAN FEEDBACK ANIMATION
+   ================================ */
+.scan-success-animation {
+    position: fixed;
+    inset: 0;
+    background: rgba(16, 185, 129, 0.15);
+    pointer-events: none;
+    z-index: 5000;
+    animation: scanFlash 0.5s ease;
+}
+
+@keyframes scanFlash {
+    0% { opacity: 0; }
+    25% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+.scan-error-animation {
+    position: fixed;
+    inset: 0;
+    background: rgba(239, 68, 68, 0.15);
+    pointer-events: none;
+    z-index: 5000;
+    animation: scanFlashError 0.6s ease;
+}
+
+@keyframes scanFlashError {
+    0%, 100% { opacity: 0; }
+    20%, 40%, 60% { opacity: 1; }
+    30%, 50% { opacity: 0.3; }
+}
+
+/* ================================
+   BIG NUMBER DISPLAY
+   ================================ */
+.number-display {
+    font-family: var(--font-display);
+    font-weight: 700;
+    line-height: 1;
+}
+
+.number-display-sm { font-size: 28px; }
+.number-display-md { font-size: 36px; }
+.number-display-lg { font-size: 48px; }
+.number-display-xl { font-size: 64px; }
+
+.number-display-success { color: var(--shop-success); }
+.number-display-danger { color: var(--shop-danger); }
+.number-display-warning { color: var(--shop-warning); }
+
+/* ================================
+   TOUCH RIPPLE EFFECT
+   ================================ */
+.touch-ripple {
+    position: relative;
+    overflow: hidden;
+}
+
+.touch-ripple::after {
+    content: '';
+    position: absolute;
+    top: var(--ripple-y, 50%);
+    left: var(--ripple-x, 50%);
+    width: 0;
+    height: 0;
+    background: rgba(255, 255, 255, 0.4);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.touch-ripple.rippling::after {
+    animation: ripple 0.6s ease-out;
+}
+
+@keyframes ripple {
+    0% { width: 0; height: 0; opacity: 0.5; }
+    100% { width: 300px; height: 300px; opacity: 0; }
+}
+
+/* ================================
+   OPTIMISTIC UI STATES
+   ================================ */
+.optimistic-pending {
+    opacity: 0.7;
+    position: relative;
+}
+
+.optimistic-pending::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        var(--primary) 50%,
+        transparent 100%
+    );
+    animation: optimisticSlide 1s ease infinite;
+}
+
+@keyframes optimisticSlide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+.optimistic-success {
+    animation: optimisticSuccess 0.3s ease forwards;
+}
+
+@keyframes optimisticSuccess {
+    0% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
+.optimistic-rollback {
+    animation: optimisticRollback 0.3s ease;
+}
+
+@keyframes optimisticRollback {
+    0% { opacity: 0.7; background: var(--shop-danger-bg); }
+    100% { opacity: 1; background: transparent; }
+}
+
+/* ================================
+   QUICK ACTION GRID
+   ================================ */
+.quick-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-md);
+}
+
+.quick-action-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-md);
+    padding: var(--space-xl);
+    min-height: 120px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-strong);
+    cursor: pointer;
+    transition: all var(--feedback-duration) ease;
+    text-align: center;
+}
+
+.quick-action-btn:active {
+    transform: scale(0.96);
+    background: var(--light);
+}
+
+.quick-action-btn svg {
+    width: 36px;
+    height: 36px;
+    color: var(--primary);
+}
+
+.quick-action-btn span {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.quick-action-btn.primary {
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    border-color: var(--primary);
+    color: white;
+}
+
+.quick-action-btn.primary svg {
+    color: white;
+}
+
+.quick-action-btn.primary span {
+    color: white;
+}
+
+/* ================================
+   SWIPE ACTION HINT
+   ================================ */
+.swipe-hint {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    font-size: 14px;
+    color: var(--secondary);
+    animation: swipeHint 2s ease infinite;
+}
+
+@keyframes swipeHint {
+    0%, 100% { transform: translateX(0); opacity: 0.5; }
+    50% { transform: translateX(10px); opacity: 1; }
+}
+
+/* ================================
+   OFFLINE MODE INDICATOR (ENHANCED)
+   ================================ */
+.offline-banner-large {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: var(--space-lg);
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    color: white;
+    text-align: center;
+    font-size: 16px;
+    font-weight: 600;
+    z-index: 6000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-md);
+    animation: offlineSlide 0.3s ease;
+}
+
+@keyframes offlineSlide {
+    from { transform: translateY(-100%); }
+    to { transform: translateY(0); }
+}
+
+.offline-banner-large svg {
+    width: 24px;
+    height: 24px;
+    animation: offlinePulse 1s ease infinite;
+}
+
+@keyframes offlinePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* ================================
+   RESPONSIVE ADJUSTMENTS
+   ================================ */
+@media (min-width: 640px) {
+    .quick-action-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .action-confirm-buttons {
+        flex-direction: row;
+        justify-content: center;
+    }
+
+    .action-confirm-buttons .btn {
+        flex: 1;
+        max-width: 180px;
+    }
+}
+
+@media (min-width: 1024px) {
+    .quick-action-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+
+    .quick-action-btn {
+        min-height: 140px;
+    }
+
+    .quick-action-btn svg {
+        width: 48px;
+        height: 48px;
+    }
+
+    .quick-action-btn span {
+        font-size: 18px;
+    }
+}

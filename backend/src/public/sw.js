@@ -3,9 +3,9 @@
  * Handles offline caching and background sync
  */
 
-const CACHE_NAME = 'worksync-v2';
-const STATIC_CACHE = 'worksync-static-v2';
-const API_CACHE = 'worksync-api-v2';
+const CACHE_NAME = 'worksync-v4';
+const STATIC_CACHE = 'worksync-static-v4';
+const API_CACHE = 'worksync-api-v4';
 
 // Static assets to cache
 const STATIC_ASSETS = [
@@ -21,6 +21,7 @@ const STATIC_ASSETS = [
     '/css/management.css',
     '/css/login.css',
     '/css/offline.css',
+    '/css/shop-floor.css',
     '/js/login.js',
     '/js/admin.js',
     '/js/supervisor.js',
@@ -29,7 +30,9 @@ const STATIC_ASSETS = [
     '/js/offline-db.js',
     '/js/offline-sync.js',
     '/js/sw-register.js',
-    '/js/sse-manager.js'
+    '/js/sse-manager.js',
+    '/js/shop-floor-ux.js',
+    '/js/optimistic-ui.js'
 ];
 
 // API endpoints to cache (for read operations)

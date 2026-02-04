@@ -739,19 +739,25 @@ function updateEmployeeQrButton(processId) {
 }
 
 function toggleEmployeeDropdown(processId) {
-    const dropdowns = Array.from(document.querySelectorAll('.employee-dropdown'));
-    dropdowns.forEach(dd => {
+    // Close all other dropdowns
+    document.querySelectorAll('.employee-dropdown').forEach(dd => {
         if (dd.dataset.processId !== String(processId)) {
             dd.classList.remove('open');
         }
     });
+
+    // Toggle this dropdown
     const dropdown = document.querySelector(`.employee-dropdown[data-process-id="${processId}"]`);
     if (!dropdown) return;
+
     dropdown.classList.toggle('open');
-    const search = dropdown.querySelector('.dropdown-search');
-    if (search) {
-        search.focus();
-        search.select();
+
+    // Focus search input when opening
+    if (dropdown.classList.contains('open')) {
+        const search = dropdown.querySelector('.dropdown-search');
+        if (search) {
+            setTimeout(() => search.focus(), 100);
+        }
     }
 }
 

@@ -251,6 +251,12 @@ function updateScanDisplay() {
 
     if (scanState.processAssignedEmployee) {
         assignedText.textContent = `${scanState.processAssignedEmployee.emp_code} - ${scanState.processAssignedEmployee.emp_name} (ID ${scanState.processAssignedEmployee.id})`;
+    } else if (scanState.employeeAssignment && (scanState.employeeAssignment.process_id || scanState.employeeAssignment.operation_code)) {
+        const opLabel = scanState.employeeAssignment.operation_code
+            ? `${scanState.employeeAssignment.operation_code}${scanState.employeeAssignment.operation_name ? ` - ${scanState.employeeAssignment.operation_name}` : ''}`
+            : `Process ${scanState.employeeAssignment.process_id}`;
+        const lineLabel = scanState.employeeAssignment.line_name ? ` on ${scanState.employeeAssignment.line_name}` : '';
+        assignedText.textContent = `${opLabel}${lineLabel}`;
     } else {
         assignedText.textContent = 'Not assigned';
     }
@@ -365,6 +371,18 @@ async function startCameraScan() {
     const status = document.getElementById('camera-status');
     const video = document.getElementById('camera-preview');
     try {
+        const isHttps = window.location.protocol === 'https:';
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        if (!window.isSecureContext || (!isHttps && !isLocalhost)) {
+            showToast('Camera access requires HTTPS. Open the site over HTTPS.', 'error');
+            status.textContent = 'HTTPS Required';
+            return;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            showToast('Camera not supported on this browser', 'error');
+            status.textContent = 'Camera Unsupported';
+            return;
+        }
         if ('BarcodeDetector' in window) {
             detector = new BarcodeDetector({ formats: ['qr_code'] });
         } else if (window.jsQR) {
@@ -377,6 +395,9 @@ async function startCameraScan() {
             video: { facingMode: { ideal: 'environment' } },
             audio: false
         });
+        video.muted = true;
+        video.playsInline = true;
+        video.setAttribute('playsinline', '');
         video.srcObject = cameraStream;
         await video.play();
         scanning = true;
@@ -385,7 +406,17 @@ async function startCameraScan() {
         document.getElementById('camera-stop').disabled = false;
         scanFrame();
     } catch (err) {
-        showToast('Unable to access camera', 'error');
+        let message = 'Unable to access camera';
+        if (err && err.name === 'NotAllowedError') {
+            message = 'Camera permission blocked. Allow camera access in browser settings.';
+        } else if (err && err.name === 'NotFoundError') {
+            message = 'No camera found on this device.';
+        } else if (err && err.name === 'NotReadableError') {
+            message = 'Camera is in use by another app.';
+        } else if (err && err.message) {
+            message = `Unable to access camera: ${err.message}`;
+        }
+        showToast(message, 'error');
         status.textContent = 'Camera Error';
     }
 }
@@ -399,6 +430,11 @@ function stopCameraScan() {
     if (cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop());
         cameraStream = null;
+    }
+    const video = document.getElementById('camera-preview');
+    if (video) {
+        video.pause();
+        video.srcObject = null;
     }
 }
 
@@ -600,9 +636,9 @@ function showMaterialsModal({ requiresQuantity, onSubmit }) {
                     <label class="form-label">Quantity Completed (before change)</label>
                     <input type="number" class="form-control" id="materials-quantity" min="0" value="0">
                 ` : ''}
-                <label class="form-label">Initial Materials Provided</label>
+                <label class="form-label">Materials Provided at Work Start</label>
                 <input type="number" class="form-control" id="materials-input" min="0" value="0">
-                <label class="form-label">Materials Already at Process (Unworked)</label>
+                <label class="form-label">Remaining Materials from Previous Day</label>
                 <input type="number" class="form-control" id="materials-existing" min="0" value="0">
             </div>
             <div class="progress-modal-footer">
@@ -615,9 +651,16 @@ function showMaterialsModal({ requiresQuantity, onSubmit }) {
     setTimeout(() => modal.classList.add('active'), 10);
 
     document.getElementById('materials-modal-save').addEventListener('click', async () => {
-        const materials = document.getElementById('materials-input').value;
-        const existing = document.getElementById('materials-existing').value;
-        const quantity = requiresQuantity ? document.getElementById('materials-quantity').value : null;
+        const materialsRaw = document.getElementById('materials-input').value;
+        const existingRaw = document.getElementById('materials-existing').value;
+        const quantityRaw = requiresQuantity ? document.getElementById('materials-quantity').value : null;
+        const materials = Math.max(0, Number(materialsRaw || 0));
+        const existing = Math.max(0, Number(existingRaw || 0));
+        const quantity = requiresQuantity ? Math.max(0, Number(quantityRaw || 0)) : null;
+        if (!Number.isFinite(materials) || !Number.isFinite(existing) || (requiresQuantity && !Number.isFinite(quantity))) {
+            showToast('Enter valid material quantities', 'error');
+            return;
+        }
         await onSubmit(materials, existing, quantity);
         closeMaterialsModal();
     });
@@ -747,9 +790,9 @@ function showAssignmentChangeModal(employeeQr) {
                 </div>
                 <label class="form-label">Quantity Completed (before change)</label>
                 <input type="number" class="form-control" id="assignment-quantity" min="0" value="0">
-                <label class="form-label">Materials at Link</label>
+                <label class="form-label">Materials Provided at Work Start</label>
                 <input type="number" class="form-control" id="assignment-materials" min="0" value="0">
-                <label class="form-label">Materials Already at Process (Unworked)</label>
+                <label class="form-label">Remaining Materials from Previous Day</label>
                 <input type="number" class="form-control" id="assignment-existing" min="0" value="0">
             </div>
             <div class="progress-modal-footer">
@@ -761,9 +804,16 @@ function showAssignmentChangeModal(employeeQr) {
     document.body.appendChild(modal);
     setTimeout(() => modal.classList.add('active'), 10);
     document.getElementById('assignment-modal-save').addEventListener('click', async () => {
-        const qty = document.getElementById('assignment-quantity').value;
-        const materials = document.getElementById('assignment-materials').value;
-        const existing = document.getElementById('assignment-existing').value;
+        const qtyRaw = document.getElementById('assignment-quantity').value;
+        const materialsRaw = document.getElementById('assignment-materials').value;
+        const existingRaw = document.getElementById('assignment-existing').value;
+        const qty = Math.max(0, Number(qtyRaw || 0));
+        const materials = Math.max(0, Number(materialsRaw || 0));
+        const existing = Math.max(0, Number(existingRaw || 0));
+        if (!Number.isFinite(qty) || !Number.isFinite(materials) || !Number.isFinite(existing)) {
+            showToast('Enter valid material quantities', 'error');
+            return;
+        }
         await submitEmployeeAssignment(employeeQr, qty, true, materials, existing);
         closeAssignmentModal();
     });
@@ -1628,7 +1678,7 @@ async function loadMaterialData() {
                             ${transactions.map(t => `
                                 <tr>
                                     <td>${new Date(t.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
-                                    <td><span class="badge badge-${getTransactionBadgeClass(t.transaction_type)}">${t.transaction_type}</span></td>
+                                    <td><span class="badge badge-${getTransactionBadgeClass(t.transaction_type)}">${formatTransactionType(t.transaction_type)}</span></td>
                                     <td>${t.quantity}</td>
                                     <td>${t.from_operation ? `${t.from_sequence}. ${t.from_operation}` : '-'}</td>
                                     <td>${t.to_operation ? `${t.to_sequence}. ${t.to_operation}` : '-'}</td>
@@ -1650,7 +1700,7 @@ async function loadMaterialData() {
 function formatMaterialUpdate(update) {
     if (!update) return '-';
     const timeLabel = new Date(update.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    return `${timeLabel} · ${update.transaction_type} ${update.quantity}`;
+    return `${timeLabel} · ${formatTransactionType(update.transaction_type)} ${update.quantity}`;
 }
 
 function openMaterialDetailsModal({ lineId, date, processId, processLabel }) {
@@ -1720,7 +1770,7 @@ function openMaterialDetailsModal({ lineId, date, processId, processLabel }) {
                             ${logs.map(log => `
                                 <tr>
                                     <td>${new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
-                                    <td><span class="badge badge-${getTransactionBadgeClass(log.transaction_type)}">${log.transaction_type}</span></td>
+                                    <td><span class="badge badge-${getTransactionBadgeClass(log.transaction_type)}">${formatTransactionType(log.transaction_type)}</span></td>
                                     <td>${log.quantity}</td>
                                     <td>${log.from_operation ? `${log.from_sequence}. ${log.from_operation}` : '-'}</td>
                                     <td>${log.to_operation ? `${log.to_sequence}. ${log.to_operation}` : '-'}</td>
@@ -1830,6 +1880,11 @@ function getTransactionBadgeClass(type) {
         case 'forwarded': return 'purple';
         default: return 'secondary';
     }
+}
+
+function formatTransactionType(type) {
+    if (type === 'received') return 'previous_day';
+    return type || '-';
 }
 
 async function submitMaterialTransaction() {
