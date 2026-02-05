@@ -3,6 +3,8 @@ const router = express.Router();
 const pool = require('../config/db.config');
 const realtime = require('../realtime');
 const ExcelJS = require('exceljs');
+const fs = require('fs');
+const path = require('path');
 const { validateBody, validateQuery, sanitizeInputs, schemas } = require('../middleware/validation');
 const { logAudit: enhancedLogAudit, AuditAction, getAuditSummary, searchAuditLogs } = require('../middleware/audit');
 const { withTransaction, withRetry, lockForUpdate } = require('../middleware/transaction');
@@ -54,6 +56,41 @@ const logAudit = async (tableName, recordId, action, newValues = null, oldValues
         req
     });
 };
+
+const clientErrorLogPath = path.join(__dirname, '..', '..', 'logs', 'client-errors.log');
+const logClientError = (payload, req) => {
+    try {
+        fs.mkdirSync(path.dirname(clientErrorLogPath), { recursive: true });
+        const entry = {
+            ts: new Date().toISOString(),
+            ip: req.ip,
+            ua: req.headers['user-agent'] || null,
+            ...payload
+        };
+        fs.appendFile(clientErrorLogPath, `${JSON.stringify(entry)}\n`, () => {});
+    } catch (err) {
+        // ignore logging failures
+    }
+};
+
+router.post('/client-error', (req, res) => {
+    const body = req.body || {};
+    const message = typeof body.message === 'string' ? body.message.slice(0, 2000) : null;
+    if (!message) {
+        return res.status(400).json({ success: false, error: 'message is required' });
+    }
+    const payload = {
+        errorType: typeof body.errorType === 'string' ? body.errorType.slice(0, 100) : 'error',
+        message,
+        stack: typeof body.stack === 'string' ? body.stack.slice(0, 4000) : null,
+        source: typeof body.source === 'string' ? body.source.slice(0, 500) : null,
+        line: Number.isFinite(body.line) ? body.line : null,
+        column: Number.isFinite(body.column) ? body.column : null,
+        url: typeof body.url === 'string' ? body.url.slice(0, 1000) : null
+    };
+    logClientError(payload, req);
+    res.json({ success: true });
+});
 
 // ============================================================================
 // DASHBOARD STATS
@@ -655,7 +692,7 @@ router.get('/reports/daily', async (req, res) => {
                  LEFT JOIN line_process_hourly_progress lph
                     ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
                  WHERE e.is_active = true
-                 GROUP BY e.emp_code, e.emp_name, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
+                 GROUP BY e.emp_code, e.emp_name, e.manpower_factor, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
                  ORDER BY e.emp_code`,
                 [line.id, date]
             );
@@ -914,7 +951,7 @@ router.get('/reports/range', async (req, res) => {
                      LEFT JOIN line_process_hourly_progress lph
                         ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
                      WHERE e.is_active = true
-                     GROUP BY e.emp_code, e.emp_name, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
+                     GROUP BY e.emp_code, e.emp_name, e.manpower_factor, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
                      ORDER BY e.emp_code`,
                     [line.id, date]
                 );
@@ -2583,6 +2620,22 @@ router.post('/supervisor/progress', async (req, res) => {
         } else {
             await refreshProcessWip(line_id, process_id, work_date);
         }
+        const remainingTotalResult = await pool.query(
+            `SELECT COALESCE(SUM(remaining_quantity), 0) AS qty
+             FROM line_process_hourly_progress
+             WHERE line_id = $1 AND process_id = $2 AND work_date = $3`,
+            [line_id, process_id, work_date]
+        );
+        const remainingTotal = parseInt(remainingTotalResult.rows[0]?.qty || 0, 10);
+        await pool.query(
+            `INSERT INTO process_material_wip (line_id, process_id, work_date, wip_quantity)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (line_id, process_id, work_date)
+             DO UPDATE SET
+                wip_quantity = EXCLUDED.wip_quantity,
+                updated_at = NOW()`,
+            [line_id, process_id, work_date, remainingTotal]
+        );
         realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, process_id, work_date, hour_slot });
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
@@ -2998,7 +3051,7 @@ router.get('/supervisor/shift-summary', async (req, res) => {
             LEFT JOIN line_process_hourly_progress lph
                 ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
             WHERE e.is_active = true
-            GROUP BY e.id, e.emp_code, e.emp_name, att.in_time, att.out_time, att.status,
+            GROUP BY e.id, e.emp_code, e.emp_name, e.manpower_factor, att.in_time, att.out_time, att.status,
                      pp.sequence_number, pp.operation_sah, o.operation_code, o.operation_name
             ORDER BY pp.sequence_number, e.emp_code
         `, [line_id, date]);

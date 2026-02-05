@@ -29,6 +29,41 @@
 }
 
 /* ================================
+   HTTPS Banner
+   ================================ */
+.https-banner {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    z-index: 9999;
+    background: rgba(15, 23, 42, 0.92);
+    color: #f8fafc;
+    border-radius: 16px;
+    padding: 12px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+}
+
+.https-banner__content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+}
+
+.https-banner__actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* ================================
    SHOP FLOOR MODE TOGGLE
    ================================ */
 body.shop-floor-mode {

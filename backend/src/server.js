@@ -14,6 +14,23 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const FORCE_HTTPS = ['1', 'true', 'yes'].includes(String(process.env.FORCE_HTTPS || '').toLowerCase());
+const FORCE_HTTPS_PORT = process.env.FORCE_HTTPS_PORT || '';
+if (FORCE_HTTPS) {
+  app.set('trust proxy', 1);
+  app.use((req, res, next) => {
+    const proto = req.headers['x-forwarded-proto'] || req.protocol;
+    if (proto !== 'https') {
+      const host = req.headers.host || '';
+      const targetHost = FORCE_HTTPS_PORT
+        ? host.replace(/:\d+$/, `:${FORCE_HTTPS_PORT}`)
+        : host;
+      return res.redirect(301, `https://${targetHost}${req.originalUrl}`);
+    }
+    next();
+  });
+}
+
 const AUTH_SECRET = process.env.AUTH_SECRET || process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const AUTH_COOKIE = 'worksync_auth';
 const ROLE_PASSWORDS = {
@@ -53,6 +70,27 @@ const verifyToken = (token) => {
   } catch (err) {
     return null;
   }
+};
+
+const isHttpsRequest = (req) => {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  return proto === 'https';
+};
+
+const buildAuthCookie = (token, req, { clear = false } = {}) => {
+  const parts = [
+    `${AUTH_COOKIE}=${token}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax'
+  ];
+  if (isHttpsRequest(req)) {
+    parts.push('Secure');
+  }
+  if (clear) {
+    parts.push('Max-Age=0');
+  }
+  return parts.join('; ');
 };
 
 const requireRole = (role) => (req, res, next) => {
@@ -131,7 +169,7 @@ app.post('/auth/login', (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid password' });
   }
   const token = signToken({ role });
-  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax`);
+  res.setHeader('Set-Cookie', buildAuthCookie(token, req));
   const redirectMap = {
     admin: '/admin',
     ie: '/ie',
@@ -151,7 +189,7 @@ app.get('/auth/session', (req, res) => {
 });
 
 app.post('/auth/logout', (req, res) => {
-  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax`);
+  res.setHeader('Set-Cookie', buildAuthCookie('', req, { clear: true }));
   res.json({ success: true });
 });
 

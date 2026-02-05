@@ -19,6 +19,8 @@ const ShopFloorUX = {
         this.setupTouchRipple();
         this.setupHapticFeedback();
         this.setupQuantitySteppers();
+        this.setupHttpsBanner();
+        this.initClientErrorLogging();
         document.body.classList.add('shop-floor-mode');
         console.log('[ShopFloorUX] Initialized');
     },
@@ -93,6 +95,86 @@ const ShopFloorUX = {
                     this.vibrate(10);
                 });
             }
+        });
+    },
+
+    /**
+     * Show HTTPS banner when running on non-secure context (except localhost)
+     */
+    setupHttpsBanner() {
+        const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+        if (window.isSecureContext || isLocalhost) return;
+
+        const banner = document.createElement('div');
+        banner.className = 'https-banner';
+        const host = location.hostname;
+        const port = location.port ? parseInt(location.port, 10) : null;
+        const httpsPort = port && port !== 443 ? '3443' : '';
+        const httpsUrl = `https://${host}${httpsPort ? `:${httpsPort}` : ''}${location.pathname}`;
+        banner.innerHTML = `
+            <div class="https-banner__content">
+                <strong>Secure connection required.</strong>
+                <span>Open the HTTPS link to enable camera and secure features.</span>
+            </div>
+            <div class="https-banner__actions">
+                <a class="btn btn-primary btn-sm" href="${httpsUrl}">Open HTTPS</a>
+                <button class="btn btn-secondary btn-sm" type="button" id="https-banner-close">Dismiss</button>
+            </div>
+        `;
+        document.body.appendChild(banner);
+        const closeBtn = banner.querySelector('#https-banner-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => banner.remove());
+        }
+    },
+
+    /**
+     * Initialize lightweight client error logging
+     */
+    initClientErrorLogging() {
+        let lastSentAt = 0;
+        const send = (payload) => {
+            const now = Date.now();
+            if (now - lastSentAt < 3000) return;
+            lastSentAt = now;
+            try {
+                const body = JSON.stringify(payload);
+                if (navigator.sendBeacon) {
+                    const blob = new Blob([body], { type: 'application/json' });
+                    navigator.sendBeacon('/api/client-error', blob);
+                } else {
+                    fetch('/api/client-error', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body
+                    }).catch(() => {});
+                }
+            } catch (err) {
+                // swallow
+            }
+        };
+
+        window.addEventListener('error', (event) => {
+            if (!event) return;
+            send({
+                errorType: 'error',
+                message: String(event.message || 'Unknown error').slice(0, 2000),
+                source: String(event.filename || '').slice(0, 500),
+                line: event.lineno || null,
+                column: event.colno || null,
+                stack: event.error && event.error.stack ? String(event.error.stack).slice(0, 4000) : null,
+                url: location.href
+            });
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+            const reason = event && event.reason;
+            send({
+                errorType: 'unhandledrejection',
+                message: String(reason && reason.message ? reason.message : reason || 'Unhandled rejection').slice(0, 2000),
+                stack: reason && reason.stack ? String(reason.stack).slice(0, 4000) : null,
+                url: location.href
+            });
         });
     },
 
