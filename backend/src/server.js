@@ -147,7 +147,7 @@ app.use('/api', (req, res, next) => {
     return requireAnyRole(['ie', 'admin'])(req, res, next);
   }
   if (req.path.startsWith('/supervisor/shift-summary')) {
-    return requireAnyRole(['supervisor', 'admin', 'management'])(req, res, next);
+    return requireAnyRole(['supervisor', 'admin', 'management', 'ie'])(req, res, next);
   }
   if (req.path.startsWith('/supervisor') && req.method === 'GET') {
     return requireAnyRole(['supervisor', 'admin', 'management'])(req, res, next);
@@ -218,7 +218,7 @@ app.get('/supervisor', requireRole('supervisor'), (req, res) => {
 });
 
 // Management page
-app.get('/management', requireRole('management'), (req, res) => {
+app.get('/management', requireAnyRole(['admin', 'ie', 'supervisor', 'management']), (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'management.html'));
 });
 
@@ -240,15 +240,27 @@ const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
 const certPath = process.env.HTTPS_CERT_PATH || path.join(__dirname, '..', '..', 'certs', 'worksync.crt');
 const keyPath = process.env.HTTPS_KEY_PATH || path.join(__dirname, '..', '..', 'certs', 'worksync.key');
 
-if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+// Only start HTTPS on the first cluster instance to avoid EADDRINUSE
+let httpsServer = null;
+const instanceId = parseInt(process.env.NODE_APP_INSTANCE || '0', 10);
+if (instanceId === 0 && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
   const options = {
     cert: fs.readFileSync(certPath),
     key: fs.readFileSync(keyPath)
   };
-  https.createServer(options, app).listen(HTTPS_PORT, HOST, () => {
+  httpsServer = https.createServer(options, app);
+  httpsServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`HTTPS port ${HTTPS_PORT} in use, HTTPS disabled for this instance.`);
+      httpsServer = null;
+    } else {
+      console.error('HTTPS server error:', err);
+    }
+  });
+  httpsServer.listen(HTTPS_PORT, HOST, () => {
     console.log(`🔒 HTTPS enabled on https://${HOST}:${HTTPS_PORT}`);
   });
-} else {
+} else if (instanceId === 0) {
   console.warn('HTTPS certs not found; HTTPS server not started.');
 }
 
@@ -290,6 +302,16 @@ async function gracefulShutdown(signal) {
       console.log('✅ HTTP server closed');
     }
   });
+
+  if (httpsServer) {
+    httpsServer.close((err) => {
+      if (err) {
+        console.error('Error closing HTTPS server:', err);
+      } else {
+        console.log('✅ HTTPS server closed');
+      }
+    });
+  }
 
   // Close database pool
   try {

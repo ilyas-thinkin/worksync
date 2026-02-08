@@ -5,7 +5,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!ok) return;
     setupNavigation();
     setupMobileSidebar();
-    loadSection('scan');
+    loadSection('dashboard');
     setupRealtime();
 });
 
@@ -98,6 +98,10 @@ function closeMobileSidebar() {
 }
 
 async function loadSection(section) {
+    if (section === 'dashboard') {
+        await loadSupervisorDashboard();
+        return;
+    }
     if (section === 'progress') {
         await loadProgressSection();
         return;
@@ -111,6 +115,186 @@ async function loadSection(section) {
         return;
     }
     await loadScanSection();
+}
+
+async function loadSupervisorDashboard() {
+    const content = document.getElementById('supervisor-content');
+    const today = new Date().toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Dashboard</h1>
+                <p class="page-subtitle">Live line performance snapshot</p>
+            </div>
+            <span class="status-badge">Live • ${today}</span>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Management Snapshot</h3>
+            </div>
+            <div class="card-body">
+                <div class="ie-actions" style="flex-wrap:wrap; gap:12px;">
+                    <div class="ie-date">
+                        <label for="sup-mgmt-date">Date</label>
+                        <input type="date" id="sup-mgmt-date" value="${today}">
+                    </div>
+                    <div class="ie-date">
+                        <label for="sup-mgmt-line-select">Line</label>
+                        <select class="form-control" id="sup-mgmt-line-select"></select>
+                    </div>
+                </div>
+                <div class="stats-grid" id="sup-mgmt-stats" style="margin-top:16px;"></div>
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">
+                        <h3 class="card-title">Line Performance</h3>
+                    </div>
+                    <div class="card-body table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Line</th>
+                                    <th>Product</th>
+                                    <th>Target</th>
+                                    <th>Output</th>
+                                    <th>Efficiency</th>
+                                    <th>Completion</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sup-mgmt-lines"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">
+                        <h3 class="card-title">Employee Efficiency</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Employee</th>
+                                        <th>Operation</th>
+                                        <th>Output</th>
+                                        <th>Efficiency</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sup-mgmt-employees"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    await supervisorLoadLineOptions();
+    document.getElementById('sup-mgmt-date')?.addEventListener('change', supervisorRefreshManagementData);
+    document.getElementById('sup-mgmt-line-select')?.addEventListener('change', supervisorRefreshEmployeeEfficiency);
+    supervisorRefreshManagementData();
+}
+
+async function supervisorLoadLineOptions() {
+    const select = document.getElementById('sup-mgmt-line-select');
+    if (!select) return;
+    const response = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) return;
+    select.innerHTML = result.data
+        .filter(line => line.is_active)
+        .map(line => `<option value="${line.id}">${line.line_name}</option>`)
+        .join('');
+}
+
+async function supervisorRefreshManagementData() {
+    await Promise.all([
+        supervisorLoadLineMetrics(),
+        supervisorRefreshEmployeeEfficiency()
+    ]);
+}
+
+async function supervisorLoadLineMetrics() {
+    const date = document.getElementById('sup-mgmt-date')?.value;
+    const stats = document.getElementById('sup-mgmt-stats');
+    const body = document.getElementById('sup-mgmt-lines');
+    if (!date || !stats || !body) return;
+    const response = await fetch(`${API_BASE}/lines-metrics?date=${date}`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) return;
+
+    const metrics = result.data || [];
+    const totalOutput = metrics.reduce((sum, row) => sum + (parseInt(row.actual_output) || 0), 0);
+    const totalTarget = metrics.reduce((sum, row) => sum + (parseInt(row.target) || 0), 0);
+    const avgEfficiency = metrics.length
+        ? (metrics.reduce((sum, row) => sum + (parseFloat(row.efficiency_percent) || 0), 0) / metrics.length).toFixed(2)
+        : '0.00';
+
+    stats.innerHTML = `
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${metrics.length}</h3>
+                <p>Active Lines</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${totalTarget}</h3>
+                <p>Total Target</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${totalOutput}</h3>
+                <p>Total Output</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${avgEfficiency}%</h3>
+                <p>Avg Efficiency</p>
+            </div>
+        </div>
+    `;
+
+    body.innerHTML = metrics.map(row => `
+        <tr>
+            <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
+            <td>
+                ${row.product_code || '-'} ${row.product_name || ''}
+                ${row.changeover ? `<div style="margin-top:2px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;">CHANGEOVER</span><div style="font-size:11px;color:#92400e;margin-top:2px;">Incoming: ${row.incoming_product_code}</div></div>` : ''}
+            </td>
+            <td>${row.target}${row.changeover && row.incoming_target ? `<div style="font-size:11px;color:#92400e;">+${row.incoming_target}</div>` : ''}</td>
+            <td>${row.actual_output}</td>
+            <td>${row.efficiency_percent}%</td>
+            <td>${row.completion_percent}%</td>
+        </tr>
+    `).join('');
+}
+
+async function supervisorRefreshEmployeeEfficiency() {
+    const lineId = document.getElementById('sup-mgmt-line-select')?.value;
+    const date = document.getElementById('sup-mgmt-date')?.value;
+    const tbody = document.getElementById('sup-mgmt-employees');
+    if (!lineId || !date || !tbody) return;
+    const response = await fetch(`${API_BASE}/supervisor/shift-summary?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) {
+        tbody.innerHTML = `<tr><td colspan="4">${result.error || 'No data'}</td></tr>`;
+        return;
+    }
+    const employees = result.data.employees || [];
+    if (!employees.length) {
+        tbody.innerHTML = '<tr><td colspan="4">No employee data</td></tr>';
+        return;
+    }
+    tbody.innerHTML = employees.map(emp => `
+        <tr>
+            <td><strong>${emp.emp_code}</strong><div style="color: var(--secondary); font-size: 12px;">${emp.emp_name}</div></td>
+            <td>${emp.operation_code} - ${emp.operation_name}</td>
+            <td>${emp.total_output}</td>
+            <td>${emp.efficiency_percent || 0}%</td>
+        </tr>
+    `).join('');
 }
 
 async function loadScanSection() {
@@ -1433,6 +1617,7 @@ async function loadProductionStats() {
 }
 
 function setupRealtime() {
+    let summaryRefreshTimer = null;
     const handleDataChange = (payload) => {
         if (!payload) return;
         if (payload.entity === 'attendance') {
@@ -1442,12 +1627,44 @@ function setupRealtime() {
             }
         }
         if (payload.entity === 'progress') {
-            // no-op for now
+            const active = document.querySelector('.nav-link.active')?.dataset.section;
+            if (active === 'shift-summary') {
+                const lineId = document.getElementById('summary-line')?.value;
+                const date = document.getElementById('summary-date')?.value;
+                const matchesLine = !payload.line_id || !lineId || String(payload.line_id) === String(lineId);
+                const matchesDate = !payload.work_date || !date || payload.work_date === date;
+                if (!matchesLine || !matchesDate) {
+                    return;
+                }
+                if (summaryRefreshTimer) clearTimeout(summaryRefreshTimer);
+                summaryRefreshTimer = setTimeout(() => {
+                    summaryRefreshTimer = null;
+                    loadShiftSummaryData();
+                }, 300);
+            }
+            if (active === 'dashboard') {
+                const date = document.getElementById('sup-mgmt-date')?.value;
+                if (!payload.work_date || !date || payload.work_date === date) {
+                    supervisorRefreshManagementData();
+                }
+            }
         }
         if (payload.entity === 'materials') {
             const active = document.querySelector('.nav-link.active')?.dataset.section;
             if (active === 'materials') {
                 loadMaterialData();
+            }
+        }
+        if (payload.entity === 'daily_plans') {
+            const active = document.querySelector('.nav-link.active')?.dataset.section;
+            if (active === 'shift-summary') {
+                const lineId = document.getElementById('summary-line')?.value;
+                const date = document.getElementById('summary-date')?.value;
+                const matchesLine = !payload.line_id || !lineId || String(payload.line_id) === String(lineId);
+                const matchesDate = !payload.work_date || !date || payload.work_date === date;
+                if (matchesLine && matchesDate) {
+                    loadShiftSummaryData();
+                }
             }
         }
     };
@@ -1573,7 +1790,7 @@ async function loadMaterialProcesses() {
         materialState.processes = result.data || [];
 
         const options = materialState.processes.map(p =>
-            `<option value="${p.id}">${p.sequence_number}. ${p.operation_code} - ${p.operation_name}</option>`
+            `<option value="${p.id}">${p.product_code ? '[' + p.product_code + '] ' : ''}${p.sequence_number}. ${p.operation_code} - ${p.operation_name}</option>`
         ).join('');
 
         document.getElementById('material-from-process').innerHTML = `<option value="">Select Process</option>${options}`;
@@ -2014,7 +2231,23 @@ async function loadShiftSummaryData() {
             <div class="summary-header">
                 <div class="summary-line-info">
                     <h2>${line.line_name}</h2>
-                    <p>${line.product_code} - ${line.product_name}</p>
+                    <p>${line.product_code} - ${line.product_name}${line.changeover ? ` <span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-left:8px;">CHANGEOVER</span>` : ''}</p>
+                    ${line.changeover ? `
+                        <p style="color:#92400e;font-weight:600;">Incoming: ${line.incoming_product_code} - ${line.incoming_product_name}</p>
+                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px;">
+                            <span style="font-size:12px;color:#92400e;font-weight:600;">
+                                Changeover boundary: P${line.changeover_sequence || 0} of P${line.incoming_max_sequence || 0}
+                            </span>
+                            <button class="btn btn-secondary btn-sm" id="advance-changeover">
+                                Advance to Next Process
+                            </button>
+                            <div style="display:flex; gap:6px; align-items:center;">
+                                <label style="font-size:12px;color:#92400e;font-weight:600;">Set boundary</label>
+                                <select class="form-control" id="set-changeover" style="min-width:180px;height:32px;"></select>
+                                <button class="btn btn-primary btn-sm" id="apply-changeover">Apply</button>
+                            </div>
+                        </div>
+                    ` : ''}
                     <p class="summary-date">${new Date(date).toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
                 </div>
                 <div style="display:flex; gap:12px; align-items:center; margin-top:8px;">
@@ -2133,6 +2366,7 @@ async function loadShiftSummaryData() {
                         <table class="data-table">
                             <thead>
                                 <tr>
+                                    ${line.changeover ? '<th>Product</th>' : ''}
                                     <th>Code</th>
                                     <th>Name</th>
                                     <th>Operation</th>
@@ -2145,6 +2379,7 @@ async function loadShiftSummaryData() {
                             <tbody>
                                 ${employees.map(e => `
                                     <tr>
+                                        ${line.changeover ? `<td><span style="font-size:11px;font-weight:600;">${e.product_code || ''}</span></td>` : ''}
                                         <td>${e.emp_code}</td>
                                         <td>${e.emp_name}</td>
                                         <td>${e.sequence_number}. ${e.operation_code}</td>
@@ -2169,19 +2404,29 @@ async function loadShiftSummaryData() {
                         <table class="data-table">
                             <thead>
                                 <tr>
+                                    ${line.changeover ? '<th>Product</th>' : ''}
                                     <th>#</th>
                                     <th>Operation</th>
                                     <th>Total Output</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${process_output.map(p => `
-                                    <tr>
+                                ${process_output.map(p => {
+                                    const isIncoming = line.changeover && p.product_code === line.incoming_product_code;
+                                    const isPrimary = line.changeover && p.product_code === line.product_code;
+                                    const isIncomingActive = isIncoming && (p.sequence_number <= (line.changeover_sequence || 0));
+                                    const rowStyle = isIncomingActive
+                                        ? 'background:#fff7ed;'
+                                        : isPrimary ? 'background:#f8fafc;' : '';
+                                    return `
+                                    <tr style="${rowStyle}">
+                                        ${line.changeover ? `<td><span style="font-size:11px;font-weight:600;">${p.product_code || ''}</span></td>` : ''}
                                         <td>${p.sequence_number}</td>
                                         <td>${p.operation_code} - ${p.operation_name}</td>
                                         <td><strong>${p.total_quantity || 0}</strong></td>
                                     </tr>
-                                `).join('')}
+                                `;
+                                }).join('')}
                             </tbody>
                         </table>
                     ` : '<div class="alert alert-warning">No process output data.</div>'}
@@ -2202,6 +2447,87 @@ async function loadShiftSummaryData() {
                     if (closed) {
                         await loadShiftSummaryData();
                     }
+                });
+            }
+        }
+        if (line.changeover && line.changeover_enabled) {
+            const advanceBtn = document.getElementById('advance-changeover');
+            if (advanceBtn) {
+                const atMax = (line.incoming_max_sequence || 0) > 0 && line.changeover_sequence >= line.incoming_max_sequence;
+                const disabled = shift?.is_closed || atMax;
+                if (disabled) {
+                    advanceBtn.disabled = true;
+                }
+                advanceBtn.addEventListener('click', async () => {
+                    if (shift?.is_closed) {
+                        showToast('Shift is closed', 'error');
+                        return;
+                    }
+                    if ((line.incoming_max_sequence || 0) > 0 && line.changeover_sequence >= line.incoming_max_sequence) {
+                        showToast('Changeover already at last process', 'error');
+                        return;
+                    }
+                    const confirmed = confirm('Advance changeover to the next process?');
+                    if (!confirmed) {
+                        return;
+                    }
+                    const response = await fetch(`${API_BASE}/supervisor/changeover-advance`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ line_id: lineId, work_date: date })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        showToast(result.error || 'Failed to advance changeover', 'error');
+                        return;
+                    }
+                    showToast(`Changeover moved to P${result.data.changeover_sequence}`, 'success');
+                    await loadShiftSummaryData();
+                });
+            }
+            const setSelect = document.getElementById('set-changeover');
+            const applyBtn = document.getElementById('apply-changeover');
+            if (setSelect && applyBtn) {
+                setSelect.innerHTML = '<option value="0">0 - No incoming processes yet</option>';
+                try {
+                    const resp = await fetch(`${API_BASE}/products/${line.incoming_product_id}`);
+                    const data = await resp.json();
+                    const processes = data?.data?.processes || [];
+                    processes.forEach(proc => {
+                        const label = `P${proc.sequence_number} - ${proc.operation_code}${proc.operation_name ? ' ' + proc.operation_name : ''}`;
+                        const opt = document.createElement('option');
+                        opt.value = String(proc.sequence_number);
+                        opt.textContent = label;
+                        setSelect.appendChild(opt);
+                    });
+                    setSelect.value = String(line.changeover_sequence || 0);
+                } catch (err) {
+                    // ignore list errors
+                }
+                if (shift?.is_closed) {
+                    setSelect.disabled = true;
+                    applyBtn.disabled = true;
+                }
+                applyBtn.addEventListener('click', async () => {
+                    if (shift?.is_closed) {
+                        showToast('Shift is closed', 'error');
+                        return;
+                    }
+                    const nextSeq = parseInt(setSelect.value || '0', 10);
+                    const confirmed = confirm(`Set changeover boundary to P${nextSeq}?`);
+                    if (!confirmed) return;
+                    const response = await fetch(`${API_BASE}/supervisor/changeover-set`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ line_id: lineId, work_date: date, changeover_sequence: nextSeq })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        showToast(result.error || 'Failed to set changeover', 'error');
+                        return;
+                    }
+                    showToast(`Changeover set to P${result.data.changeover_sequence}`, 'success');
+                    await loadShiftSummaryData();
                 });
             }
         }

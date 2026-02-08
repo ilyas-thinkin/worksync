@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const ok = await requireAuth();
     if (!ok) return;
     setupMobileSidebar();
+    setupRealtime();
     loadManagementDashboard();
 });
 
@@ -15,7 +16,7 @@ async function requireAuth() {
             return false;
         }
         const result = await response.json();
-        if (!result.success || result.role !== 'management') {
+        if (!result.success) {
             window.location.href = '/';
             return false;
         }
@@ -41,6 +42,45 @@ function setupMobileSidebar() {
         sidebar.classList.remove('open');
         overlay.classList.remove('active');
     });
+}
+
+let mgmtRealtimeTimer = null;
+function setupRealtime() {
+    const handleChange = (payload) => {
+        if (!payload) return;
+        const date = document.getElementById('mgmt-date')?.value;
+        if (payload.work_date && date && payload.work_date !== date) {
+            return;
+        }
+        if (payload.entity && !['progress', 'daily_plans', 'lines', 'products', 'employees', 'materials'].includes(payload.entity)) {
+            return;
+        }
+        if (mgmtRealtimeTimer) clearTimeout(mgmtRealtimeTimer);
+        mgmtRealtimeTimer = setTimeout(() => {
+            mgmtRealtimeTimer = null;
+            refreshManagementData();
+        }, 300);
+    };
+
+    if (typeof SSEManager !== 'undefined') {
+        SSEManager.init('/events');
+        SSEManager.on('data_change', handleChange);
+    } else {
+        const source = new EventSource('/events');
+        source.addEventListener('data_change', (event) => {
+            let payload = {};
+            try {
+                payload = JSON.parse(event.data || '{}');
+            } catch (err) {
+                return;
+            }
+            handleChange(payload);
+        });
+        source.onerror = () => {
+            source.close();
+            setTimeout(setupRealtime, 3000);
+        };
+    }
 }
 
 async function loadManagementDashboard() {
@@ -212,8 +252,11 @@ async function loadLineMetrics() {
     body.innerHTML = metrics.map(row => `
         <tr>
             <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
-            <td>${row.product_code || '-'} ${row.product_name || ''}</td>
-            <td>${row.target}</td>
+            <td>
+                ${row.product_code || '-'} ${row.product_name || ''}
+                ${row.changeover ? `<div style="margin-top:2px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;">CHANGEOVER</span><div style="font-size:11px;color:#92400e;margin-top:2px;">Incoming: ${row.incoming_product_code}</div></div>` : ''}
+            </td>
+            <td>${row.target}${row.changeover && row.incoming_target ? `<div style="font-size:11px;color:#92400e;">+${row.incoming_target}</div>` : ''}</td>
             <td>${row.actual_output}</td>
             <td>${row.efficiency_percent}%</td>
             <td>${row.completion_percent}%</td>

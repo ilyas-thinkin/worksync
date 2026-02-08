@@ -3,9 +3,9 @@
  * Handles offline caching and background sync
  */
 
-const CACHE_NAME = 'worksync-v4';
-const STATIC_CACHE = 'worksync-static-v4';
-const API_CACHE = 'worksync-api-v4';
+const CACHE_NAME = 'worksync-v5';
+const STATIC_CACHE = 'worksync-static-v5';
+const API_CACHE = 'worksync-api-v5';
 
 // Static assets to cache
 const STATIC_ASSETS = [

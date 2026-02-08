@@ -12,6 +12,8 @@ const { withTransaction, withRetry, lockForUpdate } = require('../middleware/tra
 // Apply sanitization to all routes
 router.use(sanitizeInputs);
 
+const CHANGEOVER_ENABLED = process.env.CHANGEOVER_ENABLED !== 'false';
+
 const getSettingValue = async (key, fallback) => {
     const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
     return result.rows[0]?.value || fallback;
@@ -274,11 +276,14 @@ router.get('/daily-plans', async (req, res) => {
     try {
         const plansResult = await pool.query(
             `SELECT lp.id, lp.line_id, lp.product_id, lp.work_date, lp.target_units, lp.is_locked,
+                    lp.incoming_product_id, lp.incoming_target_units, lp.changeover_sequence,
                     pl.line_code, pl.line_name,
-                    p.product_code, p.product_name
+                    p.product_code, p.product_name,
+                    ip.product_code as incoming_product_code, ip.product_name as incoming_product_name
              FROM line_daily_plans lp
              JOIN production_lines pl ON lp.line_id = pl.id
              JOIN products p ON lp.product_id = p.id
+             LEFT JOIN products ip ON lp.incoming_product_id = ip.id
              WHERE lp.work_date = $1
              ORDER BY pl.line_name`,
             [date]
@@ -304,7 +309,8 @@ router.get('/daily-plans', async (req, res) => {
             data: {
                 plans: plansResult.rows,
                 lines: linesResult.rows,
-                products: productsResult.rows
+                products: productsResult.rows,
+                changeover_enabled: CHANGEOVER_ENABLED
             }
         });
     } catch (err) {
@@ -313,9 +319,12 @@ router.get('/daily-plans', async (req, res) => {
 });
 
 router.post('/daily-plans', async (req, res) => {
-    const { line_id, product_id, work_date, target_units, user_id } = req.body;
+    const { line_id, product_id, work_date, target_units, incoming_product_id, incoming_target_units, changeover_sequence, user_id } = req.body;
     if (await isDayLocked(work_date)) {
         return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    if (incoming_product_id && parseInt(incoming_product_id, 10) === parseInt(product_id, 10)) {
+        return res.status(400).json({ success: false, error: 'Incoming product must be different from primary product' });
     }
     try {
         const lockCheck = await pool.query(
@@ -329,23 +338,51 @@ router.post('/daily-plans', async (req, res) => {
             `SELECT * FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
             [line_id, work_date]
         );
+        const prev = before.rows[0];
+        const prevIncoming = prev?.incoming_product_id ? parseInt(prev.incoming_product_id, 10) : null;
+        const nextIncoming = incoming_product_id ? parseInt(incoming_product_id, 10) : null;
+        const incomingChanged = prevIncoming !== nextIncoming;
+        let normalizedChangeover = 0;
+        if (!CHANGEOVER_ENABLED || !incoming_product_id) {
+            normalizedChangeover = 0;
+        } else if (changeover_sequence === undefined || changeover_sequence === null || changeover_sequence === '') {
+            normalizedChangeover = incomingChanged
+                ? 0
+                : Math.max(0, parseInt(prev?.changeover_sequence || 0, 10));
+        } else {
+            normalizedChangeover = Math.max(0, parseInt(changeover_sequence || 0, 10));
+        }
+        if (CHANGEOVER_ENABLED && incoming_product_id) {
+            const maxSeq = await getIncomingMaxSequence(incoming_product_id);
+            normalizedChangeover = Math.min(normalizedChangeover, maxSeq);
+        }
         const result = await pool.query(
-            `INSERT INTO line_daily_plans (line_id, product_id, work_date, target_units, created_by, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $5)
+            `INSERT INTO line_daily_plans (line_id, product_id, work_date, target_units, incoming_product_id, incoming_target_units, changeover_sequence, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
              ON CONFLICT (line_id, work_date)
              DO UPDATE SET product_id = EXCLUDED.product_id,
                            target_units = EXCLUDED.target_units,
+                           incoming_product_id = EXCLUDED.incoming_product_id,
+                           incoming_target_units = EXCLUDED.incoming_target_units,
+                           changeover_sequence = EXCLUDED.changeover_sequence,
                            updated_by = EXCLUDED.updated_by,
                            updated_at = NOW()
              RETURNING *`,
-            [line_id, product_id, work_date, target_units || 0, user_id || null]
+            [line_id, product_id, work_date, target_units || 0, incoming_product_id || null, incoming_target_units || 0, normalizedChangeover, user_id || null]
         );
         const prevProduct = before.rows[0]?.product_id;
         if (prevProduct && parseInt(prevProduct, 10) !== parseInt(product_id, 10)) {
-            await pool.query(
-                `DELETE FROM employee_process_assignments WHERE line_id = $1`,
-                [line_id]
+            // Only clear assignments for the OLD primary product's processes, not incoming
+            const oldProductProcesses = await pool.query(
+                `SELECT id FROM product_processes WHERE product_id = $1`, [prevProduct]
             );
+            const oldIds = oldProductProcesses.rows.map(r => r.id);
+            if (oldIds.length > 0) {
+                await pool.query(
+                    `DELETE FROM employee_process_assignments WHERE line_id = $1 AND process_id = ANY($2::int[])`,
+                    [line_id, oldIds]
+                );
+            }
         }
 
         if (work_date === new Date().toISOString().slice(0, 10)) {
@@ -670,6 +707,7 @@ router.get('/reports/daily', async (req, res) => {
         const employeeSheet = workbook.addWorksheet('Employee Efficiency');
         employeeSheet.columns = [
             { header: 'Line', key: 'line_name', width: 24 },
+            { header: 'Product', key: 'product_code', width: 18 },
             { header: 'Employee Code', key: 'emp_code', width: 14 },
             { header: 'Employee Name', key: 'emp_name', width: 22 },
             { header: 'Operation', key: 'operation', width: 28 },
@@ -680,6 +718,7 @@ router.get('/reports/daily', async (req, res) => {
             const shift = await pool.query(
                 `SELECT e.emp_code, e.emp_name,
                         e.manpower_factor,
+                        p.product_code,
                         o.operation_code, o.operation_name,
                         COALESCE(SUM(lph.quantity), 0) as total_output,
                         pp.operation_sah,
@@ -687,13 +726,14 @@ router.get('/reports/daily', async (req, res) => {
                  FROM employees e
                  JOIN employee_process_assignments epa ON e.id = epa.employee_id AND epa.line_id = $1
                  JOIN product_processes pp ON epa.process_id = pp.id
+                 JOIN products p ON pp.product_id = p.id
                  JOIN operations o ON pp.operation_id = o.id
                  LEFT JOIN employee_attendance att ON e.id = att.employee_id AND att.attendance_date = $2
                  LEFT JOIN line_process_hourly_progress lph
                     ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
                  WHERE e.is_active = true
-                 GROUP BY e.emp_code, e.emp_name, e.manpower_factor, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
-                 ORDER BY e.emp_code`,
+                 GROUP BY e.emp_code, e.emp_name, e.manpower_factor, p.product_code, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
+                 ORDER BY p.product_code, e.emp_code`,
                 [line.id, date]
             );
             shift.rows.forEach(row => {
@@ -712,6 +752,7 @@ router.get('/reports/daily', async (req, res) => {
                     : 0;
                 employeeSheet.addRow({
                     line_name: line.line_name,
+                    product_code: row.product_code,
                     emp_code: row.emp_code,
                     emp_name: row.emp_name,
                     operation: `${row.operation_code} - ${row.operation_name}`,
@@ -799,6 +840,7 @@ router.get('/reports/range', async (req, res) => {
         employeeSheet.columns = [
             { header: 'Date', key: 'work_date', width: 12 },
             { header: 'Line', key: 'line_name', width: 24 },
+            { header: 'Product', key: 'product_code', width: 18 },
             { header: 'Employee Code', key: 'emp_code', width: 14 },
             { header: 'Employee Name', key: 'emp_name', width: 22 },
             { header: 'Operation', key: 'operation', width: 28 },
@@ -939,6 +981,7 @@ router.get('/reports/range', async (req, res) => {
                 const shift = await pool.query(
                     `SELECT e.emp_code, e.emp_name,
                             e.manpower_factor,
+                            p.product_code,
                             o.operation_code, o.operation_name,
                             COALESCE(SUM(lph.quantity), 0) as total_output,
                             pp.operation_sah,
@@ -946,13 +989,14 @@ router.get('/reports/range', async (req, res) => {
                      FROM employees e
                      JOIN employee_process_assignments epa ON e.id = epa.employee_id AND epa.line_id = $1
                      JOIN product_processes pp ON epa.process_id = pp.id
+                     JOIN products p ON pp.product_id = p.id
                      JOIN operations o ON pp.operation_id = o.id
                      LEFT JOIN employee_attendance att ON e.id = att.employee_id AND att.attendance_date = $2
                      LEFT JOIN line_process_hourly_progress lph
                         ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
                      WHERE e.is_active = true
-                     GROUP BY e.emp_code, e.emp_name, e.manpower_factor, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
-                     ORDER BY e.emp_code`,
+                     GROUP BY e.emp_code, e.emp_name, e.manpower_factor, p.product_code, o.operation_code, o.operation_name, pp.operation_sah, att.in_time, att.out_time
+                     ORDER BY p.product_code, e.emp_code`,
                     [line.id, date]
                 );
                 shift.rows.forEach(row => {
@@ -972,6 +1016,7 @@ router.get('/reports/range', async (req, res) => {
                     employeeSheet.addRow({
                         work_date: date,
                         line_name: line.line_name,
+                        product_code: row.product_code,
                         emp_code: row.emp_code,
                         emp_name: row.emp_name,
                         operation: `${row.operation_code} - ${row.operation_name}`,
@@ -995,6 +1040,7 @@ router.get('/reports/range', async (req, res) => {
 // PRODUCTION LINES
 // ============================================================================
 router.get('/lines', async (req, res) => {
+    const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
     try {
         const result = await pool.query(`
             SELECT pl.*,
@@ -1008,6 +1054,7 @@ router.get('/lines', async (req, res) => {
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = CURRENT_DATE
             LEFT JOIN products p_plan ON ldp.product_id = p_plan.id
             LEFT JOIN products p_current ON pl.current_product_id = p_current.id
+            ${includeInactive ? '' : 'WHERE pl.is_active = true'}
             ORDER BY pl.id
         `);
         res.json({ success: true, data: result.rows });
@@ -1079,6 +1126,40 @@ router.delete('/lines/:id', async (req, res) => {
         await pool.query(`UPDATE production_lines SET is_active = false WHERE id = $1`, [id]);
         realtime.broadcast('data_change', { entity: 'lines', action: 'delete', id });
         res.json({ success: true, message: 'Line deactivated successfully' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.delete('/lines/:id/hard-delete', async (req, res) => {
+    const { id } = req.params;
+    if (req.user?.role !== 'admin') {
+        return res.status(403).json({ success: false, error: 'Admin access required' });
+    }
+    try {
+        const deps = await pool.query(
+            `SELECT
+                (SELECT COUNT(*) FROM line_daily_plans WHERE line_id = $1) as daily_plans,
+                (SELECT COUNT(*) FROM employee_process_assignments WHERE line_id = $1) as assignments,
+                (SELECT COUNT(*) FROM line_process_hourly_progress WHERE line_id = $1) as hourly_progress,
+                (SELECT COUNT(*) FROM material_transactions WHERE line_id = $1) as materials,
+                (SELECT COUNT(*) FROM process_material_wip WHERE line_id = $1) as wip,
+                (SELECT COUNT(*) FROM line_shift_closures WHERE line_id = $1) as shift_closures,
+                (SELECT COUNT(*) FROM line_daily_metrics WHERE line_id = $1) as metrics`,
+            [id]
+        );
+        const row = deps.rows[0] || {};
+        const hasData = Object.values(row).some(v => parseInt(v || 0, 10) > 0);
+        if (hasData) {
+            return res.status(400).json({
+                success: false,
+                error: 'Line has related data; deactivate instead of deleting.',
+                details: row
+            });
+        }
+        await pool.query(`DELETE FROM production_lines WHERE id = $1`, [id]);
+        realtime.broadcast('data_change', { entity: 'lines', action: 'delete', id });
+        res.json({ success: true, message: 'Line deleted successfully' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -1235,6 +1316,10 @@ router.get('/lines-metrics', async (req, res) => {
                 COALESCE(ldp.target_units, pl.target_units, 0) as target,
                 COALESCE(p.product_code, '') as product_code,
                 COALESCE(p.product_name, '') as product_name,
+                ldp.incoming_product_id,
+                COALESCE(ip.product_code, '') as incoming_product_code,
+                COALESCE(ip.product_name, '') as incoming_product_name,
+                COALESCE(ldp.incoming_target_units, 0) as incoming_target,
                 COALESCE(
                     (SELECT SUM(pp.operation_sah)
                      FROM product_processes pp
@@ -1257,6 +1342,7 @@ router.get('/lines-metrics', async (req, res) => {
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $1
             LEFT JOIN products p ON COALESCE(ldp.product_id, pl.current_product_id) = p.id
+            LEFT JOIN products ip ON ldp.incoming_product_id = ip.id
             LEFT JOIN line_daily_metrics ldm ON ldm.line_id = pl.id AND ldm.work_date = $1
             WHERE pl.is_active = true
             ORDER BY pl.id
@@ -1286,7 +1372,11 @@ router.get('/lines-metrics', async (req, res) => {
                 line_code: row.line_code,
                 product_code: row.product_code,
                 product_name: row.product_name,
+                incoming_product_code: row.incoming_product_code || null,
+                incoming_product_name: row.incoming_product_name || null,
+                changeover: !!row.incoming_product_id,
                 target: target,
+                incoming_target: parseInt(row.incoming_target) || 0,
                 manpower: manpower,
                 total_sah: totalSAH,
                 actual_output: actualOutput,
@@ -1449,6 +1539,10 @@ router.get('/products', async (req, res) => {
             SELECT p.*,
                    line_info.line_names,
                    line_info.line_ids,
+                   today_primary.line_names as today_primary_lines,
+                   today_primary.line_ids as today_primary_line_ids,
+                   today_incoming.line_names as today_incoming_lines,
+                   today_incoming.line_ids as today_incoming_line_ids,
                    (SELECT COUNT(*) FROM product_processes pp WHERE pp.product_id = p.id AND pp.is_active = true) as operations_count,
                    (SELECT COALESCE(SUM(pp.operation_sah), 0) FROM product_processes pp WHERE pp.product_id = p.id AND pp.is_active = true) as total_sah
             FROM products p
@@ -1459,6 +1553,22 @@ router.get('/products', async (req, res) => {
                 FROM production_lines pl
                 WHERE pl.current_product_id = p.id
             ) line_info ON true
+            LEFT JOIN LATERAL (
+                SELECT
+                    string_agg(pl.line_name, ', ' ORDER BY pl.line_name) as line_names,
+                    array_agg(pl.id ORDER BY pl.id) as line_ids
+                FROM line_daily_plans ldp
+                JOIN production_lines pl ON ldp.line_id = pl.id
+                WHERE ldp.work_date = CURRENT_DATE AND ldp.product_id = p.id
+            ) today_primary ON true
+            LEFT JOIN LATERAL (
+                SELECT
+                    string_agg(pl.line_name, ', ' ORDER BY pl.line_name) as line_names,
+                    array_agg(pl.id ORDER BY pl.id) as line_ids
+                FROM line_daily_plans ldp
+                JOIN production_lines pl ON ldp.line_id = pl.id
+                WHERE ldp.work_date = CURRENT_DATE AND ldp.incoming_product_id = p.id
+            ) today_incoming ON true
             ORDER BY p.product_code
         `);
         res.json({ success: true, data: result.rows });
@@ -1520,6 +1630,7 @@ router.post('/products', validateBody(schemas.product.partial()), async (req, re
 router.put('/products/:id', async (req, res) => {
     const { id } = req.params;
     const { product_code, product_name, product_description, category, line_ids, is_active } = req.body;
+    const hasLineIds = Object.prototype.hasOwnProperty.call(req.body || {}, 'line_ids');
     const normalizedLineIds = Array.isArray(line_ids)
         ? line_ids.map((lineId) => parseInt(lineId, 10)).filter(Boolean)
         : [];
@@ -1533,22 +1644,24 @@ router.put('/products/:id', async (req, res) => {
             [product_code, product_name, product_description, category, is_active, id]
         );
 
-        if (normalizedLineIds.length) {
-            await client.query(
-                `UPDATE production_lines
-                 SET current_product_id = NULL
-                 WHERE current_product_id = $1 AND id <> ALL($2::int[])`,
-                [id, normalizedLineIds]
-            );
-            await client.query(
-                `UPDATE production_lines SET current_product_id = $1 WHERE id = ANY($2::int[])`,
-                [id, normalizedLineIds]
-            );
-        } else {
-            await client.query(
-                `UPDATE production_lines SET current_product_id = NULL WHERE current_product_id = $1`,
-                [id]
-            );
+        if (hasLineIds) {
+            if (normalizedLineIds.length) {
+                await client.query(
+                    `UPDATE production_lines
+                     SET current_product_id = NULL
+                     WHERE current_product_id = $1 AND id <> ALL($2::int[])`,
+                    [id, normalizedLineIds]
+                );
+                await client.query(
+                    `UPDATE production_lines SET current_product_id = $1 WHERE id = ANY($2::int[])`,
+                    [id, normalizedLineIds]
+                );
+            } else {
+                await client.query(
+                    `UPDATE production_lines SET current_product_id = NULL WHERE current_product_id = $1`,
+                    [id]
+                );
+            }
         }
 
         await client.query('COMMIT');
@@ -1897,72 +2010,143 @@ const parseSupervisorQr = (payload) => {
     return { raw };
 };
 
-const resolveProcessForLine = async (lineId, processPayload, workDate = null) => {
+// Helper: get both active product IDs for a line on a date
+const getIncomingMaxSequence = async (productId) => {
+    if (!productId) return 0;
+    const maxSeqResult = await pool.query(
+        `SELECT COALESCE(MAX(sequence_number), 0) as max_seq
+         FROM product_processes
+         WHERE product_id = $1 AND is_active = true`,
+        [productId]
+    );
+    return parseInt(maxSeqResult.rows[0]?.max_seq || 0, 10);
+};
+
+const getLineProductIds = async (lineId, workDate = null) => {
     const dateValue = workDate || new Date().toISOString().slice(0, 10);
     const planResult = await pool.query(
-        `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+        `SELECT product_id, incoming_product_id, changeover_sequence
+         FROM line_daily_plans
+         WHERE line_id = $1 AND work_date = $2`,
         [lineId, dateValue]
     );
     const plan = planResult.rows[0];
-    let productId = plan?.product_id;
+    let primaryId = plan?.product_id || null;
+    let incomingId = plan?.incoming_product_id || null;
+    const changeoverSequence = parseInt(plan?.changeover_sequence || 0, 10);
 
-    if (!productId) {
+    if (!primaryId) {
         const lineResult = await pool.query(
             `SELECT current_product_id FROM production_lines WHERE id = $1`,
             [lineId]
         );
-        productId = lineResult.rows[0]?.current_product_id;
+        primaryId = lineResult.rows[0]?.current_product_id || null;
     }
+    if (!CHANGEOVER_ENABLED) {
+        return { primaryId, incomingId: null, changeoverSequence: 0, incomingMaxSequence: 0 };
+    }
+    let incomingMaxSequence = 0;
+    if (incomingId) {
+        incomingMaxSequence = await getIncomingMaxSequence(incomingId);
+    }
+    const normalizedChangeover = Math.max(0, Math.min(changeoverSequence, incomingMaxSequence));
+    return { primaryId, incomingId, changeoverSequence: normalizedChangeover, incomingMaxSequence };
+};
 
-    if (!productId) {
+const isProcessActiveForChangeover = ({ productId, sequenceNumber, primaryId, incomingId, changeoverSequence }) => {
+    if (!primaryId) return false;
+    if (!incomingId) {
+        return productId === primaryId;
+    }
+    if (productId === incomingId) {
+        return sequenceNumber <= changeoverSequence;
+    }
+    if (productId === primaryId) {
+        return sequenceNumber > changeoverSequence;
+    }
+    return false;
+};
+
+const resolveProcessForLine = async (lineId, processPayload, workDate = null) => {
+    const { primaryId, incomingId, changeoverSequence } = await getLineProductIds(lineId, workDate);
+
+    if (!primaryId) {
         throw new Error('Line has no product assigned for this date');
     }
 
     if (processPayload.type === 'operation') {
         const result = await pool.query(
-            `SELECT pp.id, pp.sequence_number, pp.target_units, o.id AS operation_id, o.operation_code, o.operation_name
+            `SELECT pp.id, pp.sequence_number, pp.target_units, pp.product_id,
+                    o.id AS operation_id, o.operation_code, o.operation_name
              FROM product_processes pp
              JOIN operations o ON pp.operation_id = o.id
-             WHERE pp.product_id = $1 AND pp.operation_id = $2
+             WHERE pp.product_id = ANY($1::int[]) AND pp.operation_id = $2
              ORDER BY pp.sequence_number
-             LIMIT 1`,
-            [productId, processPayload.id]
+             LIMIT 10`,
+            [[primaryId, incomingId].filter(Boolean), processPayload.id]
         );
-        if (!result.rows[0]) {
-            throw new Error('Operation not found in current product process');
+        const candidates = result.rows.filter(row => {
+            const isActive = isProcessActiveForChangeover({
+                productId: row.product_id,
+                sequenceNumber: row.sequence_number,
+                primaryId,
+                incomingId,
+                changeoverSequence
+            });
+            const isNextIncoming = incomingId
+                && row.product_id === incomingId
+                && row.sequence_number === changeoverSequence + 1;
+            return isActive || isNextIncoming;
+        });
+        const chosen = candidates[0];
+        if (!chosen) {
+            throw new Error('Operation not found in current product processes');
         }
-        return result.rows[0];
+        return chosen;
     }
 
     const result = await pool.query(
-        `SELECT pp.id, pp.sequence_number, pp.target_units, o.id AS operation_id, o.operation_code, o.operation_name
+        `SELECT pp.id, pp.sequence_number, pp.target_units, pp.product_id,
+                o.id AS operation_id, o.operation_code, o.operation_name
          FROM product_processes pp
          JOIN operations o ON pp.operation_id = o.id
-         WHERE pp.id = $1 AND pp.product_id = $2
+         WHERE pp.id = $1 AND pp.product_id = ANY($2::int[])
          LIMIT 1`,
-        [processPayload.id, productId]
+        [processPayload.id, [primaryId, incomingId].filter(Boolean)]
     );
-    if (!result.rows[0]) {
-        throw new Error('Process not found for current line product');
+    const row = result.rows[0];
+    if (!row) {
+        throw new Error('Process not found for current line products');
     }
-    return result.rows[0];
+    const isActive = isProcessActiveForChangeover({
+        productId: row.product_id,
+        sequenceNumber: row.sequence_number,
+        primaryId,
+        incomingId,
+        changeoverSequence
+    });
+    const isNextIncoming = incomingId
+        && row.product_id === incomingId
+        && row.sequence_number === changeoverSequence + 1;
+    if (!isActive && !isNextIncoming) {
+        throw new Error('Process not active for current changeover boundary');
+    }
+    return row;
 };
 
 const resolveNextProcessForLine = async (lineId, processId, workDate = null) => {
-    const dateValue = workDate || new Date().toISOString().slice(0, 10);
+    // Find next process in the SAME product's chain (no cross-product forwarding)
     const result = await pool.query(
         `SELECT next_pp.id
          FROM product_processes pp
-         JOIN production_lines pl ON pl.id = $1
-         LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $3
          JOIN product_processes next_pp
-            ON next_pp.product_id = COALESCE(ldp.product_id, pl.current_product_id)
+            ON next_pp.product_id = pp.product_id
            AND next_pp.sequence_number > pp.sequence_number
            AND next_pp.is_active = true
-         WHERE pp.id = $2
+         WHERE pp.id = $1
          ORDER BY next_pp.sequence_number
          LIMIT 1`,
-        [lineId, processId, dateValue]
+        [processId]
     );
     return result.rows[0]?.id || null;
 };
@@ -2003,11 +2187,15 @@ router.get('/supervisor/lines', async (req, res) => {
                    pl.line_code,
                    pl.line_name,
                    COALESCE(ldp.product_id, pl.current_product_id) as current_product_id,
-                   COALESCE(p_plan.product_code, p.product_code) as product_code
+                   COALESCE(p_plan.product_code, p.product_code) as product_code,
+                   ldp.incoming_product_id,
+                   COALESCE(ldp.changeover_sequence, 0) as changeover_sequence,
+                   ip.product_code as incoming_product_code
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = CURRENT_DATE
             LEFT JOIN products p_plan ON ldp.product_id = p_plan.id
             LEFT JOIN products p ON pl.current_product_id = p.id
+            LEFT JOIN products ip ON ldp.incoming_product_id = ip.id
             WHERE pl.is_active = true
             ORDER BY pl.line_name
         `);
@@ -2020,29 +2208,166 @@ router.get('/supervisor/lines', async (req, res) => {
 router.get('/supervisor/processes/:lineId', async (req, res) => {
     const { lineId } = req.params;
     try {
-        const planResult = await pool.query(
-            `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = CURRENT_DATE`,
-            [lineId]
-        );
-        let productId = planResult.rows[0]?.product_id;
-        if (!productId) {
-            const lineResult = await pool.query(
-                `SELECT current_product_id FROM production_lines WHERE id = $1`,
-                [lineId]
-            );
-            productId = lineResult.rows[0]?.current_product_id;
-        }
-        if (!productId) {
+        const { primaryId, incomingId, changeoverSequence, incomingMaxSequence } = await getLineProductIds(lineId);
+        if (!primaryId) {
             return res.json({ success: true, data: [] });
         }
+
         const result = await pool.query(`
-            SELECT pp.id, pp.sequence_number, o.operation_code, o.operation_name
+            SELECT pp.id, pp.sequence_number, pp.product_id,
+                   o.operation_code, o.operation_name,
+                   p.product_code
             FROM product_processes pp
             JOIN operations o ON pp.operation_id = o.id
-            WHERE pp.product_id = $1
-            ORDER BY pp.sequence_number
-        `, [productId]);
-        res.json({ success: true, data: result.rows });
+            JOIN products p ON pp.product_id = p.id
+            WHERE pp.is_active = true
+              AND (
+                (pp.product_id = $1 AND ($2::int IS NULL OR pp.sequence_number > $3))
+                OR (pp.product_id = $2 AND pp.sequence_number <= ($3 + 1))
+              )
+            ORDER BY pp.product_id = $1 DESC, pp.sequence_number
+        `, [primaryId, incomingId, changeoverSequence]);
+        res.json({
+            success: true,
+            data: result.rows,
+            changeover: incomingId ? true : false,
+            primary_product_id: primaryId,
+            incoming_product_id: incomingId,
+            changeover_sequence: changeoverSequence,
+            incoming_max_sequence: incomingMaxSequence,
+            changeover_enabled: CHANGEOVER_ENABLED
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Advance changeover boundary by one process sequence
+router.post('/supervisor/changeover-advance', async (req, res) => {
+    const { line_id, work_date } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    if (!CHANGEOVER_ENABLED) {
+        return res.status(403).json({ success: false, error: 'Changeover is disabled' });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    try {
+        const planResult = await pool.query(
+            `SELECT id, incoming_product_id, changeover_sequence, is_locked
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        const plan = planResult.rows[0];
+        if (!plan || !plan.incoming_product_id) {
+            return res.status(400).json({ success: false, error: 'No incoming product set for this line/date' });
+        }
+        if (plan.is_locked) {
+            return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
+
+        const maxSeqResult = await pool.query(
+            `SELECT COALESCE(MAX(sequence_number), 0) as max_seq
+             FROM product_processes
+             WHERE product_id = $1 AND is_active = true`,
+            [plan.incoming_product_id]
+        );
+        const maxSeq = parseInt(maxSeqResult.rows[0]?.max_seq || 0, 10);
+        const currentSeq = parseInt(plan.changeover_sequence || 0, 10);
+        const nextSeq = Math.min(currentSeq + 1, maxSeq);
+
+        const before = await pool.query(
+            `SELECT * FROM line_daily_plans WHERE id = $1`,
+            [plan.id]
+        );
+        const updateResult = await pool.query(
+            `UPDATE line_daily_plans
+             SET changeover_sequence = $1, updated_at = NOW()
+             WHERE id = $2
+             RETURNING changeover_sequence`,
+            [nextSeq, plan.id]
+        );
+
+        await logAudit(
+            'line_daily_plans',
+            plan.id,
+            'changeover_advance',
+            updateResult.rows[0],
+            before.rows[0] || null
+        );
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+        res.json({
+            success: true,
+            data: {
+                changeover_sequence: updateResult.rows[0].changeover_sequence,
+                max_sequence: maxSeq
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Set changeover boundary to a specific sequence
+router.post('/supervisor/changeover-set', async (req, res) => {
+    const { line_id, work_date, changeover_sequence } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    if (!CHANGEOVER_ENABLED) {
+        return res.status(403).json({ success: false, error: 'Changeover is disabled' });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    try {
+        const planResult = await pool.query(
+            `SELECT id, incoming_product_id, changeover_sequence, is_locked
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        const plan = planResult.rows[0];
+        if (!plan || !plan.incoming_product_id) {
+            return res.status(400).json({ success: false, error: 'No incoming product set for this line/date' });
+        }
+        if (plan.is_locked) {
+            return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
+
+        const maxSeq = await getIncomingMaxSequence(plan.incoming_product_id);
+        const requested = Math.max(0, parseInt(changeover_sequence || 0, 10));
+        const nextSeq = Math.min(requested, maxSeq);
+
+        const before = await pool.query(
+            `SELECT * FROM line_daily_plans WHERE id = $1`,
+            [plan.id]
+        );
+        const updateResult = await pool.query(
+            `UPDATE line_daily_plans
+             SET changeover_sequence = $1, updated_at = NOW()
+             WHERE id = $2
+             RETURNING changeover_sequence`,
+            [nextSeq, plan.id]
+        );
+        await logAudit(
+            'line_daily_plans',
+            plan.id,
+            'changeover_set',
+            updateResult.rows[0],
+            before.rows[0] || null
+        );
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+        res.json({
+            success: true,
+            data: {
+                changeover_sequence: updateResult.rows[0].changeover_sequence,
+                max_sequence: maxSeq
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -2636,6 +2961,52 @@ router.post('/supervisor/progress', async (req, res) => {
                 updated_at = NOW()`,
             [line_id, process_id, work_date, remainingTotal]
         );
+
+        if (CHANGEOVER_ENABLED && completed > 0) {
+            const planResult = await pool.query(
+                `SELECT id, incoming_product_id, changeover_sequence
+                 FROM line_daily_plans
+                 WHERE line_id = $1 AND work_date = $2`,
+                [line_id, work_date]
+            );
+            const plan = planResult.rows[0];
+            if (plan?.incoming_product_id) {
+                const procResult = await pool.query(
+                    `SELECT product_id, sequence_number
+                     FROM product_processes
+                     WHERE id = $1`,
+                    [process_id]
+                );
+                const proc = procResult.rows[0];
+                if (proc && parseInt(proc.product_id, 10) === parseInt(plan.incoming_product_id, 10)) {
+                    const seq = parseInt(proc.sequence_number || 0, 10);
+                    const currentSeq = parseInt(plan.changeover_sequence || 0, 10);
+                    if (seq > currentSeq) {
+                        const maxSeq = await getIncomingMaxSequence(plan.incoming_product_id);
+                        const nextSeq = Math.min(seq, maxSeq);
+                        const before = await pool.query(
+                            `SELECT * FROM line_daily_plans WHERE id = $1`,
+                            [plan.id]
+                        );
+                        const updateResult = await pool.query(
+                            `UPDATE line_daily_plans
+                             SET changeover_sequence = $1, updated_at = NOW()
+                             WHERE id = $2
+                             RETURNING changeover_sequence`,
+                            [nextSeq, plan.id]
+                        );
+                        await logAudit(
+                            'line_daily_plans',
+                            plan.id,
+                            'changeover_auto',
+                            updateResult.rows[0],
+                            before.rows[0] || null
+                        );
+                        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+                    }
+                }
+            }
+        }
         realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, process_id, work_date, hour_slot });
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
@@ -2680,17 +3051,30 @@ router.get('/lines/:id/details', async (req, res) => {
                    COALESCE(ldp.product_id, pl.current_product_id) as active_product_id,
                    COALESCE(p_plan.product_code, p.product_code) as product_code,
                    COALESCE(p_plan.product_name, p.product_name) as product_name,
-                   ldp.target_units as daily_target_units
+                   ldp.target_units as daily_target_units,
+                   ldp.incoming_product_id,
+                   ip.product_code as incoming_product_code,
+                   ip.product_name as incoming_product_name,
+                   COALESCE(ldp.incoming_target_units, 0) as incoming_target_units,
+                   COALESCE(ldp.changeover_sequence, 0) as changeover_sequence
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = CURRENT_DATE
             LEFT JOIN products p_plan ON ldp.product_id = p_plan.id
             LEFT JOIN products p ON pl.current_product_id = p.id
+            LEFT JOIN products ip ON ldp.incoming_product_id = ip.id
             WHERE pl.id = $1
         `, [id]);
         const line = lineResult.rows[0];
         if (!line) {
             return res.status(404).json({ success: false, error: 'Line not found' });
         }
+        line.changeover = !!line.incoming_product_id && CHANGEOVER_ENABLED;
+        let changeoverSequence = parseInt(line.changeover_sequence || 0, 10);
+        let incomingMaxSequence = 0;
+        if (line.incoming_product_id && CHANGEOVER_ENABLED) {
+            incomingMaxSequence = await getIncomingMaxSequence(line.incoming_product_id);
+        }
+        changeoverSequence = Math.max(0, Math.min(changeoverSequence, incomingMaxSequence));
 
         const employeesResult = await pool.query(`
             SELECT e.*
@@ -2700,16 +3084,25 @@ router.get('/lines/:id/details', async (req, res) => {
         `);
         const employees = employeesResult.rows;
 
+        // Get processes for both primary and incoming products
         let processes = [];
         const productId = line.active_product_id || line.current_product_id;
-        if (productId) {
+        const hasProducts = !!productId || !!line.incoming_product_id;
+        if (hasProducts) {
             const processesResult = await pool.query(`
-                SELECT pp.*, o.operation_code, o.operation_name, o.operation_category, o.qr_code_path
+                SELECT pp.*, pp.product_id,
+                       o.operation_code, o.operation_name, o.operation_category, o.qr_code_path,
+                       pr.product_code as product_code
                 FROM product_processes pp
                 JOIN operations o ON pp.operation_id = o.id
-                WHERE pp.product_id = $1
-                ORDER BY pp.sequence_number
-            `, [productId]);
+                JOIN products pr ON pp.product_id = pr.id
+                WHERE pp.is_active = true
+                  AND (
+                    (pp.product_id = $1 AND ($2::int IS NULL OR pp.sequence_number > $3))
+                    OR (pp.product_id = $2 AND pp.sequence_number <= $3)
+                  )
+                ORDER BY pp.product_id = $1 DESC, pp.sequence_number
+            `, [productId, line.incoming_product_id, changeoverSequence]);
             processes = processesResult.rows;
         }
 
@@ -2738,7 +3131,10 @@ router.get('/lines/:id/details', async (req, res) => {
                 employees,
                 processes,
                 assignments,
-                allAssignments
+                allAssignments,
+                changeover_enabled: CHANGEOVER_ENABLED,
+                incoming_max_sequence: incomingMaxSequence,
+                changeover_sequence: changeoverSequence
             }
         });
     } catch (err) {
@@ -2978,25 +3374,34 @@ router.get('/supervisor/shift-summary', async (req, res) => {
         return res.status(400).json({ success: false, error: 'line_id and date are required' });
     }
     try {
-        // Get line info
+        // Get line info with both products
         const lineResult = await pool.query(`
             SELECT pl.*,
                    COALESCE(ldp.product_id, pl.current_product_id) as product_id,
                    COALESCE(p.product_code, '') as product_code,
                    COALESCE(p.product_name, '') as product_name,
-                   COALESCE(ldp.target_units, pl.target_units, 0) as target
+                   COALESCE(ldp.target_units, pl.target_units, 0) as target,
+                   ldp.incoming_product_id,
+                   COALESCE(ip.product_code, '') as incoming_product_code,
+                   COALESCE(ip.product_name, '') as incoming_product_name,
+                   COALESCE(ldp.incoming_target_units, 0) as incoming_target,
+                   COALESCE(ldp.changeover_sequence, 0) as changeover_sequence
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
             LEFT JOIN products p ON COALESCE(ldp.product_id, pl.current_product_id) = p.id
+            LEFT JOIN products ip ON ldp.incoming_product_id = ip.id
             WHERE pl.id = $1
         `, [line_id, date]);
         const line = lineResult.rows[0];
         if (!line) {
             return res.status(404).json({ success: false, error: 'Line not found' });
         }
+        const hasChangeover = !!line.incoming_product_id && CHANGEOVER_ENABLED;
+        let changeoverSequence = parseInt(line.changeover_sequence || 0, 10);
 
-        // Get total SAH for product
+        // Get total SAH for product(s)
         let totalSAH = 0;
+        let incomingSAH = 0;
         if (line.product_id) {
             const sahResult = await pool.query(`
                 SELECT COALESCE(SUM(operation_sah), 0) as total_sah
@@ -3005,6 +3410,19 @@ router.get('/supervisor/shift-summary', async (req, res) => {
             `, [line.product_id]);
             totalSAH = parseFloat(sahResult.rows[0].total_sah) || 0;
         }
+        if (line.incoming_product_id) {
+            const sahResult2 = await pool.query(`
+                SELECT COALESCE(SUM(operation_sah), 0) as total_sah
+                FROM product_processes
+                WHERE product_id = $1 AND is_active = true
+            `, [line.incoming_product_id]);
+            incomingSAH = parseFloat(sahResult2.rows[0].total_sah) || 0;
+        }
+        let incomingMaxSequence = 0;
+        if (line.incoming_product_id && CHANGEOVER_ENABLED) {
+            incomingMaxSequence = await getIncomingMaxSequence(line.incoming_product_id);
+        }
+        changeoverSequence = Math.max(0, Math.min(changeoverSequence, incomingMaxSequence));
 
         // Get hourly output summary
         const hourlyResult = await pool.query(`
@@ -3017,44 +3435,65 @@ router.get('/supervisor/shift-summary', async (req, res) => {
         const hourlyOutput = hourlyResult.rows;
         const hourlyTotal = hourlyOutput.reduce((sum, h) => sum + parseInt(h.total_quantity || 0), 0);
 
-        // Get output by process
+        const shiftResult = await pool.query(
+            `SELECT closed_at FROM line_shift_closures WHERE line_id = $1 AND work_date = $2`,
+            [line_id, date]
+        );
+        const shiftClosed = shiftResult.rowCount > 0;
+        const shiftClosedAt = shiftResult.rows[0]?.closed_at || null;
+
+        // Get output by process (both products if changeover)
         const processOutputResult = await pool.query(`
             SELECT pp.id as process_id,
                    pp.sequence_number,
+                   pp.product_id,
+                   p.product_code,
                    o.operation_code,
                    o.operation_name,
                    COALESCE(SUM(lph.quantity), 0) as total_quantity
             FROM product_processes pp
             JOIN operations o ON pp.operation_id = o.id
+            JOIN products p ON pp.product_id = p.id
             LEFT JOIN line_process_hourly_progress lph
                 ON lph.process_id = pp.id AND lph.line_id = $1 AND lph.work_date = $2
-            WHERE pp.product_id = $3 AND pp.is_active = true
-            GROUP BY pp.id, pp.sequence_number, o.operation_code, o.operation_name
-            ORDER BY pp.sequence_number
-        `, [line_id, date, line.product_id]);
+            WHERE pp.is_active = true
+              AND (
+                (pp.product_id = $3 AND ($4::int IS NULL OR pp.sequence_number > $5))
+                OR (pp.product_id = $4 AND pp.sequence_number <= $5)
+              )
+            GROUP BY pp.id, pp.sequence_number, pp.product_id, p.product_code, o.operation_code, o.operation_name
+            ORDER BY pp.product_id = $3 DESC, pp.sequence_number
+        `, [line_id, date, line.product_id, line.incoming_product_id, changeoverSequence]);
 
-        // Get employee attendance and output
+        // Get employee attendance and output (includes both products' employees)
         const employeeResult = await pool.query(`
             SELECT e.id, e.emp_code, e.emp_name,
                    e.manpower_factor,
                    att.in_time, att.out_time, att.status,
                    COALESCE(SUM(lph.quantity), 0) as total_output,
                    pp.sequence_number,
+                   pp.product_id,
                    pp.operation_sah,
+                   p.product_code as product_code,
                    o.operation_code,
                    o.operation_name
             FROM employees e
             JOIN employee_process_assignments epa ON e.id = epa.employee_id AND epa.line_id = $1
             JOIN product_processes pp ON epa.process_id = pp.id
+            JOIN products p ON pp.product_id = p.id
             JOIN operations o ON pp.operation_id = o.id
             LEFT JOIN employee_attendance att ON e.id = att.employee_id AND att.attendance_date = $2
             LEFT JOIN line_process_hourly_progress lph
                 ON lph.employee_id = e.id AND lph.line_id = $1 AND lph.work_date = $2
             WHERE e.is_active = true
+              AND (
+                (pp.product_id = $3 AND ($4::int IS NULL OR pp.sequence_number > $5))
+                OR (pp.product_id = $4 AND pp.sequence_number <= $5)
+              )
             GROUP BY e.id, e.emp_code, e.emp_name, e.manpower_factor, att.in_time, att.out_time, att.status,
-                     pp.sequence_number, pp.operation_sah, o.operation_code, o.operation_name
-            ORDER BY pp.sequence_number, e.emp_code
-        `, [line_id, date]);
+                     pp.sequence_number, pp.product_id, pp.operation_sah, p.product_code, o.operation_code, o.operation_name
+            ORDER BY pp.product_id = $3 DESC, pp.sequence_number, e.emp_code
+        `, [line_id, date, line.product_id, line.incoming_product_id, changeoverSequence]);
 
         // Get material summary
         const materialResult = await pool.query(`
@@ -3132,7 +3571,14 @@ router.get('/supervisor/shift-summary', async (req, res) => {
                     line_code: line.line_code,
                     line_name: line.line_name,
                     product_code: line.product_code,
-                    product_name: line.product_name
+                    product_name: line.product_name,
+                    incoming_product_id: line.incoming_product_id || null,
+                    incoming_product_code: line.incoming_product_code || null,
+                    incoming_product_name: line.incoming_product_name || null,
+                    changeover: hasChangeover,
+                    changeover_sequence: changeoverSequence,
+                    incoming_max_sequence: incomingMaxSequence,
+                    changeover_enabled: CHANGEOVER_ENABLED
                 },
                 shift: {
                     is_closed: shiftClosed,
@@ -3141,12 +3587,14 @@ router.get('/supervisor/shift-summary', async (req, res) => {
                 date: date,
                 metrics: {
                     target: target,
+                    incoming_target: parseInt(line.incoming_target) || 0,
                     total_output: totalOutput,
                     qa_output: qaOutput,
                     hourly_output: hourlyTotal,
                     manpower: manpower,
                     working_hours: workingHours,
                     total_sah: totalSAH,
+                    incoming_sah: incomingSAH,
                     takt_time_seconds: taktTime,
                     takt_time_display: taktTime > 0 ? `${Math.floor(taktTime / 60)}m ${taktTime % 60}s` : '-',
                     efficiency_percent: efficiency,

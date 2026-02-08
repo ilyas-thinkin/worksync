@@ -13,7 +13,16 @@ let ieDefaultOut = '17:00';
 document.addEventListener('DOMContentLoaded', async () => {
     const ok = await requireAuth();
     if (!ok) return;
-    loadSection('dashboard');
+    if (isIeMode) {
+        loadSection('daily-plan');
+        const dailyLink = document.querySelector('.nav-link[data-section="daily-plan"]');
+        if (dailyLink) {
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            dailyLink.classList.add('active');
+        }
+    } else {
+        loadSection('dashboard');
+    }
     setupNavigation();
     setupMobileSidebar();
     setupRealtime();
@@ -221,7 +230,69 @@ async function loadDashboard() {
                     </button>
                 </div>
             </div>
+            <div class="card" style="margin-top: 24px;">
+                <div class="card-header">
+                    <h3 class="card-title">Management Snapshot</h3>
+                </div>
+                <div class="card-body">
+                    <div class="ie-actions" style="flex-wrap:wrap; gap:12px;">
+                        <div class="ie-date">
+                            <label for="admin-mgmt-date">Date</label>
+                            <input type="date" id="admin-mgmt-date" value="${new Date().toISOString().slice(0, 10)}">
+                        </div>
+                        <div class="ie-date">
+                            <label for="admin-mgmt-line-select">Line</label>
+                            <select class="form-control" id="admin-mgmt-line-select"></select>
+                        </div>
+                    </div>
+                    <div class="stats-grid" id="admin-mgmt-stats" style="margin-top:16px;"></div>
+                    <div class="card" style="margin-top:16px;">
+                        <div class="card-header">
+                            <h3 class="card-title">Line Performance</h3>
+                        </div>
+                        <div class="card-body table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Line</th>
+                                        <th>Product</th>
+                                        <th>Target</th>
+                                        <th>Output</th>
+                                        <th>Efficiency</th>
+                                        <th>Completion</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="admin-mgmt-lines"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card" style="margin-top:16px;">
+                        <div class="card-header">
+                            <h3 class="card-title">Employee Efficiency</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-container">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Employee</th>
+                                            <th>Operation</th>
+                                            <th>Output</th>
+                                            <th>Efficiency</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="admin-mgmt-employees"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         `;
+        await adminLoadLineOptions();
+        document.getElementById('admin-mgmt-date')?.addEventListener('change', adminRefreshManagementData);
+        document.getElementById('admin-mgmt-line-select')?.addEventListener('change', adminRefreshEmployeeEfficiency);
+        adminRefreshManagementData();
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">Error loading dashboard: ${err.message}</div>`;
     }
@@ -236,7 +307,7 @@ async function loadLines() {
 
     try {
         const [linesResponse, metricsResponse] = await Promise.all([
-            fetch(`${API_BASE}/lines`),
+            fetch(`${API_BASE}/lines?include_inactive=true`),
             fetch(`${API_BASE}/lines-metrics`)
         ]);
         const result = await linesResponse.json();
@@ -305,7 +376,8 @@ async function loadLines() {
                                             <div class="action-btns">
                                                 <button class="btn btn-secondary btn-sm" onclick="viewLineDetails(${line.id})">Details</button>
                                                 <button class="btn btn-secondary btn-sm" onclick='showLineModal(${JSON.stringify(line)})'>Edit</button>
-                                                <button class="btn btn-danger btn-sm" onclick="deleteLine(${line.id})">Delete</button>
+                                                <button class="btn btn-secondary btn-sm" onclick="deactivateLine(${line.id})">Deactivate</button>
+                                                <button class="btn btn-danger btn-sm" onclick="hardDeleteLine(${line.id})">Delete</button>
                                             </div>
                                         </td>
                                     </tr>
@@ -320,6 +392,109 @@ async function loadLines() {
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">Error loading lines: ${err.message}</div>`;
     }
+}
+
+async function adminLoadLineOptions() {
+    const select = document.getElementById('admin-mgmt-line-select');
+    if (!select) return;
+    const response = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) return;
+    select.innerHTML = result.data
+        .filter(line => line.is_active)
+        .map(line => `<option value="${line.id}">${line.line_name}</option>`)
+        .join('');
+}
+
+async function adminRefreshManagementData() {
+    await Promise.all([
+        adminLoadLineMetrics(),
+        adminRefreshEmployeeEfficiency()
+    ]);
+}
+
+async function adminLoadLineMetrics() {
+    const date = document.getElementById('admin-mgmt-date')?.value;
+    const stats = document.getElementById('admin-mgmt-stats');
+    const body = document.getElementById('admin-mgmt-lines');
+    if (!date || !stats || !body) return;
+    const response = await fetch(`${API_BASE}/lines-metrics?date=${date}`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) return;
+
+    const metrics = result.data || [];
+    const totalOutput = metrics.reduce((sum, row) => sum + (parseInt(row.actual_output) || 0), 0);
+    const totalTarget = metrics.reduce((sum, row) => sum + (parseInt(row.target) || 0), 0);
+    const avgEfficiency = metrics.length
+        ? (metrics.reduce((sum, row) => sum + (parseFloat(row.efficiency_percent) || 0), 0) / metrics.length).toFixed(2)
+        : '0.00';
+
+    stats.innerHTML = `
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${metrics.length}</h3>
+                <p>Active Lines</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${totalTarget}</h3>
+                <p>Total Target</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${totalOutput}</h3>
+                <p>Total Output</p>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-info">
+                <h3>${avgEfficiency}%</h3>
+                <p>Avg Efficiency</p>
+            </div>
+        </div>
+    `;
+
+    body.innerHTML = metrics.map(row => `
+        <tr>
+            <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
+            <td>
+                ${row.product_code || '-'} ${row.product_name || ''}
+                ${row.changeover ? `<div style="margin-top:2px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;">CHANGEOVER</span><div style="font-size:11px;color:#92400e;margin-top:2px;">Incoming: ${row.incoming_product_code}</div></div>` : ''}
+            </td>
+            <td>${row.target}${row.changeover && row.incoming_target ? `<div style="font-size:11px;color:#92400e;">+${row.incoming_target}</div>` : ''}</td>
+            <td>${row.actual_output}</td>
+            <td>${row.efficiency_percent}%</td>
+            <td>${row.completion_percent}%</td>
+        </tr>
+    `).join('');
+}
+
+async function adminRefreshEmployeeEfficiency() {
+    const lineId = document.getElementById('admin-mgmt-line-select')?.value;
+    const date = document.getElementById('admin-mgmt-date')?.value;
+    const tbody = document.getElementById('admin-mgmt-employees');
+    if (!lineId || !date || !tbody) return;
+    const response = await fetch(`${API_BASE}/supervisor/shift-summary?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) {
+        tbody.innerHTML = `<tr><td colspan="4">${result.error || 'No data'}</td></tr>`;
+        return;
+    }
+    const employees = result.data.employees || [];
+    if (!employees.length) {
+        tbody.innerHTML = '<tr><td colspan="4">No employee data</td></tr>';
+        return;
+    }
+    tbody.innerHTML = employees.map(emp => `
+        <tr>
+            <td><strong>${emp.emp_code}</strong><div style="color: var(--secondary); font-size: 12px;">${emp.emp_name}</div></td>
+            <td>${emp.operation_code} - ${emp.operation_name}</td>
+            <td>${emp.total_output}</td>
+            <td>${emp.efficiency_percent || 0}%</td>
+        </tr>
+    `).join('');
 }
 
 function showLineModal(line = null) {
@@ -411,7 +586,7 @@ async function saveLine(id) {
     }
 }
 
-async function deleteLine(id) {
+async function deactivateLine(id) {
     if (!confirm('Are you sure you want to deactivate this line?')) return;
 
     try {
@@ -419,6 +594,22 @@ async function deleteLine(id) {
         const result = await response.json();
         if (result.success) {
             showToast('Line deactivated', 'success');
+            loadLines();
+        } else {
+            showToast(result.error, 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function hardDeleteLine(id) {
+    if (!confirm('This will permanently delete the line. Continue?')) return;
+    try {
+        const response = await fetch(`${API_BASE}/lines/${id}/hard-delete`, { method: 'DELETE' });
+        const result = await response.json();
+        if (result.success) {
+            showToast('Line deleted', 'success');
             loadLines();
         } else {
             showToast(result.error, 'error');
@@ -500,7 +691,8 @@ async function viewLineDetails(lineId) {
                 <div class="stat-card">
                     <div class="stat-info">
                         <h3>${line.product_code ? `${line.product_code}` : '-'}</h3>
-                        <p>Current Product</p>
+                        <p>${line.changeover ? 'Primary Product' : 'Current Product'}</p>
+                        ${line.changeover ? `<div style="margin-top:4px;font-size:12px;color:#92400e;font-weight:600;">Incoming: ${line.incoming_product_code}</div>` : ''}
                     </div>
                 </div>
                 <div class="stat-card">
@@ -550,6 +742,7 @@ async function viewLineDetails(lineId) {
                             <table>
                                 <thead>
                                     <tr>
+                                        ${line.changeover ? '<th>Product</th>' : ''}
                                         <th>Seq</th>
                                         <th>Operation</th>
                                         <th>Category</th>
@@ -561,10 +754,21 @@ async function viewLineDetails(lineId) {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${processes.map(proc => {
-                                        const assignment = assignmentMap.get(proc.id);
-                                        return `
+                                    ${(() => {
+                                        let lastProductId = null;
+                                        return processes.map(proc => {
+                                            const assignment = assignmentMap.get(proc.id);
+                                            let groupHeader = '';
+                                            if (line.changeover && proc.product_id !== lastProductId) {
+                                                lastProductId = proc.product_id;
+                                                const isPrimary = proc.product_code === line.product_code;
+                                                const label = isPrimary ? 'Primary (Outgoing)' : 'Incoming (New)';
+                                                const color = isPrimary ? '#dbeafe;color:#1e40af' : '#fef3c7;color:#92400e';
+                                                groupHeader = '<tr><td colspan="9" style="background:' + color + ';font-weight:700;padding:8px 12px;font-size:13px;">' + proc.product_code + ' - ' + label + '</td></tr>';
+                                            }
+                                            return groupHeader + `
                                             <tr data-process-id="${proc.id}">
+                                                ${line.changeover ? '<td><span style="font-size:11px;font-weight:600;color:var(--secondary)">' + proc.product_code + '</span></td>' : ''}
                                                 <td><span class="process-step-num">${proc.sequence_number}</span></td>
                                                 <td>${proc.operation_code} - ${proc.operation_name}</td>
                                                 <td><span class="badge badge-info">${proc.operation_category}</span></td>
@@ -593,7 +797,8 @@ async function viewLineDetails(lineId) {
                                                 </td>
                                             </tr>
                                         `;
-                                    }).join('')}
+                                        }).join('');
+                                    })()}
                                 </tbody>
                             </table>
                         </div>
@@ -1223,7 +1428,7 @@ async function loadProducts() {
             <div class="page-header">
                 <div>
                     <h1 class="page-title">Products</h1>
-                    <p class="page-subtitle">Manage products and their process flows</p>
+                    <p class="page-subtitle">Manage products and their process flows. Line assignment is handled in Line Product Setup.</p>
                 </div>
                 <button class="btn btn-primary" onclick="showProductModal()">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1242,7 +1447,9 @@ async function loadProducts() {
                                     <th>Code</th>
                                     <th>Name</th>
                                     <th>Category</th>
-                                    <th>Line</th>
+                                    <th>Default Lines</th>
+                                    <th>Today (Primary)</th>
+                                    <th>Today (Incoming)</th>
                                     <th>Operations</th>
                                     <th>Total SAH</th>
                                     <th>Status</th>
@@ -1252,7 +1459,7 @@ async function loadProducts() {
                             <tbody>
                                 ${products.length === 0 ? `
                                     <tr>
-                                        <td colspan="8" class="text-center" style="padding: 40px;">
+                                        <td colspan="10" class="text-center" style="padding: 40px;">
                                             No products found. Click "Add Product" to create one.
                                         </td>
                                     </tr>
@@ -1262,9 +1469,18 @@ async function loadProducts() {
                                         <td>${prod.product_name}</td>
                                         <td>${prod.category || '-'}</td>
                                         <td>${prod.line_names || '-'}</td>
+                                        <td>${prod.today_primary_lines || '-'}</td>
+                                        <td>${prod.today_incoming_lines || '-'}</td>
                                         <td><span class="badge badge-info">${prod.operations_count} ops</span></td>
                                         <td>${parseFloat(prod.total_sah || 0).toFixed(4)} hrs</td>
-                                        <td><span class="badge ${prod.is_active ? 'badge-success' : 'badge-danger'}">${prod.is_active ? 'Active' : 'Inactive'}</span></td>
+                                        <td>
+                                            <span class="badge ${prod.is_active ? 'badge-success' : 'badge-danger'}">
+                                                ${prod.is_active ? 'Active' : 'Inactive'}
+                                            </span>
+                                            ${prod.today_incoming_line_ids?.length
+                                                ? '<span class="badge" style="margin-left:6px;background:#fef3c7;color:#92400e;">Changeover Today</span>'
+                                                : ''}
+                                        </td>
                                         <td>
                                             <div class="action-btns">
                                                 <button class="btn btn-secondary btn-sm" onclick="viewProductProcess(${prod.id})">Process Flow</button>
@@ -1288,11 +1504,6 @@ async function loadProducts() {
 function showProductModal(prod = null) {
     const isEdit = prod !== null;
     const lines = allLines || [];
-    const selectedLineIds = new Set(
-        lines
-            .filter(line => line.current_product_id == prod?.id)
-            .map(line => String(line.id))
-    );
     const modal = document.createElement('div');
     modal.className = 'modal-backdrop';
     modal.id = 'product-modal';
@@ -1325,14 +1536,10 @@ function showProductModal(prod = null) {
                         <input type="text" class="form-control" name="category" value="${prod?.category || ''}" placeholder="e.g., WALLET, BAG">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Production Lines</label>
-                        <div class="checkbox-grid">
-                            ${lines.map(l => `
-                                <label class="checkbox-card">
-                                    <input type="checkbox" name="line_ids" value="${l.id}" ${selectedLineIds.has(String(l.id)) ? 'checked' : ''}>
-                                    <span class="checkbox-label">${l.line_name}</span>
-                                </label>
-                            `).join('')}
+                        <label class="form-label">Line Assignment</label>
+                        <div class="alert alert-info" style="margin:0;">
+                            Line assignment is managed in <strong>Line Product Setup</strong> (Daily Plan).
+                            Set primary and changeover products there.
                         </div>
                     </div>
                     ${isEdit ? `
@@ -1361,10 +1568,6 @@ async function saveProduct(id) {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
     if (data.is_active) data.is_active = data.is_active === 'true';
-    const lineIds = Array.from(form.querySelectorAll('input[name="line_ids"]:checked'))
-        .map(input => input.value)
-        .filter(Boolean);
-    data.line_ids = lineIds;
 
     try {
         const url = id ? `${API_BASE}/products/${id}` : `${API_BASE}/products`;
@@ -1585,6 +1788,14 @@ function scheduleRealtimeRefresh(payload) {
     if (realtimeRefreshTimer) {
         clearTimeout(realtimeRefreshTimer);
     }
+    if (payload && payload.work_date) {
+        const planDate = document.getElementById('plan-date')?.value;
+        const currentDateInput = document.getElementById('attendance-date')?.value;
+        const dateMatch = !planDate || payload.work_date === planDate || !currentDateInput || payload.work_date === currentDateInput;
+        if (!dateMatch) {
+            return;
+        }
+    }
     realtimeRefreshTimer = setTimeout(() => {
         realtimeRefreshTimer = null;
         const entity = payload.entity;
@@ -1608,6 +1819,7 @@ function scheduleRealtimeRefresh(payload) {
         }
         if (currentSection === 'dashboard') {
             loadDashboard();
+            adminRefreshManagementData();
             return;
         }
         if (currentSection === 'attendance' && payload.entity === 'attendance') {
@@ -2381,8 +2593,8 @@ async function loadDailyPlans() {
         <div class="ie-section">
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Daily Line Plan</h1>
-                    <p class="page-subtitle">Assign products and targets per line for the day</p>
+                    <h1 class="page-title">Line Product Setup</h1>
+                    <p class="page-subtitle">Set the main product and changeover product for each line.</p>
                 </div>
                 <div class="ie-actions">
                     <div class="ie-date">
@@ -2390,6 +2602,10 @@ async function loadDailyPlans() {
                         <input type="date" id="plan-date" value="${today}">
                     </div>
                 </div>
+            </div>
+            <div class="alert alert-info" style="margin-bottom:16px;">
+                Primary product = outgoing product. Incoming product = next product (during changeover).
+                Use "Changeover Up To" to select the process sequence already switched to the incoming product.
             </div>
             <div class="card">
                 <div class="card-header">
@@ -2418,16 +2634,20 @@ async function loadDailyPlanData() {
             container.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
             return;
         }
-        const { plans, lines, products } = result.data;
+        const { plans, lines, products, changeover_enabled } = result.data;
         window.dailyPlanProducts = products;
+        window.changeoverEnabled = changeover_enabled !== false;
         const planMap = new Map(plans.map(plan => [String(plan.line_id), plan]));
         container.innerHTML = `
             <table>
                 <thead>
                     <tr>
                         <th>Line</th>
-                        <th>Product</th>
-                        <th>Daily Target</th>
+                        <th>Product (Primary)</th>
+                        <th>Target</th>
+                        <th>Incoming Product</th>
+                        <th>Incoming Target</th>
+                        <th>Changeover Progress</th>
                         <th>Status</th>
                         <th>Action</th>
                     </tr>
@@ -2438,10 +2658,18 @@ async function loadDailyPlanData() {
                         const locked = plan?.is_locked;
                         const selectedProduct = plan?.product_id || line.current_product_id || '';
                         const selectedTarget = plan?.target_units ?? line.target_units ?? 0;
+                        const selectedIncoming = plan?.incoming_product_id || '';
+                        const selectedIncomingTarget = plan?.incoming_target_units || 0;
+                        const selectedChangeover = plan?.changeover_sequence ?? 0;
                         const planExists = Boolean(plan?.id);
+                        const hasChangeover = !!plan?.incoming_product_id;
                         return `
                             <tr>
-                                <td><strong>${line.line_code}</strong><div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div></td>
+                                <td>
+                                    <strong>${line.line_code}</strong>
+                                    <div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div>
+                                    ${hasChangeover ? '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">CHANGEOVER</span>' : ''}
+                                </td>
                                 <td>
                                     <select class="form-control" id="plan-product-${line.id}" ${locked ? 'disabled' : ''}>
                                         <option value="">Select product</option>
@@ -2453,7 +2681,27 @@ async function loadDailyPlanData() {
                                     </select>
                                 </td>
                                 <td>
-                                    <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${selectedTarget}" ${locked ? 'disabled' : ''}>
+                                    <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${selectedTarget}" style="width:90px" ${locked ? 'disabled' : ''}>
+                                </td>
+                                <td>
+                                    <select class="form-control" id="plan-incoming-${line.id}" ${locked || changeover_enabled === false ? 'disabled' : ''}>
+                                        <option value="">None (no changeover)</option>
+                                        ${products.map(product => `
+                                            <option value="${product.id}" ${Number(selectedIncoming) === product.id ? 'selected' : ''}>
+                                                ${product.product_code} - ${product.product_name}
+                                            </option>
+                                        `).join('')}
+                                    </select>
+                                </td>
+                                <td>
+                                    <input type="number" class="form-control" id="plan-incoming-target-${line.id}" min="0" value="${selectedIncomingTarget}" style="width:90px" ${locked || changeover_enabled === false ? 'disabled' : ''}>
+                                </td>
+                                <td>
+                                    ${changeover_enabled === false
+                                        ? '<span style="color:#6b7280;font-size:12px;">Disabled</span>'
+                                        : (hasChangeover
+                                            ? `<div style="font-weight:600;">P${selectedChangeover}</div><div style="font-size:11px;color:#6b7280;">Auto from supervisor updates</div>`
+                                            : '<span style="color:#6b7280;font-size:12px;">-</span>')}
                                 </td>
                                 <td>
                                     <span class="status-badge" style="${locked ? 'background:#fee2e2;color:#b91c1c;' : 'background:#dcfce7;color:#15803d;'}">
@@ -2473,6 +2721,8 @@ async function loadDailyPlanData() {
                 </tbody>
             </table>
         `;
+
+        // Changeover boundary is auto-advanced by supervisor progress updates.
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -2482,11 +2732,18 @@ async function saveDailyPlan(lineId) {
     const date = document.getElementById('plan-date').value;
     const productId = document.getElementById(`plan-product-${lineId}`).value;
     const targetUnits = document.getElementById(`plan-target-${lineId}`).value;
+    const incomingProductId = document.getElementById(`plan-incoming-${lineId}`).value;
+    const incomingTargetUnits = document.getElementById(`plan-incoming-target-${lineId}`).value;
     if (!productId) {
         showToast('Select a product for the line', 'error');
         return;
     }
+    if (incomingProductId && incomingProductId === productId) {
+        showToast('Incoming product must be different from primary product', 'error');
+        return;
+    }
     try {
+        const changeoverEnabled = window.changeoverEnabled !== false;
         const response = await fetch('/api/daily-plans', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2494,7 +2751,9 @@ async function saveDailyPlan(lineId) {
                 line_id: lineId,
                 product_id: productId,
                 work_date: date,
-                target_units: targetUnits
+                target_units: targetUnits,
+                incoming_product_id: changeoverEnabled ? (incomingProductId || null) : null,
+                incoming_target_units: changeoverEnabled ? (incomingTargetUnits || 0) : 0
             })
         });
         const result = await response.json();
