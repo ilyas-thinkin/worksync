@@ -180,8 +180,8 @@ async function exportDailyReportStreaming(res, date) {
                 columns: [
                     { header: 'Line Code', key: 'line_code', width: 15 },
                     { header: 'Line Name', key: 'line_name', width: 25 },
-                    { header: 'Product Code', key: 'product_code', width: 15 },
-                    { header: 'Product Name', key: 'product_name', width: 30 },
+                    { header: 'Style No', key: 'product_code', width: 15 },
+                    { header: 'Description', key: 'product_name', width: 30 },
                     { header: 'Target', key: 'target', width: 10 },
                     { header: 'QA Output', key: 'qa_output', width: 12 },
                     { header: 'Hourly Output', key: 'hourly_output', width: 15 }

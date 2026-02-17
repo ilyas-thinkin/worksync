@@ -69,6 +69,7 @@ const attendanceSchema = z.object({
 const productSchema = z.object({
     product_code: productCode,
     product_name: z.string().min(1).max(200),
+    buyer_name: z.string().max(200).optional(),
     is_active: z.boolean().optional()
 });
 

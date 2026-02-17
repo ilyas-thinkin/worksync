@@ -2314,3 +2314,75 @@ Also integrated Takt Time & Efficiency metrics into the UI:
 - Fixed line edit null product daily plan error.
 - Removed manual efficiency input from line edit.
 - Service worker cache bump to force JS refresh.
+
+## 33. Workstation Feature (February 17, 2026)
+
+### Overview
+Added workstation management feature allowing grouping of 1 or more process steps into physical workstations on a production line.
+
+### Database Changes
+```sql
+-- Created workspaces table (was documented but not created previously)
+CREATE TABLE workspaces (
+    id SERIAL PRIMARY KEY,
+    workspace_code VARCHAR(50) NOT NULL UNIQUE,
+    workspace_name VARCHAR(100) NOT NULL,
+    workspace_type VARCHAR(50),
+    line_id INTEGER REFERENCES production_lines(id),
+    qr_code_path VARCHAR(255),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by INTEGER,
+    updated_by INTEGER
+);
+
+-- Added workspace_id FK to product_processes
+ALTER TABLE product_processes
+ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id);
+```
+
+### API Endpoints Added
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/workstations` | List all workstations (optional `?line_id=` filter) |
+| GET | `/api/workstations/:id` | Get workstation with assigned processes |
+| POST | `/api/workstations` | Create workstation |
+| PUT | `/api/workstations/:id` | Update workstation |
+| DELETE | `/api/workstations/:id` | Soft-delete workstation (unlinks processes) |
+| PUT | `/api/workstations/:id/processes` | Bulk assign processes to workstation |
+| PUT | `/api/process-assignments/workspace` | Assign single process to workstation |
+| GET | `/api/lines/:id/workstations` | Get workstations for a line with processes & employees |
+
+### Role Access
+- **GET** (read): Admin, IE, Supervisor, Management
+- **POST/PUT/DELETE** (write): Admin, IE only
+
+### API Modifications
+- `GET /api/lines/:id/details` — now returns `workstations` array and `workspace_code`/`workspace_name` on each process
+- `GET /api/supervisor/progress` — now returns `workspace_code`/`workspace_name` per row
+- `POST /api/supervisor/resolve-process` — response includes `workspace_code`/`workspace_name`
+- `POST /api/supervisor/resolve-employee` — response includes `workspace_code`/`workspace_name`
+- `resolveProcessForLine()` helper — SQL now joins `workspaces` table
+
+### Admin UI Changes (`admin.js`)
+- **Line Details — Process Flow table**: Added "Workstation" column with dropdown to assign/change workstation per process
+- **Line Details — Workstations card**: New card below Process Flow showing workstation cards with:
+  - Workstation code, name, type
+  - List of assigned processes
+  - Edit/Delete buttons
+  - "Add Workstation" button
+- **Workstation CRUD modals**: Add/Edit forms (code, name, type) with create/update/delete functions
+
+### Supervisor UI Changes (`supervisor.js`)
+- **Progress Log**: Groups entries by workstation when workstations exist (workstation header rows with subtotals)
+- **Scan Display**: Shows `[WS-CODE]` prefix when a scanned process belongs to a workstation
+- **Progress Entry Modal**: Shows "Workstation" info row above Process when applicable
+
+### Key Design Decisions
+- Leverages existing `workspaces` table and `product_processes.workspace_id` FK
+- Workstations are per-line (`workspaces.line_id`)
+- Process-workstation assignment is optional (backward compatible)
+- 1 process → 1 workstation; multiple processes → 1 workstation
+- No changes to progress logging schema (grouping is UI-level)
+- No changes to employee assignment or material forwarding logic

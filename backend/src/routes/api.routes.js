@@ -5,9 +5,27 @@ const realtime = require('../realtime');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
 const { validateBody, validateQuery, sanitizeInputs, schemas } = require('../middleware/validation');
 const { logAudit: enhancedLogAudit, AuditAction, getAuditSummary, searchAuditLogs } = require('../middleware/audit');
 const { withTransaction, withRetry, lockForUpdate } = require('../middleware/transaction');
+
+// Multer setup for Excel file uploads (memory storage)
+const excelUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+    fileFilter: (req, file, cb) => {
+        const allowedMimes = [
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-excel'
+        ];
+        if (allowedMimes.includes(file.mimetype) || file.originalname.match(/\.(xlsx|xls)$/i)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only Excel files (.xlsx, .xls) are allowed'));
+        }
+    }
+});
 
 // Apply sanitization to all routes
 router.use(sanitizeInputs);
@@ -1587,6 +1605,525 @@ router.get('/products', async (req, res) => {
     }
 });
 
+// Download reference Excel template for product process upload
+// Export product with processes as Excel (same format as upload template)
+router.get('/products/export/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const productRes = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
+        if (productRes.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Product not found' });
+        }
+        const product = productRes.rows[0];
+
+        const processRes = await pool.query(`
+            SELECT pp.*, o.operation_name
+            FROM product_processes pp
+            JOIN operations o ON pp.operation_id = o.id
+            WHERE pp.product_id = $1 AND pp.is_active = true
+            ORDER BY pp.sequence_number
+        `, [id]);
+        const processes = processRes.rows;
+
+        const target = parseInt(product.target_qty || 0);
+        const taktTime = target > 0 ? Math.round(28800 / target) : 0;
+
+        const workbook = new ExcelJS.Workbook();
+        const ws = workbook.addWorksheet('Product Process Setup');
+
+        ws.columns = [
+            { width: 15 }, { width: 15 }, { width: 22 }, { width: 35 },
+            { width: 20 }, { width: 18 }, { width: 15 }
+        ];
+
+        const boldFont = { bold: true, size: 11 };
+        const titleFont = { bold: true, size: 14 };
+        const borderAll = {
+            top: { style: 'thin' }, bottom: { style: 'thin' },
+            left: { style: 'thin' }, right: { style: 'thin' }
+        };
+
+        // Title
+        ws.mergeCells('A1:G1');
+        const titleCell = ws.getCell('A1');
+        titleCell.value = 'WORKERS - PROCESSWISE DETAILS';
+        titleCell.font = { ...titleFont, color: { argb: 'FFFFFFFF' } };
+        titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+        titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+        ws.getRow(1).height = 30;
+
+        // Header fields
+        const headerFields = [
+            ['PRODUCT', product.category || '-'],
+            ['BUYER', product.buyer_name || '-'],
+            ['STYLE NO', product.product_code],
+            ['DESCRIPTION', product.product_name],
+            ['TARGET', target],
+            ['TAKT TIME', taktTime]
+        ];
+        headerFields.forEach(([label, value], idx) => {
+            const row = idx + 2;
+            ws.mergeCells(`A${row}:D${row}`);
+            ws.mergeCells(`E${row}:G${row}`);
+            const lc = ws.getCell(`A${row}`);
+            lc.value = label; lc.font = boldFont; lc.alignment = { horizontal: 'center' }; lc.border = borderAll;
+            const vc = ws.getCell(`E${row}`);
+            vc.value = value; vc.font = boldFont; vc.alignment = { horizontal: 'center' }; vc.border = borderAll;
+        });
+
+        // Table header (row 8)
+        const tableHeaders = ['GROUP', 'WORK STATION', 'WORKER INPUT MAPPING', 'PROCESS DETAILS', 'PROCESS TIME (SEC)', 'CYCLE TIME (SEC)', 'WORK LOAD %'];
+        const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+        const headerRow = ws.getRow(8);
+        tableHeaders.forEach((h, i) => {
+            const cell = headerRow.getCell(i + 1);
+            cell.value = h; cell.font = boldFont; cell.fill = headerFill;
+            cell.border = borderAll; cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        });
+        headerRow.height = 30;
+
+        // Calculate cycle times per workstation (only for processes WITH a workstation)
+        const wsCycleTimes = {};
+        processes.forEach(p => {
+            const wsCode = (p.workstation_code || '').trim();
+            if (wsCode) {
+                const procTime = Math.round(parseFloat(p.operation_sah || 0) * 3600);
+                wsCycleTimes[wsCode] = (wsCycleTimes[wsCode] || 0) + procTime;
+            }
+        });
+
+        // Data rows
+        const dataStartRow = 9;
+        let totalProcessTime = 0;
+        processes.forEach((proc, idx) => {
+            const rowNum = dataStartRow + idx;
+            const row = ws.getRow(rowNum);
+            const procTime = Math.round(parseFloat(proc.operation_sah || 0) * 3600);
+            const wsCode = (proc.workstation_code || '').trim();
+            // If workstation assigned, cycle time = sum of all process times in that workstation
+            // If no workstation, cycle time = this process's own time
+            const cycleTime = wsCode ? (wsCycleTimes[wsCode] || procTime) : procTime;
+            const workLoad = taktTime > 0 ? cycleTime / taktTime : 0;
+            totalProcessTime += procTime;
+
+            const values = [
+                proc.group_name || '', proc.workstation_code || '', proc.worker_input_mapping || '',
+                proc.operation_name, procTime, cycleTime
+            ];
+            values.forEach((val, colIdx) => {
+                const cell = row.getCell(colIdx + 1);
+                cell.value = val; cell.border = borderAll; cell.alignment = { horizontal: 'center' };
+            });
+            const loadCell = row.getCell(7);
+            loadCell.value = workLoad; loadCell.numFmt = '0%';
+            loadCell.border = borderAll; loadCell.alignment = { horizontal: 'center' };
+        });
+
+        // Total row
+        const totalRowNum = dataStartRow + processes.length;
+        const totalRow = ws.getRow(totalRowNum);
+        ws.mergeCells(`A${totalRowNum}:D${totalRowNum}`);
+        const tlc = totalRow.getCell(1);
+        tlc.value = 'TOTAL TIME IN SECS'; tlc.font = boldFont; tlc.alignment = { horizontal: 'center' }; tlc.border = borderAll;
+        const tpc = totalRow.getCell(5);
+        tpc.value = totalProcessTime; tpc.font = boldFont; tpc.border = borderAll; tpc.alignment = { horizontal: 'center' };
+        const tcc = totalRow.getCell(6);
+        tcc.value = totalProcessTime; tcc.font = boldFont; tcc.border = borderAll; tcc.alignment = { horizontal: 'center' };
+        totalRow.getCell(7).border = borderAll;
+
+        const filename = `${product.product_code}_${product.product_name}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${filename}.xlsx`);
+        await workbook.xlsx.write(res);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/products/upload-template', async (req, res) => {
+    try {
+        const workbook = new ExcelJS.Workbook();
+        const ws = workbook.addWorksheet('Product Process Setup');
+
+        // Column widths: GROUP, WORK STATION, EMPLOYEE CODE, PROCESS DETAILS
+        ws.columns = [
+            { width: 15 }, { width: 18 }, { width: 20 }, { width: 40 }
+        ];
+
+        const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+        const boldFont = { bold: true, size: 11 };
+        const titleFont = { bold: true, size: 14 };
+        const borderAll = {
+            top: { style: 'thin' }, bottom: { style: 'thin' },
+            left: { style: 'thin' }, right: { style: 'thin' }
+        };
+
+        // Title row
+        ws.mergeCells('A1:D1');
+        const titleCell = ws.getCell('A1');
+        titleCell.value = 'WORKERS - PROCESSWISE DETAILS';
+        titleCell.font = { ...titleFont, color: { argb: 'FFFFFFFF' } };
+        titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+        titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+        ws.getRow(1).height = 30;
+
+        // Header fields (rows 2-7): LINE CODE, PRODUCT, BUYER, STYLE NO, DESCRIPTION, TARGET
+        const headerFields = [
+            ['LINE CODE', 'L01'],
+            ['PRODUCT', 'SLG'],
+            ['BUYER', 'COACH'],
+            ['STYLE NO', '1234'],
+            ['DESCRIPTION', 'BILLFOLD WALLET'],
+            ['TARGET', 500],
+        ];
+
+        headerFields.forEach(([label, value], idx) => {
+            const row = idx + 2;
+            ws.mergeCells(`A${row}:B${row}`);
+            ws.mergeCells(`C${row}:D${row}`);
+            const labelCell = ws.getCell(`A${row}`);
+            labelCell.value = label;
+            labelCell.font = boldFont;
+            labelCell.alignment = { horizontal: 'center' };
+            labelCell.border = borderAll;
+            const valCell = ws.getCell(`C${row}`);
+            valCell.value = value;
+            valCell.font = boldFont;
+            valCell.alignment = { horizontal: 'center' };
+            valCell.border = borderAll;
+        });
+
+        // Table header (row 8)
+        const tableHeaders = ['GROUP', 'WORK STATION', 'EMPLOYEE CODE', 'PROCESS DETAILS'];
+        const headerRow = ws.getRow(8);
+        tableHeaders.forEach((h, i) => {
+            const cell = headerRow.getCell(i + 1);
+            cell.value = h;
+            cell.font = boldFont;
+            cell.fill = headerFill;
+            cell.border = borderAll;
+            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        });
+        headerRow.height = 30;
+
+        // Example data rows (rows 9+): [GROUP, WORK STATION, EMPLOYEE CODE, PROCESS DETAILS]
+        const exampleData = [
+            ['-', 'W1', 'EMP001', 'TOP PASTING'],
+            ['-', 'W1', 'EMP001', 'KIMLON PASTING'],
+            ['-', 'W1', 'EMP001', 'ATTACHING TOP & KIMLON'],
+            ['GROUP1', 'W2', 'EMP002', 'GUSSET STITCHING -2NOS'],
+            ['', 'W2', 'EMP002', 'GUSSET LAMPING -2NOS'],
+            ['', 'W3', 'EMP003', 'GUSSET SHAPING'],
+            ['', 'W4', 'EMP004', 'PATTI PROMOTOR'],
+            ['', 'W5', 'EMP005', 'PATTI PRIMER1'],
+            ['', 'W6', 'EMP006', 'PATTI PRIMER 2'],
+            ['GROUP2', 'W7', 'EMP007', 'PATTI DYE'],
+            ['', 'W8', 'EMP008', 'TOP PASTING'],
+            ['', 'W8', 'EMP008', 'TOP KIMLON PASTING'],
+            ['GROUP3', 'W8', 'EMP008', 'TOP ATTACHING'],
+            ['GROUP11', 'W24', '', 'CLEANING'],
+            ['GROUP11', 'W25', '', 'CLEANING'],
+        ];
+
+        const dataStartRow = 9;
+
+        exampleData.forEach((rowData, idx) => {
+            const rowNum = dataStartRow + idx;
+            const row = ws.getRow(rowNum);
+            rowData.forEach((val, colIdx) => {
+                const cell = row.getCell(colIdx + 1);
+                cell.value = val;
+                cell.border = borderAll;
+                cell.alignment = { horizontal: 'center' };
+            });
+        });
+
+        // Instructions sheet
+        const instrSheet = workbook.addWorksheet('Instructions');
+        instrSheet.columns = [{ width: 80 }];
+        const instructions = [
+            'HOW TO USE THIS TEMPLATE',
+            '',
+            '1. Fill in the HEADER section (rows 2-7):',
+            '   - LINE CODE: The production line code (e.g., L01). Product will be assigned to this line.',
+            '   - PRODUCT: Product category (e.g., SLG, BAG)',
+            '   - BUYER: Buyer/brand name (e.g., COACH)',
+            '   - STYLE NO: Unique style number - this becomes the product code (REQUIRED)',
+            '   - DESCRIPTION: Product description (e.g., BILLFOLD WALLET) (REQUIRED)',
+            '   - TARGET: Daily production target quantity',
+            '',
+            '2. Fill in the PROCESS TABLE (row 9 onwards):',
+            '   - GROUP: Group name (e.g., GROUP1, GROUP2). Optional.',
+            '   - WORK STATION: Workstation/work table code (e.g., W1, W2)',
+            '   - EMPLOYEE CODE: Employee code for this workstation. Same employee for all processes at the same workstation. Leave blank if not yet assigned.',
+            '   - PROCESS DETAILS: Name of the process/operation (REQUIRED)',
+            '     * If this process does not exist, it will be auto-created',
+            '',
+            '3. IMPORTANT NOTES:',
+            '   - STYLE NO must be unique. If it already exists, the product will be updated',
+            '     and its existing processes will be replaced.',
+            '   - PROCESS DETAILS (operation name) is matched case-insensitively.',
+            '   - New processes are auto-assigned a code like OP-0001, OP-0002, etc.',
+            '   - One employee per workstation - all processes at the same workstation are handled by the same employee.',
+            '   - If LINE CODE matches an existing line, the product will be assigned to that line.',
+            '   - If EMPLOYEE CODE does not match any employee, that workstation will be left unassigned.',
+        ];
+        instructions.forEach((line, i) => {
+            const cell = instrSheet.getCell(`A${i + 1}`);
+            cell.value = line;
+            if (i === 0) cell.font = { bold: true, size: 14 };
+        });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename=product-process-template.xlsx');
+        await workbook.xlsx.write(res);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Upload Excel to create/update product with processes
+router.post('/products/upload-excel', excelUpload.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No file uploaded. Please upload an Excel file (.xlsx).' });
+    }
+
+    const client = await pool.connect();
+    try {
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(req.file.buffer);
+        const sheet = workbook.getWorksheet(1);
+        if (!sheet) {
+            return res.status(400).json({ success: false, error: 'No worksheet found in the uploaded file.' });
+        }
+
+        // Parse header section (rows 2-7): label in col A-B, value in col C-D
+        const getHeaderValue = (rowNum) => {
+            const row = sheet.getRow(rowNum);
+            return row.getCell(3).value || row.getCell(5).value || row.getCell(1).value || '';
+        };
+
+        const lineCode = String(getHeaderValue(2) || '').trim();
+        const productCategory = String(getHeaderValue(3) || '').trim();
+        const buyerName = String(getHeaderValue(4) || '').trim();
+        const styleNo = String(getHeaderValue(5) || '').trim();
+        const description = String(getHeaderValue(6) || '').trim();
+        const target = parseInt(getHeaderValue(7)) || 0;
+
+        if (!styleNo) {
+            return res.status(400).json({ success: false, error: 'STYLE NO (row 5) is required.' });
+        }
+        if (!description) {
+            return res.status(400).json({ success: false, error: 'DESCRIPTION (row 6) is required.' });
+        }
+
+        // Parse process rows (row 9 onwards, row 8 is the table header)
+        // Columns: A=GROUP, B=WORK STATION, C=EMPLOYEE CODE, D=PROCESS DETAILS
+        const processRows = [];
+        for (let rowNum = 9; rowNum <= sheet.rowCount; rowNum++) {
+            const row = sheet.getRow(rowNum);
+            const processDetails = String(row.getCell(4).value || '').trim();
+            if (!processDetails) continue;
+
+            processRows.push({
+                group_name: String(row.getCell(1).value || '').trim() || null,
+                workstation_code: String(row.getCell(2).value || '').trim() || null,
+                employee_code: String(row.getCell(3).value || '').trim() || null,
+                process_name: processDetails,
+            });
+        }
+
+        if (processRows.length === 0) {
+            return res.status(400).json({ success: false, error: 'No valid process rows found. Ensure PROCESS DETAILS is filled in from row 9 onwards.' });
+        }
+
+        await client.query('BEGIN');
+
+        // 1. Find or create product by style no (product_code)
+        let productResult = await client.query(
+            'SELECT id FROM products WHERE UPPER(product_code) = UPPER($1)',
+            [styleNo]
+        );
+        let productId;
+        let productAction;
+
+        if (productResult.rows.length > 0) {
+            productId = productResult.rows[0].id;
+            productAction = 'updated';
+            await client.query(
+                `UPDATE products SET product_name = $1, buyer_name = $2, category = $3,
+                 target_qty = $4, updated_at = NOW(), updated_by = $5 WHERE id = $6`,
+                [description, buyerName || null, productCategory || null, target, req.user?.id || null, productId]
+            );
+            await client.query(
+                'UPDATE product_processes SET is_active = false, updated_at = NOW() WHERE product_id = $1',
+                [productId]
+            );
+        } else {
+            productAction = 'created';
+            const insertResult = await client.query(
+                `INSERT INTO products (product_code, product_name, product_description, category, buyer_name, target_qty, is_active, created_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, true, $7) RETURNING id`,
+                [styleNo, description, description, productCategory || null, buyerName || null, target, req.user?.id || null]
+            );
+            productId = insertResult.rows[0].id;
+        }
+
+        // 2. Resolve line by line_code and assign product
+        let lineId = null;
+        let lineAssigned = false;
+        if (lineCode) {
+            const lineResult = await client.query(
+                'SELECT id FROM production_lines WHERE UPPER(line_code) = UPPER($1) AND is_active = true',
+                [lineCode]
+            );
+            if (lineResult.rows.length > 0) {
+                lineId = lineResult.rows[0].id;
+                await client.query(
+                    `UPDATE production_lines SET current_product_id = $1, target_units = $2, updated_at = NOW() WHERE id = $3`,
+                    [productId, target, lineId]
+                );
+                // Create/update daily plan for today
+                const today = new Date().toISOString().slice(0, 10);
+                await client.query(
+                    `INSERT INTO line_daily_plans (line_id, product_id, work_date, target_units)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (line_id, work_date)
+                     DO UPDATE SET product_id = EXCLUDED.product_id, target_units = EXCLUDED.target_units, updated_at = NOW()`,
+                    [lineId, productId, today, target]
+                );
+                lineAssigned = true;
+            }
+        }
+
+        // 3. Get next available operation code
+        const maxCodeResult = await client.query(
+            `SELECT operation_code FROM operations WHERE operation_code ~ '^OP-[0-9]+$' ORDER BY operation_code DESC LIMIT 1`
+        );
+        let nextOpNum = 1;
+        if (maxCodeResult.rows.length > 0) {
+            const match = maxCodeResult.rows[0].operation_code.match(/^OP-(\d+)$/);
+            if (match) nextOpNum = parseInt(match[1]) + 1;
+        }
+
+        // 4. Process each row - create operations and product_processes
+        const newOperations = [];
+        const operationCache = {};
+        let sequenceNumber = 1;
+
+        for (const row of processRows) {
+            const processNameUpper = row.process_name.toUpperCase();
+
+            let operationId;
+            if (operationCache[processNameUpper]) {
+                operationId = operationCache[processNameUpper];
+            } else {
+                const opResult = await client.query(
+                    'SELECT id FROM operations WHERE UPPER(operation_name) = $1 AND is_active = true',
+                    [processNameUpper]
+                );
+
+                if (opResult.rows.length > 0) {
+                    operationId = opResult.rows[0].id;
+                } else {
+                    const opCode = `OP-${String(nextOpNum).padStart(4, '0')}`;
+                    nextOpNum++;
+                    const newOp = await client.query(
+                        `INSERT INTO operations (operation_code, operation_name, is_active, created_by)
+                         VALUES ($1, $2, true, $3) RETURNING id, operation_code`,
+                        [opCode, row.process_name, req.user?.id || null]
+                    );
+                    operationId = newOp.rows[0].id;
+                    newOperations.push({ code: opCode, name: row.process_name });
+                }
+                operationCache[processNameUpper] = operationId;
+            }
+
+            await client.query(
+                `INSERT INTO product_processes
+                 (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds,
+                  manpower_required, target_units, group_name, workstation_code, worker_input_mapping, is_active, created_by)
+                 VALUES ($1, $2, $3, 0, 0, 1, $4, $5, $6, null, true, $7)`,
+                [productId, operationId, sequenceNumber, target, row.group_name, row.workstation_code, req.user?.id || null]
+            );
+            sequenceNumber++;
+        }
+
+        // 5. Assign employees to workstations (if line resolved and employee codes present)
+        const employeeWarnings = [];
+        const employeeAssignments = [];
+        if (lineId) {
+            // Clear existing workstation assignments for this line
+            await client.query('DELETE FROM employee_workstation_assignments WHERE line_id = $1', [lineId]);
+
+            // Build unique workstation -> employee_code mapping
+            const wsEmployeeMap = new Map();
+            for (const row of processRows) {
+                if (row.workstation_code && row.employee_code && !wsEmployeeMap.has(row.workstation_code)) {
+                    wsEmployeeMap.set(row.workstation_code, row.employee_code);
+                }
+            }
+
+            for (const [wsCode, empCode] of wsEmployeeMap) {
+                const empResult = await client.query(
+                    'SELECT id, emp_code, emp_name FROM employees WHERE UPPER(emp_code) = UPPER($1) AND is_active = true',
+                    [empCode]
+                );
+                if (empResult.rows.length > 0) {
+                    const emp = empResult.rows[0];
+                    await client.query(
+                        `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id)
+                         VALUES ($1, $2, $3)
+                         ON CONFLICT (line_id, workstation_code)
+                         DO UPDATE SET employee_id = EXCLUDED.employee_id, assigned_at = NOW()`,
+                        [lineId, wsCode, emp.id]
+                    );
+                    employeeAssignments.push({ workstation: wsCode, emp_code: emp.emp_code, emp_name: emp.emp_name });
+                } else {
+                    employeeWarnings.push(`Employee "${empCode}" not found for workstation ${wsCode}`);
+                }
+            }
+        }
+
+        await client.query('COMMIT');
+
+        realtime.broadcast('data_change', { entity: 'products', action: productAction, id: productId });
+        realtime.broadcast('data_change', { entity: 'product_processes', action: 'bulk_upload', product_id: productId });
+
+        let message = `Product ${productAction} successfully with ${processRows.length} processes.`;
+        if (lineAssigned) message += ` Assigned to line ${lineCode}.`;
+        if (employeeAssignments.length) message += ` ${employeeAssignments.length} employees assigned.`;
+        if (employeeWarnings.length) message += ` Warnings: ${employeeWarnings.join('; ')}`;
+
+        res.json({
+            success: true,
+            message,
+            data: {
+                product_id: productId,
+                product_action: productAction,
+                style_no: styleNo,
+                description: description,
+                buyer: buyerName,
+                line_code: lineCode || null,
+                line_assigned: lineAssigned,
+                total_processes: processRows.length,
+                new_operations_created: newOperations.length,
+                new_operations: newOperations,
+                employee_assignments: employeeAssignments,
+                employee_warnings: employeeWarnings
+            }
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (err.code === '23505') {
+            return res.status(409).json({ success: false, error: `Duplicate entry: ${err.detail || err.message}` });
+        }
+        res.status(500).json({ success: false, error: `Upload failed: ${err.message}` });
+    } finally {
+        client.release();
+    }
+});
+
 router.get('/products/:id', async (req, res) => {
     const { id } = req.params;
     try {
@@ -1598,14 +2135,18 @@ router.get('/products/:id', async (req, res) => {
             WHERE pp.product_id = $1
             ORDER BY pp.sequence_number
         `, [id]);
-        res.json({ success: true, data: { product: product.rows[0], processes: processes.rows } });
+        const workstations = await pool.query(`
+            SELECT id, workspace_code, workspace_name, workspace_type, line_id, group_name, worker_input_mapping
+            FROM workspaces WHERE is_active = true ORDER BY workspace_code
+        `);
+        res.json({ success: true, data: { product: product.rows[0], processes: processes.rows, workstations: workstations.rows } });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
 });
 
 router.post('/products', validateBody(schemas.product.partial()), async (req, res) => {
-    const { product_code, product_name, product_description, category, line_ids } = req.body;
+    const { product_code, product_name, product_description, category, buyer_name, target_qty, line_ids } = req.body;
     const normalizedLineIds = Array.isArray(line_ids)
         ? line_ids.map((id) => parseInt(id, 10)).filter(Boolean)
         : [];
@@ -1613,9 +2154,9 @@ router.post('/products', validateBody(schemas.product.partial()), async (req, re
     try {
         await client.query('BEGIN');
         const result = await client.query(
-            `INSERT INTO products (product_code, product_name, product_description, category, is_active)
-             VALUES ($1, $2, $3, $4, true) RETURNING *`,
-            [product_code, product_name, product_description, category]
+            `INSERT INTO products (product_code, product_name, product_description, category, buyer_name, target_qty, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING *`,
+            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0]
         );
         const productId = result.rows[0].id;
 
@@ -1639,7 +2180,7 @@ router.post('/products', validateBody(schemas.product.partial()), async (req, re
 
 router.put('/products/:id', async (req, res) => {
     const { id } = req.params;
-    const { product_code, product_name, product_description, category, line_ids, is_active } = req.body;
+    const { product_code, product_name, product_description, category, buyer_name, target_qty, line_ids, is_active } = req.body;
     const hasLineIds = Object.prototype.hasOwnProperty.call(req.body || {}, 'line_ids');
     const normalizedLineIds = Array.isArray(line_ids)
         ? line_ids.map((lineId) => parseInt(lineId, 10)).filter(Boolean)
@@ -1649,9 +2190,9 @@ router.put('/products/:id', async (req, res) => {
         await client.query('BEGIN');
         const result = await client.query(
             `UPDATE products
-             SET product_code = $1, product_name = $2, product_description = $3, category = $4, is_active = $5, updated_at = NOW()
-             WHERE id = $6 RETURNING *`,
-            [product_code, product_name, product_description, category, is_active, id]
+             SET product_code = $1, product_name = $2, product_description = $3, category = $4, buyer_name = $5, target_qty = $6, is_active = $7, updated_at = NOW()
+             WHERE id = $8 RETURNING *`,
+            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, is_active, id]
         );
 
         if (hasLineIds) {
@@ -1792,13 +2333,9 @@ router.get('/product-processes/:productId', async (req, res) => {
 
 router.post('/product-processes', async (req, res) => {
     const {
-        product_id,
-        operation_id,
-        sequence_number,
-        operation_sah,
-        cycle_time_seconds,
-        manpower_required,
-        target_units
+        product_id, operation_id, sequence_number, operation_sah,
+        cycle_time_seconds, manpower_required, target_units,
+        workspace_id, group_name, workstation_code, worker_input_mapping
     } = req.body;
     try {
         const today = new Date().toISOString().slice(0, 10);
@@ -1807,16 +2344,13 @@ router.post('/product-processes', async (req, res) => {
         }
         const result = await pool.query(
             `INSERT INTO product_processes
-             (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units, is_active)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`,
+             (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds,
+              manpower_required, target_units, workspace_id, group_name, workstation_code, worker_input_mapping, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true) RETURNING *`,
             [
-                product_id,
-                operation_id,
-                sequence_number,
-                operation_sah,
-                cycle_time_seconds,
-                manpower_required || 1,
-                target_units || 0
+                product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds,
+                manpower_required || 1, target_units || 0, workspace_id || null,
+                group_name || null, workstation_code || null, worker_input_mapping || null
             ]
         );
         realtime.broadcast('data_change', { entity: 'product_processes', action: 'create', product_id });
@@ -1828,11 +2362,13 @@ router.post('/product-processes', async (req, res) => {
 
 router.put('/product-processes/:id', async (req, res) => {
     const { id } = req.params;
-    const { sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units } = req.body;
+    const {
+        sequence_number, operation_sah, cycle_time_seconds, manpower_required,
+        target_units, workspace_id, group_name, workstation_code, worker_input_mapping
+    } = req.body;
     try {
         const productResult = await pool.query(
-            `SELECT product_id FROM product_processes WHERE id = $1`,
-            [id]
+            `SELECT product_id FROM product_processes WHERE id = $1`, [id]
         );
         const productId = productResult.rows[0]?.product_id;
         const today = new Date().toISOString().slice(0, 10);
@@ -1841,14 +2377,14 @@ router.put('/product-processes/:id', async (req, res) => {
         }
         const result = await pool.query(
             `UPDATE product_processes
-             SET sequence_number = $1,
-                 operation_sah = $2,
-                 cycle_time_seconds = $3,
-                 manpower_required = $4,
-                 target_units = $5,
+             SET sequence_number = $1, operation_sah = $2, cycle_time_seconds = $3,
+                 manpower_required = $4, target_units = $5, workspace_id = $6,
+                 group_name = $7, workstation_code = $8, worker_input_mapping = $9,
                  updated_at = NOW()
-             WHERE id = $6 RETURNING *`,
-            [sequence_number, operation_sah, cycle_time_seconds, manpower_required, target_units || 0, id]
+             WHERE id = $10 RETURNING *`,
+            [sequence_number, operation_sah, cycle_time_seconds, manpower_required,
+             target_units || 0, workspace_id || null,
+             group_name || null, workstation_code || null, worker_input_mapping || null, id]
         );
         realtime.broadcast('data_change', { entity: 'product_processes', action: 'update', id });
         res.json({ success: true, data: result.rows[0] });
@@ -1925,6 +2461,83 @@ router.get('/process-assignments', async (req, res) => {
             FROM employee_process_assignments
         `);
         res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Assign/unassign a process to/from a workstation
+router.put('/process-assignments/workspace', async (req, res) => {
+    const { process_id, workspace_id } = req.body;
+    if (!process_id) {
+        return res.status(400).json({ success: false, error: 'process_id is required' });
+    }
+    try {
+        await pool.query(
+            `UPDATE product_processes SET workspace_id = $1, updated_at = NOW() WHERE id = $2`,
+            [workspace_id || null, process_id]
+        );
+        realtime.broadcast('data_change', { entity: 'workstations', action: 'process_workspace_updated' });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// WORKSTATION ASSIGNMENTS (Workstation -> Employee)
+// ============================================================================
+router.post('/workstation-assignments', async (req, res) => {
+    const { line_id, workstation_code, employee_id } = req.body;
+    if (!line_id || !workstation_code) {
+        return res.status(400).json({ success: false, error: 'line_id and workstation_code are required' });
+    }
+    try {
+        if (employee_id) {
+            await pool.query(
+                `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (line_id, workstation_code)
+                 DO UPDATE SET employee_id = EXCLUDED.employee_id, assigned_at = NOW()`,
+                [line_id, workstation_code, employee_id]
+            );
+        } else {
+            await pool.query(
+                `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND workstation_code = $2`,
+                [line_id, workstation_code]
+            );
+        }
+        realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code });
+        res.json({ success: true, data: { line_id, workstation_code, employee_id: employee_id || null } });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/workstation-assignments', async (req, res) => {
+    const { line_id } = req.query;
+    if (!line_id) {
+        return res.status(400).json({ success: false, error: 'line_id is required' });
+    }
+    try {
+        const result = await pool.query(`
+            SELECT ewa.id, ewa.workstation_code, ewa.employee_id,
+                   e.emp_code, e.emp_name
+            FROM employee_workstation_assignments ewa
+            JOIN employees e ON ewa.employee_id = e.id
+            WHERE ewa.line_id = $1
+            ORDER BY ewa.workstation_code
+        `, [line_id]);
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.delete('/workstation-assignments/:id', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM employee_workstation_assignments WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -2087,9 +2700,11 @@ const resolveProcessForLine = async (lineId, processPayload, workDate = null) =>
     if (processPayload.type === 'operation') {
         const result = await pool.query(
             `SELECT pp.id, pp.sequence_number, pp.target_units, pp.product_id,
-                    o.id AS operation_id, o.operation_code, o.operation_name
+                    o.id AS operation_id, o.operation_code, o.operation_name,
+                    ws.workspace_code, ws.workspace_name
              FROM product_processes pp
              JOIN operations o ON pp.operation_id = o.id
+             LEFT JOIN workspaces ws ON pp.workspace_id = ws.id AND ws.is_active = true
              WHERE pp.product_id = ANY($1::int[]) AND pp.operation_id = $2
              ORDER BY pp.sequence_number
              LIMIT 10`,
@@ -2117,9 +2732,11 @@ const resolveProcessForLine = async (lineId, processPayload, workDate = null) =>
 
     const result = await pool.query(
         `SELECT pp.id, pp.sequence_number, pp.target_units, pp.product_id,
-                o.id AS operation_id, o.operation_code, o.operation_name
+                o.id AS operation_id, o.operation_code, o.operation_name,
+                ws.workspace_code, ws.workspace_name
          FROM product_processes pp
          JOIN operations o ON pp.operation_id = o.id
+         LEFT JOIN workspaces ws ON pp.workspace_id = ws.id AND ws.is_active = true
          WHERE pp.id = $1 AND pp.product_id = ANY($2::int[])
          LIMIT 1`,
         [processPayload.id, [primaryId, incomingId].filter(Boolean)]
@@ -2226,17 +2843,23 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
         const result = await pool.query(`
             SELECT pp.id, pp.sequence_number, pp.product_id,
                    o.operation_code, o.operation_name,
-                   p.product_code
+                   p.product_code, p.target_qty,
+                   pp.workstation_code, pp.group_name,
+                   ewa.employee_id as assigned_employee_id,
+                   e.emp_code as assigned_emp_code,
+                   e.emp_name as assigned_emp_name
             FROM product_processes pp
             JOIN operations o ON pp.operation_id = o.id
             JOIN products p ON pp.product_id = p.id
+            LEFT JOIN employee_workstation_assignments ewa ON ewa.workstation_code = pp.workstation_code AND ewa.line_id = $4
+            LEFT JOIN employees e ON ewa.employee_id = e.id
             WHERE pp.is_active = true
               AND (
                 (pp.product_id = $1 AND ($2::int IS NULL OR pp.sequence_number > $3))
                 OR (pp.product_id = $2 AND pp.sequence_number <= ($3 + 1))
               )
             ORDER BY pp.product_id = $1 DESC, pp.sequence_number
-        `, [primaryId, incomingId, changeoverSequence]);
+        `, [primaryId, incomingId, changeoverSequence, lineId]);
         res.json({
             success: true,
             data: result.rows,
@@ -2413,7 +3036,9 @@ router.post('/supervisor/resolve-process', async (req, res) => {
                     operation_id: process.operation_id,
                     operation_code: process.operation_code,
                     operation_name: process.operation_name,
-                    target_units: process.target_units || 0
+                    target_units: process.target_units || 0,
+                    workspace_code: process.workspace_code || null,
+                    workspace_name: process.workspace_name || null
                 },
                 employee: employeeResult.rows[0] || null
             }
@@ -2481,7 +3106,9 @@ router.post('/supervisor/resolve-employee', async (req, res) => {
                     operation_id: process.operation_id,
                     operation_code: process.operation_code,
                     operation_name: process.operation_name,
-                    target_units: process.target_units || 0
+                    target_units: process.target_units || 0,
+                    workspace_code: process.workspace_code || null,
+                    workspace_name: process.workspace_name || null
                 },
                 employee
             }
@@ -2891,7 +3518,7 @@ router.get('/line-shifts', async (req, res) => {
 });
 
 router.post('/supervisor/progress', async (req, res) => {
-    const { line_id, process_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks } = req.body;
+    const { line_id, process_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks, shortfall_reason } = req.body;
     if (!line_id || !process_id || !work_date || hour_slot === undefined) {
         return res.status(400).json({ success: false, error: 'line_id, process_id, work_date, hour_slot are required' });
     }
@@ -2907,12 +3534,16 @@ router.post('/supervisor/progress', async (req, res) => {
     }
     try {
         const assignmentResult = await pool.query(
-            `SELECT employee_id FROM employee_process_assignments WHERE line_id = $1 AND process_id = $2`,
-            [line_id, process_id]
+            `SELECT ewa.employee_id
+             FROM employee_workstation_assignments ewa
+             JOIN product_processes pp ON pp.workstation_code = ewa.workstation_code
+             WHERE pp.id = $1 AND ewa.line_id = $2
+             LIMIT 1`,
+            [process_id, line_id]
         );
         const assignment = assignmentResult.rows[0];
         if (!assignment) {
-            return res.status(400).json({ success: false, error: 'No employee assigned to this line/process' });
+            return res.status(400).json({ success: false, error: 'No employee assigned to this workstation' });
         }
         const completed = parseInt(quantity || 0, 10);
         const forwarded = parseInt(forwarded_quantity || 0, 10);
@@ -2926,8 +3557,8 @@ router.post('/supervisor/progress', async (req, res) => {
         }
         const result = await pool.query(
             `INSERT INTO line_process_hourly_progress
-             (line_id, process_id, employee_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             (line_id, process_id, employee_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks, shortfall_reason)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (line_id, process_id, work_date, hour_slot)
              DO UPDATE SET quantity = EXCLUDED.quantity,
                            employee_id = EXCLUDED.employee_id,
@@ -2935,9 +3566,10 @@ router.post('/supervisor/progress', async (req, res) => {
                            remaining_quantity = EXCLUDED.remaining_quantity,
                            qa_rejection = EXCLUDED.qa_rejection,
                            remarks = EXCLUDED.remarks,
+                           shortfall_reason = EXCLUDED.shortfall_reason,
                            updated_at = NOW()
              RETURNING *`,
-            [line_id, process_id, assignment.employee_id, work_date, hourValue, completed, forwarded, remaining, rejected, remarks || null]
+            [line_id, process_id, assignment.employee_id, work_date, hourValue, completed, forwarded, remaining, rejected, remarks || null, shortfall_reason || null]
         );
         if (remarks !== undefined) {
             await pool.query(
@@ -3052,11 +3684,15 @@ router.get('/supervisor/progress', async (req, res) => {
                     lpp.quantity,
                     lpp.qa_rejection,
                     lpp.remarks,
+                    lpp.shortfall_reason,
                     o.operation_code,
-                    o.operation_name
+                    o.operation_name,
+                    ws.workspace_code,
+                    ws.workspace_name
              FROM line_process_hourly_progress lpp
              JOIN product_processes pp ON lpp.process_id = pp.id
              JOIN operations o ON pp.operation_id = o.id
+             LEFT JOIN workspaces ws ON pp.workspace_id = ws.id AND ws.is_active = true
              WHERE lpp.line_id = $1 AND lpp.work_date = $2
              ORDER BY lpp.hour_slot, o.operation_code`,
             [line_id, work_date]
@@ -3223,10 +3859,12 @@ router.get('/lines/:id/details', async (req, res) => {
             const processesResult = await pool.query(`
                 SELECT pp.*, pp.product_id,
                        o.operation_code, o.operation_name, o.operation_category, o.qr_code_path,
-                       pr.product_code as product_code
+                       pr.product_code as product_code,
+                       ws.id as workspace_id, ws.workspace_code, ws.workspace_name
                 FROM product_processes pp
                 JOIN operations o ON pp.operation_id = o.id
                 JOIN products pr ON pp.product_id = pr.id
+                LEFT JOIN workspaces ws ON pp.workspace_id = ws.id AND ws.is_active = true
                 WHERE pp.is_active = true
                   AND (
                     (pp.product_id = $1 AND ($2::int IS NULL OR pp.sequence_number > $3))
@@ -3255,6 +3893,14 @@ router.get('/lines/:id/details', async (req, res) => {
         `);
         allAssignments = allAssignmentsResult.rows;
 
+        // Get workstations for this line
+        const workstationsResult = await pool.query(`
+            SELECT id, workspace_code, workspace_name, workspace_type
+            FROM workspaces
+            WHERE line_id = $1 AND is_active = true
+            ORDER BY workspace_code
+        `, [id]);
+
         res.json({
             success: true,
             data: {
@@ -3263,6 +3909,7 @@ router.get('/lines/:id/details', async (req, res) => {
                 processes,
                 assignments,
                 allAssignments,
+                workstations: workstationsResult.rows,
                 changeover_enabled: CHANGEOVER_ENABLED,
                 incoming_max_sequence: incomingMaxSequence,
                 changeover_sequence: changeoverSequence
@@ -3771,6 +4418,202 @@ router.get('/supervisor/hourly-remarks', async (req, res) => {
             [line_id, date]
         );
         res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// WORKSTATION MANAGEMENT
+// ============================================================================
+
+// GET all workstations (optional ?line_id= filter)
+router.get('/workstations', async (req, res) => {
+    const { line_id } = req.query;
+    try {
+        let query = `
+            SELECT w.*, pl.line_code, pl.line_name,
+                   COUNT(pp.id) as process_count
+            FROM workspaces w
+            LEFT JOIN production_lines pl ON w.line_id = pl.id
+            LEFT JOIN product_processes pp ON pp.workspace_id = w.id AND pp.is_active = true
+            WHERE w.is_active = true
+        `;
+        const params = [];
+        if (line_id) {
+            params.push(line_id);
+            query += ` AND w.line_id = $${params.length}`;
+        }
+        query += ` GROUP BY w.id, pl.line_code, pl.line_name ORDER BY w.workspace_code`;
+        const result = await pool.query(query, params);
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// GET single workstation with assigned processes
+router.get('/workstations/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const wsResult = await pool.query(`
+            SELECT w.*, pl.line_code, pl.line_name
+            FROM workspaces w
+            LEFT JOIN production_lines pl ON w.line_id = pl.id
+            WHERE w.id = $1
+        `, [id]);
+        if (!wsResult.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Workstation not found' });
+        }
+        const processesResult = await pool.query(`
+            SELECT pp.id, pp.sequence_number, pp.operation_sah, pp.cycle_time_seconds, pp.manpower_required,
+                   o.operation_code, o.operation_name, o.operation_category,
+                   pr.product_code, pr.product_name
+            FROM product_processes pp
+            JOIN operations o ON pp.operation_id = o.id
+            JOIN products pr ON pp.product_id = pr.id
+            WHERE pp.workspace_id = $1 AND pp.is_active = true
+            ORDER BY pp.product_id, pp.sequence_number
+        `, [id]);
+        res.json({
+            success: true,
+            data: {
+                ...wsResult.rows[0],
+                processes: processesResult.rows
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// POST create workstation
+router.post('/workstations', async (req, res) => {
+    const { workspace_code, workspace_name, workspace_type, line_id, group_name, worker_input_mapping } = req.body;
+    if (!workspace_code || !workspace_name) {
+        return res.status(400).json({ success: false, error: 'workspace_code and workspace_name are required' });
+    }
+    try {
+        const result = await pool.query(
+            `INSERT INTO workspaces (workspace_code, workspace_name, workspace_type, line_id, group_name, worker_input_mapping, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING *`,
+            [workspace_code, workspace_name, workspace_type || null, line_id || null, group_name || null, worker_input_mapping || 'CONT']
+        );
+        realtime.broadcast('data_change', { entity: 'workstations', action: 'create' });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.status(400).json({ success: false, error: 'Workstation code already exists' });
+        }
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PUT update workstation
+router.put('/workstations/:id', async (req, res) => {
+    const { id } = req.params;
+    const { workspace_code, workspace_name, workspace_type, line_id, group_name, worker_input_mapping } = req.body;
+    if (!workspace_code || !workspace_name) {
+        return res.status(400).json({ success: false, error: 'workspace_code and workspace_name are required' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE workspaces
+             SET workspace_code = $1, workspace_name = $2, workspace_type = $3, line_id = $4,
+                 group_name = $5, worker_input_mapping = $6, updated_at = NOW()
+             WHERE id = $7 RETURNING *`,
+            [workspace_code, workspace_name, workspace_type || null, line_id || null, group_name || null, worker_input_mapping || 'CONT', id]
+        );
+        if (!result.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Workstation not found' });
+        }
+        realtime.broadcast('data_change', { entity: 'workstations', action: 'update' });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.status(400).json({ success: false, error: 'Workstation code already exists' });
+        }
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// DELETE (soft-delete) workstation
+router.delete('/workstations/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        // Unlink all processes from this workstation
+        await pool.query(`UPDATE product_processes SET workspace_id = NULL WHERE workspace_id = $1`, [id]);
+        const result = await pool.query(
+            `UPDATE workspaces SET is_active = false, updated_at = NOW() WHERE id = $1 RETURNING *`,
+            [id]
+        );
+        if (!result.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Workstation not found' });
+        }
+        realtime.broadcast('data_change', { entity: 'workstations', action: 'delete' });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PUT assign processes to a workstation
+router.put('/workstations/:id/processes', async (req, res) => {
+    const { id } = req.params;
+    const { process_ids } = req.body;
+    if (!Array.isArray(process_ids)) {
+        return res.status(400).json({ success: false, error: 'process_ids must be an array' });
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        // Remove all current process assignments for this workstation
+        await client.query(`UPDATE product_processes SET workspace_id = NULL WHERE workspace_id = $1`, [id]);
+        // Assign new processes
+        if (process_ids.length > 0) {
+            await client.query(
+                `UPDATE product_processes SET workspace_id = $1 WHERE id = ANY($2::int[])`,
+                [id, process_ids]
+            );
+        }
+        await client.query('COMMIT');
+        realtime.broadcast('data_change', { entity: 'workstations', action: 'processes_updated' });
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// GET workstations for a specific line with processes and employees
+router.get('/lines/:id/workstations', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const wsResult = await pool.query(`
+            SELECT w.*
+            FROM workspaces w
+            WHERE w.line_id = $1 AND w.is_active = true
+            ORDER BY w.workspace_code
+        `, [id]);
+
+        const workstations = [];
+        for (const ws of wsResult.rows) {
+            const procResult = await pool.query(`
+                SELECT pp.id, pp.sequence_number, pp.operation_sah, pp.cycle_time_seconds,
+                       o.operation_code, o.operation_name,
+                       epa.employee_id, e.emp_code, e.emp_name
+                FROM product_processes pp
+                JOIN operations o ON pp.operation_id = o.id
+                LEFT JOIN employee_process_assignments epa ON epa.process_id = pp.id AND epa.line_id = $1
+                LEFT JOIN employees e ON epa.employee_id = e.id
+                WHERE pp.workspace_id = $2 AND pp.is_active = true
+                ORDER BY pp.sequence_number
+            `, [id, ws.id]);
+            workstations.push({ ...ws, processes: procResult.rows });
+        }
+        res.json({ success: true, data: workstations });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

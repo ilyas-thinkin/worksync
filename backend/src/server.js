@@ -134,6 +134,10 @@ realtime.startDbListener();
 // API Routes
 const apiRoutes = require('./routes/api.routes');
 app.use('/api', (req, res, next) => {
+  // Allow product export/template downloads without auth
+  if (req.path.startsWith('/products/export/') || req.path === '/products/upload-template') {
+    return next();
+  }
   if (req.path.startsWith('/users') || req.path.startsWith('/production-days') || req.path.startsWith('/audit-logs')) {
     return requireAnyRole(['admin'])(req, res, next);
   }
@@ -145,6 +149,12 @@ app.use('/api', (req, res, next) => {
   }
   if (req.path.startsWith('/daily-plans') || req.path.startsWith('/ie') || req.path.startsWith('/settings')) {
     return requireAnyRole(['ie', 'admin'])(req, res, next);
+  }
+  if (req.path.startsWith('/workstations')) {
+    if (req.method === 'GET') {
+      return requireAnyRole(['admin', 'ie', 'supervisor', 'management'])(req, res, next);
+    }
+    return requireAnyRole(['admin', 'ie'])(req, res, next);
   }
   if (req.path.startsWith('/supervisor/shift-summary')) {
     return requireAnyRole(['supervisor', 'admin', 'management', 'ie'])(req, res, next);

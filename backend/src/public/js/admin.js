@@ -333,23 +333,9 @@ async function loadLines() {
     content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
 
     try {
-        const [linesResponse, metricsResponse] = await Promise.all([
-            fetch(`${API_BASE}/lines?include_inactive=true`),
-            fetch(`${API_BASE}/lines-metrics`)
-        ]);
+        const linesResponse = await fetch(`${API_BASE}/lines?include_inactive=true`);
         const result = await linesResponse.json();
         const lines = result.data;
-
-        // Build metrics map by line_id
-        let metricsMap = new Map();
-        try {
-            const metricsResult = await metricsResponse.json();
-            if (metricsResult.success) {
-                metricsResult.data.forEach(m => metricsMap.set(m.line_id, m));
-            }
-        } catch (err) {
-            console.warn('Could not load metrics:', err);
-        }
 
         content.innerHTML = `
             <div class="page-header">
@@ -377,39 +363,29 @@ async function loadLines() {
                                     <th>Hall</th>
                                     <th>Product</th>
                                     <th>Target</th>
-                                    <th>Output</th>
-                                    <th>Takt Time</th>
-                                    <th>Efficiency</th>
-                                    <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${lines.map(line => {
-                                    const m = metricsMap.get(line.id) || {};
-                                    return `
+                                ${lines.length === 0 ? `
+                                    <tr><td colspan="7" class="text-center" style="padding:40px;">No production lines found.</td></tr>
+                                ` : lines.map(line => `
                                     <tr>
                                         <td>${line.id}</td>
                                         <td><strong>${line.line_code}</strong></td>
                                         <td>${line.line_name}</td>
                                         <td>${line.hall_location || '-'}</td>
                                         <td>${line.current_product_code ? `${line.current_product_code} - ${line.current_product_name || ''}` : '-'}</td>
-                                        <td>${m.target || line.target_units || 0}</td>
-                                        <td>${m.actual_output || 0}</td>
-                                        <td>${m.takt_time_display || '-'}</td>
-                                        <td>${Number(m.efficiency_percent || 0).toFixed(2)}%</td>
-                                        <td><span class="badge ${line.is_active ? 'badge-success' : 'badge-danger'}">${line.is_active ? 'Active' : 'Inactive'}</span></td>
+                                        <td>${line.current_product_code ? (line.target_units || 0) : '-'}</td>
                                         <td>
                                             <div class="action-btns">
-                                                <button class="btn btn-secondary btn-sm" onclick="viewLineDetails(${line.id})">Details</button>
                                                 <button class="btn btn-secondary btn-sm" onclick='showLineModal(${JSON.stringify(line)})'>Edit</button>
-                                                <button class="btn btn-secondary btn-sm" onclick="deactivateLine(${line.id})">Deactivate</button>
+                                                <button class="btn btn-secondary btn-sm" onclick="viewLineDetails(${line.id})">Details</button>
                                                 <button class="btn btn-danger btn-sm" onclick="hardDeleteLine(${line.id})">Delete</button>
                                             </div>
                                         </td>
                                     </tr>
-                                    `;
-                                }).join('')}
+                                `).join('')}
                             </tbody>
                         </table>
                     </div>
@@ -598,8 +574,17 @@ async function adminLoadFinalStatus() {
     `).join('');
 }
 
-function showLineModal(line = null) {
+async function showLineModal(line = null) {
     const isEdit = line !== null;
+    // Fetch active products for dropdown
+    let products = [];
+    try {
+        const res = await fetch(`${API_BASE}/products`);
+        const result = await res.json();
+        if (result.success) products = result.data.filter(p => p.is_active);
+    } catch (e) { /* ignore */ }
+
+    const currentProductId = line?.current_product_id || '';
     const modal = document.createElement('div');
     modal.className = 'modal-backdrop';
     modal.id = 'line-modal';
@@ -626,6 +611,13 @@ function showLineModal(line = null) {
                     <div class="form-group">
                         <label class="form-label">Hall Location</label>
                         <input type="text" class="form-control" name="hall_location" value="${line?.hall_location || ''}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Product</label>
+                        <select class="form-control" name="current_product_id">
+                            <option value="">-- No Product --</option>
+                            ${products.map(p => `<option value="${p.id}" ${String(p.id) === String(currentProductId) ? 'selected' : ''}>${p.product_code} - ${p.product_name} (${p.buyer_name || 'No buyer'})</option>`).join('')}
+                        </select>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Target (units)</label>
@@ -658,6 +650,7 @@ async function saveLine(id) {
     const data = Object.fromEntries(formData);
     if (data.is_active) data.is_active = data.is_active === 'true';
     if (data.target_units === '') data.target_units = 0;
+    data.current_product_id = data.current_product_id ? parseInt(data.current_product_id) : null;
     if (data.efficiency !== undefined) {
         delete data.efficiency;
     }
@@ -734,7 +727,8 @@ async function viewLineDetails(lineId) {
             content.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
             return;
         }
-        let { line, processes, assignments, employees, allAssignments } = result.data;
+        let { line, processes, assignments, employees, allAssignments, workstations } = result.data;
+        workstations = workstations || [];
 
         // Parse metrics
         let metrics = { takt_time_display: '-', efficiency_percent: 0, actual_output: 0, completion_percent: 0 };
@@ -844,11 +838,11 @@ async function viewLineDetails(lineId) {
                                         ${line.changeover ? '<th>Product</th>' : ''}
                                         <th>Seq</th>
                                         <th>Operation</th>
-                                        <th>Category</th>
+                                        <th>Product</th>
+                                        <th>Workstation</th>
                                         <th>QR</th>
                                         <th>Cycle Time</th>
                                         <th>SAH</th>
-                                        <th>Target</th>
                                         <th>Employee</th>
                                     </tr>
                                 </thead>
@@ -872,11 +866,16 @@ async function viewLineDetails(lineId) {
                                                 <td>${proc.operation_code} - ${proc.operation_name}</td>
                                                 <td><span class="badge badge-info">${proc.operation_category}</span></td>
                                                 <td>
+                                                    <select class="form-control form-control-sm" style="min-width:120px;font-size:12px;" onchange="assignProcessWorkstation(${proc.id}, this.value)">
+                                                        <option value="">-- None --</option>
+                                                        ${workstations.map(ws => `<option value="${ws.id}" ${proc.workspace_id == ws.id ? 'selected' : ''}>${ws.workspace_code} - ${ws.workspace_name}</option>`).join('')}
+                                                    </select>
+                                                </td>
+                                                <td>
                                                     <button class="btn btn-secondary btn-sm" ${proc.qr_code_path ? '' : 'disabled'} onclick='showOperationQrModal(${JSON.stringify(proc)})'>View</button>
                                                 </td>
                                                 <td>${proc.cycle_time_seconds || 0}s</td>
                                                 <td>${parseFloat(proc.operation_sah || 0).toFixed(4)}</td>
-                                                <td>${proc.target_units || 0}</td>
                                                 <td>
                                                     <div class="employee-dropdown" data-process-id="${proc.id}">
                                                         <button type="button" class="form-control dropdown-toggle" onclick="toggleEmployeeDropdown(${proc.id})">
@@ -904,11 +903,106 @@ async function viewLineDetails(lineId) {
                     `}
                 </div>
             </div>
+
+            <div class="card" id="workstation-assignments-card">
+                <div class="card-header">
+                    <h3 class="card-title">Workstation Employee Assignments</h3>
+                </div>
+                <div class="card-body">
+                    <div id="ws-assignments-loading">Loading...</div>
+                </div>
+            </div>
         `;
-        recomputeEmployeeDropdownOptions();
-        processes.forEach(proc => updateEmployeeQrButton(proc.id));
+        // Load workstation assignments
+        loadWorkstationAssignments(line.id, processes, employees);
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">Error loading line details: ${err.message}</div>`;
+    }
+}
+
+async function loadWorkstationAssignments(lineId, processes, employees) {
+    const container = document.getElementById('ws-assignments-loading');
+    if (!container) return;
+
+    // Build unique workstations from product processes
+    const wsMap = new Map();
+    processes.forEach(proc => {
+        const wsCode = (proc.workstation_code || '').trim();
+        if (wsCode && !wsMap.has(wsCode)) {
+            wsMap.set(wsCode, { code: wsCode, processes: [] });
+        }
+        if (wsCode) wsMap.get(wsCode).processes.push(proc);
+    });
+
+    if (wsMap.size === 0) {
+        container.innerHTML = '<div class="alert alert-info">No workstations defined in the product process flow.</div>';
+        return;
+    }
+
+    // Fetch current workstation assignments
+    let assignments = [];
+    try {
+        const res = await fetch(`${API_BASE}/workstation-assignments?line_id=${lineId}`);
+        const result = await res.json();
+        if (result.success) assignments = result.data;
+    } catch (err) { /* ignore */ }
+
+    const assignMap = new Map(assignments.map(a => [a.workstation_code, a]));
+
+    const rows = Array.from(wsMap.values()).map(ws => {
+        const assigned = assignMap.get(ws.code);
+        const processNames = ws.processes.map(p => p.operation_name).join(', ');
+        const empOptions = (employees || []).filter(e => e.is_active !== false).map(e =>
+            `<option value="${e.id}" ${assigned && assigned.employee_id === e.id ? 'selected' : ''}>${e.emp_code} - ${e.emp_name}</option>`
+        ).join('');
+
+        return `<tr>
+            <td style="font-weight:600;">${ws.code}</td>
+            <td style="font-size:13px;">${processNames}</td>
+            <td>
+                <select class="form-control form-control-sm" style="min-width:160px;" onchange="saveWorkstationAssignment(${lineId}, '${ws.code.replace(/'/g, "\\'")}', this.value)">
+                    <option value="">-- Unassigned --</option>
+                    ${empOptions}
+                </select>
+            </td>
+        </tr>`;
+    }).join('');
+
+    container.innerHTML = `
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Workstation</th>
+                        <th>Processes</th>
+                        <th>Assigned Employee</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+async function saveWorkstationAssignment(lineId, workstationCode, employeeId) {
+    try {
+        const response = await fetch(`${API_BASE}/workstation-assignments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: lineId,
+                workstation_code: workstationCode,
+                employee_id: employeeId || null
+            })
+        });
+        const result = await response.json();
+        if (result.success) {
+            showToast(`Workstation ${workstationCode} ${employeeId ? 'assigned' : 'unassigned'}`, 'success');
+        } else {
+            showToast(result.error || 'Assignment failed', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
     }
 }
 
@@ -967,6 +1061,178 @@ function applyProcessAssignmentUpdate(processId, employeeId, lineId) {
         }
     }
     recomputeEmployeeDropdownOptions();
+}
+
+// ============================================================================
+// WORKSTATION MANAGEMENT
+// ============================================================================
+
+function showAddWorkstationModal(lineId, productId) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width:450px;">
+            <div class="modal-header">
+                <h3>Add Workstation</h3>
+                <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Workstation Code *</label>
+                    <input type="text" class="form-control" id="ws-code" placeholder="e.g. W1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Workstation Name *</label>
+                    <input type="text" class="form-control" id="ws-name" placeholder="e.g. Stitching Station 1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Group</label>
+                    <input type="text" class="form-control" id="ws-group" placeholder="e.g. GROUP1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Worker Input Mapping</label>
+                    <select class="form-control" id="ws-input-mapping">
+                        <option value="FIRST INPUT">FIRST INPUT</option>
+                        <option value="CONT" selected>CONT</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Type</label>
+                    <input type="text" class="form-control" id="ws-type" placeholder="e.g. Stitching, QA, Assembly">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveWorkstation(null, ${lineId || 'null'}, ${productId || 'null'})">Save</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+function editWorkstation(ws, lineId, productId) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width:450px;">
+            <div class="modal-header">
+                <h3>Edit Workstation</h3>
+                <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Workstation Code *</label>
+                    <input type="text" class="form-control" id="ws-code" value="${ws.workspace_code || ''}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Workstation Name *</label>
+                    <input type="text" class="form-control" id="ws-name" value="${ws.workspace_name || ''}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Group</label>
+                    <input type="text" class="form-control" id="ws-group" value="${ws.group_name || ''}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Worker Input Mapping</label>
+                    <select class="form-control" id="ws-input-mapping">
+                        <option value="FIRST INPUT" ${ws.worker_input_mapping === 'FIRST INPUT' ? 'selected' : ''}>FIRST INPUT</option>
+                        <option value="CONT" ${ws.worker_input_mapping !== 'FIRST INPUT' ? 'selected' : ''}>CONT</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Type</label>
+                    <input type="text" class="form-control" id="ws-type" value="${ws.workspace_type || ''}">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveWorkstation(${ws.id}, ${lineId || 'null'}, ${productId || 'null'})">Save</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+async function saveWorkstation(wsId, lineId, productId) {
+    const code = document.getElementById('ws-code').value.trim();
+    const name = document.getElementById('ws-name').value.trim();
+    const type = document.getElementById('ws-type').value.trim();
+    const group = document.getElementById('ws-group').value.trim();
+    const inputMapping = document.getElementById('ws-input-mapping').value;
+    if (!code || !name) {
+        showToast('Code and Name are required', 'error');
+        return;
+    }
+    try {
+        const url = wsId ? `${API_BASE}/workstations/${wsId}` : `${API_BASE}/workstations`;
+        const method = wsId ? 'PUT' : 'POST';
+        const response = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                workspace_code: code,
+                workspace_name: name,
+                workspace_type: type || null,
+                line_id: lineId || null,
+                group_name: group || null,
+                worker_input_mapping: inputMapping || 'CONT'
+            })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast(wsId ? 'Workstation updated' : 'Workstation created', 'success');
+        document.querySelector('.modal-overlay')?.remove();
+        if (productId) {
+            viewProductProcess(productId);
+        } else if (lineId) {
+            viewLineDetails(lineId);
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function deleteWorkstation(wsId, lineId) {
+    if (!confirm('Delete this workstation? Processes will be unassigned.')) return;
+    try {
+        const response = await fetch(`${API_BASE}/workstations/${wsId}`, { method: 'DELETE' });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Workstation deleted', 'success');
+        viewLineDetails(lineId);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function assignProcessWorkstation(processId, workspaceId, productId) {
+    try {
+        const response = await fetch(`${API_BASE}/process-assignments/workspace`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ process_id: processId, workspace_id: workspaceId || null })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Workstation assignment updated', 'success');
+        // Refresh the current view
+        if (productId) {
+            viewProductProcess(productId);
+        } else if (currentView.type === 'line') {
+            viewLineDetails(currentView.lineId);
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
 }
 
 function buildEmployeeOptions(processId) {
@@ -1150,7 +1416,6 @@ function renderEmployeesTable(employees) {
                                 <th>Name</th>
                                 <th>Designation</th>
                                 <th>MP</th>
-                                <th>Efficiency</th>
                                 <th>Current Work</th>
                                 <th>QR Code</th>
                                 <th>Status</th>
@@ -1165,7 +1430,6 @@ function renderEmployeesTable(employees) {
                                     <td>${emp.emp_name}</td>
                                     <td>${emp.designation || '-'}</td>
                                     <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
-                                    <td>${Number(emp.efficiency || 0).toFixed(2)}</td>
                                     <td>${formatEmployeeWork(emp) || '-'}</td>
                                     <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
                                     <td><span class="badge ${emp.is_active ? 'badge-success' : 'badge-danger'}">${emp.is_active ? 'Active' : 'Inactive'}</span></td>
@@ -1212,7 +1476,6 @@ function updateEmployeesTableBody(employees) {
             <td>${emp.emp_name}</td>
             <td>${emp.designation || '-'}</td>
             <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
-            <td>${Number(emp.efficiency || 0).toFixed(2)}</td>
             <td>${formatEmployeeWork(emp) || '-'}</td>
             <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
             <td><span class="badge ${emp.is_active ? 'badge-success' : 'badge-danger'}">${emp.is_active ? 'Active' : 'Inactive'}</span></td>
@@ -1529,12 +1792,27 @@ async function loadProducts() {
                     <h1 class="page-title">Products</h1>
                     <p class="page-subtitle">Manage products and their process flows. Line assignment is handled in Line Product Setup.</p>
                 </div>
-                <button class="btn btn-primary" onclick="showProductModal()">
-                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
-                    </svg>
-                    Add Product
-                </button>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn btn-primary" onclick="showProductModal()">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                        </svg>
+                        Add Product
+                    </button>
+                    <button class="btn btn-secondary" onclick="downloadProductTemplate()">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3"/>
+                        </svg>
+                        Download Template
+                    </button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('excel-upload-input').click()">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                        </svg>
+                        Upload Excel
+                    </button>
+                    <input type="file" id="excel-upload-input" accept=".xlsx,.xls" style="display:none" onchange="handleProductExcelUpload(this)">
+                </div>
             </div>
 
             <div class="card">
@@ -1543,10 +1821,11 @@ async function loadProducts() {
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Code</th>
-                                    <th>Name</th>
-                                    <th>Category</th>
-                                    <th>Default Lines</th>
+                                    <th>Buyer</th>
+                                    <th>Style No</th>
+                                    <th>Description</th>
+                                    <th>Target</th>
+                                    <th>Assigned Line</th>
                                     <th>Today (Primary)</th>
                                     <th>Today (Incoming)</th>
                                     <th>Operations</th>
@@ -1558,15 +1837,16 @@ async function loadProducts() {
                             <tbody>
                                 ${products.length === 0 ? `
                                     <tr>
-                                        <td colspan="10" class="text-center" style="padding: 40px;">
+                                        <td colspan="11" class="text-center" style="padding: 40px;">
                                             No products found. Click "Add Product" to create one.
                                         </td>
                                     </tr>
                                 ` : products.map(prod => `
                                     <tr>
+                                        <td>${prod.buyer_name || '-'}</td>
                                         <td><strong>${prod.product_code}</strong></td>
                                         <td>${prod.product_name}</td>
-                                        <td>${prod.category || '-'}</td>
+                                        <td>${prod.target_qty || 0}</td>
                                         <td>${prod.line_names || '-'}</td>
                                         <td>${prod.today_primary_lines || '-'}</td>
                                         <td>${prod.today_incoming_lines || '-'}</td>
@@ -1584,6 +1864,7 @@ async function loadProducts() {
                                             <div class="action-btns">
                                                 <button class="btn btn-secondary btn-sm" onclick="viewProductProcess(${prod.id})">Process Flow</button>
                                                 <button class="btn btn-secondary btn-sm" onclick='showProductModal(${JSON.stringify(prod)})'>Edit</button>
+                                                <button class="btn btn-secondary btn-sm" onclick="exportProductExcel(${prod.id})">Export</button>
                                                 <button class="btn btn-danger btn-sm" onclick="deleteProduct(${prod.id})">Delete</button>
                                             </div>
                                         </td>
@@ -1597,6 +1878,57 @@ async function loadProducts() {
         `;
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">Error loading products: ${err.message}</div>`;
+    }
+}
+
+function downloadProductTemplate() {
+    window.location.href = `${API_BASE}/products/upload-template`;
+}
+
+function exportProductExcel(productId) {
+    window.location.href = `${API_BASE}/products/export/${productId}`;
+}
+
+async function handleProductExcelUpload(input) {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = ''; // Reset so same file can be re-uploaded
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    // Show loading overlay
+    const content = document.getElementById('main-content');
+    const overlay = document.createElement('div');
+    overlay.className = 'loading-overlay';
+    overlay.innerHTML = '<div class="spinner"></div><p style="margin-top:16px;color:#6b7280;">Uploading and processing Excel file...</p>';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(255,255,255,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;';
+    document.body.appendChild(overlay);
+
+    try {
+        const response = await fetch(`${API_BASE}/products/upload-excel`, {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        document.body.removeChild(overlay);
+
+        if (result.success) {
+            const d = result.data;
+            let msg = `Product "${d.description}" (Style: ${d.style_no}) ${d.product_action} successfully.\n`;
+            msg += `${d.total_processes} processes imported.`;
+            if (d.new_operations_created > 0) {
+                msg += `\n${d.new_operations_created} new operation(s) auto-created:\n`;
+                msg += d.new_operations.map(op => `  ${op.code} - ${op.name}`).join('\n');
+            }
+            alert(msg);
+            loadProducts();
+        } else {
+            alert('Upload failed: ' + (result.error || 'Unknown error'));
+        }
+    } catch (err) {
+        if (document.body.contains(overlay)) document.body.removeChild(overlay);
+        alert('Upload error: ' + err.message);
     }
 }
 
@@ -1619,20 +1951,24 @@ function showProductModal(prod = null) {
             <div class="modal-body">
                 <form id="product-form">
                     <div class="form-group">
-                        <label class="form-label">Product Code *</label>
+                        <label class="form-label">Product (Category)</label>
+                        <input type="text" class="form-control" name="category" value="${prod?.category || ''}" placeholder="e.g. SLG, BAG, WALLET">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Buyer Name</label>
+                        <input type="text" class="form-control" name="buyer_name" value="${prod?.buyer_name || ''}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Style No *</label>
                         <input type="text" class="form-control" name="product_code" value="${prod?.product_code || ''}" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Product Name *</label>
+                        <label class="form-label">Description *</label>
                         <input type="text" class="form-control" name="product_name" value="${prod?.product_name || ''}" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Description</label>
-                        <textarea class="form-control" name="product_description" rows="3">${prod?.product_description || ''}</textarea>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Category</label>
-                        <input type="text" class="form-control" name="category" value="${prod?.category || ''}" placeholder="e.g., WALLET, BAG">
+                        <label class="form-label">Target Qty</label>
+                        <input type="number" class="form-control" name="target_qty" value="${prod?.target_qty || 0}" min="0">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Line Assignment</label>
@@ -1667,6 +2003,7 @@ async function saveProduct(id) {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
     if (data.is_active) data.is_active = data.is_active === 'true';
+    if (data.target_qty != null) data.target_qty = parseInt(data.target_qty) || 0;
 
     try {
         const url = id ? `${API_BASE}/products/${id}` : `${API_BASE}/products`;
@@ -1722,16 +2059,82 @@ async function viewProductProcess(productId) {
         const productResult = await productRes.json();
         const operationsResult = await operationsRes.json();
 
-        const { product, processes } = productResult.data;
+        const { product, processes, workstations: allWorkstations } = productResult.data;
         const allOperations = operationsResult.data;
 
-        const totalSah = processes.reduce((sum, p) => sum + parseFloat(p.operation_sah || 0), 0);
-        const totalCycleTime = processes.reduce((sum, p) => sum + parseInt(p.cycle_time_seconds || 0), 0);
+        // Build workstation map with processes grouped by workstation_code
+        const wsMap = new Map();
+        const unassigned = [];
+        processes.forEach(proc => {
+            const wsCode = (proc.workstation_code || '').trim();
+            if (wsCode) {
+                if (!wsMap.has(wsCode)) {
+                    wsMap.set(wsCode, {
+                        code: wsCode,
+                        group_name: proc.group_name || '',
+                        worker_input_mapping: proc.worker_input_mapping || 'CONT',
+                        processes: []
+                    });
+                }
+                wsMap.get(wsCode).processes.push(proc);
+            } else {
+                unassigned.push(proc);
+            }
+        });
+
+        // Build table rows with group/workstation/process hierarchy
+        let tableRows = '';
+        const wsArray = Array.from(wsMap.values());
+
+        // Light pastel colors for workstation groups (no red/green, dark text friendly)
+        const wsColors = [
+            '#E8F0FE', '#FFF3E0', '#F3E5F5', '#E0F2F1', '#FFF9C4', '#FCE4EC',
+            '#E8EAF6', '#F1F8E9', '#EFEBE9', '#E0F7FA', '#FBE9E7', '#EDE7F6',
+        ];
+        let wsColorIdx = 0;
+
+        wsArray.forEach((ws) => {
+            const rowCount = ws.processes.length;
+            const bgColor = wsColors[wsColorIdx % wsColors.length];
+            wsColorIdx++;
+
+            ws.processes.forEach((proc, procIdx) => {
+                const isFirst = procIdx === 0;
+                tableRows += `<tr style="background:${bgColor};">
+                    <td style="text-align:center;">${proc.sequence_number}</td>
+                    ${isFirst ? `<td rowspan="${rowCount}" style="vertical-align:middle;font-weight:600;text-align:center;">${ws.group_name || '-'}</td>` : ''}
+                    ${isFirst ? `<td rowspan="${rowCount}" style="vertical-align:middle;font-weight:600;text-align:center;">${ws.code}</td>` : ''}
+                    <td>${proc.operation_name}</td>
+                    <td>
+                        <div class="action-btns">
+                            <button class="btn btn-secondary btn-sm" onclick='editProcess(${JSON.stringify(proc)}, ${productId})'>Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteProcess(${proc.id}, ${productId})">Remove</button>
+                        </div>
+                    </td>
+                </tr>`;
+            });
+        });
+
+        // Unassigned processes (no workstation)
+        unassigned.forEach(proc => {
+            tableRows += `<tr style="background:#F5F5F5;">
+                <td style="text-align:center;">${proc.sequence_number}</td>
+                <td style="text-align:center;color:#666;">-</td>
+                <td style="text-align:center;color:#666;">-</td>
+                <td>${proc.operation_name}</td>
+                <td>
+                    <div class="action-btns">
+                        <button class="btn btn-secondary btn-sm" onclick='editProcess(${JSON.stringify(proc)}, ${productId})'>Edit</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteProcess(${proc.id}, ${productId})">Remove</button>
+                    </div>
+                </td>
+            </tr>`;
+        });
 
         content.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">${product.product_code} - ${product.product_name}</h1>
+                    <h1 class="page-title">Workers - Processwise Details</h1>
                     <p class="page-subtitle">Process Flow Management</p>
                 </div>
                 <div class="flex gap-2">
@@ -1740,6 +2143,12 @@ async function viewProductProcess(productId) {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
                         </svg>
                         Back to Products
+                    </button>
+                    <button class="btn btn-secondary" onclick="exportProductExcel(${productId})">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3"/>
+                        </svg>
+                        Export Excel
                     </button>
                     <button class="btn btn-primary" onclick="showAddProcessModal(${productId})">
                         <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1750,52 +2159,23 @@ async function viewProductProcess(productId) {
                 </div>
             </div>
 
-            <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
-                <div class="stat-card">
-                    <div class="stat-icon purple">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                        </svg>
-                    </div>
-                    <div class="stat-info">
-                        <h3>${processes.length}</h3>
-                        <p>Total Operations</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-icon blue">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                    </div>
-                    <div class="stat-info">
-                        <h3>${totalCycleTime}s</h3>
-                        <p>Total Cycle Time</p>
-                    </div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-icon green">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                        </svg>
-                    </div>
-                    <div class="stat-info">
-                        <h3>${totalSah.toFixed(4)}</h3>
-                        <p>Total SAH (hrs)</p>
-                    </div>
+            <div class="card" style="margin-bottom:16px;">
+                <div class="card-body" style="padding:0;">
+                    <table style="width:100%;border-collapse:collapse;">
+                        <tbody>
+                            <tr><td style="padding:8px 16px;font-weight:600;width:40%;border-bottom:1px solid var(--border);">PRODUCT</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.category || '-'}</td></tr>
+                            <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">BUYER</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.buyer_name || '-'}</td></tr>
+                            <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">STYLE NO</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.product_code}</td></tr>
+                            <tr><td style="padding:8px 16px;font-weight:600;">DESCRIPTION</td><td style="padding:8px 16px;">${product.product_name}</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
             <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Process Flow</h3>
-                </div>
                 <div class="card-body">
                     ${processes.length === 0 ? `
                         <div class="empty-state">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
-                            </svg>
                             <h3>No operations defined</h3>
                             <p>Click "Add Operation" to define the process flow</p>
                         </div>
@@ -1805,40 +2185,15 @@ async function viewProductProcess(productId) {
                             <thead>
                                 <tr>
                                     <th>Seq</th>
-                                    <th>Operation Code</th>
-                                    <th>Operation Name</th>
-                                    <th>Category</th>
-                                    <th>QR</th>
-                                    <th>Cycle Time</th>
-                                    <th>SAH</th>
-                                    <th>Target</th>
-                                    <th>Manpower</th>
+                                    <th>Group</th>
+                                    <th>Work Station</th>
+                                    <th>Process Details</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${processes.map(proc => `
-                                    <tr>
-                                        <td><span class="process-step-num">${proc.sequence_number}</span></td>
-                                        <td><strong>${proc.operation_code}</strong></td>
-                                        <td>${proc.operation_name}</td>
-                                        <td><span class="badge badge-info">${proc.operation_category}</span></td>
-                                        <td>
-                                            <button class="btn btn-secondary btn-sm" ${proc.qr_code_path ? '' : 'disabled'} onclick='showOperationQrModal(${JSON.stringify(proc)})'>View</button>
-                                        </td>
-                                        <td>${proc.cycle_time_seconds || 0}s</td>
-                                        <td>${parseFloat(proc.operation_sah || 0).toFixed(4)}</td>
-                                        <td>${proc.target_units || 0}</td>
-                                        <td>${proc.manpower_required || 1}</td>
-                                        <td>
-                                            <div class="action-btns">
-                                                <button class="btn btn-secondary btn-sm" onclick='editProcess(${JSON.stringify(proc)}, ${productId})'>Edit</button>
-                                                <button class="btn btn-danger btn-sm" onclick="deleteProcess(${proc.id}, ${productId})">Remove</button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                `).join('')}
-                                </tbody>
+                                ${tableRows}
+                            </tbody>
                             </table>
                         </div>
                     `}
@@ -1849,6 +2204,7 @@ async function viewProductProcess(productId) {
         // Store operations for modal
         window.currentAllOperations = allOperations;
         window.currentProductId = productId;
+        window.currentAllWorkstations = allWorkstations || [];
 
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">Error: ${err.message}</div>`;
@@ -1990,16 +2346,12 @@ function showAddProcessModal(productId) {
                         <input type="number" class="form-control" name="sequence_number" min="1" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Cycle Time (seconds) *</label>
-                        <input type="number" class="form-control" name="cycle_time_seconds" min="1" required onchange="calculateSAH()">
+                        <label class="form-label">Group</label>
+                        <input type="text" class="form-control" name="group_name" placeholder="e.g. GROUP1">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">SAH (calculated)</label>
-                        <input type="number" class="form-control" name="operation_sah" step="0.0001" required readonly>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Target (units)</label>
-                        <input type="number" class="form-control" name="target_units" min="0" value="0">
+                        <label class="form-label">Work Station</label>
+                        <input type="text" class="form-control" name="workstation_code" placeholder="e.g. W1">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Manpower Required</label>
@@ -2104,20 +2456,23 @@ function editProcess(proc, productId) {
                         <input type="number" class="form-control" name="sequence_number" min="1" value="${proc.sequence_number}" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Cycle Time (seconds) *</label>
-                        <input type="number" class="form-control" name="cycle_time_seconds" min="1" value="${proc.cycle_time_seconds || ''}" required onchange="calculateSAH()">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">SAH</label>
-                        <input type="number" class="form-control" name="operation_sah" step="0.0001" value="${proc.operation_sah}" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Target (units)</label>
-                        <input type="number" class="form-control" name="target_units" min="0" value="${proc.target_units || 0}">
-                    </div>
-                    <div class="form-group">
                         <label class="form-label">Manpower Required</label>
                         <input type="number" class="form-control" name="manpower_required" min="1" value="${proc.manpower_required || 1}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Group</label>
+                        <input type="text" class="form-control" name="group_name" value="${proc.group_name || ''}" placeholder="e.g. GROUP1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Work Station</label>
+                        <input type="text" class="form-control" name="workstation_code" value="${proc.workstation_code || ''}" placeholder="e.g. W1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Worker Input Mapping</label>
+                        <select class="form-control" name="worker_input_mapping">
+                            <option value="FIRST INPUT" ${proc.worker_input_mapping === 'FIRST INPUT' ? 'selected' : ''}>FIRST INPUT</option>
+                            <option value="CONT" ${proc.worker_input_mapping !== 'FIRST INPUT' ? 'selected' : ''}>CONT</option>
+                        </select>
                     </div>
                 </form>
             </div>
@@ -2227,7 +2582,7 @@ async function loadOperations() {
                             <input type="text" id="op-search" placeholder="Search operations..." onkeyup="filterOperations()">
                         </div>
                         <select class="form-control" style="width: auto;" id="op-category" onchange="filterOperations()">
-                            <option value="">All Categories</option>
+                            <option value="">All Products</option>
                             ${categories.map(c => `<option value="${c.operation_category}">${c.operation_category}</option>`).join('')}
                         </select>
                     </div>
@@ -2238,7 +2593,7 @@ async function loadOperations() {
                                 <tr>
                                     <th>Code</th>
                                     <th>Name</th>
-                                    <th>Category</th>
+                                    <th>Product</th>
                                     <th>Used In</th>
                                     <th>QR</th>
                                     <th>Status</th>
@@ -2340,7 +2695,7 @@ function showOperationModal(op = null) {
                         <textarea class="form-control" name="operation_description" rows="3">${op?.operation_description || ''}</textarea>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Category *</label>
+                        <label class="form-label">Product *</label>
                         <select class="form-control" name="operation_category" required>
                             ${categories.map(c => `<option value="${c}" ${op?.operation_category === c ? 'selected' : ''}>${c}</option>`).join('')}
                         </select>
