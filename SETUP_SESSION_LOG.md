@@ -2233,5 +2233,84 @@ All HTML files updated to include new scripts and styles:
 
 ---
 
-**Last Updated:** February 4, 2026
-**Status:** Phase 2 Infrastructure Complete (17/17 tasks)
+## 32. Feature Audit & Remarks Completion (February 10, 2026)
+
+### Feature Audit
+Audited all 5 core production features across API, database, and all 4 role panels:
+
+| # | Feature | API | DB | Admin | IE | Supervisor | Management | Status |
+|---|---------|-----|----|-------|----|------------|------------|--------|
+| 1 | Multi-product changeover | Yes | Yes | Yes | Yes | Yes | Yes | Complete |
+| 2 | Hourly efficiency per employee | Yes | Yes | Yes | Yes | Yes | Yes | Complete |
+| 3 | Final Stitching & Final QA display | Yes | Yes | Yes | Yes | Yes | Yes | Complete |
+| 4 | QA Rejection entry | Yes | Yes | Yes | Yes | Yes | - | Complete |
+| 5 | Optional remarks per line (hourly) | Yes | Yes | - | - | Yes | - | Was partial |
+
+### Feature 5 Completion: Hourly Remarks Retrieval & Display
+
+**Problem:** Remarks were being captured and stored (via `POST /api/supervisor/progress`) but had no retrieval endpoint and were not displayed anywhere after entry.
+
+**API Changes:**
+
+1. **New endpoint:** `GET /api/supervisor/hourly-remarks`
+   - Parameters: `line_id`, `date`
+   - Returns all non-empty remarks for a line/date, ordered by hour_slot
+   - File: `backend/src/routes/api.routes.js`
+
+2. **Updated endpoint:** `GET /api/supervisor/shift-summary`
+   - Now includes `hourly_remarks` array in the response alongside existing data
+   - Queries `line_hourly_reports` table for remarks with non-empty content
+
+3. **Auth update:** `backend/src/server.js`
+   - Added IE role access to `/supervisor/hourly-remarks` endpoint
+   - Accessible by: supervisor, admin, management, ie
+
+**UI Changes:**
+
+1. **Shift Summary** (`supervisor.js`):
+   - Hourly Remarks card displayed after "Output by Process" section
+   - Shows table with Hour and Remarks columns
+   - Only rendered when remarks exist (badge shows entry count)
+
+2. **Progress Log** (`supervisor.js`):
+   - Each progress entry now shows associated remark below it (italic, grouped by hour)
+   - QA rejection badges shown inline on entries with rejections
+
+### Production Metrics UI Integration (from previous session)
+
+Also integrated Takt Time & Efficiency metrics into the UI:
+
+1. **Admin/IE Lines List** (`admin.js`):
+   - Fetches `GET /api/lines-metrics` alongside lines data
+   - Table now shows: Output, Takt Time, Efficiency columns (was just static Efficiency)
+   - Metrics mapped by line_id for display
+
+2. **Admin/IE Line Details** (`admin.js`):
+   - Fetches `GET /api/lines/:id/metrics` alongside line details
+   - Stats grid expanded from 4 to 6 cards: Product, Target, Actual Output, Takt Time, Efficiency%, Process Steps
+
+3. **Supervisor Hourly Progress** (`supervisor.js`):
+   - Added 5-card stats grid: Target, Actual Output, Takt Time, Efficiency, Completion
+   - Stats refresh on line/date change and after saving metrics
+   - `loadProductionStats()` function added
+
+---
+
+**Last Updated:** February 10, 2026
+**Status:** Phase 2 Infrastructure Complete (17/17 tasks) + All 5 core features verified complete
+# Progress Update (2026-02-10)
+
+## Summary of work completed
+- Implemented multi-product changeover support with incoming product and auto boundary advance.
+- Added changeover sequence tracking and validation.
+- Updated daily plan UI for IE/Admin; removed manual boundary input (auto from supervisor progress).
+- Supervisor can advance/set changeover and view boundary.
+- Added QA rejection and hourly remarks in supervisor hourly progress.
+- Added hourly employee efficiency API and UI (Admin/IE/Supervisor/Management).
+- Added final stitching / final QA status summary.
+- Embedded Management Snapshot into Admin/IE/Supervisor dashboards.
+- Enabled live SSE updates with line/date filtering.
+- Added hard delete for lines (admin-only) and fixed active/inactive filtering.
+- Fixed line edit null product daily plan error.
+- Removed manual efficiency input from line edit.
+- Service worker cache bump to force JS refresh.

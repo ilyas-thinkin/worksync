@@ -1102,17 +1102,27 @@ router.put('/lines/:id', async (req, res) => {
              WHERE id = $8 RETURNING *`,
             [line_code, line_name, hall_location, current_product_id, target_units || 0, efficiency || 0, is_active, id]
         );
-        await pool.query(
-            `INSERT INTO line_daily_plans (line_id, product_id, work_date, target_units, created_by, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $5)
-             ON CONFLICT (line_id, work_date)
-             DO UPDATE SET product_id = EXCLUDED.product_id,
-                           target_units = EXCLUDED.target_units,
-                           updated_by = EXCLUDED.updated_by,
-                           updated_at = NOW()`,
-            [id, current_product_id, today, target_units || 0, null]
-        );
-        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id: id, work_date: today });
+        if (current_product_id) {
+            await pool.query(
+                `INSERT INTO line_daily_plans (line_id, product_id, work_date, target_units, created_by, updated_by)
+                 VALUES ($1, $2, $3, $4, $5, $5)
+                 ON CONFLICT (line_id, work_date)
+                 DO UPDATE SET product_id = EXCLUDED.product_id,
+                               target_units = EXCLUDED.target_units,
+                               updated_by = EXCLUDED.updated_by,
+                               updated_at = NOW()`,
+                [id, current_product_id, today, target_units || 0, null]
+            );
+            realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id: id, work_date: today });
+        } else if (target_units !== undefined) {
+            await pool.query(
+                `UPDATE line_daily_plans
+                 SET target_units = $1, updated_at = NOW()
+                 WHERE line_id = $2 AND work_date = $3`,
+                [target_units || 0, id, today]
+            );
+            realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id: id, work_date: today });
+        }
         realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: result.rows[0]?.id || id });
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
@@ -2881,7 +2891,7 @@ router.get('/line-shifts', async (req, res) => {
 });
 
 router.post('/supervisor/progress', async (req, res) => {
-    const { line_id, process_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity } = req.body;
+    const { line_id, process_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks } = req.body;
     if (!line_id || !process_id || !work_date || hour_slot === undefined) {
         return res.status(400).json({ success: false, error: 'line_id, process_id, work_date, hour_slot are required' });
     }
@@ -2907,22 +2917,37 @@ router.post('/supervisor/progress', async (req, res) => {
         const completed = parseInt(quantity || 0, 10);
         const forwarded = parseInt(forwarded_quantity || 0, 10);
         const remaining = parseInt(remaining_quantity || 0, 10);
+        const rejected = parseInt(qa_rejection || 0, 10);
+        if (rejected < 0 || rejected > completed) {
+            return res.status(400).json({ success: false, error: 'QA Rejection must be between 0 and Completed' });
+        }
         if (completed !== forwarded + remaining) {
             return res.status(400).json({ success: false, error: 'Completed must equal Forwarded + Remaining' });
         }
         const result = await pool.query(
             `INSERT INTO line_process_hourly_progress
-             (line_id, process_id, employee_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (line_id, process_id, employee_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (line_id, process_id, work_date, hour_slot)
              DO UPDATE SET quantity = EXCLUDED.quantity,
                            employee_id = EXCLUDED.employee_id,
                            forwarded_quantity = EXCLUDED.forwarded_quantity,
                            remaining_quantity = EXCLUDED.remaining_quantity,
+                           qa_rejection = EXCLUDED.qa_rejection,
+                           remarks = EXCLUDED.remarks,
                            updated_at = NOW()
              RETURNING *`,
-            [line_id, process_id, assignment.employee_id, work_date, hourValue, completed, forwarded, remaining]
+            [line_id, process_id, assignment.employee_id, work_date, hourValue, completed, forwarded, remaining, rejected, remarks || null]
         );
+        if (remarks !== undefined) {
+            await pool.query(
+                `INSERT INTO line_hourly_reports (line_id, work_date, hour_slot, remarks, updated_at)
+                 VALUES ($1, $2, $3, $4, NOW())
+                 ON CONFLICT (line_id, work_date, hour_slot)
+                 DO UPDATE SET remarks = EXCLUDED.remarks, updated_at = NOW()`,
+                [line_id, work_date, hourValue, remarks || null]
+            );
+        }
         const nextProcessId = forwarded > 0
             ? await resolveNextProcessForLine(line_id, process_id, work_date)
             : null;
@@ -3025,6 +3050,8 @@ router.get('/supervisor/progress', async (req, res) => {
                     lpp.process_id,
                     lpp.hour_slot,
                     lpp.quantity,
+                    lpp.qa_rejection,
+                    lpp.remarks,
                     o.operation_code,
                     o.operation_name
              FROM line_process_hourly_progress lpp
@@ -3035,6 +3062,110 @@ router.get('/supervisor/progress', async (req, res) => {
             [line_id, work_date]
         );
         res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Hourly employee efficiency for a line
+router.get('/supervisor/employee-hourly-efficiency', async (req, res) => {
+    const { line_id, date, hour } = req.query;
+    if (!line_id || !date || hour === undefined) {
+        return res.status(400).json({ success: false, error: 'line_id, date, and hour are required' });
+    }
+    const hourValue = parseInt(hour, 10);
+    if (!Number.isFinite(hourValue)) {
+        return res.status(400).json({ success: false, error: 'hour must be a number' });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT e.id, e.emp_code, e.emp_name,
+                    e.manpower_factor,
+                    o.operation_code, o.operation_name,
+                    pp.operation_sah,
+                    COALESCE(SUM(lph.quantity), 0) as total_output,
+                    COALESCE(SUM(lph.qa_rejection), 0) as total_rejection
+             FROM line_process_hourly_progress lph
+             JOIN employees e ON lph.employee_id = e.id
+             JOIN product_processes pp ON lph.process_id = pp.id
+             JOIN operations o ON pp.operation_id = o.id
+             WHERE lph.line_id = $1 AND lph.work_date = $2 AND lph.hour_slot = $3
+             GROUP BY e.id, e.emp_code, e.emp_name, e.manpower_factor,
+                      o.operation_code, o.operation_name, pp.operation_sah
+             ORDER BY e.emp_code`,
+            [line_id, date, hourValue]
+        );
+        const data = result.rows.map(row => {
+            const output = parseInt(row.total_output || 0, 10);
+            const sah = parseFloat(row.operation_sah || 0);
+            const mp = parseFloat(row.manpower_factor || 1);
+            const efficiency = mp > 0 && sah > 0
+                ? Math.round(((output * sah) / mp) * 100 * 100) / 100
+                : 0;
+            return {
+                ...row,
+                efficiency_percent: efficiency
+            };
+        });
+        res.json({ success: true, data });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Final stitching and final QA status per line
+router.get('/lines-final-status', async (req, res) => {
+    const { date } = req.query;
+    const workDate = date || new Date().toISOString().split('T')[0];
+    try {
+        const result = await pool.query(
+            `WITH targets AS (
+                SELECT pl.id as line_id,
+                       pl.line_name,
+                       pl.line_code,
+                       COALESCE(ldp.target_units, pl.target_units, 0) as target
+                FROM production_lines pl
+                LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $1
+                WHERE pl.is_active = true
+            ),
+            final_stitch AS (
+                SELECT lph.line_id,
+                       COALESCE(SUM(lph.quantity), 0) as output
+                FROM line_process_hourly_progress lph
+                JOIN product_processes pp ON lph.process_id = pp.id
+                JOIN operations o ON pp.operation_id = o.id
+                WHERE lph.work_date = $1
+                  AND o.operation_category = 'STITCHING'
+                  AND lower(o.operation_name) LIKE '%final%'
+                GROUP BY lph.line_id
+            ),
+            final_qa AS (
+                SELECT lph.line_id,
+                       COALESCE(SUM(lph.quantity), 0) as output,
+                       COALESCE(SUM(lph.qa_rejection), 0) as rejection
+                FROM line_process_hourly_progress lph
+                JOIN product_processes pp ON lph.process_id = pp.id
+                JOIN operations o ON pp.operation_id = o.id
+                WHERE lph.work_date = $1
+                  AND (lower(o.operation_name) LIKE '%qa%' OR lower(o.operation_name) LIKE '%quality%')
+                GROUP BY lph.line_id
+            )
+            SELECT t.line_id, t.line_name, t.line_code, t.target,
+                   COALESCE(fs.output, 0) as final_stitch_output,
+                   COALESCE(fq.output, 0) as final_qa_output,
+                   COALESCE(fq.rejection, 0) as final_qa_rejection
+            FROM targets t
+            LEFT JOIN final_stitch fs ON fs.line_id = t.line_id
+            LEFT JOIN final_qa fq ON fq.line_id = t.line_id
+            ORDER BY t.line_id`,
+            [workDate]
+        );
+        const data = result.rows.map(row => ({
+            ...row,
+            final_stitch_remaining: Math.max((parseInt(row.target) || 0) - (parseInt(row.final_stitch_output) || 0), 0),
+            final_qa_remaining: Math.max((parseInt(row.target) || 0) - (parseInt(row.final_qa_output) || 0), 0)
+        }));
+        res.json({ success: true, data });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -3521,6 +3652,14 @@ router.get('/supervisor/shift-summary', async (req, res) => {
         const qaOutput = parseInt(metrics.qa_output || 0);
         const totalOutput = qaOutput > 0 ? qaOutput : hourlyTotal;
 
+        // Get hourly remarks
+        const remarksResult = await pool.query(`
+            SELECT hour_slot, remarks, updated_at
+            FROM line_hourly_reports
+            WHERE line_id = $1 AND work_date = $2 AND remarks IS NOT NULL AND remarks != ''
+            ORDER BY hour_slot
+        `, [line_id, date]);
+
         // Get working hours
         const inTime = await getSettingValue('default_in_time', '08:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
@@ -3608,9 +3747,30 @@ router.get('/supervisor/shift-summary', async (req, res) => {
                     opening_stock: metrics.materials_issued,
                     forwarded_to_next: metrics.forwarded_quantity,
                     remaining_wip: metrics.remaining_wip
-                }
+                },
+                hourly_remarks: remarksResult.rows
             }
         });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// GET hourly remarks for a line
+router.get('/supervisor/hourly-remarks', async (req, res) => {
+    const { line_id, date } = req.query;
+    if (!line_id || !date) {
+        return res.status(400).json({ success: false, error: 'line_id and date are required' });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT hour_slot, remarks, updated_at
+             FROM line_hourly_reports
+             WHERE line_id = $1 AND work_date = $2 AND remarks IS NOT NULL AND remarks != ''
+             ORDER BY hour_slot`,
+            [line_id, date]
+        );
+        res.json({ success: true, data: result.rows });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

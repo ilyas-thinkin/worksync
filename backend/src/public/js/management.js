@@ -59,6 +59,17 @@ function setupRealtime() {
         mgmtRealtimeTimer = setTimeout(() => {
             mgmtRealtimeTimer = null;
             refreshManagementData();
+            if (payload.entity === 'progress') {
+                const lineId = document.getElementById('mgmt-line-select')?.value;
+                if (payload.line_id && lineId && String(payload.line_id) !== String(lineId)) {
+                    return;
+                }
+                const hourSelect = document.getElementById('mgmt-hour-select');
+                if (hourSelect && payload.hour_slot !== undefined) {
+                    hourSelect.value = String(payload.hour_slot);
+                }
+                refreshEmployeeEfficiency();
+            }
         }, 300);
     };
 
@@ -143,6 +154,10 @@ async function loadManagementDashboard() {
                         <label class="form-label">Line</label>
                         <select class="form-control" id="mgmt-line-select"></select>
                     </div>
+                    <div>
+                        <label class="form-label">Hour</label>
+                        <select class="form-control" id="mgmt-hour-select"></select>
+                    </div>
                 </div>
                 <div class="table-container" style="margin-top: 16px;">
                     <table>
@@ -151,6 +166,7 @@ async function loadManagementDashboard() {
                                 <th>Employee</th>
                                 <th>Operation</th>
                                 <th>Output</th>
+                                <th>Rejection</th>
                                 <th>Efficiency</th>
                             </tr>
                         </thead>
@@ -159,12 +175,33 @@ async function loadManagementDashboard() {
                 </div>
             </div>
         </div>
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Final Stitching / Final QA Status</h3>
+            </div>
+            <div class="card-body table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Line</th>
+                            <th>Final Stitching Done</th>
+                            <th>Remaining</th>
+                            <th>Final QA Done</th>
+                            <th>QA Rejection</th>
+                            <th>Remaining</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mgmt-final-status"></tbody>
+                </table>
+            </div>
+        </div>
     `;
 
     document.getElementById('mgmt-date').addEventListener('change', refreshManagementData);
     document.getElementById('mgmt-download').addEventListener('click', downloadReport);
     document.getElementById('mgmt-download-range').addEventListener('click', downloadRangeReport);
     await loadLineOptions();
+    loadHourOptions();
     refreshManagementData();
 }
 
@@ -200,10 +237,45 @@ async function loadLineOptions() {
     select.addEventListener('change', refreshEmployeeEfficiency);
 }
 
+function loadHourOptions() {
+    const select = document.getElementById('mgmt-hour-select');
+    if (!select) return;
+    const hourStart = 8;
+    const hourEnd = 19;
+    const now = new Date();
+    const defaultHour = Math.min(Math.max(now.getHours(), hourStart), hourEnd);
+    select.innerHTML = Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
+        const value = hourStart + i;
+        return `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${String(value).padStart(2, '0')}:00</option>`;
+    }).join('');
+    select.addEventListener('change', refreshEmployeeEfficiency);
+}
+
+async function mgmtSetLatestHour(lineId, date) {
+    const select = document.getElementById('mgmt-hour-select');
+    if (!select || !lineId || !date) return false;
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/progress?line_id=${lineId}&work_date=${date}`, { credentials: 'include' });
+        const result = await response.json();
+        if (!result.success) return false;
+        const rows = result.data || [];
+        if (!rows.length) return false;
+        const latest = rows.reduce((max, row) => Math.max(max, parseInt(row.hour_slot || 0, 10)), 0);
+        if (latest) {
+            select.value = String(latest);
+            return true;
+        }
+    } catch (err) {
+        return false;
+    }
+    return false;
+}
+
 async function refreshManagementData() {
     await Promise.all([
         loadLineMetrics(),
-        refreshEmployeeEfficiency()
+        refreshEmployeeEfficiency(),
+        loadFinalStatus()
     ]);
 }
 
@@ -267,20 +339,32 @@ async function loadLineMetrics() {
 async function refreshEmployeeEfficiency() {
     const lineId = document.getElementById('mgmt-line-select').value;
     const date = document.getElementById('mgmt-date').value;
+    const hour = document.getElementById('mgmt-hour-select')?.value;
     const tbody = document.getElementById('mgmt-employees');
     if (!lineId) {
-        tbody.innerHTML = '<tr><td colspan="4">Select a line</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5">Select a line</td></tr>';
         return;
     }
-    const response = await fetch(`${API_BASE}/supervisor/shift-summary?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+    const response = await fetch(`${API_BASE}/supervisor/employee-hourly-efficiency?line_id=${lineId}&date=${date}&hour=${hour}`, { credentials: 'include' });
     const result = await response.json();
     if (!result.success) {
-        tbody.innerHTML = `<tr><td colspan="4">${result.error || 'No data'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5">${result.error || 'No data'}</td></tr>`;
         return;
     }
-    const employees = result.data.employees || [];
+    let employees = result.data || [];
     if (!employees.length) {
-        tbody.innerHTML = '<tr><td colspan="4">No employee data</td></tr>';
+        const updated = await mgmtSetLatestHour(lineId, date);
+        if (updated) {
+            const retryHour = document.getElementById('mgmt-hour-select')?.value;
+            const retryResponse = await fetch(`${API_BASE}/supervisor/employee-hourly-efficiency?line_id=${lineId}&date=${date}&hour=${retryHour}`, { credentials: 'include' });
+            const retryResult = await retryResponse.json();
+            if (retryResult.success) {
+                employees = retryResult.data || [];
+            }
+        }
+    }
+    if (!employees.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No employee data</td></tr>';
         return;
     }
     tbody.innerHTML = employees.map(emp => `
@@ -288,7 +372,35 @@ async function refreshEmployeeEfficiency() {
             <td><strong>${emp.emp_code}</strong><div style="color: var(--secondary); font-size: 12px;">${emp.emp_name}</div></td>
             <td>${emp.operation_code} - ${emp.operation_name}</td>
             <td>${emp.total_output}</td>
+            <td>${emp.total_rejection || 0}</td>
             <td>${emp.efficiency_percent || 0}%</td>
+        </tr>
+    `).join('');
+}
+
+async function loadFinalStatus() {
+    const date = document.getElementById('mgmt-date').value;
+    const tbody = document.getElementById('mgmt-final-status');
+    if (!tbody) return;
+    const response = await fetch(`${API_BASE}/lines-final-status?date=${date}`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) {
+        tbody.innerHTML = `<tr><td colspan="6">${result.error || 'No data'}</td></tr>`;
+        return;
+    }
+    const rows = result.data || [];
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6">No data</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(row => `
+        <tr>
+            <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
+            <td>${row.final_stitch_output}</td>
+            <td>${row.final_stitch_remaining}</td>
+            <td>${row.final_qa_output}</td>
+            <td>${row.final_qa_rejection}</td>
+            <td>${row.final_qa_remaining}</td>
         </tr>
     `).join('');
 }

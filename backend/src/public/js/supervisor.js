@@ -143,6 +143,10 @@ async function loadSupervisorDashboard() {
                         <label for="sup-mgmt-line-select">Line</label>
                         <select class="form-control" id="sup-mgmt-line-select"></select>
                     </div>
+                    <div class="ie-date">
+                        <label for="sup-mgmt-hour-select">Hour</label>
+                        <select class="form-control" id="sup-mgmt-hour-select"></select>
+                    </div>
                 </div>
                 <div class="stats-grid" id="sup-mgmt-stats" style="margin-top:16px;"></div>
                 <div class="card" style="margin-top:16px;">
@@ -177,6 +181,7 @@ async function loadSupervisorDashboard() {
                                         <th>Employee</th>
                                         <th>Operation</th>
                                         <th>Output</th>
+                                        <th>Rejection</th>
                                         <th>Efficiency</th>
                                     </tr>
                                 </thead>
@@ -185,12 +190,34 @@ async function loadSupervisorDashboard() {
                         </div>
                     </div>
                 </div>
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">
+                        <h3 class="card-title">Final Stitching / Final QA Status</h3>
+                    </div>
+                    <div class="card-body table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Line</th>
+                                    <th>Final Stitching Done</th>
+                                    <th>Remaining</th>
+                                    <th>Final QA Done</th>
+                                    <th>QA Rejection</th>
+                                    <th>Remaining</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sup-mgmt-final-status"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     `;
     await supervisorLoadLineOptions();
+    supervisorLoadHourOptions();
     document.getElementById('sup-mgmt-date')?.addEventListener('change', supervisorRefreshManagementData);
     document.getElementById('sup-mgmt-line-select')?.addEventListener('change', supervisorRefreshEmployeeEfficiency);
+    document.getElementById('sup-mgmt-hour-select')?.addEventListener('change', supervisorRefreshEmployeeEfficiency);
     supervisorRefreshManagementData();
 }
 
@@ -206,10 +233,44 @@ async function supervisorLoadLineOptions() {
         .join('');
 }
 
+async function supervisorSetLatestHour(lineId, date) {
+    const select = document.getElementById('sup-mgmt-hour-select');
+    if (!select || !lineId || !date) return false;
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/progress?line_id=${lineId}&work_date=${date}`, { credentials: 'include' });
+        const result = await response.json();
+        if (!result.success) return false;
+        const rows = result.data || [];
+        if (!rows.length) return false;
+        const latest = rows.reduce((max, row) => Math.max(max, parseInt(row.hour_slot || 0, 10)), 0);
+        if (latest) {
+            select.value = String(latest);
+            return true;
+        }
+    } catch (err) {
+        return false;
+    }
+    return false;
+}
+
+function supervisorLoadHourOptions() {
+    const select = document.getElementById('sup-mgmt-hour-select');
+    if (!select) return;
+    const hourStart = 8;
+    const hourEnd = 19;
+    const now = new Date();
+    const defaultHour = Math.min(Math.max(now.getHours(), hourStart), hourEnd);
+    select.innerHTML = Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
+        const value = hourStart + i;
+        return `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${String(value).padStart(2, '0')}:00</option>`;
+    }).join('');
+}
+
 async function supervisorRefreshManagementData() {
     await Promise.all([
         supervisorLoadLineMetrics(),
-        supervisorRefreshEmployeeEfficiency()
+        supervisorRefreshEmployeeEfficiency(),
+        supervisorLoadFinalStatus()
     ]);
 }
 
@@ -274,17 +335,29 @@ async function supervisorLoadLineMetrics() {
 async function supervisorRefreshEmployeeEfficiency() {
     const lineId = document.getElementById('sup-mgmt-line-select')?.value;
     const date = document.getElementById('sup-mgmt-date')?.value;
+    const hour = document.getElementById('sup-mgmt-hour-select')?.value;
     const tbody = document.getElementById('sup-mgmt-employees');
     if (!lineId || !date || !tbody) return;
-    const response = await fetch(`${API_BASE}/supervisor/shift-summary?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+    const response = await fetch(`${API_BASE}/supervisor/employee-hourly-efficiency?line_id=${lineId}&date=${date}&hour=${hour}`, { credentials: 'include' });
     const result = await response.json();
     if (!result.success) {
-        tbody.innerHTML = `<tr><td colspan="4">${result.error || 'No data'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5">${result.error || 'No data'}</td></tr>`;
         return;
     }
-    const employees = result.data.employees || [];
+    let employees = result.data || [];
     if (!employees.length) {
-        tbody.innerHTML = '<tr><td colspan="4">No employee data</td></tr>';
+        const updated = await supervisorSetLatestHour(lineId, date);
+        if (updated) {
+            const retryHour = document.getElementById('sup-mgmt-hour-select')?.value;
+            const retryResponse = await fetch(`${API_BASE}/supervisor/employee-hourly-efficiency?line_id=${lineId}&date=${date}&hour=${retryHour}`, { credentials: 'include' });
+            const retryResult = await retryResponse.json();
+            if (retryResult.success) {
+                employees = retryResult.data || [];
+            }
+        }
+    }
+    if (!employees.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No employee data</td></tr>';
         return;
     }
     tbody.innerHTML = employees.map(emp => `
@@ -292,7 +365,35 @@ async function supervisorRefreshEmployeeEfficiency() {
             <td><strong>${emp.emp_code}</strong><div style="color: var(--secondary); font-size: 12px;">${emp.emp_name}</div></td>
             <td>${emp.operation_code} - ${emp.operation_name}</td>
             <td>${emp.total_output}</td>
+            <td>${emp.total_rejection || 0}</td>
             <td>${emp.efficiency_percent || 0}%</td>
+        </tr>
+    `).join('');
+}
+
+async function supervisorLoadFinalStatus() {
+    const date = document.getElementById('sup-mgmt-date')?.value;
+    const tbody = document.getElementById('sup-mgmt-final-status');
+    if (!date || !tbody) return;
+    const response = await fetch(`${API_BASE}/lines-final-status?date=${date}`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) {
+        tbody.innerHTML = `<tr><td colspan="6">${result.error || 'No data'}</td></tr>`;
+        return;
+    }
+    const rows = result.data || [];
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6">No data</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(row => `
+        <tr>
+            <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
+            <td>${row.final_stitch_output}</td>
+            <td>${row.final_stitch_remaining}</td>
+            <td>${row.final_qa_output}</td>
+            <td>${row.final_qa_rejection}</td>
+            <td>${row.final_qa_remaining}</td>
         </tr>
     `).join('');
 }
@@ -1074,6 +1175,29 @@ async function loadProgressSection() {
                     </div>
                 </div>
             </div>
+            <div class="card" style="margin-top:16px;">
+                <div class="card-header">
+                    <h3 class="card-title">Hourly Employee Efficiency</h3>
+                </div>
+                <div class="card-body">
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Employee</th>
+                                    <th>Operation</th>
+                                    <th>Output</th>
+                                    <th>Rejection</th>
+                                    <th>Efficiency</th>
+                                </tr>
+                            </thead>
+                            <tbody id="progress-employee-efficiency">
+                                <tr><td colspan="5">Select a line and hour</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         `;
 
         document.getElementById('progress-line').addEventListener('change', () => {
@@ -1082,6 +1206,10 @@ async function loadProgressSection() {
             loadProgressLog();
             loadLineMetrics();
             loadProductionStats();
+            loadProgressEmployeeEfficiency();
+        });
+        document.getElementById('progress-hour').addEventListener('change', () => {
+            loadProgressEmployeeEfficiency();
         });
         document.getElementById('progress-date').addEventListener('change', () => {
             resetProgressProcess();
@@ -1149,6 +1277,8 @@ async function saveProgress() {
     const qty = document.getElementById('progress-quantity').value;
     const forwarded = document.getElementById('progress-forwarded')?.value || 0;
     const remaining = document.getElementById('progress-remaining')?.value || 0;
+    const rejection = document.getElementById('progress-rejection')?.value || 0;
+    const remarks = document.getElementById('progress-remarks')?.value || '';
     if (!lineId || !date) {
         showToast('Line and date are required', 'error');
         return;
@@ -1160,6 +1290,11 @@ async function saveProgress() {
     const completed = parseInt(qty || 0, 10);
     const forwardedNum = parseInt(forwarded || 0, 10);
     const remainingNum = parseInt(remaining || 0, 10);
+    const rejectedNum = parseInt(rejection || 0, 10);
+    if (rejectedNum < 0 || rejectedNum > completed) {
+        showToast('QA Rejection must be between 0 and Completed', 'error');
+        return;
+    }
     if (completed !== forwardedNum + remainingNum) {
         showToast('Completed must equal Forwarded + Remaining', 'error');
         return;
@@ -1175,7 +1310,9 @@ async function saveProgress() {
                 hour_slot: hour,
                 quantity: completed,
                 forwarded_quantity: forwardedNum,
-                remaining_quantity: remainingNum
+                remaining_quantity: remainingNum,
+                qa_rejection: parseInt(rejection || 0, 10),
+                remarks: remarks
             })
         });
         const result = await response.json();
@@ -1185,9 +1322,42 @@ async function saveProgress() {
         }
         showToast('Saved', 'success');
         resetProgressProcess();
+        loadProgressEmployeeEfficiency();
     } catch (err) {
         showToast(err.message, 'error');
     }
+}
+
+async function loadProgressEmployeeEfficiency() {
+    const lineId = document.getElementById('progress-line')?.value;
+    const date = document.getElementById('progress-date')?.value;
+    const hour = document.getElementById('progress-hour')?.value;
+    const tbody = document.getElementById('progress-employee-efficiency');
+    if (!tbody) return;
+    if (!lineId || !date || hour === undefined) {
+        tbody.innerHTML = '<tr><td colspan="5">Select a line and hour</td></tr>';
+        return;
+    }
+    const response = await fetch(`${API_BASE}/supervisor/employee-hourly-efficiency?line_id=${lineId}&date=${date}&hour=${hour}`, { credentials: 'include' });
+    const result = await response.json();
+    if (!result.success) {
+        tbody.innerHTML = `<tr><td colspan="5">${result.error || 'No data'}</td></tr>`;
+        return;
+    }
+    const rows = result.data || [];
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No hourly data</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(emp => `
+        <tr>
+            <td><strong>${emp.emp_code}</strong><div style="color: var(--secondary); font-size: 12px;">${emp.emp_name}</div></td>
+            <td>${emp.operation_code} - ${emp.operation_name}</td>
+            <td>${emp.total_output}</td>
+            <td>${emp.total_rejection || 0}</td>
+            <td>${emp.efficiency_percent || 0}%</td>
+        </tr>
+    `).join('');
 }
 
 let progressCameraStream = null;
@@ -1384,6 +1554,8 @@ function showProgressEntryModal() {
     const existing = document.getElementById('progress-modal');
     if (existing) existing.remove();
     const targetUnits = progressState.process?.target_units || 0;
+    const opName = (progressState.process?.operation_name || '').toLowerCase();
+    const isQaProcess = opName.includes('qa') || opName.includes('quality');
     const modal = document.createElement('div');
     modal.className = 'progress-modal-backdrop';
     modal.id = 'progress-modal';
@@ -1418,6 +1590,12 @@ function showProgressEntryModal() {
                 <input type="number" class="form-control" id="progress-forwarded" min="0" value="0">
                 <label class="form-label">Completed Units remaining with u / Units to be forwared</label>
                 <input type="number" class="form-control" id="progress-remaining" min="0" value="0">
+                ${isQaProcess ? `
+                    <label class="form-label">QA Rejection</label>
+                    <input type="number" class="form-control" id="progress-rejection" min="0" value="0">
+                ` : ''}
+                <label class="form-label">Hourly Remarks (optional)</label>
+                <textarea class="form-control" id="progress-remarks" rows="2" placeholder="Optional remarks for this line and hour"></textarea>
             </div>
             <div class="progress-modal-footer">
                 <button class="btn btn-secondary" type="button" id="progress-modal-cancel">Cancel</button>
@@ -1458,13 +1636,27 @@ async function loadProgressLog() {
             log.innerHTML = '<div class="alert alert-warning">No progress logged yet.</div>';
             return;
         }
-        log.innerHTML = rows.map(row => `
+        // Group by hour to show remarks once per hour
+        const hourRemarks = new Map();
+        rows.forEach(row => {
+            if (row.remarks && !hourRemarks.has(row.hour_slot)) {
+                hourRemarks.set(row.hour_slot, row.remarks);
+            }
+        });
+
+        let lastHour = null;
+        log.innerHTML = rows.map(row => {
+            const showRemarks = row.remarks && hourRemarks.get(row.hour_slot) && lastHour !== row.hour_slot;
+            if (showRemarks) lastHour = row.hour_slot;
+            return `
             <div class="progress-log-row">
                 <div class="progress-log-hour">${String(row.hour_slot).padStart(2, '0')}:00</div>
-                <div class="progress-log-work">${row.operation_code} - ${row.operation_name}</div>
+                <div class="progress-log-work">${row.operation_code} - ${row.operation_name}${row.qa_rejection > 0 ? ` <span class="badge badge-red" style="font-size:10px;">Rej: ${row.qa_rejection}</span>` : ''}</div>
                 <div class="progress-log-qty">${row.quantity}</div>
             </div>
-        `).join('');
+            ${showRemarks ? `<div class="progress-log-remark"><span style="color:var(--secondary);font-size:12px;font-style:italic;padding:2px 8px 6px 60px;display:block;">Remark: ${hourRemarks.get(row.hour_slot)}</span></div>` : ''}
+            `;
+        }).join('');
     } catch (err) {
         log.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -1647,6 +1839,19 @@ function setupRealtime() {
                 if (!payload.work_date || !date || payload.work_date === date) {
                     supervisorRefreshManagementData();
                 }
+                if (payload.line_id) {
+                    const lineId = document.getElementById('sup-mgmt-line-select')?.value;
+                    if (!lineId || String(lineId) === String(payload.line_id)) {
+                        const hourSelect = document.getElementById('sup-mgmt-hour-select');
+                        if (hourSelect && payload.hour_slot !== undefined) {
+                            hourSelect.value = String(payload.hour_slot);
+                        }
+                        supervisorRefreshEmployeeEfficiency();
+                    }
+                }
+            }
+            if (active === 'progress') {
+                loadProgressEmployeeEfficiency();
             }
         }
         if (payload.entity === 'materials') {
@@ -2225,7 +2430,7 @@ async function loadShiftSummaryData() {
         }
 
         const data = result.data;
-        const { line, metrics, hourly_output, process_output, employees, materials, shift } = data;
+        const { line, metrics, hourly_output, process_output, employees, materials, shift, hourly_remarks } = data;
 
         container.innerHTML = `
             <div class="summary-header">
@@ -2432,6 +2637,33 @@ async function loadShiftSummaryData() {
                     ` : '<div class="alert alert-warning">No process output data.</div>'}
                 </div>
             </div>
+
+            ${(hourly_remarks && hourly_remarks.length) ? `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Hourly Remarks</h3>
+                    <span class="badge badge-blue">${hourly_remarks.length} entries</span>
+                </div>
+                <div class="card-body">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th style="width:80px;">Hour</th>
+                                <th>Remarks</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${hourly_remarks.map(r => `
+                                <tr>
+                                    <td><strong>${String(r.hour_slot).padStart(2, '0')}:00</strong></td>
+                                    <td>${r.remarks}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            ` : ''}
 
             <div class="summary-footer">
                 <p>Report generated: ${new Date().toLocaleString('en-IN')}</p>

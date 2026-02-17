@@ -149,6 +149,12 @@ app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/supervisor/shift-summary')) {
     return requireAnyRole(['supervisor', 'admin', 'management', 'ie'])(req, res, next);
   }
+  if (req.path.startsWith('/supervisor/employee-hourly-efficiency')) {
+    return requireAnyRole(['supervisor', 'admin', 'management', 'ie'])(req, res, next);
+  }
+  if (req.path.startsWith('/supervisor/hourly-remarks')) {
+    return requireAnyRole(['supervisor', 'admin', 'management', 'ie'])(req, res, next);
+  }
   if (req.path.startsWith('/supervisor') && req.method === 'GET') {
     return requireAnyRole(['supervisor', 'admin', 'management'])(req, res, next);
   }
