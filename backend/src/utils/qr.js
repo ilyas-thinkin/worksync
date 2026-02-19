@@ -7,7 +7,7 @@ const baseDir = process.env.QRCODES_DIR || path.join(__dirname, '..', '..', 'qrc
 const dirs = {
     employees: path.join(baseDir, 'employees'),
     lines: path.join(baseDir, 'lines'),
-    processes: path.join(baseDir, 'processes')
+    workstations: path.join(baseDir, 'workstations')
 };
 
 async function ensureDir(dir) {
@@ -65,57 +65,49 @@ async function generateLineQrById(id) {
     return relativePath;
 }
 
-async function generateProcessQrById(id) {
-    const result = await pool.query(
-        `SELECT pp.id, pp.sequence_number, o.operation_name
-         FROM product_processes pp
-         JOIN operations o ON pp.operation_id = o.id
-         WHERE pp.id = $1`,
-        [id]
+
+async function generateWorkstationQrForLine(lineId) {
+    const lineResult = await pool.query(
+        'SELECT id, line_code, line_name FROM production_lines WHERE id = $1',
+        [lineId]
     );
-    const process = result.rows[0];
-    if (!process) return null;
+    const line = lineResult.rows[0];
+    if (!line) return [];
 
-    const filename = `process_${process.id}.png`;
-    const relativePath = `qrcodes/processes/${filename}`;
-    const fullPath = path.join(dirs.processes, filename);
-    const payload = {
-        type: 'process',
-        id: process.id,
-        name: process.operation_name
-    };
+    const wsDir = path.join(dirs.workstations, line.line_code);
+    await ensureDir(wsDir);
 
-    await writeQr(fullPath, payload);
-    await pool.query('UPDATE product_processes SET qr_code_path = $1 WHERE id = $2', [relativePath, process.id]);
-    return relativePath;
-}
+    const results = [];
+    for (let i = 1; i <= 100; i++) {
+        const wsCode = 'W' + String(i).padStart(2, '0');
+        const filename = `ws_${line.line_code}_${wsCode}.png`;
+        const fullPath = path.join(wsDir, filename);
+        const relativePath = `qrcodes/workstations/${line.line_code}/${filename}`;
 
-async function generateOperationQrById(id) {
-    const result = await pool.query(
-        'SELECT id, operation_code, operation_name FROM operations WHERE id = $1',
-        [id]
-    );
-    const operation = result.rows[0];
-    if (!operation) return null;
+        const payload = {
+            type: 'workstation',
+            line_id: line.id,
+            line_code: line.line_code,
+            workstation_code: wsCode,
+            workstation_number: i
+        };
 
-    const filename = `operation_${operation.id}.png`;
-    const relativePath = `qrcodes/operations/${filename}`;
-    const fullPath = path.join(baseDir, 'operations', filename);
-    const payload = {
-        type: 'operation',
-        id: operation.id,
-        code: operation.operation_code,
-        name: operation.operation_name
-    };
+        await writeQr(fullPath, payload);
 
-    await writeQr(fullPath, payload);
-    await pool.query('UPDATE operations SET qr_code_path = $1 WHERE id = $2', [relativePath, operation.id]);
-    return relativePath;
+        const wsResult = await pool.query(
+            `INSERT INTO line_workstations (line_id, workstation_number, workstation_code, qr_code_path)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (line_id, workstation_code) DO UPDATE SET qr_code_path = EXCLUDED.qr_code_path
+             RETURNING id`,
+            [line.id, i, wsCode, relativePath]
+        );
+        results.push({ id: wsResult.rows[0].id, workstation_number: i, workstation_code: wsCode, qr_code_path: relativePath });
+    }
+    return results;
 }
 
 module.exports = {
     generateEmployeeQrById,
     generateLineQrById,
-    generateProcessQrById,
-    generateOperationQrById
+    generateWorkstationQrForLine
 };

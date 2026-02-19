@@ -220,8 +220,10 @@ async function scanLoop(videoElementId) {
 const morningState = {
     lineId: null,
     processes: [],
+    workstations: null,
     targetQty: 0,
     selectedWorkstation: null,
+    selectedWorkstationPlanId: null,
     scannedEmployee: null
 };
 
@@ -303,39 +305,104 @@ async function onMorningLineChange() {
     container.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
 
     try {
-        const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}`);
+        const today = new Date().toISOString().slice(0, 10);
+        const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${today}`);
         const result = await response.json();
-        morningState.processes = result.data || [];
-        morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
-        renderMorningAssignments();
+
+        if (result.has_plan && result.workstation_plan?.length > 0) {
+            // Use the line plan workstations
+            morningState.workstations = result.workstation_plan;
+            morningState.processes = result.data || [];
+            morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
+            renderMorningAssignments(true);
+        } else {
+            // Fallback: group flat processes by workstation_code
+            morningState.processes = result.data || [];
+            morningState.workstations = null;
+            morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
+            renderMorningAssignments(false);
+        }
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
 }
 
-function renderMorningAssignments() {
+function renderMorningAssignments(hasPlan) {
     const container = document.getElementById('morning-assignments');
-    const processes = morningState.processes;
 
-    if (!processes.length) {
-        container.innerHTML = '<div class="card"><div class="card-body"><div class="alert alert-info">No processes found for this line. Assign a product to the line first.</div></div></div>';
+    if (hasPlan && morningState.workstations?.length > 0) {
+        const workstations = morningState.workstations;
+        const allAssigned = workstations.every(ws => ws.assigned_emp_name);
+
+        const rows = workstations.map(ws => {
+            const assigned = ws.assigned_emp_name
+                ? `<span style="color:#16a34a; font-weight:600;">${ws.assigned_emp_code} - ${ws.assigned_emp_name}</span>`
+                : '<span style="color:#dc2626;">Not assigned</span>';
+            const icon = ws.assigned_emp_name ? '&#10003;' : '&#9888;';
+            const iconColor = ws.assigned_emp_name ? '#16a34a' : '#f59e0b';
+            const processList = (ws.processes || []).map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
+            const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
+
+            return `<tr>
+                <td style="font-weight:700;">${ws.workstation_code}</td>
+                <td style="font-size:0.85em;">${processList}</td>
+                <td style="text-align:center; font-weight:600; color:${workloadColor};">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
+                <td><span style="color:${iconColor}; margin-right:6px;">${icon}</span>${assigned}</td>
+                <td>
+                    <button class="btn btn-primary btn-sm" onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, ${ws.id})">
+                        Scan Worker
+                    </button>
+                </td>
+            </tr>`;
+        }).join('');
+
+        container.innerHTML = `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Workstation Assignments</h3>
+                    <span style="font-size:0.85em; color:#6b7280;">
+                        ${workstations.length} workstations &nbsp;|&nbsp;
+                        ${allAssigned ? '<span style="color:#16a34a;">All assigned</span>' : '<span style="color:#dc2626;">Some unassigned</span>'}
+                    </span>
+                </div>
+                <div class="card-body table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Workstation</th>
+                                <th>Processes</th>
+                                <th style="text-align:center;">Workload</th>
+                                <th>Assigned Worker</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            </div>
+        `;
         return;
     }
 
-    // Group processes by workstation_code
+    // Fallback: no plan — group by workstation_code from product_processes
+    const processes = morningState.processes;
+    if (!processes.length) {
+        container.innerHTML = `
+            <div class="card"><div class="card-body">
+                <div class="alert alert-info">
+                    No workstation plan found for today. Please ask IE/Admin to generate a workstation plan for this line first.
+                </div>
+            </div></div>`;
+        return;
+    }
+
     const wsMap = new Map();
     processes.forEach(p => {
         const ws = p.workstation_code || p.group_name || '-';
         if (!wsMap.has(ws)) {
-            wsMap.set(ws, {
-                workstation_code: ws,
-                processes: [],
-                assigned_emp_code: p.assigned_emp_code,
-                assigned_emp_name: p.assigned_emp_name
-            });
+            wsMap.set(ws, { workstation_code: ws, processes: [], assigned_emp_code: null, assigned_emp_name: null, plan_id: null });
         }
         wsMap.get(ws).processes.push(p);
-        // Use the first assigned employee found for this workstation
         if (p.assigned_emp_name && !wsMap.get(ws).assigned_emp_name) {
             wsMap.get(ws).assigned_emp_code = p.assigned_emp_code;
             wsMap.get(ws).assigned_emp_name = p.assigned_emp_name;
@@ -349,14 +416,13 @@ function renderMorningAssignments() {
         const icon = ws.assigned_emp_name ? '&#10003;' : '&#9888;';
         const iconColor = ws.assigned_emp_name ? '#16a34a' : '#f59e0b';
         const processList = ws.processes.map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
-        const escapedWs = ws.workstation_code.replace(/'/g, "\\'");
 
         return `<tr>
             <td style="font-weight:600;">${ws.workstation_code}</td>
             <td>${processList}</td>
             <td><span style="color:${iconColor}; margin-right:6px;">${icon}</span> ${assigned}</td>
             <td>
-                <button class="btn btn-primary btn-sm" onclick="startMorningScan('${escapedWs}')">
+                <button class="btn btn-primary btn-sm" onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, null)">
                     Scan Worker
                 </button>
             </td>
@@ -367,16 +433,12 @@ function renderMorningAssignments() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">Workstation Assignments</h3>
+                <small style="color:#f59e0b;">No balance plan — using product-level grouping</small>
             </div>
             <div class="card-body table-container">
                 <table>
                     <thead>
-                        <tr>
-                            <th>Workstation</th>
-                            <th>Processes</th>
-                            <th>Assigned Worker</th>
-                            <th>Action</th>
-                        </tr>
+                        <tr><th>Workstation</th><th>Processes</th><th>Assigned Worker</th><th>Action</th></tr>
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
@@ -385,8 +447,9 @@ function renderMorningAssignments() {
     `;
 }
 
-function startMorningScan(workstationCode) {
+function startMorningScan(workstationCode, linePlanWorkstationId) {
     morningState.selectedWorkstation = workstationCode;
+    morningState.selectedWorkstationPlanId = linePlanWorkstationId || null;
     morningState.scannedEmployee = null;
 
     const scanPanel = document.getElementById('morning-scan-panel');
@@ -475,13 +538,16 @@ async function confirmMorningAssign() {
     try {
         const emp = morningState.scannedEmployee;
 
+        const today = new Date().toISOString().slice(0, 10);
         const response = await fetch(`${API_BASE}/workstation-assignments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 line_id: morningState.lineId,
                 workstation_code: morningState.selectedWorkstation,
-                employee_id: emp.id
+                employee_id: emp.id,
+                work_date: today,
+                line_plan_workstation_id: morningState.selectedWorkstationPlanId
             })
         });
         const result = await response.json();
@@ -513,6 +579,7 @@ function cancelMorningScan() {
     const scanPanel = document.getElementById('morning-scan-panel');
     if (scanPanel) scanPanel.style.display = 'none';
     morningState.selectedWorkstation = null;
+    morningState.selectedWorkstationPlanId = null;
     morningState.scannedEmployee = null;
 }
 
@@ -522,10 +589,16 @@ function cancelMorningScan() {
 const hourlyState = {
     lineId: null,
     processes: [],
+    workstations: null,
     targetQty: 0,
     hourlyTarget: 0,
     selectedProcess: null,
-    progressData: []
+    selectedWorkstation: null,
+    progressData: [],
+    changeoverActive: false,
+    incomingProductId: null,
+    incomingProductName: '',
+    activeTarget: 0
 };
 
 const SHORTFALL_REASONS = [
@@ -631,6 +704,7 @@ async function onHourlyLineChange() {
     const lineId = document.getElementById('hourly-line').value;
     hourlyState.lineId = lineId;
     hourlyState.selectedProcess = null;
+    hourlyState.workstations = null;
     stopCamera();
     hideHourlyPanels();
 
@@ -643,10 +717,16 @@ async function onHourlyLineChange() {
     container.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
 
     try {
-        const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}`);
+        const date = document.getElementById('hourly-date')?.value || new Date().toISOString().slice(0, 10);
+        const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${date}`);
         const result = await response.json();
         hourlyState.processes = result.data || [];
-        hourlyState.targetQty = hourlyState.processes.length > 0 ? (hourlyState.processes[0].target_qty || 0) : 0;
+        hourlyState.workstations = (result.has_plan && result.workstation_plan?.length > 0) ? result.workstation_plan : null;
+        hourlyState.changeoverActive = !!result.changeover_active;
+        hourlyState.incomingProductId = result.incoming_product_id || null;
+        hourlyState.incomingProductName = result.incoming_product_name || result.incoming_product_code || '';
+        hourlyState.activeTarget = result.active_target || 0;
+        hourlyState.targetQty = hourlyState.activeTarget || (hourlyState.processes.length > 0 ? (hourlyState.processes[0].target_qty || 0) : 0);
         hourlyState.hourlyTarget = hourlyState.targetQty > 0 ? Math.round(hourlyState.targetQty / 8) : 0;
         await refreshHourlySummary();
     } catch (err) {
@@ -674,19 +754,168 @@ async function refreshHourlySummary() {
     renderHourlySummary();
 }
 
+function computeTotalOutput(progressData, workstations) {
+    // Use WS01's first process as the line-output representative (all workstations produce same qty)
+    if (!workstations?.length || !progressData?.length) return 0;
+    const ws1 = workstations[0];
+    const pid = parseInt(ws1.processes?.[0]?.process_id || ws1.processes?.[0]?.id || 0, 10);
+    if (!pid) return 0;
+    return progressData
+        .filter(d => parseInt(d.process_id, 10) === pid)
+        .reduce((s, d) => s + parseInt(d.quantity || 0, 10), 0);
+}
+
+async function activateChangeover(lineId, workDate) {
+    if (!confirm('Start changeover? Hourly output tracking will switch to the changeover product.')) return;
+    const btn = document.getElementById('btn-start-co');
+    if (btn) { btn.disabled = true; btn.textContent = 'Activating\u2026'; }
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/changeover/activate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: workDate })
+        });
+        const data = await r.json();
+        if (!data.success) {
+            alert(data.error);
+            if (btn) { btn.disabled = false; btn.textContent = '\u21ba Start Changeover'; }
+            return;
+        }
+        await onHourlyLineChange();
+    } catch (err) {
+        alert(err.message);
+        if (btn) { btn.disabled = false; btn.textContent = '\u21ba Start Changeover'; }
+    }
+}
+
 function renderHourlySummary() {
     const container = document.getElementById('hourly-summary');
-    const processes = hourlyState.processes;
     const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
     const hourlyTarget = hourlyState.hourlyTarget;
+    const date = document.getElementById('hourly-date')?.value || '';
 
+    // Changeover completion banner (shown when changeover is planned)
+    let changeoverBanner = '';
+    if (hourlyState.incomingProductId) {
+        if (hourlyState.changeoverActive) {
+            changeoverBanner = `
+                <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span style="background:#7c3aed;color:#fff;padding:3px 12px;border-radius:10px;font-weight:700;font-size:13px;">&#8652; CHANGEOVER ACTIVE</span>
+                    <span style="color:#6d28d9;font-size:13px;font-weight:600;">${hourlyState.incomingProductName || 'Changeover product'}</span>
+                </div>`;
+        } else {
+            const totalOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations);
+            const target = hourlyState.targetQty || 0;
+            const pct = target > 0 ? Math.min(Math.round(totalOutput / target * 100), 999) : 0;
+            const targetMet = pct >= 100;
+            const pctColor = pct >= 100 ? '#16a34a' : pct >= 80 ? '#d97706' : '#6b7280';
+            changeoverBanner = `
+                <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+                    <span style="font-size:13px;color:#374151;">
+                        Total Output: <strong>${totalOutput}</strong> / <strong>${target}</strong>
+                        &nbsp;<span style="color:${pctColor};font-weight:700;">(${pct}%)</span>
+                    </span>
+                    <button onclick="activateChangeover(${hourlyState.lineId},'${date}')"
+                        id="btn-start-co"
+                        ${targetMet ? '' : 'disabled'}
+                        style="margin-left:auto;padding:6px 18px;background:${targetMet ? '#7c3aed' : '#e5e7eb'};color:${targetMet ? '#fff' : '#9ca3af'};border:none;border-radius:6px;cursor:${targetMet ? 'pointer' : 'default'};font-weight:600;font-size:13px;transition:background 0.2s;"
+                        title="${targetMet ? 'Click to start changeover to ' + (hourlyState.incomingProductName || 'changeover product') : 'Primary target not yet met (' + pct + '%)'}">
+                        &#8652; Start Changeover
+                    </button>
+                </div>`;
+        }
+    }
+
+    if (hourlyState.workstations?.length > 0) {
+        // New model: display per workstation
+        const workstations = hourlyState.workstations;
+        if (!workstations.length) {
+            container.innerHTML = '<div class="card"><div class="card-body"><div class="alert alert-info">No workstations found for this line.</div></div></div>';
+            return;
+        }
+
+        const rows = workstations.map(ws => {
+            // Progress for this workstation = look at any process in it for this hour
+            const wsProcessIds = (ws.processes || []).map(p => p.process_id || p.id);
+            const progress = hourlyState.progressData.find(
+                d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour
+            );
+            const output = progress ? parseInt(progress.quantity || 0) : 0;
+            const reason = progress?.shortfall_reason || '';
+            const worker = ws.assigned_emp_name
+                ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}`
+                : '<span style="color:#dc2626;">Unassigned</span>';
+            const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
+            const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
+
+            let statusHtml = '';
+            if (output > 0) {
+                if (hourlyTarget > 0 && output < hourlyTarget) {
+                    statusHtml = `<span style="color:#dc2626; font-weight:600;">Below target</span>`;
+                    if (reason) statusHtml += `<br><small style="color:#6b7280;">${reason}</small>`;
+                } else {
+                    statusHtml = `<span style="color:#16a34a; font-weight:600;">On track</span>`;
+                }
+            } else {
+                statusHtml = '<span style="color:#6b7280;">-</span>';
+            }
+
+            return `<tr>
+                <td style="font-weight:700;">${ws.workstation_code}</td>
+                <td style="font-size:0.85em; color:#6b7280;">${processList}</td>
+                <td style="text-align:center; color:${workloadColor}; font-weight:600;">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
+                <td>${worker}</td>
+                <td style="text-align:center;">${hourlyTarget || '-'}</td>
+                <td style="text-align:center; font-weight:600;">${output || '-'}</td>
+                <td>${statusHtml}</td>
+                <td>
+                    <button class="btn btn-primary btn-sm" onclick="openWorkstationHourlyEntry(${ws.id})">
+                        Enter Output
+                    </button>
+                </td>
+            </tr>`;
+        }).join('');
+
+        container.innerHTML = changeoverBanner + `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Workstation Output Summary</h3>
+                    <span style="font-size:0.85em; color:#6b7280;">
+                        Target/hr: <strong>${hourlyTarget || '-'}</strong> &nbsp;|&nbsp;
+                        Product target: <strong>${hourlyState.targetQty || '-'}</strong> &nbsp;|&nbsp;
+                        ${workstations.length} workstations
+                    </span>
+                </div>
+                <div class="card-body table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Workstation</th>
+                                <th>Processes</th>
+                                <th style="text-align:center;">Workload</th>
+                                <th>Worker</th>
+                                <th style="text-align:center;">Target/hr</th>
+                                <th style="text-align:center;">Output</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
+    // Fallback: no workstation plan — show flat process list
+    const processes = hourlyState.processes;
     if (!processes.length) {
         container.innerHTML = '<div class="card"><div class="card-body"><div class="alert alert-info">No processes found for this line.</div></div></div>';
         return;
     }
 
     const rows = processes.map(p => {
-        // Find progress for this process and selected hour
         const progress = hourlyState.progressData.find(
             d => parseInt(d.process_id) === p.id && parseInt(d.hour_slot) === hour
         );
@@ -721,7 +950,7 @@ function renderHourlySummary() {
         </tr>`;
     }).join('');
 
-    container.innerHTML = `
+    container.innerHTML = changeoverBanner + `
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">Process Output Summary</h3>
@@ -891,6 +1120,139 @@ function openHourlyEntry(processId) {
 
     entryPanel.scrollIntoView({ behavior: 'smooth' });
     outputInput.focus();
+}
+
+// New workstation-based entry (uses workstation_plan_id for fan-out)
+function openWorkstationHourlyEntry(workstationPlanId) {
+    const ws = hourlyState.workstations?.find(w => w.id === workstationPlanId);
+    if (!ws) { showToast('Workstation not found', 'error'); return; }
+    hourlyState.selectedWorkstation = ws;
+    hourlyState.selectedProcess = null;
+
+    const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
+    const hourlyTarget = hourlyState.hourlyTarget;
+
+    const wsProcessIds = (ws.processes || []).map(p => p.process_id || p.id);
+    const existing = hourlyState.progressData.find(
+        d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour
+    );
+    const existingOutput = existing ? parseInt(existing.quantity || 0) : 0;
+    const existingReason = existing?.shortfall_reason || '';
+
+    const scanPanel = document.getElementById('hourly-scan-panel');
+    if (scanPanel) scanPanel.style.display = 'none';
+
+    const entryPanel = document.getElementById('hourly-entry-panel');
+    const entryTitle = document.getElementById('hourly-entry-title');
+    const entryForm = document.getElementById('hourly-entry-form');
+
+    const processList = (ws.processes || []).map(p => p.operation_name).join(' → ');
+    entryTitle.textContent = `${ws.workstation_code} — Enter Output`;
+    entryPanel.style.display = 'block';
+
+    const workerInfo = ws.assigned_emp_name
+        ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}`
+        : '<span style="color:#dc2626;">Unassigned</span>';
+
+    entryForm.innerHTML = `
+        <div style="margin-bottom:12px;">
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:8px;">
+                <div><strong>Workstation:</strong> ${ws.workstation_code}</div>
+                <div><strong>Worker:</strong> ${workerInfo}</div>
+                <div><strong>Hourly Target:</strong> ${hourlyTarget || 'N/A'}</div>
+                <div><strong>Hour:</strong> ${String(hour).padStart(2, '0')}:00</div>
+            </div>
+            <div style="font-size:0.85em; color:#6b7280;">Processes: ${processList}</div>
+        </div>
+
+        <div style="margin-bottom:16px;">
+            <label class="form-label">Output Quantity</label>
+            <input type="number" class="form-control" id="hourly-output-qty" min="0" value="${existingOutput || ''}"
+                placeholder="Enter output quantity" style="max-width:200px;">
+        </div>
+
+        <div id="hourly-reason-section" style="margin-bottom:16px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
+            <label class="form-label" style="color:#dc2626; font-weight:700;">Reason for Shortfall (Required)</label>
+            <select class="form-control" id="hourly-reason" style="max-width:300px;">
+                <option value="">-- Select Reason --</option>
+                ${SHORTFALL_REASONS.map(r => `<option value="${r}" ${existingReason === r ? 'selected' : ''}>${r}</option>`).join('')}
+            </select>
+            <div id="hourly-reason-warning" style="display:none; color:#dc2626; font-weight:600; margin-top:8px; padding:8px 12px; background:#fef2f2; border-radius:6px; border:1px solid #fecaca;">
+                &#9888; Please select a shortfall reason
+            </div>
+        </div>
+
+        <div style="display:flex; gap:12px;">
+            <button class="btn btn-primary" id="hourly-save-btn">Save Output</button>
+            <button class="btn btn-secondary" id="hourly-entry-cancel">Cancel</button>
+        </div>
+    `;
+
+    const outputInput = document.getElementById('hourly-output-qty');
+    outputInput.addEventListener('input', () => {
+        const val = parseInt(outputInput.value || 0, 10);
+        document.getElementById('hourly-reason-section').style.display =
+            (hourlyTarget > 0 && val > 0 && val < hourlyTarget) ? 'block' : 'none';
+        document.getElementById('hourly-reason-warning').style.display = 'none';
+    });
+
+    document.getElementById('hourly-save-btn').addEventListener('click', saveWorkstationHourlyOutput);
+    document.getElementById('hourly-entry-cancel').addEventListener('click', () => {
+        entryPanel.style.display = 'none';
+        hourlyState.selectedWorkstation = null;
+    });
+
+    entryPanel.scrollIntoView({ behavior: 'smooth' });
+    outputInput.focus();
+}
+
+async function saveWorkstationHourlyOutput() {
+    const ws = hourlyState.selectedWorkstation;
+    if (!ws) return;
+
+    const lineId = hourlyState.lineId;
+    const date = document.getElementById('hourly-date')?.value;
+    const hour = document.getElementById('hourly-hour')?.value;
+    const output = parseInt(document.getElementById('hourly-output-qty')?.value || 0, 10);
+    const hourlyTarget = hourlyState.hourlyTarget;
+    const reason = document.getElementById('hourly-reason')?.value || '';
+    const warningEl = document.getElementById('hourly-reason-warning');
+
+    if (!lineId || !date || !hour) { showToast('Line, date and hour are required', 'error'); return; }
+    if (output < 0) { showToast('Output must be 0 or more', 'error'); return; }
+
+    if (hourlyTarget > 0 && output > 0 && output < hourlyTarget && !reason) {
+        if (warningEl) warningEl.style.display = 'block';
+        showToast('Please select a shortfall reason', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/progress`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: lineId,
+                workstation_plan_id: ws.id,
+                work_date: date,
+                hour_slot: parseInt(hour, 10),
+                quantity: output,
+                forwarded_quantity: output,
+                remaining_quantity: 0,
+                qa_rejection: 0,
+                shortfall_reason: (hourlyTarget > 0 && output > 0 && output < hourlyTarget) ? reason : null
+            })
+        });
+        const result = await response.json();
+        if (!result.success) { showToast(result.error || 'Failed to save output', 'error'); return; }
+
+        showToast('Output saved', 'success');
+        document.getElementById('hourly-entry-panel').style.display = 'none';
+        hourlyState.selectedWorkstation = null;
+        await refreshHourlySummary();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
 }
 
 async function saveHourlyOutput() {

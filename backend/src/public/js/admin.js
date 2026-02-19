@@ -381,6 +381,7 @@ async function loadLines() {
                                             <div class="action-btns">
                                                 <button class="btn btn-secondary btn-sm" onclick='showLineModal(${JSON.stringify(line)})'>Edit</button>
                                                 <button class="btn btn-secondary btn-sm" onclick="viewLineDetails(${line.id})">Details</button>
+                                                <button class="btn btn-primary btn-sm" onclick="viewWorkstationQRs(${line.id}, '${line.line_code}')">WS QR Codes</button>
                                                 <button class="btn btn-danger btn-sm" onclick="hardDeleteLine(${line.id})">Delete</button>
                                             </div>
                                         </td>
@@ -711,6 +712,120 @@ async function hardDeleteLine(id) {
     }
 }
 
+async function viewWorkstationQRs(lineId, lineCode) {
+    const existing = document.getElementById('ws-qr-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'ws-qr-modal';
+    modal.className = 'modal-backdrop active';
+    modal.innerHTML = `
+        <div class="modal" style="max-width:960px;width:95vw;">
+            <div class="modal-header">
+                <h3 class="modal-title">Workstation QR Codes &mdash; ${lineCode}</h3>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="btn btn-secondary btn-sm" onclick="printWorkstationQRs()">Print</button>
+                    <button class="btn btn-primary btn-sm" id="ws-qr-regen-btn" onclick="regenWorkstationQRs(${lineId}, '${lineCode}')">Regenerate QRs</button>
+                    <button class="modal-close" onclick="document.getElementById('ws-qr-modal').remove()">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-body" style="max-height:75vh;overflow-y:auto;">
+                <div id="ws-qr-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;padding:4px;">
+                    <div style="text-align:center;color:#6b7280;grid-column:1/-1;">Loading...</div>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    try {
+        const res = await fetch(`${API_BASE}/lines/${lineId}/workstations`);
+        const result = await res.json();
+        const workstations = result.data || [];
+        const grid = document.getElementById('ws-qr-grid');
+
+        if (workstations.length === 0) {
+            grid.innerHTML = `<div style="text-align:center;color:#6b7280;grid-column:1/-1;padding:20px;">
+                No workstations generated yet.
+                <button class="btn btn-primary" style="margin-top:8px;" onclick="regenWorkstationQRs(${lineId}, '${lineCode}')">Generate Now</button>
+            </div>`;
+            return;
+        }
+
+        grid.innerHTML = workstations.map(ws => {
+            const imgSrc = ws.qr_code_path ? `/${ws.qr_code_path}` : '';
+            return `<div class="ws-qr-item" style="text-align:center;border:1px solid #e5e7eb;border-radius:8px;padding:8px;background:#fff;">
+                ${imgSrc
+                    ? `<img src="${imgSrc}" alt="${ws.workstation_code}" style="width:100px;height:100px;display:block;margin:0 auto 4px;">`
+                    : `<div style="width:100px;height:100px;display:flex;align-items:center;justify-content:center;color:#9ca3af;background:#f9fafb;margin:0 auto 4px;border-radius:4px;font-size:0.75em;">No QR</div>`
+                }
+                <div style="font-weight:700;font-size:0.85em;">${lineCode}</div>
+                <div style="font-size:0.82em;color:#4b5563;">${ws.workstation_code}</div>
+            </div>`;
+        }).join('');
+    } catch (err) {
+        document.getElementById('ws-qr-grid').innerHTML = `<div style="color:#dc2626;grid-column:1/-1;">${err.message}</div>`;
+    }
+}
+
+async function regenWorkstationQRs(lineId, lineCode) {
+    const btn = document.getElementById('ws-qr-regen-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+    try {
+        const res = await fetch(`${API_BASE}/lines/${lineId}/workstations/generate-qr`, { method: 'POST' });
+        const result = await res.json();
+        if (result.success) {
+            showToast(`Generated ${result.data.count} QR codes for ${lineCode}`, 'success');
+            // Reload the grid
+            document.getElementById('ws-qr-modal')?.remove();
+            viewWorkstationQRs(lineId, lineCode);
+        } else {
+            showToast(result.error, 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Regenerate QRs'; }
+    }
+}
+
+function printWorkstationQRs() {
+    const grid = document.getElementById('ws-qr-grid');
+    if (!grid) return;
+    const title = document.querySelector('#ws-qr-modal .modal-title')?.textContent || 'Workstation QR Codes';
+    const win = window.open('', '_blank');
+    win.document.write(`<!DOCTYPE html><html><head>
+        <title>${title}</title>
+        <style>
+            body { font-family: sans-serif; margin: 10px; }
+            h2 { margin-bottom: 12px; font-size: 16px; }
+            .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+            .item { text-align: center; border: 1px solid #ccc; border-radius: 6px; padding: 6px; break-inside: avoid; }
+            .item img { width: 90px; height: 90px; display: block; margin: 0 auto 2px; }
+            .item .line { font-weight: 700; font-size: 11px; }
+            .item .code { font-size: 11px; color: #333; }
+            @media print { @page { size: A4; margin: 8mm; } }
+        </style>
+    </head><body>
+        <h2>${title}</h2>
+        <div class="grid">
+            ${Array.from(grid.querySelectorAll('.ws-qr-item')).map(el => `
+                <div class="item">
+                    ${el.querySelector('img') ? `<img src="${el.querySelector('img').src}">` : '<div style="width:90px;height:90px;background:#eee;margin:0 auto;"></div>'}
+                    <div class="line">${el.querySelector('div[style*="font-weight:700"]')?.textContent || ''}</div>
+                    <div class="code">${el.querySelectorAll('div')[1]?.textContent || ''}</div>
+                </div>
+            `).join('')}
+        </div>
+        <script>window.onload=()=>window.print();<\/script>
+    </body></html>`);
+    win.document.close();
+}
+
 async function viewLineDetails(lineId) {
     currentView = { type: 'line', lineId };
     const content = document.getElementById('main-content');
@@ -871,9 +986,6 @@ async function viewLineDetails(lineId) {
                                                         ${workstations.map(ws => `<option value="${ws.id}" ${proc.workspace_id == ws.id ? 'selected' : ''}>${ws.workspace_code} - ${ws.workspace_name}</option>`).join('')}
                                                     </select>
                                                 </td>
-                                                <td>
-                                                    <button class="btn btn-secondary btn-sm" ${proc.qr_code_path ? '' : 'disabled'} onclick='showOperationQrModal(${JSON.stringify(proc)})'>View</button>
-                                                </td>
                                                 <td>${proc.cycle_time_seconds || 0}s</td>
                                                 <td>${parseFloat(proc.operation_sah || 0).toFixed(4)}</td>
                                                 <td>
@@ -888,9 +1000,6 @@ async function viewLineDetails(lineId) {
                                                                 ${buildEmployeeOptions(proc.id)}
                                                             </div>
                                                         </div>
-                                                    </div>
-                                                    <div class="mt-2">
-                                                        <button class="btn btn-secondary btn-sm employee-qr-btn" data-process-id="${proc.id}" type="button">View QR</button>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -1286,27 +1395,6 @@ function updateEmployeeDropdownLabel(processId) {
     button.textContent = emp ? `${emp.emp_code} - ${emp.emp_name}` : 'Unassigned';
 }
 
-function updateEmployeeQrButton(processId) {
-    const button = document.querySelector(`.employee-qr-btn[data-process-id="${processId}"]`);
-    if (!button) return;
-    const assignedId = window.currentLineAssignmentMap?.get(String(processId));
-    const emp = assignedId
-        ? (window.currentLineEmployees || []).find(e => String(e.id) === String(assignedId))
-        : null;
-    if (!emp || !emp.qr_code_path) {
-        button.disabled = true;
-        button.removeAttribute('onclick');
-        return;
-    }
-    const payload = {
-        id: emp.id,
-        emp_code: emp.emp_code,
-        emp_name: emp.emp_name,
-        qr_code_path: emp.qr_code_path
-    };
-    button.disabled = false;
-    button.onclick = () => showEmployeeQrModal(payload);
-}
 
 function toggleEmployeeDropdown(processId) {
     // Close all other dropdowns
@@ -1566,41 +1654,6 @@ function getEmployeeQrUrl(qrPath) {
     return `/qrcodes/${normalized}`;
 }
 
-function getOperationQrUrl(qrPath) {
-    return getEmployeeQrUrl(qrPath);
-}
-
-function showOperationQrModal(op) {
-    if (!op || !op.qr_code_path) return;
-    const qrUrl = getOperationQrUrl(op.qr_code_path);
-    const title = op.operation_code ? `${op.operation_code}` : 'Operation';
-    const modal = document.createElement('div');
-    modal.className = 'modal-backdrop';
-    modal.id = 'operation-qr-modal';
-    modal.innerHTML = `
-        <div class="modal" style="max-width: 420px;">
-            <div class="modal-header">
-                <h3 class="modal-title">QR Code - ${title}</h3>
-                <button class="modal-close" onclick="closeModal('operation-qr-modal')">
-                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-            <div class="modal-body" style="text-align: center;">
-                <img src="${qrUrl}" alt="QR Code for ${title}" style="max-width: 100%; height: auto;">
-                <div style="margin-top: 12px; color: var(--secondary); font-size: 14px;">
-                    ${op.operation_name || ''}
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('operation-qr-modal')">Close</button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(modal);
-    setTimeout(() => modal.classList.add('active'), 10);
-}
 
 function showEmployeeQrModal(emp) {
     if (!emp || !emp.qr_code_path) return;
@@ -2059,69 +2112,17 @@ async function viewProductProcess(productId) {
         const productResult = await productRes.json();
         const operationsResult = await operationsRes.json();
 
-        const { product, processes, workstations: allWorkstations } = productResult.data;
+        const { product, processes } = productResult.data;
         const allOperations = operationsResult.data;
 
-        // Build workstation map with processes grouped by workstation_code
-        const wsMap = new Map();
-        const unassigned = [];
-        processes.forEach(proc => {
-            const wsCode = (proc.workstation_code || '').trim();
-            if (wsCode) {
-                if (!wsMap.has(wsCode)) {
-                    wsMap.set(wsCode, {
-                        code: wsCode,
-                        group_name: proc.group_name || '',
-                        worker_input_mapping: proc.worker_input_mapping || 'CONT',
-                        processes: []
-                    });
-                }
-                wsMap.get(wsCode).processes.push(proc);
-            } else {
-                unassigned.push(proc);
-            }
-        });
-
-        // Build table rows with group/workstation/process hierarchy
-        let tableRows = '';
-        const wsArray = Array.from(wsMap.values());
-
-        // Light pastel colors for workstation groups (no red/green, dark text friendly)
-        const wsColors = [
-            '#E8F0FE', '#FFF3E0', '#F3E5F5', '#E0F2F1', '#FFF9C4', '#FCE4EC',
-            '#E8EAF6', '#F1F8E9', '#EFEBE9', '#E0F7FA', '#FBE9E7', '#EDE7F6',
-        ];
-        let wsColorIdx = 0;
-
-        wsArray.forEach((ws) => {
-            const rowCount = ws.processes.length;
-            const bgColor = wsColors[wsColorIdx % wsColors.length];
-            wsColorIdx++;
-
-            ws.processes.forEach((proc, procIdx) => {
-                const isFirst = procIdx === 0;
-                tableRows += `<tr style="background:${bgColor};">
-                    <td style="text-align:center;">${proc.sequence_number}</td>
-                    ${isFirst ? `<td rowspan="${rowCount}" style="vertical-align:middle;font-weight:600;text-align:center;">${ws.group_name || '-'}</td>` : ''}
-                    ${isFirst ? `<td rowspan="${rowCount}" style="vertical-align:middle;font-weight:600;text-align:center;">${ws.code}</td>` : ''}
-                    <td>${proc.operation_name}</td>
-                    <td>
-                        <div class="action-btns">
-                            <button class="btn btn-secondary btn-sm" onclick='editProcess(${JSON.stringify(proc)}, ${productId})'>Edit</button>
-                            <button class="btn btn-danger btn-sm" onclick="deleteProcess(${proc.id}, ${productId})">Remove</button>
-                        </div>
-                    </td>
-                </tr>`;
-            });
-        });
-
-        // Unassigned processes (no workstation)
-        unassigned.forEach(proc => {
-            tableRows += `<tr style="background:#F5F5F5;">
+        // Flat list sorted by sequence_number
+        const sorted = [...processes].sort((a, b) => a.sequence_number - b.sequence_number);
+        const tableRows = sorted.map(proc => {
+            const samSec = ((parseFloat(proc.operation_sah || 0)) * 3600).toFixed(1);
+            return `<tr>
                 <td style="text-align:center;">${proc.sequence_number}</td>
-                <td style="text-align:center;color:#666;">-</td>
-                <td style="text-align:center;color:#666;">-</td>
                 <td>${proc.operation_name}</td>
+                <td style="text-align:center;">${samSec}</td>
                 <td>
                     <div class="action-btns">
                         <button class="btn btn-secondary btn-sm" onclick='editProcess(${JSON.stringify(proc)}, ${productId})'>Edit</button>
@@ -2129,7 +2130,7 @@ async function viewProductProcess(productId) {
                     </div>
                 </td>
             </tr>`;
-        });
+        }).join('');
 
         content.innerHTML = `
             <div class="page-header">
@@ -2184,10 +2185,9 @@ async function viewProductProcess(productId) {
                             <table>
                             <thead>
                                 <tr>
-                                    <th>Seq</th>
-                                    <th>Group</th>
-                                    <th>Work Station</th>
+                                    <th style="text-align:center;">Seq</th>
                                     <th>Process Details</th>
+                                    <th style="text-align:center;">SAM (sec)</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -2204,7 +2204,6 @@ async function viewProductProcess(productId) {
         // Store operations for modal
         window.currentAllOperations = allOperations;
         window.currentProductId = productId;
-        window.currentAllWorkstations = allWorkstations || [];
 
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">Error: ${err.message}</div>`;
@@ -2346,16 +2345,8 @@ function showAddProcessModal(productId) {
                         <input type="number" class="form-control" name="sequence_number" min="1" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Group</label>
-                        <input type="text" class="form-control" name="group_name" placeholder="e.g. GROUP1">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Work Station</label>
-                        <input type="text" class="form-control" name="workstation_code" placeholder="e.g. W1">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Manpower Required</label>
-                        <input type="number" class="form-control" name="manpower_required" min="1" value="1">
+                        <label class="form-label">SAM (seconds)</label>
+                        <input type="number" class="form-control" name="sam_seconds" min="0" step="0.1" placeholder="e.g. 12.5">
                     </div>
                 </form>
             </div>
@@ -2398,18 +2389,17 @@ function updateProcessOperationOptions(filterValue, operations) {
     `;
 }
 
-function calculateSAH() {
-    const cycleTime = document.querySelector('input[name="cycle_time_seconds"]').value;
-    if (cycleTime) {
-        const sah = (parseFloat(cycleTime) / 3600).toFixed(4);
-        document.querySelector('input[name="operation_sah"]').value = sah;
-    }
-}
 
 async function saveProcess() {
     const form = document.getElementById('process-form');
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
+
+    // Convert SAM seconds to operation_sah (hours)
+    if (data.sam_seconds !== undefined) {
+        data.operation_sah = data.sam_seconds ? (parseFloat(data.sam_seconds) / 3600).toFixed(6) : null;
+        delete data.sam_seconds;
+    }
 
     try {
         const response = await fetch(`${API_BASE}/product-processes`, {
@@ -2432,6 +2422,7 @@ async function saveProcess() {
 }
 
 function editProcess(proc, productId) {
+    const currentSamSec = ((parseFloat(proc.operation_sah || 0)) * 3600).toFixed(1);
     const modal = document.createElement('div');
     modal.className = 'modal-backdrop';
     modal.id = 'process-modal';
@@ -2456,23 +2447,8 @@ function editProcess(proc, productId) {
                         <input type="number" class="form-control" name="sequence_number" min="1" value="${proc.sequence_number}" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Manpower Required</label>
-                        <input type="number" class="form-control" name="manpower_required" min="1" value="${proc.manpower_required || 1}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Group</label>
-                        <input type="text" class="form-control" name="group_name" value="${proc.group_name || ''}" placeholder="e.g. GROUP1">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Work Station</label>
-                        <input type="text" class="form-control" name="workstation_code" value="${proc.workstation_code || ''}" placeholder="e.g. W1">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Worker Input Mapping</label>
-                        <select class="form-control" name="worker_input_mapping">
-                            <option value="FIRST INPUT" ${proc.worker_input_mapping === 'FIRST INPUT' ? 'selected' : ''}>FIRST INPUT</option>
-                            <option value="CONT" ${proc.worker_input_mapping !== 'FIRST INPUT' ? 'selected' : ''}>CONT</option>
-                        </select>
+                        <label class="form-label">SAM (seconds)</label>
+                        <input type="number" class="form-control" name="sam_seconds" min="0" step="0.1" value="${currentSamSec}">
                     </div>
                 </form>
             </div>
@@ -2490,6 +2466,12 @@ async function updateProcess(processId, productId) {
     const form = document.getElementById('process-edit-form');
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
+
+    // Convert SAM seconds to operation_sah (hours)
+    if (data.sam_seconds !== undefined) {
+        data.operation_sah = data.sam_seconds ? (parseFloat(data.sam_seconds) / 3600).toFixed(6) : null;
+        delete data.sam_seconds;
+    }
 
     try {
         const response = await fetch(`${API_BASE}/product-processes/${processId}`, {
@@ -2595,7 +2577,6 @@ async function loadOperations() {
                                     <th>Name</th>
                                     <th>Product</th>
                                     <th>Used In</th>
-                                    <th>QR</th>
                                     <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
@@ -2624,9 +2605,6 @@ function renderOperationsTable(operations) {
             <td>${op.operation_name}</td>
             <td><span class="badge badge-info">${op.operation_category}</span></td>
             <td>${op.used_in_products || 0} products</td>
-            <td>
-                <button class="btn btn-secondary btn-sm" ${op.qr_code_path ? '' : 'disabled'} onclick='showOperationQrModal(${JSON.stringify(op)})'>View</button>
-            </td>
             <td><span class="badge ${op.is_active ? 'badge-success' : 'badge-danger'}">${op.is_active ? 'Active' : 'Inactive'}</span></td>
             <td>
                 <div class="action-btns">
@@ -3066,6 +3044,9 @@ async function loadDailyPlans() {
                         <label for="plan-date">Date</label>
                         <input type="date" id="plan-date" value="${today}">
                     </div>
+                    <button onclick="openPlanUploadModal()" style="padding:8px 16px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                        &#8679; Upload Plan
+                    </button>
                 </div>
             </div>
             <div class="alert alert-info" style="margin-bottom:16px;">
@@ -3086,6 +3067,97 @@ async function loadDailyPlans() {
     `;
     document.getElementById('plan-date').addEventListener('change', loadDailyPlanData);
     loadDailyPlanData();
+}
+
+function openPlanUploadModal() {
+    const existing = document.getElementById('plan-upload-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'plan-upload-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9000;display:flex;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:520px;width:95%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+                <h3 style="margin:0;font-size:18px;font-weight:700;color:#111827;">Upload Line Plan from Excel</h3>
+                <button onclick="document.getElementById('plan-upload-modal').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#6b7280;line-height:1;">&times;</button>
+            </div>
+            <p style="font-size:13px;color:#6b7280;margin:0 0 16px;">
+                Fill in the template and upload to auto-create the product, processes, workstation plan, and employee assignments in one step.
+            </p>
+            <a href="/api/lines/plan-upload-template" download
+               style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;margin-bottom:20px;">
+                &#8595; Download Template
+            </a>
+            <div style="margin-bottom:16px;">
+                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Select Excel File (.xlsx)</label>
+                <input type="file" id="plan-upload-file" accept=".xlsx,.xls"
+                       style="display:block;width:100%;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:6px;box-sizing:border-box;">
+            </div>
+            <div id="plan-upload-result" style="margin-bottom:12px;"></div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;">
+                <button onclick="document.getElementById('plan-upload-modal').remove()" style="padding:8px 18px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                <button onclick="submitPlanUpload()" id="plan-upload-btn"
+                        style="padding:8px 18px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+                    Upload
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+async function submitPlanUpload() {
+    const fileInput = document.getElementById('plan-upload-file');
+    const resultDiv = document.getElementById('plan-upload-result');
+    const btn = document.getElementById('plan-upload-btn');
+
+    if (!fileInput?.files?.[0]) {
+        resultDiv.innerHTML = '<div style="color:#dc2626;font-size:13px;">Please select an Excel file first.</div>';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Uploading\u2026';
+    resultDiv.innerHTML = '<div style="color:#6b7280;font-size:13px;">Processing\u2026</div>';
+
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+
+    try {
+        const r = await fetch('/api/lines/plan-upload-excel', { method: 'POST', body: fd });
+        const data = await r.json();
+
+        if (!data.success) {
+            resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${data.error}</div>`;
+            btn.disabled = false;
+            btn.textContent = 'Upload';
+            return;
+        }
+
+        const s = data.summary;
+        resultDiv.innerHTML = `
+            <div style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.7;">
+                <strong>&#10003; Upload successful</strong><br>
+                Line: <strong>${s.line}</strong> &nbsp;|&nbsp; Product: <strong>${s.product}</strong> &nbsp;|&nbsp; Date: <strong>${s.date}</strong><br>
+                Target: <strong>${s.target}</strong> units &nbsp;|&nbsp;
+                Workstations: <strong>${s.workstations}</strong> &nbsp;|&nbsp;
+                Processes: <strong>${s.processes}</strong> &nbsp;|&nbsp;
+                Employees assigned: <strong>${s.employees_assigned}</strong>
+            </div>`;
+        btn.disabled = false;
+        btn.textContent = 'Upload';
+
+        // Reload the daily plan if the uploaded date matches the current view
+        const planDateEl = document.getElementById('plan-date');
+        if (planDateEl && planDateEl.value === s.date) loadDailyPlanData();
+
+    } catch (err) {
+        resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${err.message}</div>`;
+        btn.disabled = false;
+        btn.textContent = 'Upload';
+    }
 }
 
 async function loadDailyPlanData() {
@@ -3113,6 +3185,7 @@ async function loadDailyPlanData() {
                         <th>Incoming Product</th>
                         <th>Incoming Target</th>
                         <th>Changeover Progress</th>
+                        <th>Overtime</th>
                         <th>Status</th>
                         <th>Action</th>
                     </tr>
@@ -3128,6 +3201,12 @@ async function loadDailyPlanData() {
                         const selectedChangeover = plan?.changeover_sequence ?? 0;
                         const planExists = Boolean(plan?.id);
                         const hasChangeover = !!plan?.incoming_product_id;
+                        const otMins = plan?.overtime_minutes || 0;
+                        const otTarget = plan?.overtime_target || 0;
+                        const hasOT = otMins > 0 || otTarget > 0;
+                        const otLabel = hasOT
+                            ? `+${otMins >= 60 ? Math.floor(otMins/60)+'h '+(otMins%60 ? (otMins%60)+'m' : '') : otMins+'m'} / +${otTarget} units`.trim()
+                            : '—';
                         return `
                             <tr>
                                 <td>
@@ -3169,6 +3248,11 @@ async function loadDailyPlanData() {
                                             : '<span style="color:#6b7280;font-size:12px;">-</span>')}
                                 </td>
                                 <td>
+                                    <div style="font-size:13px;${hasOT ? 'color:#7c3aed;font-weight:600;' : 'color:#9ca3af;'}">${otLabel}</div>
+                                    ${planExists && !locked ? `<button class="btn btn-sm" style="margin-top:4px;font-size:11px;padding:2px 8px;background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd;" onclick="openOvertimeModal(${line.id})">Set OT</button>` : ''}
+                                    ${hasOT && planExists && !locked ? `<button class="btn btn-sm" style="margin-top:4px;margin-left:2px;font-size:11px;padding:2px 8px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;" onclick="clearOvertime(${line.id})">Clear</button>` : ''}
+                                </td>
+                                <td>
                                     <span class="status-badge" style="${locked ? 'background:#fee2e2;color:#b91c1c;' : 'background:#dcfce7;color:#15803d;'}">
                                         ${locked ? 'Locked' : 'Open'}
                                     </span>
@@ -3176,9 +3260,15 @@ async function loadDailyPlanData() {
                                 <td>
                                     <div class="action-btns">
                                         <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Save</button>
+                                        <button class="btn btn-primary btn-sm" onclick="toggleLineDetails(${line.id})" ${!selectedProduct ? 'disabled' : ''} title="View and assign processes to workstations">Details</button>
                                         <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!planExists || locked ? 'disabled' : ''}>Lock</button>
                                         <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!planExists || !locked ? 'disabled' : ''}>Unlock</button>
                                     </div>
+                                </td>
+                            </tr>
+                            <tr id="ws-plan-row-${line.id}" style="display:none;">
+                                <td colspan="9" style="padding:0; background:#f8fafc;">
+                                    <div id="ws-plan-panel-${line.id}" style="padding:16px;"></div>
                                 </td>
                             </tr>
                         `;
@@ -3192,6 +3282,1072 @@ async function loadDailyPlanData() {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
 }
+
+// ============================================================================
+// LINE DETAILS PAGE (Full-Screen Overlay)
+// ============================================================================
+let _ldData = null; // { lineId, date, data }
+
+async function toggleLineDetails(lineId) {
+    const date = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
+    const productId = document.getElementById(`plan-product-${lineId}`)?.value || '';
+    const target = document.getElementById(`plan-target-${lineId}`)?.value || '';
+    await openLineDetailsPage(lineId, date, productId, target);
+}
+
+async function toggleWorkstationPlan(lineId) { return toggleLineDetails(lineId); }
+
+async function openLineDetailsPage(lineId, date, productId, target) {
+    let overlay = document.getElementById('line-details-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'line-details-overlay';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:#f8fafc;z-index:1050;overflow-y:auto;';
+        document.body.appendChild(overlay);
+    }
+    overlay.style.display = 'block';
+    document.body.style.overflow = 'hidden';
+    overlay.innerHTML = `
+        <div style="background:#fff;border-bottom:2px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+            <button class="btn btn-secondary btn-sm" onclick="closeLineDetailsPage()">&#8592; Back to Daily Plans</button>
+            <div>
+                <span id="ld-overlay-title" style="font-weight:700;font-size:1rem;">Line Details</span>
+                <span style="color:#6b7280;font-size:0.85em;margin-left:10px;">Date: ${date}</span>
+            </div>
+        </div>
+        <div id="ld-overlay-content" style="padding:20px;">
+            <div style="text-align:center;padding:40px;color:#6b7280;">Loading...</div>
+        </div>
+    `;
+    const content = overlay.querySelector('#ld-overlay-content');
+    try {
+        const params = new URLSearchParams({ date });
+        if (productId) params.set('product_id', productId);
+        if (target) params.set('target', target);
+        const res = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+        const result = await res.json();
+        if (!result.success) throw new Error(result.error);
+        _ldData = { lineId, date, data: result.data };
+        // Update header with line name from API
+        const titleEl = overlay.querySelector('#ld-overlay-title');
+        if (titleEl && result.data.line) {
+            titleEl.textContent = (result.data.line.line_code || '') + (result.data.line.line_name ? ' \u2014 ' + result.data.line.line_name : '');
+        }
+        renderLineDetailsContent(content, lineId, date, result.data);
+    } catch (err) {
+        content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function closeLineDetailsPage() {
+    const overlay = document.getElementById('line-details-overlay');
+    if (overlay) overlay.style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+async function loadLineDetailsPanel(lineId) { /* no-op — replaced by overlay */ }
+async function loadWorkstationPlanPanel(lineId) { return loadLineDetailsPanel(lineId); }
+
+const WS_ROW_COLORS = [
+    '#EFF6FF', '#FFF7ED', '#F0FDF4', '#FDF4FF', '#FFFBEB',
+    '#F0F9FF', '#FFF1F2', '#F5F3FF', '#ECFDF5', '#FEF9C3'
+];
+
+// Group processes by workstation code, computing SAM sum + workload per group
+function _buildWsGroups(processes, taktSecs, useOT) {
+    const groups = [];
+    const indexMap = new Map();
+    processes.forEach(p => {
+        const ws = (p.workstation_code || '').trim();
+        const key = ws || `__u_${p.id}`;
+        if (!indexMap.has(key)) {
+            indexMap.set(key, groups.length);
+            groups.push({ ws, processes: [], sam: 0, employee_id: null, emp_name: '', emp_code: '', group_name: '', is_ot_skipped: false });
+        }
+        const g = groups[indexMap.get(key)];
+        g.processes.push(p);
+        g.sam += parseFloat(p.operation_sah || 0) * 3600;
+        if (!g.employee_id) {
+            // In OT mode: use ot_employee_id when set; fall back to regular employee_id by default
+            const hasOTEmp = useOT && p.ot_employee_id != null;
+            const empId   = hasOTEmp ? p.ot_employee_id : p.employee_id;
+            const empName = hasOTEmp ? (p.ot_emp_name || '') : (p.emp_name || '');
+            const empCode = hasOTEmp ? (p.ot_emp_code || '') : (p.emp_code || '');
+            if (empId) { g.employee_id = empId; g.emp_name = empName; g.emp_code = empCode; }
+        }
+        if (!g.group_name && (p.group_name || '').trim()) g.group_name = (p.group_name || '').trim();
+        // is_ot_skipped is the same for every process in the same workstation
+        if (p.is_ot_skipped) g.is_ot_skipped = true;
+    });
+    groups.forEach((g, i) => {
+        g.workload_pct = (taktSecs > 0 && g.ws) ? (g.sam / taktSecs) * 100 : null;
+        g.color = g.ws ? WS_ROW_COLORS[i % WS_ROW_COLORS.length] : '#fff';
+    });
+    return groups;
+}
+
+// Toggle a workstation's OT-skipped state without a full re-render.
+// Updates the button appearance, row opacity, and emp-picker pointer-events live.
+function ldWsToggleOTSkip(btn, lineId) {
+    const wasSkipped = btn.dataset.otSkipped === 'true';
+    const nowSkipped = !wasSkipped;
+    btn.dataset.otSkipped = nowSkipped ? 'true' : 'false';
+    btn.textContent = nowSkipped ? 'Skipped' : 'Active';
+    btn.style.background = nowSkipped ? '#fee2e2' : '#dcfce7';
+    btn.style.color = nowSkipped ? '#b91c1c' : '#15803d';
+    btn.style.borderColor = nowSkipped ? '#fca5a5' : '#86efac';
+
+    // Update row opacity + emp-picker interactivity for this WS group
+    const tbody = document.getElementById(`ld-body-${lineId}`);
+    if (!tbody) return;
+    const ws = btn.dataset.ws;
+    tbody.querySelectorAll('tr[data-process-id]').forEach(row => {
+        const wsInput = row.querySelector('.ld-ws');
+        if (!wsInput || wsInput.value.trim() !== ws) return;
+        row.style.opacity = nowSkipped ? '0.45' : '';
+        const picker = row.querySelector('.ld-emp-picker');
+        if (picker) {
+            picker.parentElement.style.opacity = nowSkipped ? '0.35' : '';
+            picker.parentElement.style.pointerEvents = nowSkipped ? 'none' : '';
+        }
+    });
+
+    // Also update the cached is_ot_skipped on the process objects so recolorDetailRows preserves it
+    if (_ldData) {
+        const rOTProd = window._ldOTProduct?.[lineId] || 'primary';
+        const isOTCo = rOTProd === 'changeover' && !!_ldData.changeoverData && !!_ldData.data.incoming_product_id;
+        const src = isOTCo ? _ldData.changeoverData : _ldData.data;
+        src.processes = src.processes.map(p =>
+            (p.workstation_code || '').trim() === ws ? { ...p, is_ot_skipped: nowSkipped } : p
+        );
+        if (isOTCo) _ldData.changeoverData = src; else _ldData.data = src;
+    }
+}
+
+// ============================================================
+// Searchable employee picker (replaces native <select>)
+// ============================================================
+function ldEmpPickerToggle(pickerEl, lineId) {
+    const dropdown = pickerEl.querySelector('.ld-emp-dropdown');
+    const isOpen = dropdown.style.display !== 'none';
+    // Close all open pickers first
+    document.querySelectorAll('.ld-emp-dropdown').forEach(d => { d.style.display = 'none'; });
+    if (!isOpen) {
+        dropdown.style.display = 'block';
+        const search = dropdown.querySelector('.ld-emp-search');
+        if (search) {
+            search.value = '';
+            ldEmpPickerFilter(search); // show all
+            setTimeout(() => search.focus(), 10);
+        }
+    }
+}
+
+function ldEmpPickerFilter(searchInput) {
+    const q = (searchInput.value || '').toLowerCase();
+    const opts = searchInput.closest('.ld-emp-dropdown').querySelectorAll('.ld-emp-option');
+    opts.forEach(opt => {
+        if (!opt.dataset.empId) { opt.style.display = ''; return; } // always show "not assigned"
+        const text = (opt.dataset.empLabel || opt.textContent).toLowerCase();
+        opt.style.display = text.includes(q) ? '' : 'none';
+    });
+}
+
+function ldEmpPickerSelect(optionEl, lineId) {
+    if (optionEl.classList.contains('ld-emp-taken')) return; // blocked
+    const picker = optionEl.closest('.ld-emp-picker');
+    const dropdown = optionEl.closest('.ld-emp-dropdown');
+    const empId = optionEl.dataset.empId || '';
+    const label = empId ? (optionEl.dataset.empLabel || optionEl.textContent.trim()) : '— Not assigned —';
+    picker.dataset.value = empId;
+    picker.querySelector('.ld-emp-current-label').textContent = label;
+    dropdown.style.display = 'none';
+    syncEmpDropdowns(lineId);
+}
+
+// Close any open picker when clicking outside
+document.addEventListener('click', e => {
+    if (!e.target.closest('.ld-emp-picker')) {
+        document.querySelectorAll('.ld-emp-dropdown').forEach(d => { d.style.display = 'none'; });
+    }
+}, true);
+
+// Show a QR image in a full-screen modal overlay
+function showQrModal(src, label) {
+    const existing = document.getElementById('qr-view-modal');
+    if (existing) existing.remove();
+    const m = document.createElement('div');
+    m.id = 'qr-view-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:3000;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;';
+    m.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:20px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+            <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:12px;">${label}</div>
+            <img src="${src}" style="width:240px;height:240px;display:block;" onerror="this.src='';this.alt='QR not found'">
+            <div style="font-size:11px;color:#9ca3af;margin-top:8px;">Click anywhere to close</div>
+        </div>`;
+    m.addEventListener('click', () => m.remove());
+    document.body.appendChild(m);
+}
+
+function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT) {
+    const lineCode = _ldData?.data?.line?.line_code || '';
+
+    // Map empId → qr_code_path for live QR updates
+    const empQrMap = new Map(employees.map(e => [String(e.id), e.qr_code_path || '']));
+
+    // Derive workstation QR path from line code and WS code
+    const wsQrPath = wsCode => {
+        if (!lineCode || !wsCode) return '';
+        const num = parseInt(wsCode.replace(/\D/g, '') || '0', 10);
+        if (!num) return '';
+        const norm = 'W' + String(num).padStart(2, '0');
+        return `qrcodes/workstations/${lineCode}/ws_${lineCode}_${norm}.png`;
+    };
+
+    // Small thumbnail HTML — click to enlarge
+    const qrThumb = (path, label, imgId) => {
+        if (!path) return '<span style="color:#d1d5db;font-size:11px;">—</span>';
+        const idAttr = imgId ? ` id="${imgId}"` : '';
+        return `<img${idAttr} src="/${path}" style="width:40px;height:40px;border-radius:6px;border:1px solid #e5e7eb;cursor:pointer;display:block;margin:0 auto;"
+                     onclick="showQrModal('/${path}','${label.replace(/'/g, '&#39;')}')"
+                     onerror="this.style.opacity='0.2'" title="${label} — click to enlarge">`;
+    };
+
+    // Build a set of employee IDs already taken factory-wide for this date.
+    // Filter by the current shift mode so regular and OT taken-checks are independent.
+    const allAssignments = (_ldData?.data?.all_assignments || []).filter(a => !!a.is_overtime === !!useOT);
+    // Map: empId (string) → { line_id, workstation_code } where they're currently saved
+    const savedAssignMap = new Map();
+    allAssignments.forEach(a => {
+        savedAssignMap.set(String(a.employee_id), { line_id: String(a.line_id), workstation_code: a.workstation_code });
+    });
+    // Current page WS → empId selections (from wsGroups, not yet saved)
+    const pageWsEmp = new Map(); // wsCode → empId
+    wsGroups.forEach(g => { if (g.ws && g.employee_id) pageWsEmp.set(g.ws, String(g.employee_id)); });
+
+    // Build searchable picker options
+    const empPickerOpts = (selId, wsCode) => {
+        const selIdStr = selId ? String(selId) : '';
+        const noneOpt = `<div class="ld-emp-option" data-emp-id="" data-emp-label="— Not assigned —"
+             onclick="ldEmpPickerSelect(this,${lineId})"
+             style="padding:7px 10px;cursor:pointer;font-size:0.82em;color:#9ca3af;border-bottom:1px solid #f3f4f6;">
+             — Not assigned —</div>`;
+        return noneOpt + employees.map(e => {
+            const eStr = String(e.id);
+            const isSelected = eStr === selIdStr;
+            const takenOnPage = pageWsEmp.has(eStr) && pageWsEmp.get(eStr) !== wsCode;
+            const savedTo = savedAssignMap.get(eStr);
+            const takenSaved = savedTo && !(String(savedTo.line_id) === String(lineId) && savedTo.workstation_code === wsCode);
+            const isTaken = !isSelected && (takenOnPage || takenSaved);
+            const cleanLabel = `${e.emp_code} — ${e.emp_name}`;
+            return `<div class="ld-emp-option${isTaken ? ' ld-emp-taken' : ''}"
+                 data-emp-id="${eStr}" data-emp-label="${cleanLabel.replace(/"/g,'&quot;')}"
+                 onclick="ldEmpPickerSelect(this,${lineId})"
+                 style="padding:7px 10px;cursor:${isTaken?'default':'pointer'};font-size:0.82em;
+                        background:${isSelected?'#eff6ff':''};font-weight:${isSelected?'600':'400'};
+                        color:${isTaken?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;">
+                 <span>${e.emp_code} — ${e.emp_name}</span>
+                 ${isTaken ? '<span style="color:#f87171;font-size:11px;margin-left:6px;">Taken ✗</span>' : ''}
+             </div>`;
+        }).join('');
+    };
+
+    const empLabel = (selId) => {
+        if (!selId) return '— Not assigned —';
+        const e = employees.find(e => String(e.id) === String(selId));
+        return e ? `${e.emp_code} — ${e.emp_name}` : '— Not assigned —';
+    };
+
+    tbody.innerHTML = wsGroups.map(g =>
+        g.processes.map((p, idx) => {
+            const isFirst = idx === 0;
+            const rs = g.processes.length > 1 ? ` rowspan="${g.processes.length}"` : '';
+            const samSec = (parseFloat(p.operation_sah || 0) * 3600).toFixed(1);
+            // Cycle time = sum of all process times in this workstation (rowspan, first row only)
+            const cycleCell = isFirst
+                ? `<td style="text-align:center;vertical-align:middle;"${rs}>${g.sam.toFixed(1)}s</td>`
+                : '';
+            const wl = g.workload_pct;
+            const wlStr = wl != null ? wl.toFixed(1) + '%' : '-';
+            const wlColor = wl > 100 ? '#dc2626' : wl > 85 ? '#d97706' : (wl ? '#16a34a' : '#9ca3af');
+            const wlCell = isFirst
+                ? `<td style="text-align:center;font-weight:700;color:${wlColor};vertical-align:middle;"${rs}>${wlStr}</td>`
+                : '';
+            // Workstation QR — rowspan on first row only (same WS = same QR)
+            // In OT mode: add a Skip/Active toggle button below the QR image
+            const wsQr = wsQrPath(g.ws);
+            const skipBtn = (useOT && g.ws) ? `
+                <button class="ld-ws-ot-toggle" data-ws="${g.ws}" data-ot-skipped="${g.is_ot_skipped ? 'true' : 'false'}"
+                    onclick="ldWsToggleOTSkip(this,${lineId})"
+                    style="margin-top:5px;display:block;width:100%;font-size:10px;font-weight:700;border-radius:10px;cursor:pointer;padding:2px 6px;border:1px solid ${g.is_ot_skipped ? '#fca5a5' : '#86efac'};background:${g.is_ot_skipped ? '#fee2e2' : '#dcfce7'};color:${g.is_ot_skipped ? '#b91c1c' : '#15803d'};">
+                    ${g.is_ot_skipped ? 'Skipped' : 'Active'}
+                </button>` : '';
+            const wsQrCell = isFirst
+                ? `<td style="text-align:center;vertical-align:middle;padding:4px;"${rs}>${qrThumb(wsQr, g.ws || 'Workstation')}${skipBtn}</td>`
+                : '';
+            // Employee cell — rowspan on first row, searchable custom picker + QR
+            // In OT mode, dim/disable when workstation is skipped
+            const empQr = empQrMap.get(String(g.employee_id || '')) || '';
+            const empImgId = `emp-qr-img-${g.ws.replace(/\W/g, '_')}`;
+            const currentEmpLabel = empLabel(g.employee_id).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            const empCellStyle = (useOT && g.is_ot_skipped)
+                ? 'vertical-align:middle;padding:6px;opacity:0.35;pointer-events:none;'
+                : 'vertical-align:middle;padding:6px;';
+            const empCell = isFirst
+                ? `<td${rs} style="${empCellStyle}">
+                       <div class="ld-emp-picker" data-ws="${g.ws}" data-value="${g.employee_id||''}" style="position:relative;">
+                           <div class="ld-emp-display" onclick="ldEmpPickerToggle(this.parentElement,${lineId})"
+                               style="cursor:pointer;padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;
+                                      font-size:0.82em;min-width:175px;background:#fff;display:flex;
+                                      justify-content:space-between;align-items:center;gap:4px;user-select:none;">
+                               <span class="ld-emp-current-label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${currentEmpLabel}</span>
+                               <span style="color:#9ca3af;font-size:10px;flex-shrink:0;">▾</span>
+                           </div>
+                           <div class="ld-emp-dropdown" style="display:none;position:absolute;left:0;top:calc(100% + 3px);
+                                z-index:600;background:#fff;border:1px solid #d1d5db;border-radius:8px;
+                                box-shadow:0 6px 24px rgba(0,0,0,.15);min-width:260px;overflow:hidden;">
+                               <div style="padding:6px 6px 4px;border-bottom:1px solid #f3f4f6;">
+                                   <input class="ld-emp-search form-control" style="font-size:0.82em;padding:5px 8px;"
+                                          placeholder="&#128269; Search by name or code..."
+                                          oninput="ldEmpPickerFilter(this)"
+                                          onclick="event.stopPropagation()">
+                               </div>
+                               <div class="ld-emp-options" style="max-height:220px;overflow-y:auto;">
+                                   ${empPickerOpts(g.employee_id, g.ws)}
+                               </div>
+                           </div>
+                       </div>
+                       <div style="margin-top:6px;text-align:center;">${qrThumb(empQr, (g.emp_name||g.emp_code||'Employee'), empImgId)}</div>
+                   </td>`
+                : '';
+            // Dim the entire row when the WS is skipped in OT mode
+            const rowOpacity = (useOT && g.is_ot_skipped) ? 'opacity:0.45;' : '';
+            return `<tr style="background:${g.color};${rowOpacity}" data-process-id="${p.id}">
+                <td style="text-align:center;font-weight:600;">${p.sequence_number}</td>
+                <td><input type="text" class="form-control ld-group" style="font-size:0.82em;padding:3px 6px;width:64px;" value="${(p.group_name||'').trim()}" placeholder="G1" data-pid="${p.id}" onblur="recolorDetailRows(${lineId})"></td>
+                <td><input type="text" class="form-control ld-ws" style="font-size:0.82em;padding:3px 6px;width:64px;" value="${g.ws}" placeholder="W1" data-pid="${p.id}" onfocus="this.dataset.prev=this.value" onblur="validateAndApplyWs(this,${lineId})"></td>
+                ${wsQrCell}
+                <td>${p.operation_name}<br><small style="color:#9ca3af;font-size:0.78em;">${p.operation_code||''}</small></td>
+                <td style="text-align:center;">${samSec}s</td>
+                ${cycleCell}
+                ${wlCell}
+                <td style="text-align:center;">${parseFloat(p.operation_sah||0).toFixed(4)}</td>
+                ${empCell}
+            </tr>`;
+        }).join('')
+    ).join('');
+    // Run sync after render to apply correct disable states
+    syncEmpDropdowns(lineId);
+}
+
+// Re-evaluate taken states across all WS pickers and update QR images.
+// Called after any employee selection changes.
+function syncEmpDropdowns(lineId) {
+    const tbody = document.getElementById(`ld-body-${lineId}`);
+    if (!tbody) return;
+    const allPickers = Array.from(tbody.querySelectorAll('.ld-emp-picker'));
+
+    // Collect current page selections: empId → wsCode
+    const pageSelected = new Map();
+    allPickers.forEach(p => { if (p.dataset.value) pageSelected.set(String(p.dataset.value), p.dataset.ws); });
+
+    // Filter taken employees by current shift mode (regular vs OT are independent pools)
+    const isOT = !!window._ldActiveOT?.[lineId];
+    const allAssignments = (_ldData?.data?.all_assignments || []).filter(a => !!a.is_overtime === isOT);
+    const otherLineTaken = new Map();
+    allAssignments.forEach(a => {
+        if (String(a.line_id) !== String(lineId))
+            otherLineTaken.set(String(a.employee_id), a.workstation_code);
+    });
+
+    const empQrMap = new Map((_ldData?.data?.employees || []).map(e => [String(e.id), e.qr_code_path || '']));
+
+    allPickers.forEach(picker => {
+        const thisWs = picker.dataset.ws;
+        const thisSelected = picker.dataset.value || '';
+
+        // Update each option's taken state
+        picker.querySelectorAll('.ld-emp-option').forEach(opt => {
+            const eId = opt.dataset.empId || '';
+            if (!eId) return; // "Not assigned" — always available
+            const isThisSelected = eId === thisSelected;
+            const takenOnPage = pageSelected.has(eId) && pageSelected.get(eId) !== thisWs;
+            const takenOtherLine = otherLineTaken.has(eId);
+            const isTaken = !isThisSelected && (takenOnPage || takenOtherLine);
+
+            opt.classList.toggle('ld-emp-taken', isTaken);
+            opt.style.cursor = isTaken ? 'default' : 'pointer';
+            opt.style.color = isTaken ? '#9ca3af' : '';
+            opt.style.background = isThisSelected ? '#eff6ff' : '';
+            opt.style.fontWeight = isThisSelected ? '600' : '';
+
+            // Taken badge
+            let badge = opt.querySelector('.ld-taken-badge');
+            if (isTaken && !badge) {
+                badge = document.createElement('span');
+                badge.className = 'ld-taken-badge';
+                badge.style.cssText = 'color:#f87171;font-size:11px;margin-left:6px;';
+                badge.textContent = 'Taken ✗';
+                opt.appendChild(badge);
+            } else if (!isTaken && badge) {
+                badge.remove();
+            }
+        });
+
+        // Update employee QR image
+        const wsKey = thisWs.replace(/\W/g, '_');
+        const imgEl = document.getElementById(`emp-qr-img-${wsKey}`);
+        if (imgEl) {
+            const qrPath = empQrMap.get(thisSelected) || '';
+            if (qrPath) {
+                imgEl.src = '/' + qrPath;
+                imgEl.style.opacity = '1';
+                const empName = _ldData?.data?.employees?.find(e => String(e.id) === thisSelected)?.emp_name || 'Employee';
+                imgEl.onclick = () => showQrModal('/' + qrPath, empName);
+            } else {
+                imgEl.src = '';
+                imgEl.style.opacity = '0.15';
+            }
+        }
+    });
+}
+
+function renderLineDetailsPanel(panel, lineId, date, data) {
+    renderLineDetailsContent(panel, lineId, date, data);
+}
+
+function renderLineDetailsContent(panel, lineId, date, data) {
+    // Plan-level fields — always from the primary plan data
+    const { employees, products, product,
+            overtime_minutes: otMins = 0, overtime_target: otTarget = 0,
+            incoming_product_id = null, incoming_target_units = 0, changeover_sequence = 0,
+            is_locked = false } = data;
+
+    // Regular product mode: 'primary' or 'changeover' (for the non-OT view)
+    if (!window._ldProductMode) window._ldProductMode = {};
+    const mode = window._ldProductMode[lineId] || 'primary';
+    const isChangeover = mode === 'changeover' && !!incoming_product_id;
+
+    // OT toggle — available regardless of which product is selected in regular mode
+    if (typeof window._ldActiveOT === 'undefined') window._ldActiveOT = {};
+    if (!window._ldOTProduct) window._ldOTProduct = {};
+    const hasOT = otMins > 0 && otTarget > 0;
+    const activeOT = hasOT && !!(window._ldActiveOT[lineId]);
+    // OT product: which product is being manufactured during overtime (independent of regular mode)
+    const otProductMode = window._ldOTProduct[lineId] || 'primary';
+    const isOTChangeover = activeOT && otProductMode === 'changeover' && !!incoming_product_id;
+
+    // displayIsChangeover drives what data is shown in the table.
+    // In OT mode it follows the OT product; in regular mode it follows the view toggle.
+    const displayIsChangeover = activeOT ? isOTChangeover : isChangeover;
+    const activeViewData = displayIsChangeover ? (_ldData?.changeoverData || data) : data;
+    const processes      = activeViewData.processes || [];
+    const regularTaktSecs = activeViewData.takt_time_seconds || 0;
+    const target_units   = displayIsChangeover ? incoming_target_units : (data.target_units || 0);
+
+    if (!processes || processes.length === 0) {
+        panel.innerHTML = `<div class="alert alert-info">${displayIsChangeover ? 'No processes found for the changeover product.' : 'No product assigned for this line on ' + date + ', or product has no active processes.'}</div>`;
+        return;
+    }
+
+    const otTaktSecs = hasOT ? (otMins * 60) / otTarget : 0;
+    const activeTakt = activeOT ? otTaktSecs : regularTaktSecs;
+
+    const fmtTakt = s => s > 0 ? `${Math.floor(s/60)}m ${Math.round(s%60)}s` : '-';
+    const taktDisplay = fmtTakt(regularTaktSecs);
+    const otTaktDisplay = fmtTakt(otTaktSecs);
+
+    const wsGroups = _buildWsGroups(processes, activeTakt, activeOT);
+    const assignedWs = wsGroups.filter(g => g.ws).length;
+
+    const otToggleHtml = hasOT ? `
+        <span style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;background:#f3f4f6;border-radius:20px;padding:2px 4px;border:1px solid #e5e7eb;">
+            <button id="ld-takt-reg-${lineId}" onclick="switchLdTakt(${lineId}, false)"
+                style="border:none;border-radius:16px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;
+                       background:${!activeOT ? '#3b82f6' : 'transparent'};color:${!activeOT ? '#fff' : '#6b7280'};">
+                Regular
+            </button>
+            <button id="ld-takt-ot-${lineId}" onclick="switchLdTakt(${lineId}, true)"
+                style="border:none;border-radius:16px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;
+                       background:${activeOT ? '#7c3aed' : 'transparent'};color:${activeOT ? '#fff' : '#6b7280'};">
+                OT +${otMins}m
+            </button>
+        </span>
+    ` : '';
+
+    // Plan settings card always uses primary plan data
+    const planPrimaryTarget = data.target_units || 0;
+    const productOpts = (products || []).map(p =>
+        `<option value="${p.id}" ${p.id === product?.id ? 'selected' : ''}>${p.product_code} — ${p.product_name}</option>`
+    ).join('');
+    const incomingOpts = `<option value="">None (no changeover)</option>` + (products || []).map(p =>
+        `<option value="${p.id}" ${p.id === incoming_product_id ? 'selected' : ''}>${p.product_code} — ${p.product_name}</option>`
+    ).join('');
+    const lockedAttr = is_locked ? 'disabled' : '';
+
+    const incomingProd = (products || []).find(p => p.id === incoming_product_id);
+
+    // Regular product toggle — only visible when NOT in OT mode
+    const productToggle = (!activeOT && incoming_product_id) ? `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+            <span style="font-size:12px;font-weight:600;color:#6b7280;">Viewing plan for:</span>
+            <div style="display:inline-flex;background:#f3f4f6;border-radius:20px;padding:3px 4px;gap:2px;">
+                <button onclick="switchLdProduct(${lineId},'primary')"
+                    style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
+                           background:${!isChangeover ? '#3b82f6' : 'transparent'};color:${!isChangeover ? '#fff' : '#6b7280'};">
+                    &#9654; Primary: ${product?.product_code || '—'}
+                </button>
+                <button onclick="switchLdProduct(${lineId},'changeover')"
+                    style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
+                           background:${isChangeover ? '#f59e0b' : 'transparent'};color:${isChangeover ? '#fff' : '#6b7280'};">
+                    &#8652; Changeover: ${incomingProd?.product_code || '—'}
+                </button>
+            </div>
+            ${isChangeover ? `<span style="font-size:11px;color:#92400e;background:#fef3c7;border-radius:10px;padding:2px 8px;">Editing changeover product plan</span>` : ''}
+        </div>
+    ` : '';
+
+    // OT product toggle — only visible when in OT mode
+    const otProductToggle = (activeOT && incoming_product_id) ? `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+            <span style="font-size:12px;font-weight:600;color:#7c3aed;">OT working on:</span>
+            <div style="display:inline-flex;background:#f5f3ff;border-radius:20px;padding:3px 4px;gap:2px;border:1px solid #ddd6fe;">
+                <button onclick="switchLdOTProduct(${lineId},'primary')"
+                    style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
+                           background:${!isOTChangeover ? '#7c3aed' : 'transparent'};color:${!isOTChangeover ? '#fff' : '#6b7280'};">
+                    &#9654; Primary: ${product?.product_code || '—'}
+                </button>
+                <button onclick="switchLdOTProduct(${lineId},'changeover')"
+                    style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
+                           background:${isOTChangeover ? '#f59e0b' : 'transparent'};color:${isOTChangeover ? '#fff' : '#6b7280'};">
+                    &#8652; Changeover: ${incomingProd?.product_code || '—'}
+                </button>
+            </div>
+            ${isOTChangeover ? `<span style="font-size:11px;color:#92400e;background:#fef3c7;border-radius:10px;padding:2px 8px;">OT on changeover product</span>` : `<span style="font-size:11px;color:#5b21b6;background:#f5f3ff;border-radius:10px;padding:2px 8px;border:1px solid #ddd6fe;">OT on primary product</span>`}
+        </div>
+    ` : '';
+
+    panel.innerHTML = `
+        <!-- Plan Settings Card -->
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
+            <div style="flex:1;min-width:200px;">
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Product (Primary)</label>
+                <select id="ld-product-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
+                    ${productOpts}
+                </select>
+            </div>
+            <div style="min-width:90px;">
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Target</label>
+                <input type="number" id="ld-target-${lineId}" class="form-control" style="font-size:0.88em;width:90px;" value="${planPrimaryTarget}" min="0" ${lockedAttr}>
+            </div>
+            <div style="flex:1;min-width:200px;">
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Product</label>
+                <select id="ld-incoming-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
+                    ${incomingOpts}
+                </select>
+            </div>
+            <div style="min-width:90px;">
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Incoming Target</label>
+                <input type="number" id="ld-incoming-target-${lineId}" class="form-control" style="font-size:0.88em;width:90px;" value="${incoming_target_units||0}" min="0" ${lockedAttr}>
+            </div>
+            <div style="min-width:80px;">
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">CO Progress</label>
+                <div style="font-size:0.95em;font-weight:700;color:${changeover_sequence > 0 ? '#92400e' : '#9ca3af'};padding:6px 4px;">
+                    ${changeover_sequence > 0 ? `P${changeover_sequence}` : '—'}
+                    <span style="font-size:10px;font-weight:400;color:#9ca3af;display:block;">auto-advanced</span>
+                </div>
+            </div>
+            <div style="display:flex;align-items:flex-end;gap:6px;">
+                ${is_locked
+                    ? `<span style="background:#fee2e2;color:#b91c1c;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;">🔒 Locked</span>`
+                    : `<button class="btn btn-primary btn-sm" onclick="saveLdPlanSettings(${lineId})" style="white-space:nowrap;">Update Plan</button>`}
+            </div>
+        </div>
+        <!-- Product mode toggle (regular) / OT product toggle -->
+        ${productToggle}${otProductToggle}
+        <!-- Workstation Summary -->
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <span style="font-size:0.85em;color:#6b7280;">
+                <strong style="color:${displayIsChangeover?'#92400e':'#1e293b'}">${displayIsChangeover ? (incomingProd?.product_code||'CO') : (product?.product_code||'')} — ${displayIsChangeover ? (incomingProd?.product_name||'') : (product?.product_name||'')}</strong>
+                &nbsp;|&nbsp; Takt: <strong id="ld-takt-display-${lineId}">${activeOT ? otTaktDisplay : taktDisplay}</strong>
+                ${otToggleHtml}
+                &nbsp;|&nbsp; Target: <strong>${target_units}</strong>
+                &nbsp;|&nbsp; Processes: <strong>${processes.length}</strong>
+                &nbsp;|&nbsp; Workstations: <strong>${assignedWs}</strong>
+                ${hasOT ? `&nbsp;|&nbsp; OT: <strong style="color:#7c3aed;">+${otMins}m / +${otTarget} units</strong>` : ''}
+            </span>
+            <div style="margin-left:auto;">
+                <button class="btn btn-primary btn-sm" onclick="saveLineDetails(${lineId})" ${is_locked ? 'disabled' : ''}
+                    style="${activeOT ? 'background:#7c3aed;border-color:#7c3aed;' : displayIsChangeover ? 'background:#f59e0b;border-color:#f59e0b;' : ''}">
+                    &#10003; ${activeOT ? `Save OT Employees${isOTChangeover ? ' (Changeover)' : ''}` : displayIsChangeover ? 'Save Changeover Plan' : 'Save Workstation Plan'}
+                </button>
+            </div>
+        </div>
+        ${activeOT ? `<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:8px 14px;margin-bottom:8px;font-size:0.82em;color:#5b21b6;display:flex;align-items:center;gap:8px;">
+            <strong>OT Mode${isOTChangeover ? ' — Changeover Product' : ''}:</strong> Assigning employees for the overtime shift${isOTChangeover ? ' on the changeover product' : ''}. Workstation layout unchanged — only employee assignments are saved.
+        </div>` : ''}
+        <div style="font-size:0.78em;color:#6b7280;margin-bottom:8px;">
+            Enter <strong>Group</strong> (e.g. G1) and <strong>Workstation</strong> (e.g. W1) per process.
+            Processes with the same workstation share one employee assignment. Tab out to regroup.
+        </div>
+        <div class="table-container">
+            <table id="ld-table-${lineId}" style="font-size:0.88em;width:100%;">
+                <thead>
+                    <tr>
+                        <th style="text-align:center;">Seq</th>
+                        <th>Group</th>
+                        <th>Workstation</th>
+                        <th style="text-align:center;">WS QR</th>
+                        <th>Operation</th>
+                        <th style="text-align:center;">Process Time</th>
+                        <th style="text-align:center;">Cycle Time</th>
+                        <th style="text-align:center;">Work Load</th>
+                        <th style="text-align:center;">SAH</th>
+                        <th style="min-width:180px;">Employee</th>
+                    </tr>
+                </thead>
+                <tbody id="ld-body-${lineId}"></tbody>
+            </table>
+        </div>
+    `;
+    _buildLdTbody(document.getElementById(`ld-body-${lineId}`), lineId, wsGroups, employees, activeOT);
+}
+
+function switchLdTakt(lineId, useOT) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+    if (typeof window._ldActiveOT === 'undefined') window._ldActiveOT = {};
+    window._ldActiveOT[lineId] = useOT;
+    const panel = document.getElementById('ld-overlay-content');
+    if (panel) renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
+}
+
+// Switch which product is being worked during OT (independent of the regular view toggle)
+async function switchLdOTProduct(lineId, mode) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+    if (!window._ldOTProduct) window._ldOTProduct = {};
+    window._ldOTProduct[lineId] = mode;
+
+    const panel = document.getElementById('ld-overlay-content');
+    if (!panel) return;
+
+    // Lazy-load changeover data if not yet fetched
+    if (mode === 'changeover' && !_ldData.changeoverData) {
+        const { date, data } = _ldData;
+        const incomingId = data.incoming_product_id;
+        const incomingTarget = data.incoming_target_units || 0;
+        if (!incomingId) { showToast('No changeover product configured for this line', 'error'); return; }
+        panel.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Loading changeover product plan…</div>';
+        try {
+            const params = new URLSearchParams({ date });
+            params.set('product_id', incomingId);
+            params.set('target', incomingTarget);
+            const res = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+            const r = await res.json();
+            if (!r.success) { showToast(r.error, 'error'); return; }
+            _ldData.changeoverData = r.data;
+        } catch (err) { showToast(err.message, 'error'); return; }
+    }
+    renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
+}
+
+// Switch between primary / changeover product view in the details overlay
+async function switchLdProduct(lineId, mode) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+    if (!window._ldProductMode) window._ldProductMode = {};
+    window._ldProductMode[lineId] = mode;
+
+    const panel = document.getElementById('ld-overlay-content');
+    if (!panel) return;
+
+    if (mode === 'changeover' && !_ldData.changeoverData) {
+        const { date, data } = _ldData;
+        const incomingId = data.incoming_product_id;
+        const incomingTarget = data.incoming_target_units || 0;
+        if (!incomingId) { showToast('No changeover product configured for this line', 'error'); return; }
+
+        panel.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Loading changeover product plan…</div>';
+        try {
+            const params = new URLSearchParams({ date });
+            params.set('product_id', incomingId);
+            params.set('target', incomingTarget);
+            const res = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+            const r = await res.json();
+            if (!r.success) { showToast(r.error, 'error'); return; }
+            _ldData.changeoverData = r.data;
+        } catch (err) { showToast(err.message, 'error'); return; }
+    }
+
+    renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
+}
+
+// Save the plan settings (product, target, changeover) from the details overlay
+async function saveLdPlanSettings(lineId) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+    const { date } = _ldData;
+
+    const productId = parseInt(document.getElementById(`ld-product-${lineId}`)?.value || '0', 10);
+    const targetUnits = parseInt(document.getElementById(`ld-target-${lineId}`)?.value || '0', 10);
+    const incomingProductId = document.getElementById(`ld-incoming-${lineId}`)?.value || '';
+    const incomingTarget = parseInt(document.getElementById(`ld-incoming-target-${lineId}`)?.value || '0', 10);
+
+    if (!productId) { showToast('Please select a product', 'error'); return; }
+    if (incomingProductId && parseInt(incomingProductId, 10) === productId) {
+        showToast('Changeover product must be different from the primary product', 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/daily-plans', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: lineId,
+                product_id: productId,
+                work_date: date,
+                target_units: targetUnits,
+                incoming_product_id: incomingProductId ? parseInt(incomingProductId, 10) : null,
+                incoming_target_units: incomingProductId ? incomingTarget : 0
+            })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error, 'error'); return; }
+
+        showToast('Plan updated', 'success');
+        // Reload details — product may have changed (different process list)
+        const panel = document.getElementById('ld-overlay-content');
+        if (panel) {
+            panel.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Reloading...</div>';
+            const params = new URLSearchParams({ date });
+            params.set('product_id', productId);
+            params.set('target', targetUnits);
+            const res2 = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+            const r2 = await res2.json();
+            if (r2.success) {
+                _ldData.data = r2.data;
+                renderLineDetailsContent(panel, lineId, date, r2.data);
+            }
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// Called onblur for each WS input. Validates the proposed change before allowing
+// the table to re-render. If invalid, reverts the input to its previous value.
+function validateAndApplyWs(input, lineId) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+
+    const newWs = input.value.trim();
+    const prevWs = input.dataset.prev ?? '';
+
+    // Nothing changed — just recolor normally
+    if (newWs === prevWs) { recolorDetailRows(lineId); return; }
+
+    const changedPid = parseInt(input.dataset.pid, 10);
+    const tbody = document.getElementById(`ld-body-${lineId}`);
+    if (!tbody) return;
+
+    // Build the PROPOSED process list with the new WS applied, keeping sequence order
+    const _valIsOT = !!window._ldActiveOT?.[lineId];
+    const _valMode = _valIsOT ? (window._ldOTProduct?.[lineId] || 'primary') : (window._ldProductMode?.[lineId] || 'primary');
+    const _valIsChangeover = _valMode === 'changeover' && !!_ldData.changeoverData && !!_ldData.data.incoming_product_id;
+    const _valSource = _valIsChangeover ? _ldData.changeoverData : _ldData.data;
+    const proposed = _valSource.processes.map(p => {
+        if (p.id === changedPid) return { ...p, workstation_code: newWs };
+        // Read other rows' current values directly from the DOM
+        const row = tbody.querySelector(`tr[data-process-id="${p.id}"]`);
+        const currentWs = row?.querySelector('.ld-ws')?.value.trim() ?? (p.workstation_code || '');
+        return { ...p, workstation_code: currentWs };
+    });
+
+    const error = _validateWsSequence(proposed);
+    if (error) {
+        // Revert the input — do NOT redraw the table
+        input.value = prevWs;
+        input.style.borderColor = '#ef4444';
+        input.style.background = '#fee2e2';
+        // Flash border red then restore after a moment
+        setTimeout(() => {
+            input.style.borderColor = '';
+            input.style.background = '';
+        }, 2500);
+        _showWsSeqError(error);
+        return;
+    }
+
+    // Valid change — accept it and redraw
+    recolorDetailRows(lineId);
+}
+
+function recolorDetailRows(lineId) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+    const tbody = document.getElementById(`ld-body-${lineId}`);
+    if (!tbody) return;
+
+    const rMode = window._ldProductMode?.[lineId] || 'primary';
+    const isOT = !!window._ldActiveOT?.[lineId];
+    const rOTProd = window._ldOTProduct?.[lineId] || 'primary';
+    // displayIsChangeover: which product's data is actually shown in the table right now
+    const isRChangeover = isOT
+        ? (rOTProd === 'changeover' && !!_ldData.changeoverData && !!_ldData.data.incoming_product_id)
+        : (rMode === 'changeover' && !!_ldData.changeoverData);
+    const rSource = isRChangeover ? _ldData.changeoverData : _ldData.data;
+
+    // Collect employee per WS from the pickers (one per WS group)
+    const wsEmpMap = new Map();
+    tbody.querySelectorAll('.ld-emp-picker').forEach(p => {
+        wsEmpMap.set(p.dataset.ws, p.dataset.value || null);
+    });
+    // In OT mode, also collect skip state per WS from the toggle buttons
+    const wsSkipMap = new Map();
+    if (isOT) {
+        tbody.querySelectorAll('.ld-ws-ot-toggle').forEach(btn => {
+            wsSkipMap.set(btn.dataset.ws, btn.dataset.otSkipped === 'true');
+        });
+    }
+    // Collect group/ws per process from text inputs.
+    // In OT mode write employee back to ot_employee_id so regular assignments are preserved.
+    const pidState = new Map();
+    tbody.querySelectorAll('tr[data-process-id]').forEach(row => {
+        const pid = parseInt(row.dataset.processId, 10);
+        const ws = row.querySelector('.ld-ws')?.value.trim() || '';
+        const group = row.querySelector('.ld-group')?.value.trim() || '';
+        const empVal = wsEmpMap.get(ws) || null;
+        const state = { workstation_code: ws, group_name: group || null };
+        if (isOT) {
+            state.ot_employee_id = empVal;
+            if (wsSkipMap.has(ws)) state.is_ot_skipped = wsSkipMap.get(ws);
+        } else {
+            state.employee_id = empVal;
+        }
+        pidState.set(pid, state);
+    });
+    // Update cached processes in the correct data store
+    const updatedProcesses = rSource.processes.map(p => {
+        const s = pidState.get(p.id);
+        return s ? { ...p, ...s } : p;
+    });
+    if (isRChangeover) {
+        _ldData.changeoverData = { ..._ldData.changeoverData, processes: updatedProcesses };
+    } else {
+        _ldData.data = { ..._ldData.data, processes: updatedProcesses };
+    }
+    // Rebuild only the tbody (no full re-render — preserves header)
+    // OT takt applies whenever isOT is true, regardless of product
+    let activeTakt;
+    const hasOTData = _ldData.data.overtime_minutes > 0 && _ldData.data.overtime_target > 0;
+    if (isOT && hasOTData) {
+        activeTakt = (_ldData.data.overtime_minutes * 60) / _ldData.data.overtime_target;
+    } else {
+        activeTakt = rSource.takt_time_seconds || 0;
+    }
+    const wsGroups = _buildWsGroups(updatedProcesses, activeTakt, isOT);
+    _buildLdTbody(tbody, lineId, wsGroups, rSource.employees, isOT);
+    // Highlight out-of-sequence WS inputs
+    _highlightWsSequenceErrors(tbody, updatedProcesses);
+}
+
+function _highlightWsSequenceErrors(tbody, processes) {
+    // Build a set of process IDs that are out of sequence
+    const badPids = new Set();
+    let maxWsNum = 0;
+    for (const p of processes) {
+        const ws = (p.workstation_code || '').trim();
+        if (!ws) continue;
+        const wsNum = parseInt(ws.replace(/\D/g, '') || '0', 10);
+        if (wsNum < maxWsNum) badPids.add(p.id);
+        else maxWsNum = Math.max(maxWsNum, wsNum);
+    }
+    tbody.querySelectorAll('tr[data-process-id]').forEach(row => {
+        const pid = parseInt(row.dataset.processId, 10);
+        const wsInput = row.querySelector('.ld-ws');
+        if (!wsInput) return;
+        if (badPids.has(pid)) {
+            wsInput.style.borderColor = '#ef4444';
+            wsInput.style.background = '#fee2e2';
+            wsInput.title = 'Workstation is out of sequence — must be ≥ the workstation of the preceding process.';
+        } else {
+            wsInput.style.borderColor = '';
+            wsInput.style.background = '';
+            wsInput.title = '';
+        }
+    });
+}
+
+function _showWsSeqError(message) {
+    const existing = document.getElementById('ws-seq-err-banner');
+    if (existing) existing.remove();
+    const panel = document.getElementById('ld-overlay-content') || document.getElementById('ld-content');
+    if (!panel) { alert(message); return; }
+    const banner = document.createElement('div');
+    banner.id = 'ws-seq-err-banner';
+    banner.style.cssText = 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:13px;line-height:1.5;display:flex;gap:10px;align-items:flex-start;';
+    banner.innerHTML = `
+        <svg style="flex-shrink:0;margin-top:2px;" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        </svg>
+        <div><strong>Invalid Workstation Assignment</strong><br>${message}</div>
+        <button onclick="document.getElementById('ws-seq-err-banner').remove()" style="margin-left:auto;border:none;background:none;cursor:pointer;font-size:16px;color:#991b1b;flex-shrink:0;">&times;</button>
+    `;
+    panel.insertBefore(banner, panel.firstChild);
+    banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Returns null if ok, or an error message string describing the first violation.
+// processes must be sorted by sequence_number ascending (as returned by the API).
+function _validateWsSequence(processes) {
+    let maxWsNum = 0;
+    let maxWsCode = '';
+    for (const p of processes) {
+        const ws = (p.workstation_code || '').trim();
+        if (!ws) continue; // unassigned — skip
+        const wsNum = parseInt(ws.replace(/\D/g, '') || '0', 10);
+        if (wsNum < maxWsNum) {
+            return (
+                `Workstation Assignment Conflict: Process (Seq ${p.sequence_number} — ` +
+                `${p.operation_name || p.operation_code || 'Process #' + p.id}) cannot be assigned to ` +
+                `Workstation "${ws}" because a preceding process is already assigned to Workstation "${maxWsCode}", ` +
+                `which is further along the line. Workstation assignments must follow the process sequence order. ` +
+                `Please revise the layout to maintain sequential flow.`
+            );
+        }
+        if (wsNum > maxWsNum) {
+            maxWsNum = wsNum;
+            maxWsCode = ws;
+        }
+    }
+    return null;
+}
+
+async function saveLineDetails(lineId) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+    recolorDetailRows(lineId); // sync DOM state → _ldData
+    const { date, data } = _ldData;
+
+    const saveMode = window._ldProductMode?.[lineId] || 'primary';
+    const isOT = !!window._ldActiveOT?.[lineId];
+    const otProdMode = window._ldOTProduct?.[lineId] || 'primary';
+    // Regular mode: which product is visible in the non-OT view
+    const isSaveChangeover = !isOT && saveMode === 'changeover' && !!_ldData.changeoverData && !!data.incoming_product_id;
+    // OT mode: which product is being worked during OT
+    const isOTSaveChangeover = isOT && otProdMode === 'changeover' && !!_ldData.changeoverData && !!data.incoming_product_id;
+    const activeProductId = isOT
+        ? (isOTSaveChangeover ? data.incoming_product_id : (data.product?.id || null))
+        : (isSaveChangeover   ? data.incoming_product_id : (data.product?.id || null));
+    const activeTarget = isOT
+        ? (isOTSaveChangeover ? (data.incoming_target_units || 0) : (data.target_units || 0))
+        : (isSaveChangeover   ? (data.incoming_target_units || 0) : (data.target_units || 0));
+    const activeProcesses = isOT
+        ? (isOTSaveChangeover ? _ldData.changeoverData.processes : data.processes)
+        : (isSaveChangeover   ? _ldData.changeoverData.processes  : data.processes);
+
+    const tbody = document.getElementById(`ld-body-${lineId}`);
+    if (!tbody) return;
+
+    // In OT mode: only save OT employee assignments + skip state (workstation layout is unchanged)
+    if (isOT) {
+        // Collect employee per WS from pickers
+        const wsMap = new Map(); // ws → { employee_id, is_skipped }
+        tbody.querySelectorAll('.ld-emp-picker').forEach(p => {
+            const ws = p.dataset.ws;
+            if (ws && !wsMap.has(ws))
+                wsMap.set(ws, { employee_id: p.dataset.value ? parseInt(p.dataset.value, 10) : null, is_skipped: false });
+        });
+        // Collect skip state from toggle buttons
+        tbody.querySelectorAll('.ld-ws-ot-toggle').forEach(btn => {
+            const ws = btn.dataset.ws;
+            if (wsMap.has(ws)) wsMap.get(ws).is_skipped = btn.dataset.otSkipped === 'true';
+            else wsMap.set(ws, { employee_id: null, is_skipped: btn.dataset.otSkipped === 'true' });
+        });
+        const assignments = Array.from(wsMap.entries()).map(([ws, val]) => ({
+            workstation_code: ws,
+            employee_id: val.is_skipped ? null : (val.employee_id || null),
+            is_skipped: val.is_skipped
+        }));
+        try {
+            const res = await fetch(`/api/lines/${lineId}/workstation-plan/employees`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ work_date: date, is_overtime: true, assignments })
+            });
+            const result = await res.json();
+            if (result.success) {
+                showToast('OT employee assignments saved', 'success');
+                const params = new URLSearchParams({ date });
+                if (activeProductId) params.set('product_id', activeProductId);
+                if (activeTarget) params.set('target', activeTarget);
+                const res2 = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+                const r2 = await res2.json();
+                if (r2.success) {
+                    _ldData.data = r2.data;
+                    const content = document.getElementById('ld-overlay-content');
+                    if (content) renderLineDetailsContent(content, lineId, date, _ldData.data);
+                }
+            } else {
+                showToast(result.error, 'error');
+            }
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+        return;
+    }
+
+    // Regular / changeover mode: full workstation plan save
+    const seqError = _validateWsSequence(activeProcesses);
+    if (seqError) {
+        _showWsSeqError(seqError);
+        return;
+    }
+
+    // Collect one employee per WS from the pickers
+    const wsEmpMap = new Map();
+    tbody.querySelectorAll('.ld-emp-picker').forEach(p => {
+        wsEmpMap.set(p.dataset.ws, p.dataset.value || null);
+    });
+    const rows = activeProcesses.map(p => ({
+        process_id: p.id,
+        group_name: p.group_name || null,
+        workstation_code: p.workstation_code || '',
+        employee_id: wsEmpMap.get(p.workstation_code) || null
+    }));
+    try {
+        const res = await fetch(`/api/lines/${lineId}/workstation-plan/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                work_date: date,
+                rows,
+                product_id: activeProductId,
+                target_units: activeTarget
+            })
+        });
+        const result = await res.json();
+        if (result.success) {
+            showToast(result.message || 'Plan saved', 'success');
+            // Reload fresh data for the active product and re-render
+            const params = new URLSearchParams({ date });
+            if (activeProductId) params.set('product_id', activeProductId);
+            if (activeTarget) params.set('target', activeTarget);
+            const res2 = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+            const r2 = await res2.json();
+            if (r2.success) {
+                if (isSaveChangeover) {
+                    _ldData.changeoverData = r2.data;
+                } else {
+                    _ldData.data = r2.data;
+                }
+                const content = document.getElementById('ld-overlay-content');
+                if (content) renderLineDetailsContent(content, lineId, date, _ldData.data);
+            }
+        } else {
+            showToast(result.error, 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+
 
 async function saveDailyPlan(lineId) {
     const date = document.getElementById('plan-date').value;
@@ -3267,6 +4423,80 @@ async function unlockDailyPlan(lineId) {
             return;
         }
         showToast('Plan unlocked', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ============================================================================
+// Overtime Plan
+// ============================================================================
+function openOvertimeModal(lineId) {
+    const existing = document.getElementById('ot-modal-overlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ot-modal-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:28px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+            <h3 style="margin:0 0 8px;font-size:17px;font-weight:700;color:#1e293b;">Set Overtime Plan</h3>
+            <p style="margin:0 0 20px;font-size:13px;color:#64748b;">Enter the overtime duration and additional production target for this line.</p>
+            <div style="margin-bottom:14px;">
+                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">OT Duration (minutes)</label>
+                <input type="number" id="ot-minutes-input" min="0" max="480" value="60" class="form-control" style="width:100%;" placeholder="e.g. 60">
+                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Typical: 30, 60, 90, 120 minutes</div>
+            </div>
+            <div style="margin-bottom:20px;">
+                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">Additional Target (units)</label>
+                <input type="number" id="ot-target-input" min="0" value="0" class="form-control" style="width:100%;" placeholder="e.g. 50">
+                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Extra units to produce during overtime</div>
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn btn-secondary" onclick="document.getElementById('ot-modal-overlay').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveOvertime(${lineId})" style="background:#7c3aed;border-color:#7c3aed;">Save Overtime</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.getElementById('ot-minutes-input').focus();
+}
+
+async function saveOvertime(lineId) {
+    const date = document.getElementById('plan-date').value;
+    const mins = parseInt(document.getElementById('ot-minutes-input').value, 10);
+    const target = parseInt(document.getElementById('ot-target-input').value, 10);
+    if (isNaN(mins) || mins < 0) { showToast('Please enter a valid OT duration', 'error'); return; }
+    if (isNaN(target) || target < 0) { showToast('Please enter a valid OT target', 'error'); return; }
+    try {
+        const res = await fetch('/api/daily-plans/overtime', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date, overtime_minutes: mins, overtime_target: target })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error, 'error'); return; }
+        document.getElementById('ot-modal-overlay')?.remove();
+        showToast('Overtime plan saved', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function clearOvertime(lineId) {
+    const date = document.getElementById('plan-date').value;
+    try {
+        const res = await fetch('/api/daily-plans/overtime', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date, overtime_minutes: 0, overtime_target: 0 })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error, 'error'); return; }
+        showToast('Overtime cleared', 'success');
         loadDailyPlanData();
     } catch (err) {
         showToast(err.message, 'error');
