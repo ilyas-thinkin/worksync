@@ -504,6 +504,265 @@ router.patch('/daily-plans/overtime', async (req, res) => {
 });
 
 // ============================================================================
+// DAILY PLAN EXCEL EXPORT
+// ============================================================================
+router.post('/daily-plans/export-excel', async (req, res) => {
+    const { date, lineConfigs = {} } = req.body;
+    if (!date) return res.status(400).json({ success: false, error: 'date is required' });
+
+    // Helper: get per-line config or defaults
+    const getLineCfg = (lineId) => {
+        const c = lineConfigs[lineId] || lineConfigs[String(lineId)] || {};
+        return {
+            start:     c.start     || '08:00',
+            end:       c.end       || '17:00',
+            lunchMins: parseInt(c.lunchMins ?? 60, 10),
+            otMins:    parseInt(c.otMins    ?? 0,  10),
+            otTarget:  parseInt(c.otTarget  ?? 0,  10),
+            wsOt:      c.wsOt || {},
+        };
+    };
+
+    const effArgb = e => e == null ? 'FF9CA3AF' : e >= 95 ? 'FF16A34A' : e >= 60 ? 'FFD97706' : 'FFDC2626';
+    const fmtTakt = s => s > 0 ? `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s` : '\u2014';
+
+    try {
+        const plansResult = await pool.query(
+            `SELECT ldp.id, ldp.line_id, ldp.product_id, ldp.target_units,
+                    ldp.overtime_minutes, ldp.overtime_target,
+                    pl.line_code, pl.line_name,
+                    p.product_code, p.product_name
+             FROM line_daily_plans ldp
+             JOIN production_lines pl ON ldp.line_id = pl.id
+             JOIN products p ON ldp.product_id = p.id
+             WHERE ldp.work_date = $1
+             ORDER BY pl.line_name`,
+            [date]
+        );
+
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = 'WorkSync';
+        workbook.created = new Date();
+
+        const borderAll = {
+            top: { style: 'thin' }, bottom: { style: 'thin' },
+            left: { style: 'thin' }, right: { style: 'thin' }
+        };
+        const WS_ARGB = [
+            'FFEFF6FF','FFFFF7ED','FFF0FDF4','FFFDF4FF','FFFFFBEB',
+            'FFF0F9FF','FFFFF1F2','FFF5F3FF','FFECFDF5','FFFEF9C3'
+        ];
+
+        for (const plan of plansResult.rows) {
+            const cfg = getLineCfg(plan.line_id);
+
+            // Compute regular working seconds from per-line config
+            const [sh, sm] = cfg.start.split(':').map(Number);
+            const [eh, em] = cfg.end.split(':').map(Number);
+            const workingSecs = ((eh * 60 + em) - (sh * 60 + sm) - cfg.lunchMins) * 60;
+            const regTakt     = plan.target_units > 0 ? workingSecs / plan.target_units : 0;
+
+            // OT from config (user may have overridden from plan defaults)
+            const otMins   = cfg.otMins;
+            const otTarget = cfg.otTarget || parseInt(plan.overtime_target || 0, 10);
+            const hasOT    = otMins > 0 && otTarget > 0;
+
+            const processResult = await pool.query(
+                `SELECT pp.id, pp.sequence_number, pp.operation_sah,
+                        o.operation_code, o.operation_name,
+                        ws_info.group_name, ws_info.workstation_code,
+                        e.emp_code, e.emp_name
+                 FROM product_processes pp
+                 JOIN operations o ON pp.operation_id = o.id
+                 LEFT JOIN (
+                     SELECT DISTINCT ON (lpwp.product_process_id)
+                            lpwp.product_process_id,
+                            lpw.id AS lpw_id, lpw.group_name, lpw.workstation_code
+                     FROM line_plan_workstations lpw
+                     JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+                     WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
+                     ORDER BY lpwp.product_process_id, lpw.id
+                 ) ws_info ON ws_info.product_process_id = pp.id
+                 LEFT JOIN employee_workstation_assignments ewa
+                     ON ewa.line_plan_workstation_id = ws_info.lpw_id
+                     AND ewa.line_id = $1 AND ewa.work_date = $2 AND ewa.is_overtime = false
+                 LEFT JOIN employees e ON ewa.employee_id = e.id
+                 WHERE pp.product_id = $3 AND pp.is_active = true
+                 ORDER BY pp.sequence_number`,
+                [plan.line_id, date, plan.product_id]
+            );
+            if (processResult.rows.length === 0) continue;
+
+            // Group by workstation + compute efficiency
+            const groups  = [];
+            const wsIndex = new Map();
+            processResult.rows.forEach(p => {
+                const ws  = (p.workstation_code || '').trim();
+                const key = ws || `__u_${p.id}`;
+                if (!wsIndex.has(key)) {
+                    wsIndex.set(key, groups.length);
+                    groups.push({ ws, group_name: '', processes: [], sam: 0, emp_name: '', emp_code: '' });
+                }
+                const g = groups[wsIndex.get(key)];
+                g.processes.push(p);
+                g.sam += parseFloat(p.operation_sah || 0) * 3600;
+                if (!g.group_name && p.group_name) g.group_name = p.group_name;
+                if (!g.emp_name && p.emp_name) { g.emp_name = p.emp_name; g.emp_code = p.emp_code || ''; }
+            });
+            groups.forEach(g => {
+                g.reg_eff = regTakt > 0 ? (g.sam / regTakt) * 100 : null;
+                const wsOtMins = hasOT ? ((g.ws && cfg.wsOt[g.ws] != null) ? cfg.wsOt[g.ws] : otMins) : 0;
+                const otSecs   = wsOtMins * 60;
+                const otTakt   = (otSecs > 0 && otTarget > 0) ? otSecs / otTarget : 0;
+                g.ot_eff    = (hasOT && wsOtMins > 0 && otTakt > 0) ? (g.sam / otTakt) * 100 : null;
+                g.total_eff = (g.reg_eff != null && g.ot_eff != null)
+                    ? (g.sam * (plan.target_units + otTarget)) / (workingSecs + wsOtMins * 60) * 100
+                    : null;
+            });
+
+            // 9 columns: WS, Group, Seq, Op Code, Op Name, SAH, Cycle, Workload%, Employee
+            const TOTAL_COLS = 9;
+            const sheetName = (plan.line_code || plan.line_name || 'Line').substring(0, 31);
+            const ws = workbook.addWorksheet(sheetName);
+            ws.columns = [
+                { width: 8  }, // A WS
+                { width: 12 }, // B Group
+                { width: 6  }, // C Seq
+                { width: 13 }, // D Op Code
+                { width: 36 }, // E Op Name
+                { width: 8  }, // F SAH
+                { width: 10 }, // G Cycle(s)
+                { width: 9  }, // H Workload%
+                { width: 22 }, // I Employee
+            ];
+
+            // Row 1: Title (A1:I1)
+            ws.mergeCells(`A1:I1`);
+            const titleCell = ws.getCell('A1');
+            titleCell.value = 'LINE DAILY PLAN';
+            titleCell.font  = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+            titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+            titleCell.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
+            ws.getRow(1).height = 28;
+
+            // Rows 2-8: Meta
+            const otInfo = hasOT ? ` | OT: ${otMins}min / +${otTarget} units` : '';
+            const metaRows = [
+                ['Line',          `${plan.line_code}${plan.line_name ? ' \u2014 ' + plan.line_name : ''}`],
+                ['Date',          date],
+                ['Product',       `${plan.product_code} \u2014 ${plan.product_name}`],
+                ['Target',        `${plan.target_units} units`],
+                ['Working Hours', `${cfg.start} \u2013 ${cfg.end} (lunch ${cfg.lunchMins}min)`],
+                ['Takt Time',     fmtTakt(regTakt) + otInfo],
+            ];
+            metaRows.forEach(([label, value], i) => {
+                const rn = i + 2;
+                ws.mergeCells(`C${rn}:I${rn}`);
+                const lc = ws.getCell(`A${rn}`);
+                lc.value = label; lc.font = { bold: true, size: 10 };
+                lc.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD6E4F0' } };
+                ws.getCell(`B${rn}`).value = ':';
+                ws.getCell(`B${rn}`).alignment = { horizontal: 'center' };
+                const vc = ws.getCell(`C${rn}`);
+                vc.value = value; vc.font = { size: 10 };
+                ws.getRow(rn).height = 16;
+            });
+            ws.getRow(8).height = 6;
+
+            // Row 9: Headers
+            const hdrs = ['WS', 'Group', 'Seq', 'Op. Code', 'Operation Name', 'SAH', 'Cycle (s)', 'Workload%', 'Employee'];
+            const hRow = ws.getRow(9);
+            hRow.height = 18;
+            hdrs.forEach((h, i) => {
+                const c = hRow.getCell(i + 1);
+                c.value = h;
+                c.font  = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+                c.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E7D32' } };
+                c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                c.border = borderAll;
+            });
+
+            // Data rows from row 10
+            let curRow = 10;
+            groups.forEach((g, gi) => {
+                const bg       = { type: 'pattern', pattern: 'solid', fgColor: { argb: WS_ARGB[gi % WS_ARGB.length] } };
+                const startRn  = curRow;
+                const rowCount = g.processes.length;
+
+                g.processes.forEach(p => {
+                    const row = ws.getRow(curRow);
+                    row.height = 15;
+                    [[3, p.sequence_number, { horizontal: 'center' }],
+                     [4, p.operation_code  || '', { horizontal: 'left'  }],
+                     [5, p.operation_name  || '', {}],
+                     [6, parseFloat(p.operation_sah || 0), { horizontal: 'right' }],
+                    ].forEach(([col, val, align]) => {
+                        const cell = row.getCell(col);
+                        cell.value = val; cell.border = borderAll; cell.fill = bg;
+                        if (align) cell.alignment = align;
+                    });
+                    ws.getCell(curRow, 6).numFmt = '0.0000';
+                    curRow++;
+                });
+
+                const endRn = curRow - 1;
+
+                // WS (1) and Group (2) — merged rowspan
+                [[1, g.ws || '\u2014'], [2, g.group_name || '\u2014']].forEach(([col, val]) => {
+                    if (rowCount > 1) ws.mergeCells(startRn, col, endRn, col);
+                    const cell = ws.getCell(startRn, col);
+                    cell.value = val; cell.font = { bold: true, size: 10 };
+                    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                    cell.border = borderAll; cell.fill = bg;
+                });
+
+                // Cycle (7)
+                if (rowCount > 1) ws.mergeCells(startRn, 7, endRn, 7);
+                const cycleCell = ws.getCell(startRn, 7);
+                cycleCell.value = Math.round(g.sam * 10) / 10;
+                cycleCell.numFmt = '0.0"s"';
+                cycleCell.font  = { bold: true, size: 10 };
+                cycleCell.alignment = { horizontal: 'right', vertical: 'middle' };
+                cycleCell.border = borderAll; cycleCell.fill = bg;
+
+                // Workload% (8)
+                if (rowCount > 1) ws.mergeCells(startRn, 8, endRn, 8);
+                const wlCell = ws.getCell(startRn, 8);
+                if (g.reg_eff != null) {
+                    wlCell.value  = Math.round(g.reg_eff * 10) / 10;
+                    wlCell.numFmt = '0.0"%"';
+                } else {
+                    wlCell.value = 'N/A';
+                }
+                wlCell.font      = { bold: true, size: 10, color: { argb: effArgb(g.reg_eff) } };
+                wlCell.alignment = { horizontal: 'center', vertical: 'middle' };
+                wlCell.border    = borderAll; wlCell.fill = bg;
+
+                // Employee (9)
+                if (rowCount > 1) ws.mergeCells(startRn, 9, endRn, 9);
+                const empCell = ws.getCell(startRn, 9);
+                empCell.value = g.emp_name ? `${g.emp_name}${g.emp_code ? '\n(' + g.emp_code + ')' : ''}` : '\u2014';
+                empCell.font  = { size: 9 };
+                empCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                empCell.border = borderAll; empCell.fill = bg;
+            });
+        }
+
+        if (workbook.worksheets.length === 0) {
+            return res.status(404).json({ success: false, error: 'No line plans with processes found for this date.' });
+        }
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="daily_plan_${date}.xlsx"`);
+        res.setHeader('Cache-Control', 'no-cache');
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (err) {
+        if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
 // LINE DAILY METRICS (Supervisor)
 // ============================================================================
 router.get('/line-metrics', async (req, res) => {
@@ -6259,7 +6518,7 @@ router.put('/workstations/:id/processes', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     } finally {
         client.release();
-    }
+    }see same employee is able to select for more work station
 });
 
 // GET workstations for a specific line with processes and employees
@@ -6289,6 +6548,125 @@ router.get('/lines/:id/workstations', async (req, res) => {
             workstations.push({ ...ws, processes: procResult.rows });
         }
         res.json({ success: true, data: workstations });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// OSM REPORT — Stagewise Hourly Output per Workstation
+// ============================================================================
+router.get('/osm-report', async (req, res) => {
+    const { line_id, date } = req.query;
+    if (!line_id || !date) {
+        return res.status(400).json({ success: false, error: 'line_id and date are required' });
+    }
+    try {
+        const inTime  = await getSettingValue('default_in_time',  '08:00');
+        const outTime = await getSettingValue('default_out_time', '17:00');
+        const [inH, inM]   = inTime.split(':').map(Number);
+        const [outH, outM] = outTime.split(':').map(Number);
+        const workingSeconds = (outH * 3600 + outM * 60) - (inH * 3600 + inM * 60);
+        const workingHours   = workingSeconds / 3600;
+
+        const lineResult = await pool.query(`
+            SELECT pl.line_name, pl.line_code,
+                   ldp.target_units, ldp.product_id,
+                   p.product_code, p.product_name
+            FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
+            LEFT JOIN products p ON p.id = ldp.product_id
+            WHERE pl.id = $1
+        `, [line_id, date]);
+
+        if (!lineResult.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+        const line = lineResult.rows[0];
+
+        if (!line.product_id) {
+            return res.json({
+                success: true,
+                line_name: line.line_name, line_code: line.line_code,
+                product_code: '', product_name: '', date,
+                target_units: 0, in_time: inTime, out_time: outTime,
+                working_hours: workingHours, workstations: []
+            });
+        }
+
+        const wsResult = await pool.query(`
+            SELECT lpw.id as ws_id,
+                   lpw.workstation_number, lpw.workstation_code,
+                   COALESCE(lpw.group_name, '') as group_name,
+                   lpw.actual_sam_seconds, lpw.takt_time_seconds, lpw.workload_pct,
+                   array_agg(pp.id ORDER BY lpwp.sequence_in_workstation) as process_ids,
+                   array_agg(o.operation_code || ' - ' || o.operation_name
+                             ORDER BY lpwp.sequence_in_workstation) as process_details
+            FROM line_plan_workstations lpw
+            JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+            JOIN product_processes pp ON lpwp.product_process_id = pp.id
+            JOIN operations o ON pp.operation_id = o.id
+            WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
+            GROUP BY lpw.id, lpw.workstation_number, lpw.workstation_code, lpw.group_name,
+                     lpw.actual_sam_seconds, lpw.takt_time_seconds, lpw.workload_pct
+            ORDER BY lpw.workstation_number
+        `, [line_id, date, line.product_id]);
+
+        if (!wsResult.rows.length) {
+            return res.json({
+                success: true,
+                line_name: line.line_name, line_code: line.line_code,
+                product_code: line.product_code || '', product_name: line.product_name || '',
+                date, target_units: parseInt(line.target_units || 0),
+                in_time: inTime, out_time: outTime,
+                working_hours: workingHours, workstations: []
+            });
+        }
+
+        const wsIds = wsResult.rows.map(r => r.ws_id);
+        const progressResult = await pool.query(`
+            SELECT lpwp.workstation_id, lph.hour_slot,
+                   MAX(lph.quantity) as quantity,
+                   string_agg(DISTINCT lph.shortfall_reason, '; ')
+                       FILTER (WHERE lph.shortfall_reason IS NOT NULL AND lph.shortfall_reason <> '')
+                       as shortfall_reason
+            FROM line_plan_workstation_processes lpwp
+            JOIN line_process_hourly_progress lph
+                ON lph.process_id = lpwp.product_process_id
+               AND lph.line_id = $1 AND lph.work_date = $2
+            WHERE lpwp.workstation_id = ANY($3::int[])
+            GROUP BY lpwp.workstation_id, lph.hour_slot
+            ORDER BY lpwp.workstation_id, lph.hour_slot
+        `, [line_id, date, wsIds]);
+
+        const hourlyMap = {};
+        for (const row of progressResult.rows) {
+            if (!hourlyMap[row.workstation_id]) hourlyMap[row.workstation_id] = {};
+            hourlyMap[row.workstation_id][row.hour_slot] = {
+                quantity: parseInt(row.quantity || 0),
+                shortfall_reason: row.shortfall_reason || null
+            };
+        }
+
+        const workstations = wsResult.rows.map(ws => ({
+            workstation_code:   ws.workstation_code,
+            workstation_number: ws.workstation_number,
+            group_name:         ws.group_name,
+            sam_seconds:        parseFloat(ws.actual_sam_seconds || 0),
+            takt_time_seconds:  parseFloat(ws.takt_time_seconds  || 0),
+            workload_pct:       parseFloat(ws.workload_pct       || 0),
+            process_details:    (ws.process_details || []).join(' / '),
+            hourly:             hourlyMap[ws.ws_id] || {}
+        }));
+
+        res.json({
+            success: true,
+            line_name: line.line_name, line_code: line.line_code,
+            product_code: line.product_code || '', product_name: line.product_name || '',
+            date, target_units: parseInt(line.target_units || 0),
+            in_time: inTime, out_time: outTime,
+            working_hours: workingHours, workstations
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

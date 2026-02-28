@@ -134,6 +134,9 @@ async function loadSection(section) {
         case 'production-days':
             await loadProductionDays();
             break;
+        case 'osm':
+            await loadOsmReport();
+            break;
     }
 }
 
@@ -3044,6 +3047,9 @@ async function loadDailyPlans() {
                         <label for="plan-date">Date</label>
                         <input type="date" id="plan-date" value="${today}">
                     </div>
+                    <button onclick="openDailyPlanPrintModal()" style="padding:8px 16px;background:#1e40af;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                        &#9113; Print / Export
+                    </button>
                     <button onclick="openPlanUploadModal()" style="padding:8px 16px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
                         &#8679; Upload Plan
                     </button>
@@ -3307,12 +3313,29 @@ async function openLineDetailsPage(lineId, date, productId, target) {
     }
     overlay.style.display = 'block';
     document.body.style.overflow = 'hidden';
+    // Initialize work hours state for this line (preserve if already set)
+    if (!window._ldWorkHours) window._ldWorkHours = {};
+    if (!window._ldWorkHours[lineId]) window._ldWorkHours[lineId] = { start: '08:00', end: '17:00', lunchMins: 60 };
+    const wh = window._ldWorkHours[lineId];
     overlay.innerHTML = `
-        <div style="background:#fff;border-bottom:2px solid #e5e7eb;padding:12px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+        <div style="background:#fff;border-bottom:2px solid #e5e7eb;padding:10px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10;box-shadow:0 1px 4px rgba(0,0,0,.06);flex-wrap:wrap;">
             <button class="btn btn-secondary btn-sm" onclick="closeLineDetailsPage()">&#8592; Back to Daily Plans</button>
             <div>
                 <span id="ld-overlay-title" style="font-weight:700;font-size:1rem;">Line Details</span>
                 <span style="color:#6b7280;font-size:0.85em;margin-left:10px;">Date: ${date}</span>
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:5px;flex-shrink:0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:5px 10px;">
+                <span style="font-size:11px;color:#6b7280;font-weight:600;white-space:nowrap;">Work Hours:</span>
+                <input type="time" value="${wh.start}" style="font-size:12px;padding:3px 5px;border:1px solid #d1d5db;border-radius:5px;width:88px;"
+                    onchange="ldUpdateWorkHours(${lineId},'start',this.value)">
+                <span style="font-size:13px;color:#9ca3af;">–</span>
+                <input type="time" value="${wh.end}" style="font-size:12px;padding:3px 5px;border:1px solid #d1d5db;border-radius:5px;width:88px;"
+                    onchange="ldUpdateWorkHours(${lineId},'end',this.value)">
+                <span style="font-size:11px;color:#6b7280;margin-left:6px;white-space:nowrap;">Lunch:</span>
+                <input type="number" value="${wh.lunchMins}" min="0" max="120"
+                    style="font-size:12px;padding:3px 4px;border:1px solid #d1d5db;border-radius:5px;width:50px;text-align:center;"
+                    title="Lunch break (minutes)" onchange="ldUpdateWorkHours(${lineId},'lunchMins',this.value)">
+                <span style="font-size:11px;color:#6b7280;">min</span>
             </div>
         </div>
         <div id="ld-overlay-content" style="padding:20px;">
@@ -3343,6 +3366,35 @@ function closeLineDetailsPage() {
     const overlay = document.getElementById('line-details-overlay');
     if (overlay) overlay.style.display = 'none';
     document.body.style.overflow = '';
+}
+
+// Compute regular working seconds from the per-line hours state
+function _ldGetWorkSecs(lineId) {
+    const wh = window._ldWorkHours?.[lineId] || { start: '08:00', end: '17:00', lunchMins: 60 };
+    const [sh, sm] = (wh.start || '08:00').split(':').map(Number);
+    const [eh, em] = (wh.end || '17:00').split(':').map(Number);
+    const startSecs = (sh || 8) * 3600 + (sm || 0) * 60;
+    const endSecs   = (eh || 17) * 3600 + (em || 0) * 60;
+    return Math.max(0, endSecs - startSecs - (parseInt(wh.lunchMins, 10) || 0) * 60);
+}
+
+// Update work hours state and re-render the content
+function ldUpdateWorkHours(lineId, field, value) {
+    if (!window._ldWorkHours) window._ldWorkHours = {};
+    if (!window._ldWorkHours[lineId]) window._ldWorkHours[lineId] = { start: '08:00', end: '17:00', lunchMins: 60 };
+    window._ldWorkHours[lineId][field] = field === 'lunchMins' ? (parseInt(value, 10) || 0) : value;
+    const panel = document.getElementById('ld-overlay-content');
+    if (panel && _ldData && _ldData.lineId === lineId) {
+        renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
+    }
+}
+
+// Update per-workstation OT minutes and refresh the tbody
+function ldUpdateWsOt(lineId, wsCode, value) {
+    if (!window._ldWsOtMins) window._ldWsOtMins = {};
+    if (!window._ldWsOtMins[lineId]) window._ldWsOtMins[lineId] = {};
+    window._ldWsOtMins[lineId][wsCode] = parseInt(value, 10) || 0;
+    recolorDetailRows(lineId);
 }
 
 async function loadLineDetailsPanel(lineId) { /* no-op — replaced by overlay */ }
@@ -3489,7 +3541,10 @@ function showQrModal(src, label) {
     document.body.appendChild(m);
 }
 
-function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT) {
+function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
+    const { workSecs = 0, target_units = 0, otMins = 0, otTarget = 0, hasOT = false } = opts;
+    const regTakt = (workSecs > 0 && target_units > 0) ? workSecs / target_units : 0;
+    const effColor = e => e == null ? '#9ca3af' : e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
     const lineCode = _ldData?.data?.line?.line_code || '';
 
     // Map empId → qr_code_path for live QR updates
@@ -3567,11 +3622,31 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT) {
             const cycleCell = isFirst
                 ? `<td style="text-align:center;vertical-align:middle;"${rs}>${g.sam.toFixed(1)}s</td>`
                 : '';
-            const wl = g.workload_pct;
-            const wlStr = wl != null ? wl.toFixed(1) + '%' : '-';
-            const wlColor = wl > 100 ? '#dc2626' : wl > 85 ? '#d97706' : (wl ? '#16a34a' : '#9ca3af');
-            const wlCell = isFirst
-                ? `<td style="text-align:center;font-weight:700;color:${wlColor};vertical-align:middle;"${rs}>${wlStr}</td>`
+            // Per-workstation efficiency calculations
+            const wsOtMins = (hasOT && g.ws) ? (window._ldWsOtMins?.[lineId]?.[g.ws] ?? otMins) : 0;
+            const wsOtSecs = wsOtMins * 60;
+            const otTakt   = (wsOtSecs > 0 && otTarget > 0) ? wsOtSecs / otTarget : 0;
+            const regEff   = (regTakt > 0 && g.ws) ? (g.sam / regTakt) * 100 : null;
+            const otEff    = (hasOT && wsOtSecs > 0 && otTakt > 0 && g.ws) ? (g.sam / otTakt) * 100 : null;
+            const totalEff = (regEff != null && otEff != null)
+                ? (g.sam * (target_units + otTarget)) / (workSecs + wsOtSecs) * 100 : null;
+            const regEffCell = isFirst
+                ? `<td style="text-align:center;font-weight:700;color:${effColor(regEff)};vertical-align:middle;"${rs}>${regEff != null ? regEff.toFixed(1)+'%' : '-'}</td>`
+                : '';
+            const otEffCell = isFirst
+                ? `<td style="text-align:center;vertical-align:middle;"${rs}>${hasOT
+                    ? `<div style="font-weight:700;color:${effColor(otEff)};">${otEff != null ? otEff.toFixed(1)+'%' : 'N/A'}</div>
+                       ${g.ws ? `<div style="margin-top:3px;display:flex;align-items:center;justify-content:center;gap:3px;">
+                           <input type="number" min="0" max="480" value="${wsOtMins}"
+                               style="width:44px;font-size:10px;padding:1px 3px;border:1px solid #c4b5fd;border-radius:4px;text-align:center;"
+                               title="OT minutes for this workstation"
+                               onchange="ldUpdateWsOt(${lineId},'${g.ws.replace(/'/g,"\\'")}',this.value)">
+                           <span style="font-size:9px;color:#7c3aed;">min</span>
+                       </div>` : ''}`
+                    : '<span style="color:#9ca3af;font-size:11px;">N/A</span>'}</td>`
+                : '';
+            const totalEffCell = isFirst
+                ? `<td style="text-align:center;font-weight:700;color:${effColor(totalEff)};vertical-align:middle;"${rs}>${totalEff != null ? totalEff.toFixed(1)+'%' : 'N/A'}</td>`
                 : '';
             // Workstation QR — rowspan on first row only (same WS = same QR)
             // In OT mode: add a Skip/Active toggle button below the QR image
@@ -3630,7 +3705,7 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT) {
                 <td>${p.operation_name}<br><small style="color:#9ca3af;font-size:0.78em;">${p.operation_code||''}</small></td>
                 <td style="text-align:center;">${samSec}s</td>
                 ${cycleCell}
-                ${wlCell}
+                ${regEffCell}
                 <td style="text-align:center;">${parseFloat(p.operation_sah||0).toFixed(4)}</td>
                 ${empCell}
             </tr>`;
@@ -3742,8 +3817,11 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     const displayIsChangeover = activeOT ? isOTChangeover : isChangeover;
     const activeViewData = displayIsChangeover ? (_ldData?.changeoverData || data) : data;
     const processes      = activeViewData.processes || [];
-    const regularTaktSecs = activeViewData.takt_time_seconds || 0;
     const target_units   = displayIsChangeover ? incoming_target_units : (data.target_units || 0);
+    const workSecs       = _ldGetWorkSecs(lineId);
+    const regularTaktSecs = (workSecs > 0 && target_units > 0)
+        ? workSecs / target_units
+        : (activeViewData.takt_time_seconds || 0);
 
     if (!processes || processes.length === 0) {
         panel.innerHTML = `<div class="alert alert-info">${displayIsChangeover ? 'No processes found for the changeover product.' : 'No product assigned for this line on ' + date + ', or product has no active processes.'}</div>`;
@@ -3901,7 +3979,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                         <th>Operation</th>
                         <th style="text-align:center;">Process Time</th>
                         <th style="text-align:center;">Cycle Time</th>
-                        <th style="text-align:center;">Work Load</th>
+                        <th style="text-align:center;">Workload%</th>
                         <th style="text-align:center;">SAH</th>
                         <th style="min-width:180px;">Employee</th>
                     </tr>
@@ -3910,7 +3988,8 @@ function renderLineDetailsContent(panel, lineId, date, data) {
             </table>
         </div>
     `;
-    _buildLdTbody(document.getElementById(`ld-body-${lineId}`), lineId, wsGroups, employees, activeOT);
+    _buildLdTbody(document.getElementById(`ld-body-${lineId}`), lineId, wsGroups, employees, activeOT,
+        { workSecs, target_units, otMins, otTarget, hasOT });
 }
 
 function switchLdTakt(lineId, useOT) {
@@ -4135,14 +4214,19 @@ function recolorDetailRows(lineId) {
     // Rebuild only the tbody (no full re-render — preserves header)
     // OT takt applies whenever isOT is true, regardless of product
     let activeTakt;
-    const hasOTData = _ldData.data.overtime_minutes > 0 && _ldData.data.overtime_target > 0;
+    const otMinsR   = _ldData.data.overtime_minutes || 0;
+    const otTargetR = _ldData.data.overtime_target || 0;
+    const hasOTData = otMinsR > 0 && otTargetR > 0;
+    const workSecsR = _ldGetWorkSecs(lineId);
+    const tgt       = rSource.target_units || _ldData.data.target_units || 0;
     if (isOT && hasOTData) {
-        activeTakt = (_ldData.data.overtime_minutes * 60) / _ldData.data.overtime_target;
+        activeTakt = (otMinsR * 60) / otTargetR;
     } else {
-        activeTakt = rSource.takt_time_seconds || 0;
+        activeTakt = (workSecsR > 0 && tgt > 0) ? workSecsR / tgt : (rSource.takt_time_seconds || 0);
     }
     const wsGroups = _buildWsGroups(updatedProcesses, activeTakt, isOT);
-    _buildLdTbody(tbody, lineId, wsGroups, rSource.employees, isOT);
+    _buildLdTbody(tbody, lineId, wsGroups, rSource.employees, isOT,
+        { workSecs: workSecsR, target_units: tgt, otMins: otMinsR, otTarget: otTargetR, hasOT: hasOTData });
     // Highlight out-of-sequence WS inputs
     _highlightWsSequenceErrors(tbody, updatedProcesses);
 }
@@ -4847,4 +4931,572 @@ async function loadAuditLogs() {
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
+}
+
+// ============================================================================
+// DAILY PLAN PRINT / EXCEL EXPORT
+// ============================================================================
+
+// Global per-line print config: { [lineId]: { start, end, lunchMins, otMins, otTarget, productId, wsOt:{[ws]:mins}, wsLoaded } }
+window._dpPrintConfig = {};
+
+async function openDailyPlanPrintModal() {
+    if (document.getElementById('dp-print-modal')) document.getElementById('dp-print-modal').remove();
+    const modal = document.createElement('div');
+    modal.id = 'dp-print-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:22px 24px 18px;width:700px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.22);">
+            <h3 style="margin:0 0 14px;font-size:17px;font-weight:700;color:#111827;">Print / Export Daily Plan</h3>
+            <div id="dp-print-lines-config" style="flex:1;overflow-y:auto;min-height:60px;">
+                <div style="text-align:center;padding:24px;color:#6b7280;font-size:13px;">Loading plans\u2026</div>
+            </div>
+            <div id="dp-print-status" style="min-height:18px;margin-top:10px;font-size:12px;color:#6b7280;"></div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:14px;margin-top:6px;">
+                <button onclick="document.getElementById('dp-print-modal').remove()"
+                    style="padding:8px 16px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                <button onclick="downloadDailyPlansExcel()"
+                    style="padding:8px 16px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">&#8595; Excel</button>
+                <button onclick="printDailyPlans()"
+                    style="padding:8px 16px;background:#1e40af;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">&#9113; Print</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    const date = document.getElementById('plan-date').value;
+    try {
+        const resp   = await fetch(`/api/daily-plans?date=${date}`);
+        const result = await resp.json();
+        if (!result.success) throw new Error(result.error);
+        const { plans, lines } = result.data;
+        const planMap     = new Map(plans.map(p => [String(p.line_id), p]));
+        const activeLines = lines.filter(l => planMap.has(String(l.id)));
+
+        // Initialise per-line config with defaults
+        window._dpPrintConfig = {};
+        activeLines.forEach(line => {
+            const plan = planMap.get(String(line.id));
+            window._dpPrintConfig[line.id] = {
+                start:     '08:00',
+                end:       '17:00',
+                lunchMins: 60,
+                otMins:    parseInt(plan.overtime_minutes  || 0, 10),
+                otTarget:  parseInt(plan.overtime_target   || 0, 10),
+                productId: plan.product_id,
+                wsOt:      {},      // { [wsCode]: overrideMinutes }
+                wsLoaded:  false,
+            };
+        });
+
+        if (!activeLines.length) {
+            document.getElementById('dp-print-lines-config').innerHTML =
+                '<div style="color:#6b7280;font-size:13px;padding:8px 0;">No plans set for this date.</div>';
+            return;
+        }
+        _renderDpPrintConfig(activeLines, planMap);
+    } catch (err) {
+        document.getElementById('dp-print-lines-config').innerHTML =
+            `<div style="color:#dc2626;font-size:13px;">\u26a0 ${err.message}</div>`;
+    }
+}
+
+function dpToggleSelectAll(checked) {
+    document.querySelectorAll('[id^="dp-sel-"]:not(#dp-sel-all)').forEach(cb => { cb.checked = checked; });
+}
+
+function _renderDpPrintConfig(activeLines, planMap) {
+    const hasAnyOT = activeLines.some(l => (planMap.get(String(l.id))?.overtime_minutes || 0) > 0);
+    const totalCols = 5 + (hasAnyOT ? 2 : 0); // checkbox + line + start + end + lunch [+ ot + ws-ot-btn]
+    const cont = document.getElementById('dp-print-lines-config');
+    cont.innerHTML = `
+        <div style="font-size:12px;color:#374151;font-weight:600;margin-bottom:8px;">Select lines and set working hours</div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+                <tr style="background:#f3f4f6;font-size:11px;">
+                    <th style="padding:7px 8px;text-align:center;border-bottom:1px solid #e5e7eb;width:32px;">
+                        <input type="checkbox" id="dp-sel-all" checked title="Select / Deselect all" onchange="dpToggleSelectAll(this.checked)">
+                    </th>
+                    <th style="padding:7px 8px;text-align:left;border-bottom:1px solid #e5e7eb;">Line</th>
+                    <th style="padding:7px 8px;text-align:center;border-bottom:1px solid #e5e7eb;">Start</th>
+                    <th style="padding:7px 8px;text-align:center;border-bottom:1px solid #e5e7eb;">End</th>
+                    <th style="padding:7px 8px;text-align:center;border-bottom:1px solid #e5e7eb;">Lunch (min)</th>
+                    ${hasAnyOT ? '<th style="padding:7px 8px;text-align:center;border-bottom:1px solid #e5e7eb;color:#7c3aed;">OT (mins)</th><th style="padding:7px 8px;border-bottom:1px solid #e5e7eb;"></th>' : ''}
+                </tr>
+            </thead>
+            <tbody>
+                ${activeLines.map(line => {
+                    const plan  = planMap.get(String(line.id));
+                    const hasOT = (plan?.overtime_minutes || 0) > 0;
+                    const cfg   = window._dpPrintConfig[line.id];
+                    return `
+                        <tr style="border-bottom:1px solid #f3f4f6;" id="dp-line-row-${line.id}">
+                            <td style="padding:5px 8px;text-align:center;">
+                                <input type="checkbox" id="dp-sel-${line.id}" checked
+                                    style="width:15px;height:15px;cursor:pointer;accent-color:#1e40af;">
+                            </td>
+                            <td style="padding:7px 8px;">
+                                <div style="font-weight:600;font-size:12px;">${plan.line_code}</div>
+                                ${plan.line_name ? `<div style="font-size:10px;color:#6b7280;">${plan.line_name}</div>` : ''}
+                            </td>
+                            <td style="padding:5px 6px;text-align:center;">
+                                <input type="time" value="08:00"
+                                    onchange="window._dpPrintConfig[${line.id}].start=this.value"
+                                    style="padding:3px 5px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;width:88px;">
+                            </td>
+                            <td style="padding:5px 6px;text-align:center;">
+                                <input type="time" value="17:00"
+                                    onchange="window._dpPrintConfig[${line.id}].end=this.value"
+                                    style="padding:3px 5px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;width:88px;">
+                            </td>
+                            <td style="padding:5px 6px;text-align:center;">
+                                <input type="number" value="60" min="0" max="120"
+                                    onchange="window._dpPrintConfig[${line.id}].lunchMins=parseInt(this.value)||0"
+                                    style="padding:3px 5px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;width:60px;text-align:center;">
+                            </td>
+                            ${hasAnyOT ? `
+                            <td style="padding:5px 6px;text-align:center;">
+                                ${hasOT
+                                    ? `<input type="number" value="${cfg.otMins}" min="0" max="600"
+                                           onchange="window._dpPrintConfig[${line.id}].otMins=parseInt(this.value)||0"
+                                           style="padding:3px 5px;border:1px solid #c4b5fd;border-radius:5px;font-size:12px;width:60px;text-align:center;background:#faf5ff;">
+                                       <div style="font-size:10px;color:#7c3aed;margin-top:1px;">+${parseInt(plan.overtime_target)||0} units</div>`
+                                    : '<span style="color:#9ca3af;font-size:12px;">\u2014</span>'}
+                            </td>
+                            <td style="padding:5px 6px;text-align:center;">
+                                ${hasOT
+                                    ? `<button onclick="dpToggleWsOt(${line.id})" id="dp-ws-ot-btn-${line.id}"
+                                           style="font-size:10px;padding:3px 7px;border:1px solid #c4b5fd;border-radius:4px;background:#faf5ff;color:#6d28d9;cursor:pointer;white-space:nowrap;">WS OT \u25be</button>`
+                                    : ''}
+                            </td>` : ''}
+                        </tr>
+                        ${hasOT ? `
+                        <tr id="dp-ws-ot-row-${line.id}" style="display:none;background:#faf5ff;">
+                            <td colspan="${hasAnyOT ? 7 : 5}" style="padding:0 14px 10px 24px;">
+                                <div id="dp-ws-ot-content-${line.id}" style="font-size:11px;color:#7c3aed;padding-top:6px;">
+                                    Click "WS OT" to load workstation OT overrides\u2026
+                                </div>
+                            </td>
+                        </tr>` : ''}
+                    `;
+                }).join('')}
+            </tbody>
+        </table>`;
+}
+
+async function dpToggleWsOt(lineId) {
+    const row = document.getElementById(`dp-ws-ot-row-${lineId}`);
+    const btn = document.getElementById(`dp-ws-ot-btn-${lineId}`);
+    if (!row) return;
+    const open = row.style.display !== 'none';
+    row.style.display = open ? 'none' : '';
+    btn.textContent = open ? 'WS OT \u25be' : 'WS OT \u25b4';
+    if (open || window._dpPrintConfig[lineId]?.wsLoaded) return;
+
+    const cfg     = window._dpPrintConfig[lineId];
+    const date    = document.getElementById('plan-date').value;
+    const content = document.getElementById(`dp-ws-ot-content-${lineId}`);
+    content.textContent = 'Loading\u2026';
+    try {
+        const params = new URLSearchParams({ date, product_id: cfg.productId });
+        const rj = await fetch(`/api/lines/${lineId}/line-process-details?${params}`).then(r => r.json());
+        if (!rj.success) throw new Error(rj.error);
+        const wsList = [...new Set((rj.data.processes || []).map(p => (p.workstation_code || '').trim()).filter(Boolean))];
+        wsList.forEach(ws => { if (!(ws in cfg.wsOt)) cfg.wsOt[ws] = cfg.otMins; });
+        cfg.wsLoaded = true;
+        if (!wsList.length) { content.textContent = 'No workstations found.'; return; }
+        content.innerHTML = `
+            <div style="font-weight:600;margin-bottom:6px;">OT Minutes per Workstation <span style="font-weight:400;color:#9ca3af;">(default: ${cfg.otMins} min)</span></div>
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px 10px;">
+                ${wsList.map(ws => `
+                    <div style="display:flex;align-items:center;gap:4px;">
+                        <span style="font-weight:700;min-width:38px;font-size:11px;">${ws}</span>
+                        <input type="number" value="${cfg.wsOt[ws]}" min="0" max="600"
+                            onchange="window._dpPrintConfig[${lineId}].wsOt['${ws}']=parseInt(this.value)||0"
+                            style="width:52px;padding:2px 4px;border:1px solid #c4b5fd;border-radius:4px;font-size:11px;">
+                    </div>`).join('')}
+            </div>`;
+    } catch (err) {
+        content.innerHTML = `<span style="color:#dc2626;">\u26a0 ${err.message}</span>`;
+    }
+}
+
+async function printDailyPlans() {
+    const date     = document.getElementById('plan-date').value;
+    const statusEl = document.getElementById('dp-print-status');
+    const config   = window._dpPrintConfig || {};
+    if (!Object.keys(config).length) { statusEl.textContent = 'Open this modal from the daily plans page first.'; return; }
+    // Only print selected (checked) lines
+    const selectedIds = Object.keys(config).filter(id => {
+        const cb = document.getElementById(`dp-sel-${id}`);
+        return !cb || cb.checked;
+    });
+    if (!selectedIds.length) { statusEl.textContent = 'No lines selected. Tick at least one line.'; return; }
+    statusEl.textContent = 'Fetching workstation data\u2026';
+
+    const fmtTakt  = s => s > 0 ? `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s` : '\u2014';
+    const effColor = e => e == null ? '#9ca3af' : e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
+    const effStr   = e => e == null ? '<span style="color:#9ca3af;">N/A</span>' : `${e.toFixed(1)}%`;
+    const WS_COLORS = ['#EFF6FF','#FFF7ED','#F0FDF4','#FDF4FF','#FFFBEB','#F0F9FF','#FFF1F2','#F5F3FF','#ECFDF5','#FEF9C3'];
+
+    try {
+        const lineDataList = await Promise.all(selectedIds.map(async lineId => {
+            const cfg    = config[lineId];
+            const params = new URLSearchParams({ date, product_id: cfg.productId });
+            const rj     = await fetch(`/api/lines/${lineId}/line-process-details?${params}`).then(r => r.json());
+            return { lineId, cfg, data: rj.success ? rj.data : null };
+        }));
+
+        const validLines = lineDataList.filter(ld => ld.data?.processes?.length > 0);
+        if (!validLines.length) { statusEl.textContent = 'No workstation plans found for any line.'; return; }
+
+        const pagesHtml = validLines.map((ld, ldIdx) => {
+            const { lineId, cfg, data } = ld;
+            const [sh, sm] = cfg.start.split(':').map(Number);
+            const [eh, em] = cfg.end.split(':').map(Number);
+            const workSecs  = ((eh * 60 + em) - (sh * 60 + sm) - cfg.lunchMins) * 60;
+            const target    = data.target_units || 0;
+            const regTakt   = target > 0 ? workSecs / target : 0;
+            const otTarget  = cfg.otTarget || 0;
+            const hasLineOT = cfg.otMins > 0 && otTarget > 0;
+            const line      = data.line;
+            const product   = data.product;
+
+            // Build workstation groups + efficiency
+            const groups   = [];
+            const wsIdxMap = new Map();
+            (data.processes || []).forEach(p => {
+                const ws  = (p.workstation_code || '').trim();
+                const key = ws || `__u_${p.id}`;
+                if (!wsIdxMap.has(key)) {
+                    wsIdxMap.set(key, groups.length);
+                    groups.push({ ws, processes: [], sam: 0, group_name: '', emp_name: '', emp_code: '' });
+                }
+                const g = groups[wsIdxMap.get(key)];
+                g.processes.push(p);
+                g.sam += parseFloat(p.operation_sah || 0) * 3600;
+                if (!g.group_name && p.group_name) g.group_name = p.group_name;
+                if (!g.emp_name && p.emp_name) { g.emp_name = p.emp_name; g.emp_code = p.emp_code || ''; }
+            });
+            groups.forEach(g => {
+                g.reg_eff = regTakt > 0 ? (g.sam / regTakt) * 100 : null;
+                // Per-workstation OT: use WS override if set, else line OT
+                const wsOtMins = hasLineOT ? ((g.ws && cfg.wsOt[g.ws] != null) ? cfg.wsOt[g.ws] : cfg.otMins) : 0;
+                const otSecs   = wsOtMins * 60;
+                const otTakt   = (otSecs > 0 && otTarget > 0) ? otSecs / otTarget : 0;
+                g.ot_eff    = (hasLineOT && wsOtMins > 0 && otTakt > 0) ? (g.sam / otTakt) * 100 : null;
+                g.total_eff = (g.reg_eff != null && g.ot_eff != null)
+                    ? (g.sam * (target + otTarget)) / (workSecs + otSecs) * 100
+                    : null;
+            });
+
+            const rows = groups.map((g, gi) => g.processes.map((p, pi) => {
+                const isFirst = pi === 0;
+                const rs  = g.processes.length > 1 ? ` rowspan="${g.processes.length}"` : '';
+                const bg  = `background:${WS_COLORS[gi % WS_COLORS.length]};`;
+                return `<tr>
+                    ${isFirst ? `<td${rs} class="ws-cell" style="${bg}font-weight:700;">${g.ws || '\u2014'}</td>` : ''}
+                    ${isFirst ? `<td${rs} style="${bg}">${g.group_name || '\u2014'}</td>` : ''}
+                    <td style="${bg}text-align:center;">${p.sequence_number}</td>
+                    <td style="${bg}color:#6b7280;font-size:8px;">${p.operation_code || ''}</td>
+                    <td style="${bg}">${p.operation_name || ''}</td>
+                    <td style="${bg}text-align:right;">${parseFloat(p.operation_sah || 0).toFixed(4)}</td>
+                    ${isFirst ? `<td${rs} style="${bg}text-align:right;font-weight:700;">${g.sam.toFixed(1)}s</td>` : ''}
+                    ${isFirst ? `<td${rs} style="${bg}text-align:center;font-weight:700;color:${effColor(g.reg_eff)};">${effStr(g.reg_eff)}</td>` : ''}
+                    ${isFirst ? `<td${rs} style="${bg}">${g.emp_name || '\u2014'}${g.emp_code ? '<br><small style="color:#6b7280;">' + g.emp_code + '</small>' : ''}</td>` : ''}
+                </tr>`;
+            }).join('')).join('');
+
+            const isLast = ldIdx === validLines.length - 1;
+            const otInfo = hasLineOT ? ` &nbsp;|&nbsp; OT: ${cfg.otMins}m / +${otTarget} units` : '';
+            return `<div class="line-page" style="${isLast ? '' : 'page-break-after:always;'}">
+                <div class="lp-header">
+                    <div class="lp-title">LINE DAILY PLAN</div>
+                    <div class="lp-meta">
+                        <div><b>Line:</b> ${line.line_code}${line.line_name ? ' \u2014 ' + line.line_name : ''}</div>
+                        <div><b>Date:</b> ${date}</div>
+                        <div><b>Product:</b> ${product.product_code} \u2014 ${product.product_name}</div>
+                        <div><b>Target:</b> ${target} units</div>
+                        <div><b>Working:</b> ${cfg.start} \u2013 ${cfg.end} (lunch ${cfg.lunchMins}min)</div>
+                        <div><b>Takt:</b> ${fmtTakt(regTakt)}${otInfo}</div>
+                    </div>
+                </div>
+                <table>
+                    <thead><tr>
+                        <th>WS</th><th>Group</th><th>Seq</th><th>Op. Code</th>
+                        <th>Operation Name</th><th>SAH</th><th>Cycle (s)</th>
+                        <th>Workload%</th><th>Employee</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+        }).join('');
+
+        statusEl.textContent = '';
+        const win = window.open('', '_blank');
+        win.document.write(`<!DOCTYPE html><html><head><title>Daily Plan \u2014 ${date}</title><style>
+            *{box-sizing:border-box;margin:0;padding:0;}
+            body{font-family:Arial,sans-serif;font-size:10px;color:#111;}
+            .line-page{padding:8mm;}
+            .lp-header{margin-bottom:10px;}
+            .lp-title{font-size:15px;font-weight:700;color:#1e40af;border-bottom:2px solid #1e40af;padding-bottom:4px;margin-bottom:8px;}
+            .lp-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:3px 16px;font-size:10px;}
+            .lp-meta div{padding:1px 0;}
+            table{width:100%;border-collapse:collapse;font-size:9px;}
+            th{background:#1e3a5f;color:#fff;padding:5px 4px;text-align:center;border:1px solid #999;}
+            td{padding:3px 4px;border:1px solid #ccc;vertical-align:middle;}
+            td.ws-cell{text-align:center;}
+            @media print{@page{size:A4 landscape;margin:8mm;}.line-page{padding:0;}}
+        </style></head><body>${pagesHtml}<script>window.onload=()=>window.print();<\/script></body></html>`);
+        win.document.close();
+    } catch (err) {
+        statusEl.textContent = '\u26a0 ' + err.message;
+    }
+}
+
+async function downloadDailyPlansExcel() {
+    const date     = document.getElementById('plan-date').value;
+    const statusEl = document.getElementById('dp-print-status');
+    const config   = window._dpPrintConfig || {};
+    if (!Object.keys(config).length) { statusEl.textContent = 'Open this modal from the daily plans page first.'; return; }
+    // Only export selected (checked) lines
+    const filteredConfig = {};
+    Object.keys(config).forEach(id => {
+        const cb = document.getElementById(`dp-sel-${id}`);
+        if (!cb || cb.checked) filteredConfig[id] = config[id];
+    });
+    if (!Object.keys(filteredConfig).length) { statusEl.textContent = 'No lines selected. Tick at least one line.'; return; }
+    statusEl.textContent = 'Generating Excel\u2026';
+    try {
+        const resp = await fetch('/api/daily-plans/export-excel', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ date, lineConfigs: filteredConfig }),
+        });
+        if (!resp.ok) {
+            const j = await resp.json().catch(() => ({}));
+            throw new Error(j.error || `Server error ${resp.status}`);
+        }
+        const blob = await resp.blob();
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url; a.download = `daily_plan_${date}.xlsx`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        statusEl.textContent = '';
+    } catch (err) {
+        statusEl.textContent = '\u26a0 ' + err.message;
+    }
+}
+
+// ============================================================================
+// OSM REPORT — Stagewise Hourly OSM Report
+// ============================================================================
+async function loadOsmReport() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Stagewise Hourly OSM Report</h1>
+                <p class="page-subtitle">Workstation-level hourly output tracking</p>
+            </div>
+            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
+                <div class="ie-date">
+                    <label for="osm-line">Line</label>
+                    <select id="osm-line" class="form-control" style="min-width:180px;"></select>
+                </div>
+                <div class="ie-date">
+                    <label for="osm-date">Date</label>
+                    <input type="date" id="osm-date" value="${today}">
+                </div>
+                <button class="btn btn-secondary" onclick="refreshOsmReport()">Refresh</button>
+                <button class="btn btn-secondary" onclick="printOsmReport()">Print</button>
+            </div>
+        </div>
+        <div id="osm-content">
+            <div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>
+        </div>
+    `;
+
+    try {
+        const r = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await r.json();
+        if (result.success) {
+            const sel = document.getElementById('osm-line');
+            sel.innerHTML = '<option value="">-- Select Line --</option>' +
+                result.data.filter(l => l.is_active).map(l =>
+                    `<option value="${l.id}">${l.line_name} (${l.line_code})</option>`
+                ).join('');
+            sel.addEventListener('change', refreshOsmReport);
+        }
+    } catch (e) { /* ignore */ }
+
+    document.getElementById('osm-date').addEventListener('change', refreshOsmReport);
+}
+
+async function refreshOsmReport() {
+    const lineId = document.getElementById('osm-line')?.value;
+    const date   = document.getElementById('osm-date')?.value;
+    const container = document.getElementById('osm-content');
+    if (!container) return;
+
+    if (!lineId) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
+        return;
+    }
+
+    container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+
+    try {
+        const r = await fetch(`${API_BASE}/osm-report?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const data = await r.json();
+
+        if (!data.success) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${data.error || 'Failed to load report'}</div></div>`;
+            return;
+        }
+
+        if (!data.workstations?.length) {
+            container.innerHTML = `
+                <div class="card">
+                    <div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
+                        No workstation plan found for <strong>${data.line_name}</strong> on <strong>${date}</strong>.<br>
+                        Upload a line plan or generate workstations first.
+                    </div>
+                </div>`;
+            return;
+        }
+
+        container.innerHTML = _buildOsmTable(data);
+    } catch (err) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
+    }
+}
+
+function _buildOsmTable(data) {
+    const { workstations, target_units, working_hours, in_time, out_time } = data;
+    const inH  = parseInt((in_time  || '08:00').split(':')[0]);
+    const outH = parseInt((out_time || '17:00').split(':')[0]);
+
+    const hours = [];
+    for (let h = inH; h < outH; h++) hours.push(h);
+
+    const perHourTarget = (working_hours > 0 && target_units > 0)
+        ? Math.round(target_units / working_hours) : 0;
+
+    let maxDataHour = -1;
+    for (const ws of workstations) {
+        for (const h of Object.keys(ws.hourly)) {
+            const hInt = parseInt(h);
+            if (hInt > maxDataHour) maxDataHour = hInt;
+        }
+    }
+    const elapsedHours = maxDataHour >= inH
+        ? hours.filter(h => h <= maxDataHour).length : 0;
+    const totalTargetSoFar = elapsedHours * perHourTarget;
+
+    const ordinals = ['1ST','2ND','3RD','4TH','5TH','6TH','7TH','8TH','9TH','10TH','11TH','12TH'];
+    const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
+    const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
+    const tcS = tdS + 'text-align:center;';
+
+    const hourHeaders = hours.map((_, i) =>
+        `<th style="${thS}min-width:52px;">${ordinals[i] || (i+1)+'TH'}<br>HOUR</th>`
+    ).join('');
+
+    const targetRow = hours.map(() =>
+        `<td style="${tcS}font-weight:700;">${perHourTarget}</td>`
+    ).join('');
+
+    const dataRows = workstations.map(ws => {
+        const hourCells = hours.map(h => {
+            const d = ws.hourly[h];
+            const qty = (d && d.quantity != null) ? d.quantity : '';
+            return `<td style="${tcS}">${qty}</td>`;
+        }).join('');
+
+        const totalOutput = Object.values(ws.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
+        const blog = totalOutput - totalTargetSoFar;
+        const blogColor = blog >= 0 ? '#16a34a' : '#dc2626';
+        const balToProd = totalOutput - target_units;
+
+        const reasons = [...new Set(
+            Object.values(ws.hourly).map(d => d.shortfall_reason).filter(Boolean)
+        )].join('; ');
+
+        return `<tr>
+            <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
+            <td style="${tcS}">${totalOutput}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
+            <td style="${tdS}font-size:11px;max-width:220px;word-break:break-word;">${ws.process_details}</td>
+            ${hourCells}
+            <td style="${tcS}font-weight:700;">${totalTargetSoFar}</td>
+            <td style="${tcS}font-weight:700;">${totalOutput}</td>
+            <td style="${tcS}font-weight:700;color:${blogColor};">${blog >= 0 ? '+' : ''}${blog}</td>
+            <td style="${tcS}">${balToProd >= 0 ? '+' : ''}${balToProd}</td>
+            <td style="${tdS}font-size:11px;">${reasons}</td>
+        </tr>`;
+    }).join('');
+
+    return `<div class="card" id="osm-print-area">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">STAGEWISE HOURLY OSM REPORT</h3>
+                <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
+                    ${data.line_name} (${data.line_code})
+                    &nbsp;&bull;&nbsp; ${data.product_code} ${data.product_name}
+                    &nbsp;&bull;&nbsp; Date: ${data.date}
+                    &nbsp;&bull;&nbsp; Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
+                </div>
+            </div>
+        </div>
+        <div class="card-body" style="overflow-x:auto;padding:0;">
+            <table style="border-collapse:collapse;white-space:nowrap;width:100%;" id="osm-table">
+                <thead>
+                    <tr>
+                        <th style="${thS}min-width:60px;">GROUP</th>
+                        <th style="${thS}min-width:80px;">CUMULATIVE<br>OUTPUT AS ON DATE</th>
+                        <th style="${thS}min-width:70px;">WORK<br>STATION</th>
+                        <th style="${thS}min-width:200px;white-space:normal;">PROCESS DETAILS</th>
+                        ${hourHeaders}
+                        <th style="${thS}min-width:75px;">TOTAL<br>TARGET</th>
+                        <th style="${thS}min-width:80px;">TOTAL OUTPUT<br>(AS ON TIME)</th>
+                        <th style="${thS}min-width:65px;">B.LOG</th>
+                        <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD<br>AS PER TODAY'S TARGET</th>
+                        <th style="${thS}min-width:120px;white-space:normal;">REASON</th>
+                    </tr>
+                    <tr style="background:#dbeafe;">
+                        <td colspan="4" style="${tdS}text-align:right;font-weight:700;padding:4px 10px;">TARGET / HOUR</td>
+                        ${targetRow}
+                        <td colspan="4" style="${tdS}"></td>
+                    </tr>
+                </thead>
+                <tbody>${dataRows}</tbody>
+            </table>
+        </div>
+    </div>`;
+}
+
+function printOsmReport() {
+    const area = document.getElementById('osm-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const sel = document.getElementById('osm-line');
+    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    const date = document.getElementById('osm-date')?.value || '';
+    const w = window.open('', '_blank');
+    w.document.write(`<!DOCTYPE html><html><head>
+        <title>OSM Report - ${lineText} - ${date}</title>
+        <style>
+            body { font-family: Arial, sans-serif; font-size: 11px; margin: 10px; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #999; padding: 3px 5px; }
+            .card-header { margin-bottom: 8px; }
+            .card-title { font-size: 14px; font-weight: bold; margin: 0 0 4px; }
+            @media print { body { margin: 0; } }
+        </style>
+        </head><body>${area.innerHTML}
+        <script>window.onload=function(){window.print();}<\/script>
+        </body></html>`);
+    w.document.close();
 }

@@ -610,6 +610,71 @@ const SHORTFALL_REASONS = [
     'COMMERCIAL PACKAGE ISSUES'
 ];
 
+// Returns list of workstation codes (or process names) that have output below
+// target for the given hour but NO shortfall reason recorded.
+function checkHourPendingReasons(hour) {
+    const hourlyTarget = hourlyState.hourlyTarget;
+    if (!hourlyTarget || !hourlyState.lineId) return [];
+    const violations = [];
+
+    if (hourlyState.workstations?.length > 0) {
+        hourlyState.workstations.forEach(ws => {
+            const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
+            const progress = hourlyState.progressData.find(
+                d => wsProcessIds.includes(parseInt(d.process_id, 10)) && parseInt(d.hour_slot, 10) === hour
+            );
+            if (progress) {
+                const qty = parseInt(progress.quantity || 0, 10);
+                if (qty > 0 && qty < hourlyTarget && !progress.shortfall_reason) {
+                    violations.push(ws.workstation_code);
+                }
+            }
+        });
+    } else {
+        hourlyState.processes.forEach(p => {
+            const progress = hourlyState.progressData.find(
+                d => parseInt(d.process_id, 10) === p.id && parseInt(d.hour_slot, 10) === hour
+            );
+            if (progress) {
+                const qty = parseInt(progress.quantity || 0, 10);
+                if (qty > 0 && qty < hourlyTarget && !progress.shortfall_reason) {
+                    violations.push(p.workstation_code || p.operation_name || `Process ${p.id}`);
+                }
+            }
+        });
+    }
+    return violations;
+}
+
+// Show a blocking banner at the top of hourly-summary, listing workstations that
+// need a reason before the hour can be changed.
+function showReasonRequiredBanner(violations) {
+    const container = document.getElementById('hourly-summary');
+    if (!container) return;
+    const existing = document.getElementById('reason-required-banner');
+    if (existing) existing.remove();
+    const banner = document.createElement('div');
+    banner.id = 'reason-required-banner';
+    banner.style.cssText = 'background:#fee2e2;border:2px solid #fca5a5;border-radius:10px;padding:14px 18px;margin-bottom:14px;display:flex;align-items:flex-start;gap:12px;';
+    banner.innerHTML = `
+        <div style="font-size:28px;line-height:1;flex-shrink:0;">&#9888;</div>
+        <div style="flex:1;">
+            <div style="font-weight:700;font-size:15px;color:#991b1b;margin-bottom:4px;">PLEASE UPDATE REASON</div>
+            <div style="font-size:13px;color:#b91c1c;">
+                The following workstation(s) have output below target with no reason provided.
+                You cannot move to the next hour until all reasons are updated.
+            </div>
+            <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
+                ${violations.map(v => `<span style="background:#fecaca;color:#991b1b;border-radius:6px;padding:3px 10px;font-weight:700;font-size:13px;">${v}</span>`).join('')}
+            </div>
+        </div>
+        <button onclick="document.getElementById('reason-required-banner').remove()"
+            style="flex-shrink:0;background:none;border:none;font-size:20px;color:#991b1b;cursor:pointer;line-height:1;">&times;</button>
+    `;
+    container.insertBefore(banner, container.firstChild);
+    banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 async function loadHourlyProcedure() {
     const content = document.getElementById('supervisor-content');
     content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
@@ -688,8 +753,36 @@ async function loadHourlyProcedure() {
         `;
 
         document.getElementById('hourly-line').addEventListener('change', onHourlyLineChange);
-        document.getElementById('hourly-date').addEventListener('change', refreshHourlySummary);
-        document.getElementById('hourly-hour').addEventListener('change', refreshHourlySummary);
+
+        // Date change — guard: must not have pending reasons for current hour
+        const dateSel = document.getElementById('hourly-date');
+        dateSel.addEventListener('focus', function () { this._prevValue = this.value; });
+        dateSel.addEventListener('change', function () {
+            const prevHour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
+            const violations = checkHourPendingReasons(prevHour);
+            if (violations.length > 0) {
+                this.value = this._prevValue || this.value; // revert
+                showReasonRequiredBanner(violations);
+                return;
+            }
+            refreshHourlySummary();
+        });
+
+        // Hour change — guard: must resolve all shortfalls for the PREVIOUS hour first
+        const hourSel = document.getElementById('hourly-hour');
+        hourSel.addEventListener('mousedown', function () { this._prevValue = this.value; });
+        hourSel.addEventListener('change', function () {
+            const prevHour = parseInt(this._prevValue || this.value, 10);
+            const violations = checkHourPendingReasons(prevHour);
+            if (violations.length > 0) {
+                this.value = prevHour; // revert to blocked hour
+                showReasonRequiredBanner(violations);
+                return;
+            }
+            this._prevValue = this.value;
+            refreshHourlySummary();
+        });
+
         document.getElementById('hourly-cancel-scan').addEventListener('click', cancelHourlyScan);
 
         hourlyState.lineId = null;
@@ -848,20 +941,24 @@ function renderHourlySummary() {
             const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
 
+            const needsReason = output > 0 && hourlyTarget > 0 && output < hourlyTarget && !reason;
             let statusHtml = '';
             if (output > 0) {
                 if (hourlyTarget > 0 && output < hourlyTarget) {
-                    statusHtml = `<span style="color:#dc2626; font-weight:600;">Below target</span>`;
-                    if (reason) statusHtml += `<br><small style="color:#6b7280;">${reason}</small>`;
+                    if (needsReason) {
+                        statusHtml = `<span style="color:#dc2626;font-weight:700;">&#9888; Below target</span><br><small style="color:#dc2626;font-weight:600;">Please Update Reason</small>`;
+                    } else {
+                        statusHtml = `<span style="color:#dc2626;font-weight:600;">Below target</span><br><small style="color:#6b7280;">${reason}</small>`;
+                    }
                 } else {
-                    statusHtml = `<span style="color:#16a34a; font-weight:600;">On track</span>`;
+                    statusHtml = `<span style="color:#16a34a;font-weight:600;">On track</span>`;
                 }
             } else {
                 statusHtml = '<span style="color:#6b7280;">-</span>';
             }
 
-            return `<tr>
-                <td style="font-weight:700;">${ws.workstation_code}</td>
+            return `<tr style="${needsReason ? 'background:#fff5f5;' : ''}">
+                <td style="font-weight:700;">${ws.workstation_code}${needsReason ? ' <span style="color:#dc2626;">&#9888;</span>' : ''}</td>
                 <td style="font-size:0.85em; color:#6b7280;">${processList}</td>
                 <td style="text-align:center; color:${workloadColor}; font-weight:600;">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
                 <td>${worker}</td>
@@ -923,20 +1020,24 @@ function renderHourlySummary() {
         const reason = progress?.shortfall_reason || '';
         const worker = p.assigned_emp_name ? `${p.assigned_emp_code} - ${p.assigned_emp_name}` : '<span style="color:#dc2626;">Unassigned</span>';
 
+        const needsReason = output > 0 && hourlyTarget > 0 && output < hourlyTarget && !reason;
         let statusHtml = '';
         if (output > 0) {
             if (hourlyTarget > 0 && output < hourlyTarget) {
-                statusHtml = `<span style="color:#dc2626; font-weight:600;">Below target</span>`;
-                if (reason) statusHtml += `<br><small style="color:#6b7280;">${reason}</small>`;
+                if (needsReason) {
+                    statusHtml = `<span style="color:#dc2626;font-weight:700;">&#9888; Below target</span><br><small style="color:#dc2626;font-weight:600;">Please Update Reason</small>`;
+                } else {
+                    statusHtml = `<span style="color:#dc2626;font-weight:600;">Below target</span><br><small style="color:#6b7280;">${reason}</small>`;
+                }
             } else {
-                statusHtml = `<span style="color:#16a34a; font-weight:600;">On track</span>`;
+                statusHtml = `<span style="color:#16a34a;font-weight:600;">On track</span>`;
             }
         } else {
             statusHtml = '<span style="color:#6b7280;">-</span>';
         }
 
-        return `<tr>
-            <td style="font-weight:600;">${p.workstation_code || p.group_name || '-'}</td>
+        return `<tr style="${needsReason ? 'background:#fff5f5;' : ''}">
+            <td style="font-weight:600;">${(p.workstation_code || p.group_name || '-')}${needsReason ? ' <span style="color:#dc2626;">&#9888;</span>' : ''}</td>
             <td>${p.operation_code} - ${p.operation_name}</td>
             <td>${worker}</td>
             <td style="text-align:center;">${hourlyTarget || '-'}</td>
