@@ -137,6 +137,12 @@ async function loadSection(section) {
         case 'osm':
             await loadOsmReport();
             break;
+        case 'plan-history':
+            await loadPlanHistory();
+            break;
+        case 'efficiency':
+            await loadEfficiencyReport();
+            break;
     }
 }
 
@@ -3035,6 +3041,7 @@ async function saveAttendance(employeeId, date, inTime, outTime, status, notes, 
 async function loadDailyPlans() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
+    if (!window._dpTab) window._dpTab = 'regular';
     content.innerHTML = `
         <div class="ie-section">
             <div class="page-header">
@@ -3047,20 +3054,31 @@ async function loadDailyPlans() {
                         <label for="plan-date">Date</label>
                         <input type="date" id="plan-date" value="${today}">
                     </div>
-                    <button onclick="openDailyPlanPrintModal()" style="padding:8px 16px;background:#1e40af;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                    <button id="dp-print-btn" onclick="openDailyPlanPrintModal()" style="padding:8px 16px;background:#1e40af;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
                         &#9113; Print / Export
                     </button>
-                    <button onclick="openPlanUploadModal()" style="padding:8px 16px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                    <button id="dp-upload-btn" onclick="openPlanUploadModal()" style="padding:8px 16px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
                         &#8679; Upload Plan
                     </button>
                 </div>
             </div>
-            <div class="alert alert-info" style="margin-bottom:16px;">
+            <!-- Regular / OT tabs -->
+            <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid #e5e7eb;padding-bottom:0;">
+                <button id="dp-tab-regular" onclick="switchDpTab('regular')"
+                    style="padding:8px 22px;border:none;border-radius:8px 8px 0 0;font-size:13px;font-weight:600;cursor:pointer;background:#1e40af;color:#fff;margin-bottom:-2px;border-bottom:2px solid #1e40af;">
+                    Regular Shift
+                </button>
+                <button id="dp-tab-ot" onclick="switchDpTab('ot')"
+                    style="padding:8px 22px;border:none;border-radius:8px 8px 0 0;font-size:13px;font-weight:600;cursor:pointer;background:#f3f4f6;color:#6b7280;margin-bottom:-2px;border-bottom:2px solid transparent;">
+                    OT Plan
+                </button>
+            </div>
+            <div id="dp-regular-hint" class="alert alert-info" style="margin-bottom:16px;">
                 Primary product = outgoing product. Incoming product = next product (during changeover).
                 Use "Changeover Up To" to select the process sequence already switched to the incoming product.
             </div>
             <div class="card">
-                <div class="card-header">
+                <div class="card-header" id="dp-card-header">
                     <h3 class="card-title">Line Plans</h3>
                 </div>
                 <div class="card-body">
@@ -3071,8 +3089,43 @@ async function loadDailyPlans() {
             </div>
         </div>
     `;
-    document.getElementById('plan-date').addEventListener('change', loadDailyPlanData);
-    loadDailyPlanData();
+    document.getElementById('plan-date').addEventListener('change', () => {
+        switchDpTab(window._dpTab || 'regular');
+    });
+    switchDpTab(window._dpTab || 'regular');
+}
+
+function switchDpTab(tab) {
+    window._dpTab = tab;
+    const date = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
+    const tabReg = document.getElementById('dp-tab-regular');
+    const tabOt  = document.getElementById('dp-tab-ot');
+    const hint   = document.getElementById('dp-regular-hint');
+    const header = document.getElementById('dp-card-header');
+    const printBtn  = document.getElementById('dp-print-btn');
+    const uploadBtn = document.getElementById('dp-upload-btn');
+
+    if (tabReg) {
+        tabReg.style.background      = tab === 'regular' ? '#1e40af' : '#f3f4f6';
+        tabReg.style.color           = tab === 'regular' ? '#fff'    : '#6b7280';
+        tabReg.style.borderBottomColor = tab === 'regular' ? '#1e40af' : 'transparent';
+    }
+    if (tabOt) {
+        tabOt.style.background       = tab === 'ot' ? '#7c3aed' : '#f3f4f6';
+        tabOt.style.color            = tab === 'ot' ? '#fff'    : '#6b7280';
+        tabOt.style.borderBottomColor = tab === 'ot' ? '#7c3aed' : 'transparent';
+    }
+    if (hint)   hint.style.display   = tab === 'regular' ? '' : 'none';
+    if (header) header.querySelector('.card-title').textContent = tab === 'regular' ? 'Line Plans' : 'OT Plans';
+    // Print/Upload only relevant for regular tab
+    if (printBtn)  printBtn.style.display = tab === 'regular' ? '' : 'none';
+    if (uploadBtn) uploadBtn.style.display = tab === 'regular' ? '' : 'none';
+
+    if (tab === 'ot') {
+        loadOtPlanSection(date);
+    } else {
+        loadDailyPlanData();
+    }
 }
 
 function openPlanUploadModal() {
@@ -3191,7 +3244,6 @@ async function loadDailyPlanData() {
                         <th>Incoming Product</th>
                         <th>Incoming Target</th>
                         <th>Changeover Progress</th>
-                        <th>Overtime</th>
                         <th>Status</th>
                         <th>Action</th>
                     </tr>
@@ -3207,12 +3259,7 @@ async function loadDailyPlanData() {
                         const selectedChangeover = plan?.changeover_sequence ?? 0;
                         const planExists = Boolean(plan?.id);
                         const hasChangeover = !!plan?.incoming_product_id;
-                        const otMins = plan?.overtime_minutes || 0;
-                        const otTarget = plan?.overtime_target || 0;
-                        const hasOT = otMins > 0 || otTarget > 0;
-                        const otLabel = hasOT
-                            ? `+${otMins >= 60 ? Math.floor(otMins/60)+'h '+(otMins%60 ? (otMins%60)+'m' : '') : otMins+'m'} / +${otTarget} units`.trim()
-                            : '—';
+                        const otEnabled = plan?.ot_enabled || false;
                         return `
                             <tr>
                                 <td>
@@ -3252,11 +3299,6 @@ async function loadDailyPlanData() {
                                         : (hasChangeover
                                             ? `<div style="font-weight:600;">P${selectedChangeover}</div><div style="font-size:11px;color:#6b7280;">Auto from supervisor updates</div>`
                                             : '<span style="color:#6b7280;font-size:12px;">-</span>')}
-                                </td>
-                                <td>
-                                    <div style="font-size:13px;${hasOT ? 'color:#7c3aed;font-weight:600;' : 'color:#9ca3af;'}">${otLabel}</div>
-                                    ${planExists && !locked ? `<button class="btn btn-sm" style="margin-top:4px;font-size:11px;padding:2px 8px;background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd;" onclick="openOvertimeModal(${line.id})">Set OT</button>` : ''}
-                                    ${hasOT && planExists && !locked ? `<button class="btn btn-sm" style="margin-top:4px;margin-left:2px;font-size:11px;padding:2px 8px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;" onclick="clearOvertime(${line.id})">Clear</button>` : ''}
                                 </td>
                                 <td>
                                     <span class="status-badge" style="${locked ? 'background:#fee2e2;color:#b91c1c;' : 'background:#dcfce7;color:#15803d;'}">
@@ -3350,11 +3392,60 @@ async function openLineDetailsPage(lineId, date, productId, target) {
         const res = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
         const result = await res.json();
         if (!result.success) throw new Error(result.error);
-        _ldData = { lineId, date, data: result.data };
+        _ldData = { lineId, date, data: result.data, otTab: false };
         // Update header with line name from API
         const titleEl = overlay.querySelector('#ld-overlay-title');
         if (titleEl && result.data.line) {
             titleEl.textContent = (result.data.line.line_code || '') + (result.data.line.line_name ? ' \u2014 ' + result.data.line.line_name : '');
+        }
+        // Fetch the most recent previous WS plan date for "Copy from [date]" button
+        const resolvedProductId = result.data.product?.id;
+        if (resolvedProductId) {
+            fetch(`/api/lines/${lineId}/workstation-plan/latest-date?product_id=${resolvedProductId}&before_date=${date}`)
+                .then(r => r.json())
+                .then(r => {
+                    if (r.success && r.date) {
+                        const hdr = document.getElementById('line-details-overlay')?.querySelector('div[style*="sticky"]');
+                        const existing = document.getElementById('ld-copy-btn');
+                        if (existing) existing.remove();
+                        if (hdr) {
+                            const btn = document.createElement('button');
+                            btn.id = 'ld-copy-btn';
+                            btn.textContent = `↩ Copy layout from ${r.date}`;
+                            btn.style.cssText = 'font-size:11px;padding:4px 12px;background:#f0fdf4;color:#166534;border:1px solid #86efac;border-radius:6px;cursor:pointer;white-space:nowrap;';
+                            btn.onclick = () => ldCopyFromDate(lineId, r.date, date, resolvedProductId);
+                            hdr.appendChild(btn);
+                        }
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // Add OT tab buttons if OT is enabled for this plan
+        const headerBar = overlay.querySelector('div[style*="sticky"]');
+        const existingTabs = overlay.querySelector('#ld-tabs');
+        if (existingTabs) existingTabs.remove();
+        if (result.data.ot_enabled && headerBar) {
+            const tabs = document.createElement('div');
+            tabs.id = 'ld-tabs';
+            tabs.style.cssText = 'display:flex;gap:4px;align-items:center;';
+            tabs.innerHTML = `
+                <button id="ld-tab-regular" onclick="switchLdTab('regular',${lineId})"
+                    style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid #3b82f6;background:#3b82f6;color:#fff;cursor:pointer;font-weight:600;">
+                    Regular Shift
+                </button>
+                <button id="ld-tab-ot" onclick="switchLdTab('ot',${lineId})"
+                    style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid #d1d5db;background:#fff;color:#374151;cursor:pointer;">
+                    OT Plan
+                </button>
+            `;
+            // Insert after the back button group
+            const backBtn = headerBar.querySelector('button');
+            if (backBtn && backBtn.nextSibling) {
+                headerBar.insertBefore(tabs, backBtn.nextSibling);
+            } else {
+                headerBar.appendChild(tabs);
+            }
         }
         renderLineDetailsContent(content, lineId, date, result.data);
     } catch (err) {
@@ -3366,6 +3457,36 @@ function closeLineDetailsPage() {
     const overlay = document.getElementById('line-details-overlay');
     if (overlay) overlay.style.display = 'none';
     document.body.style.overflow = '';
+}
+
+async function ldCopyFromDate(lineId, fromDate, toDate, productId) {
+    if (!confirm(`Copy workstation layout and employee assignments from ${fromDate} to ${toDate}?\n\nThis will overwrite any existing workstation plan for ${toDate}.`)) return;
+    try {
+        const res = await fetch(`/api/lines/${lineId}/workstation-plan/copy-from-date`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error, 'error'); return; }
+        showToast(`Layout copied from ${fromDate}`, 'success');
+        // Reload line details to show the copied plan
+        if (_ldData) {
+            const content = document.getElementById('ld-overlay-content');
+            if (content) {
+                content.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Reloading...</div>';
+                const params = new URLSearchParams({ date: toDate, product_id: productId });
+                const r = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+                const d = await r.json();
+                if (d.success) {
+                    _ldData.data = d.data;
+                    renderLineDetailsContent(content, lineId, toDate, d.data);
+                }
+            }
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
 }
 
 // Compute regular working seconds from the per-line hours state
@@ -4466,7 +4587,11 @@ async function saveDailyPlan(lineId) {
             showToast(result.error, 'error');
             return;
         }
-        showToast('Daily plan saved', 'success');
+        if (result.copied_from) {
+            showToast(`Daily plan saved — workstation layout copied from ${result.copied_from}`, 'success');
+        } else {
+            showToast('Daily plan saved', 'success');
+        }
         loadDailyPlanData();
     } catch (err) {
         showToast(err.message, 'error');
@@ -4514,74 +4639,601 @@ async function unlockDailyPlan(lineId) {
 }
 
 // ============================================================================
-// Overtime Plan
+// OT Toggle (Daily Plan)
 // ============================================================================
-function openOvertimeModal(lineId) {
-    const existing = document.getElementById('ot-modal-overlay');
-    if (existing) existing.remove();
-
-    const overlay = document.createElement('div');
-    overlay.id = 'ot-modal-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;';
-    overlay.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:28px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
-            <h3 style="margin:0 0 8px;font-size:17px;font-weight:700;color:#1e293b;">Set Overtime Plan</h3>
-            <p style="margin:0 0 20px;font-size:13px;color:#64748b;">Enter the overtime duration and additional production target for this line.</p>
-            <div style="margin-bottom:14px;">
-                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">OT Duration (minutes)</label>
-                <input type="number" id="ot-minutes-input" min="0" max="480" value="60" class="form-control" style="width:100%;" placeholder="e.g. 60">
-                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Typical: 30, 60, 90, 120 minutes</div>
-            </div>
-            <div style="margin-bottom:20px;">
-                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">Additional Target (units)</label>
-                <input type="number" id="ot-target-input" min="0" value="0" class="form-control" style="width:100%;" placeholder="e.g. 50">
-                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Extra units to produce during overtime</div>
-            </div>
-            <div style="display:flex;gap:8px;justify-content:flex-end;">
-                <button class="btn btn-secondary" onclick="document.getElementById('ot-modal-overlay').remove()">Cancel</button>
-                <button class="btn btn-primary" onclick="saveOvertime(${lineId})" style="background:#7c3aed;border-color:#7c3aed;">Save Overtime</button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(overlay);
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    document.getElementById('ot-minutes-input').focus();
-}
-
-async function saveOvertime(lineId) {
-    const date = document.getElementById('plan-date').value;
-    const mins = parseInt(document.getElementById('ot-minutes-input').value, 10);
-    const target = parseInt(document.getElementById('ot-target-input').value, 10);
-    if (isNaN(mins) || mins < 0) { showToast('Please enter a valid OT duration', 'error'); return; }
-    if (isNaN(target) || target < 0) { showToast('Please enter a valid OT target', 'error'); return; }
+async function toggleOTPlan(lineId, enable, date) {
     try {
-        const res = await fetch('/api/daily-plans/overtime', {
+        const res = await fetch('/api/daily-plans/ot-toggle', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: lineId, work_date: date, overtime_minutes: mins, overtime_target: target })
+            body: JSON.stringify({ line_id: lineId, work_date: date, ot_enabled: enable })
         });
         const result = await res.json();
-        if (!result.success) { showToast(result.error, 'error'); return; }
-        document.getElementById('ot-modal-overlay')?.remove();
-        showToast('Overtime plan saved', 'success');
-        loadDailyPlanData();
+        if (!result.success) { showToast(result.error || 'Failed to update OT', 'error'); return; }
+        showToast(enable ? 'OT enabled' : 'OT disabled', 'success');
+        if (window._dpTab === 'ot') {
+            const date = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
+            loadOtPlanSection(date);
+        } else {
+            loadDailyPlanData();
+        }
     } catch (err) {
         showToast(err.message, 'error');
     }
 }
 
-async function clearOvertime(lineId) {
-    const date = document.getElementById('plan-date').value;
+// ============================================================================
+// OT Plan Section (Daily Plans → OT Tab)
+// ============================================================================
+
+async function loadOtPlanSection(date) {
+    const container = document.getElementById('daily-plan-table');
+    if (!container) return;
+    container.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
     try {
-        const res = await fetch('/api/daily-plans/overtime', {
-            method: 'PATCH',
+        const res = await fetch(`/api/daily-plans?date=${date}`);
+        const result = await res.json();
+        if (!result.success) { container.innerHTML = `<div class="alert alert-danger">${result.error}</div>`; return; }
+        const { plans, lines } = result.data;
+        const planMap = new Map(plans.map(p => [String(p.line_id), p]));
+        if (!lines.length) { container.innerHTML = '<div style="padding:24px;color:#6b7280;">No active lines found.</div>'; return; }
+
+        container.innerHTML = lines.map(line => {
+            const plan = planMap.get(String(line.id));
+            const hasPlan = !!plan?.id;
+            const otEnabled = plan?.ot_enabled || false;
+            return renderOtLineCard(line, plan, date, hasPlan, otEnabled);
+        }).join('');
+
+        // Auto-load expanded cards
+        lines.forEach(line => {
+            const plan = planMap.get(String(line.id));
+            if (plan?.ot_enabled) loadOtLineCard(line.id, date);
+        });
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
+    const productLabel = plan ? `${plan.product_code || ''} ${plan.product_name || ''}`.trim() : '';
+    const targetLabel  = plan ? `${plan.target_units || 0} units` : '';
+
+    if (!hasPlan) {
+        return `
+        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;opacity:0.55;display:flex;align-items:center;gap:12px;">
+            <span style="font-weight:700;font-size:14px;color:#374151;">${line.line_code}</span>
+            <span style="font-size:13px;color:#9ca3af;">${line.line_name}</span>
+            <span style="margin-left:auto;font-size:12px;color:#9ca3af;">No plan set for this date</span>
+        </div>`;
+    }
+
+    if (!otEnabled) {
+        return `
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;display:flex;align-items:center;gap:12px;">
+            <span style="font-weight:700;font-size:14px;color:#1e293b;">${line.line_code}</span>
+            <span style="font-size:13px;color:#374151;">${line.line_name}</span>
+            ${productLabel ? `<span style="font-size:12px;color:#6b7280;background:#f3f4f6;border-radius:10px;padding:2px 10px;">${productLabel} · ${targetLabel}</span>` : ''}
+            <button onclick="toggleOTPlan(${line.id},true,'${date}')"
+                style="margin-left:auto;padding:6px 16px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                Enable OT ▶
+            </button>
+        </div>`;
+    }
+
+    // OT enabled — expanded card with lazy-loaded body
+    return `
+    <div style="background:#fff;border:2px solid #7c3aed;border-radius:10px;margin-bottom:12px;overflow:hidden;">
+        <!-- Card header -->
+        <div style="background:#f5f3ff;padding:12px 18px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #ddd6fe;">
+            <span style="font-weight:700;font-size:14px;color:#1e293b;">${line.line_code}</span>
+            <span style="font-size:13px;color:#374151;">${line.line_name}</span>
+            ${productLabel ? `<span style="font-size:12px;color:#6b7280;background:#ede9fe;border-radius:10px;padding:2px 10px;">${productLabel}</span>` : ''}
+            <span style="background:#7c3aed;color:#fff;border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700;margin-left:4px;">● OT ON</span>
+            <button onclick="toggleOTPlan(${line.id},false,'${date}')"
+                style="margin-left:auto;padding:5px 14px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
+                Disable OT ✕
+            </button>
+        </div>
+        <!-- Card body — lazy loaded -->
+        <div id="ot-card-body-${line.id}" style="padding:16px;">
+            <div style="text-align:center;padding:24px;color:#6b7280;">Loading OT plan…</div>
+        </div>
+    </div>`;
+}
+
+async function loadOtLineCard(lineId, date) {
+    const body = document.getElementById(`ot-card-body-${lineId}`);
+    if (!body) return;
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan?date=${date}`);
+        const result = await res.json();
+        if (!result.success) { body.innerHTML = `<div class="alert alert-danger">${result.error}</div>`; return; }
+        if (!result.data) {
+            body.innerHTML = '<div style="padding:12px;color:#6b7280;">No OT plan found. Try disabling and re-enabling OT.</div>';
+            return;
+        }
+        window._otCardData = window._otCardData || {};
+        window._otCardData[lineId] = result.data;
+        fillOtLineCard(lineId, date, result.data);
+    } catch (err) {
+        body.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function fillOtLineCard(lineId, date, data) {
+    const body = document.getElementById(`ot-card-body-${lineId}`);
+    if (!body) return;
+    const { ot_plan, workstations, products, employees, all_ot_assignments } = data;
+    const globalMins = ot_plan.global_ot_minutes || 60;
+    const otTarget   = ot_plan.ot_target_units   || 0;
+
+    // Build factory-wide OT assignment map for this date (employee_id → {line_id, ws_code})
+    if (!window._otEmpState) window._otEmpState = {};
+    if (!window._otEmpState[date]) window._otEmpState[date] = {};
+    // Seed from server data (don't overwrite in-session changes)
+    (all_ot_assignments || []).forEach(a => {
+        if (!window._otEmpState[date][String(a.employee_id)]) {
+            window._otEmpState[date][String(a.employee_id)] = { line_id: a.line_id, ws_code: a.workstation_code };
+        }
+    });
+
+    const effColor = p => p >= 90 ? '#16a34a' : p >= 80 ? '#d97706' : '#dc2626';
+    const idPfx    = `otc-${lineId}`;
+
+    const wsRows = workstations.map(ws => {
+        const isActive = ws.is_active !== false;
+        const efMins  = (ws.ot_minutes > 0 ? ws.ot_minutes : globalMins);
+        const taktSec = (otTarget > 0 && efMins > 0) ? (efMins * 60) / otTarget : 0;
+        const wl      = (taktSec > 0 && ws.actual_sam_seconds > 0)
+            ? Math.round((parseFloat(ws.actual_sam_seconds) / taktSec) * 1000) / 10 : null;
+        const wlCell  = wl != null
+            ? `<span style="font-weight:700;color:${effColor(wl)};">${wl}%</span>`
+            : '<span style="color:#9ca3af;">—</span>';
+        const procs   = ws.processes.map(p => p.operation_code).join(' / ') || '—';
+        const samDisp = ws.actual_sam_seconds ? (Math.round(parseFloat(ws.actual_sam_seconds) * 10) / 10) + 's' : '—';
+        const emp     = ws.assigned_employee;
+        const empCell = emp
+            ? `<button id="${idPfx}-emp-btn-${ws.workstation_code}"
+                   onclick="openOtEmpPicker(${lineId},'${date}','${ws.workstation_code}',this)"
+                   style="font-size:12px;font-weight:600;padding:3px 10px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;border-radius:5px;cursor:pointer;">
+                   ${emp.emp_code} ▼
+               </button>
+               <button onclick="clearOtEmployee(${lineId},'${date}','${ws.workstation_code}')"
+                   style="margin-left:3px;background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px;line-height:1;" title="Remove">×</button>`
+            : `<button id="${idPfx}-emp-btn-${ws.workstation_code}"
+                   onclick="openOtEmpPicker(${lineId},'${date}','${ws.workstation_code}',this)"
+                   style="font-size:11px;padding:3px 10px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:5px;cursor:pointer;">
+                   Assign ▼
+               </button>`;
+        return `
+        <tr style="${isActive ? '' : 'opacity:0.45;'}">
+            <td style="font-weight:600;padding:8px 10px;">${ws.workstation_code}</td>
+            <td style="color:#6b7280;font-size:12px;padding:8px 10px;">${ws.group_name || '—'}</td>
+            <td style="font-size:12px;padding:8px 10px;max-width:260px;">${procs}</td>
+            <td style="text-align:center;font-size:12px;padding:8px 10px;">${samDisp}</td>
+            <td style="text-align:center;padding:6px 8px;">
+                <input type="number" min="0" max="480"
+                    data-ws="${ws.workstation_code}"
+                    class="${idPfx}-ws-mins"
+                    value="${ws.ot_minutes || 0}"
+                    placeholder="${globalMins}"
+                    title="0 = use global (${globalMins} min)"
+                    style="width:58px;text-align:center;border:1px solid #d1d5db;border-radius:4px;padding:3px 4px;font-size:12px;">
+            </td>
+            <td style="text-align:center;padding:8px 10px;">${wlCell}</td>
+            <td style="text-align:center;padding:6px 8px;">
+                <button id="${idPfx}-actbtn-${ws.workstation_code}"
+                    data-ws-active="${isActive}"
+                    onclick="toggleOtWsAdminBtn(${lineId},'${date}','${ws.workstation_code}',this)"
+                    style="min-width:78px;padding:3px 10px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;
+                           background:${isActive ? '#dcfce7' : '#fee2e2'};
+                           color:${isActive ? '#16a34a' : '#dc2626'};
+                           border:1px solid ${isActive ? '#bbf7d0' : '#fecaca'};">
+                    ${isActive ? '● Active' : '○ Inactive'}
+                </button>
+            </td>
+            <td id="${idPfx}-emp-${ws.workstation_code}" style="padding:8px 10px;white-space:nowrap;">${empCell}</td>
+        </tr>`;
+    }).join('');
+
+    const productOpts = products.map(p =>
+        `<option value="${p.id}" ${p.id == ot_plan.product_id ? 'selected' : ''}>${p.product_code} — ${p.product_name}</option>`
+    ).join('');
+
+    body.innerHTML = `
+        <!-- Settings row -->
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;">
+            <div>
+                <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Product</label>
+                <select id="${idPfx}-product" style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;min-width:180px;">${productOpts}</select>
+            </div>
+            <div>
+                <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Minutes</label>
+                <input type="number" id="${idPfx}-mins" min="0" max="480" value="${globalMins}"
+                    style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;width:80px;">
+            </div>
+            <div>
+                <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Target (units)</label>
+                <input type="number" id="${idPfx}-target" min="0" value="${otTarget}"
+                    style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;width:90px;">
+            </div>
+            <button onclick="saveOtCardSettings(${lineId},'${date}')"
+                style="padding:6px 16px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                Save Settings
+            </button>
+        </div>
+        <!-- Workstation table -->
+        <div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin-bottom:12px;">
+            <div style="background:#1e1b4b;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;">
+                <span style="color:#fff;font-weight:700;font-size:13px;">OT Workstations</span>
+                <span style="color:#a5b4fc;font-size:11px;">${workstations.length} workstations</span>
+            </div>
+            <div style="overflow-x:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead>
+                        <tr style="background:#f8fafc;border-bottom:2px solid #e5e7eb;">
+                            <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;">WS</th>
+                            <th style="padding:8px 10px;font-size:11px;color:#6b7280;">Group</th>
+                            <th style="padding:8px 10px;font-size:11px;color:#6b7280;">Processes</th>
+                            <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">SAM</th>
+                            <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">OT Min<br><span style="font-weight:400;font-size:10px;">(0=global)</span></th>
+                            <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">Wkld%</th>
+                            <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">Status</th>
+                            <th style="padding:8px 10px;font-size:11px;color:#6b7280;">Employee</th>
+                        </tr>
+                    </thead>
+                    <tbody>${wsRows || '<tr><td colspan="8" style="padding:16px;text-align:center;color:#9ca3af;">No workstations</td></tr>'}</tbody>
+                </table>
+            </div>
+        </div>
+        <!-- Footer actions -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button onclick="saveOtWsTimes(${lineId},'${date}')"
+                style="padding:6px 16px;background:#059669;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                Save WS Times
+            </button>
+            <button onclick="openOtLayoutEditor(${lineId},'${date}')"
+                style="padding:6px 16px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                Edit Layout
+            </button>
+            <button onclick="resetOtFromRegular(${lineId},'${date}')"
+                style="padding:6px 14px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:12px;">
+                Reset from Regular Plan
+            </button>
+        </div>`;
+}
+
+async function saveOtCardSettings(lineId, date) {
+    const pfx = `otc-${lineId}`;
+    const productId  = document.getElementById(`${pfx}-product`)?.value;
+    const globalMins = parseInt(document.getElementById(`${pfx}-mins`)?.value, 10)   || 60;
+    const otTarget   = parseInt(document.getElementById(`${pfx}-target`)?.value, 10) || 0;
+    if (!productId) { showToast('Please select a product', 'error'); return; }
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: lineId, work_date: date, overtime_minutes: 0, overtime_target: 0 })
+            body: JSON.stringify({ date, product_id: productId, global_ot_minutes: globalMins, ot_target_units: otTarget })
         });
         const result = await res.json();
-        if (!result.success) { showToast(result.error, 'error'); return; }
-        showToast('Overtime cleared', 'success');
-        loadDailyPlanData();
+        if (!result.success) { showToast(result.error || 'Failed to save', 'error'); return; }
+        showToast('OT settings saved', 'success');
+        loadOtLineCard(lineId, date);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function toggleOtWsAdminBtn(lineId, date, wsCode, btn) {
+    const makeActive = btn.dataset.wsActive !== 'true';
+    const pfx = `otc-${lineId}`;
+    const minsInput = document.querySelector(`.${pfx}-ws-mins[data-ws="${wsCode}"]`);
+    const ot_minutes = parseInt(minsInput?.value || 0, 10);
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/workstations`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, workstations: [{ workstation_code: wsCode, is_active: makeActive, ot_minutes }] })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed', 'error'); return; }
+    } catch (err) { showToast(err.message, 'error'); return; }
+
+    // Update button
+    btn.dataset.wsActive = makeActive ? 'true' : 'false';
+    btn.style.background = makeActive ? '#dcfce7' : '#fee2e2';
+    btn.style.color = makeActive ? '#16a34a' : '#dc2626';
+    btn.style.borderColor = makeActive ? '#bbf7d0' : '#fecaca';
+    btn.textContent = makeActive ? '● Active' : '○ Inactive';
+    // Dim/undim the row
+    const row = btn.closest('tr');
+    if (row) row.style.opacity = makeActive ? '1' : '0.45';
+    showToast(`${wsCode} ${makeActive ? 'activated' : 'deactivated'}`, 'success');
+}
+
+async function saveOtWsTimes(lineId, date) {
+    const pfx = `otc-${lineId}`;
+    const inputs = document.querySelectorAll(`.${pfx}-ws-mins`);
+    if (!inputs.length) { showToast('No workstations to save', 'error'); return; }
+    const workstations = Array.from(inputs).map(inp => {
+        const wsCode = inp.dataset.ws;
+        const activeBtn = document.getElementById(`${pfx}-actbtn-${wsCode}`);
+        const is_active = activeBtn ? activeBtn.dataset.wsActive === 'true' : true;
+        return { workstation_code: wsCode, is_active, ot_minutes: parseInt(inp.value, 10) || 0 };
+    });
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/workstations`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, workstations })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to save', 'error'); return; }
+        showToast('Workstation settings saved', 'success');
+        loadOtLineCard(lineId, date);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function resetOtFromRegular(lineId, date) {
+    // Re-enable OT (which copies the regular plan) by disabling + re-enabling
+    try {
+        const disRes = await fetch('/api/daily-plans/ot-toggle', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date, ot_enabled: false })
+        });
+        if (!(await disRes.json()).success) { showToast('Failed to reset OT', 'error'); return; }
+        const enRes = await fetch('/api/daily-plans/ot-toggle', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date, ot_enabled: true })
+        });
+        const enResult = await enRes.json();
+        if (!enResult.success) { showToast('Failed to reset OT', 'error'); return; }
+        showToast('OT plan reset from regular plan', 'success');
+        loadOtLineCard(lineId, date);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ── Employee picker for OT card ──────────────────────────────────────────────
+
+function openOtEmpPicker(lineId, date, wsCode, btn) {
+    // Close any existing picker
+    document.querySelectorAll('.ot-emp-picker').forEach(el => el.remove());
+
+    const data      = window._otCardData?.[lineId];
+    const employees = data?.employees || [];
+    const taken     = window._otEmpState?.[date] || {};
+
+    const picker = document.createElement('div');
+    picker.className = 'ot-emp-picker';
+    picker.style.cssText = 'position:absolute;z-index:2000;background:#fff;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.15);padding:10px;max-height:260px;overflow-y:auto;min-width:200px;';
+
+    picker.innerHTML = `
+        <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:6px;text-transform:uppercase;">Select Employee</div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;">
+            ${employees.map(e => {
+                const takenEntry = taken[String(e.id)];
+                const isTaken    = takenEntry && takenEntry.ws_code !== wsCode;
+                return `<button
+                    onclick="${isTaken ? '' : `assignOtEmployee(${lineId},'${date}','${wsCode}',${e.id},'${e.emp_code}')`}"
+                    style="padding:4px 10px;border-radius:16px;font-size:12px;font-weight:600;cursor:${isTaken ? 'not-allowed' : 'pointer'};
+                           background:${isTaken ? '#f3f4f6' : '#ede9fe'};color:${isTaken ? '#9ca3af' : '#5b21b6'};
+                           border:1px solid ${isTaken ? '#e5e7eb' : '#c4b5fd'};opacity:${isTaken ? '0.6' : '1'};"
+                    title="${isTaken ? 'Already assigned to OT' : e.emp_name}">
+                    ${e.emp_code}
+                </button>`;
+            }).join('')}
+        </div>`;
+
+    // Position below the button
+    document.body.appendChild(picker);
+    const rect = btn.getBoundingClientRect();
+    picker.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+    picker.style.left = (rect.left + window.scrollX) + 'px';
+
+    // Close on outside click
+    setTimeout(() => {
+        document.addEventListener('click', function closePicker(e) {
+            if (!picker.contains(e.target) && e.target !== btn) {
+                picker.remove();
+                document.removeEventListener('click', closePicker);
+            }
+        });
+    }, 0);
+}
+
+async function assignOtEmployee(lineId, date, wsCode, empId, empCode) {
+    document.querySelectorAll('.ot-emp-picker').forEach(el => el.remove());
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/employee`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, workstation_code: wsCode, employee_id: empId })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to assign', 'error'); return; }
+
+        // Update in-session state
+        if (!window._otEmpState[date]) window._otEmpState[date] = {};
+        window._otEmpState[date][String(empId)] = { line_id: lineId, ws_code: wsCode };
+
+        // Update the cell — use same clickable-chip style so employee can be changed again
+        const pfx  = `otc-${lineId}`;
+        const cell = document.getElementById(`${pfx}-emp-${wsCode}`);
+        if (cell) {
+            cell.innerHTML = `
+                <button id="${pfx}-emp-btn-${wsCode}"
+                    onclick="openOtEmpPicker(${lineId},'${date}','${wsCode}',this)"
+                    style="font-size:12px;font-weight:600;padding:3px 10px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;border-radius:5px;cursor:pointer;">
+                    ${empCode} ▼
+                </button>
+                <button onclick="clearOtEmployee(${lineId},'${date}','${wsCode}')"
+                    style="margin-left:3px;background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px;line-height:1;" title="Remove">×</button>`;
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function clearOtEmployee(lineId, date, wsCode) {
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/employee`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, workstation_code: wsCode, employee_id: null })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to clear', 'error'); return; }
+
+        // Remove from in-session state
+        if (window._otEmpState?.[date]) {
+            Object.keys(window._otEmpState[date]).forEach(empId => {
+                if (window._otEmpState[date][empId]?.ws_code === wsCode &&
+                    String(window._otEmpState[date][empId]?.line_id) === String(lineId)) {
+                    delete window._otEmpState[date][empId];
+                }
+            });
+        }
+        // Update cell to show Assign button
+        const pfx  = `otc-${lineId}`;
+        const cell = document.getElementById(`${pfx}-emp-${wsCode}`);
+        if (cell) {
+            cell.innerHTML = `<button id="${pfx}-emp-btn-${wsCode}"
+                onclick="openOtEmpPicker(${lineId},'${date}','${wsCode}',this)"
+                style="font-size:11px;padding:3px 10px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:5px;cursor:pointer;">
+                Assign ▼</button>`;
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ── OT Layout Editor ──────────────────────────────────────────────────────────
+
+function openOtLayoutEditor(lineId, date) {
+    const existing = document.getElementById('ot-layout-modal');
+    if (existing) existing.remove();
+
+    const data = window._otCardData?.[lineId];
+    if (!data) { showToast('OT plan data not loaded', 'error'); return; }
+
+    const { workstations, all_processes, ot_plan } = data;
+    // Build a map: process_id → {workstation_code, group_name}
+    const procToWs = {};
+    (workstations || []).forEach(ws => {
+        (ws.processes || []).forEach(p => {
+            procToWs[p.process_id] = { ws_code: ws.workstation_code, group: ws.group_name || '' };
+        });
+    });
+
+    const rows = (all_processes || []).map(p => {
+        const assigned = procToWs[p.id] || { ws_code: '', group: '' };
+        const samDisp  = p.operation_sah ? (Math.round(parseFloat(p.operation_sah) * 36000) / 10) + 's' : '—';
+        return `<tr>
+            <td style="padding:6px 8px;font-size:12px;color:#6b7280;">${p.sequence_number}</td>
+            <td style="padding:6px 8px;font-size:12px;font-weight:600;">${p.operation_code}</td>
+            <td style="padding:6px 8px;font-size:12px;">${p.operation_name}</td>
+            <td style="padding:6px 8px;font-size:12px;text-align:center;">${samDisp}</td>
+            <td style="padding:6px 8px;">
+                <input type="text" data-ppid="${p.id}" data-field="ws"
+                    value="${assigned.ws_code}" placeholder="e.g. WS01"
+                    style="width:70px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:3px 6px;text-transform:uppercase;">
+            </td>
+            <td style="padding:6px 8px;">
+                <input type="text" data-ppid="${p.id}" data-field="grp"
+                    value="${assigned.group}" placeholder="e.g. G1"
+                    style="width:60px;font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:3px 6px;">
+            </td>
+        </tr>`;
+    }).join('');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ot-layout-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:3500;display:flex;align-items:flex-start;justify-content:center;padding-top:40px;';
+    overlay.innerHTML = `
+        <div style="background:#fff;border-radius:12px;width:min(820px,95vw);max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+            <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;">
+                <span style="font-size:16px;font-weight:700;color:#1e1b4b;">Edit OT Layout</span>
+                <span style="font-size:12px;color:#6b7280;">Assign each process to a workstation (leave WS blank to exclude)</span>
+                <button onclick="document.getElementById('ot-layout-modal').remove()"
+                    style="margin-left:auto;background:none;border:none;font-size:18px;cursor:pointer;color:#6b7280;">✕</button>
+            </div>
+            <div style="overflow-y:auto;flex:1;">
+                <table style="width:100%;border-collapse:collapse;">
+                    <thead style="position:sticky;top:0;background:#f8fafc;z-index:1;">
+                        <tr>
+                            <th style="padding:8px;font-size:11px;color:#6b7280;text-align:left;border-bottom:2px solid #e5e7eb;">SEQ</th>
+                            <th style="padding:8px;font-size:11px;color:#6b7280;text-align:left;border-bottom:2px solid #e5e7eb;">CODE</th>
+                            <th style="padding:8px;font-size:11px;color:#6b7280;text-align:left;border-bottom:2px solid #e5e7eb;">NAME</th>
+                            <th style="padding:8px;font-size:11px;color:#6b7280;text-align:center;border-bottom:2px solid #e5e7eb;">SAM</th>
+                            <th style="padding:8px;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb;">WS</th>
+                            <th style="padding:8px;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb;">Group</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <div style="padding:14px 20px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">
+                <button onclick="document.getElementById('ot-layout-modal').remove()"
+                    style="padding:7px 18px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:13px;">
+                    Cancel
+                </button>
+                <button onclick="saveOtLayout(${lineId},'${date}')"
+                    style="padding:7px 20px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                    Save Layout
+                </button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+}
+
+async function saveOtLayout(lineId, date) {
+    const modal = document.getElementById('ot-layout-modal');
+    if (!modal) return;
+
+    // Collect inputs: build map wsCode → {group, ppIds[]}
+    const wsMap = {};
+    modal.querySelectorAll('[data-ppid]').forEach(input => {
+        const ppId  = input.dataset.ppid;
+        const field = input.dataset.field;
+        const val   = input.value.trim().toUpperCase();
+        if (!ppId) return;
+        if (!wsMap[ppId]) wsMap[ppId] = { ws: '', grp: '' };
+        wsMap[ppId][field] = val;
+    });
+
+    // Group by WS code (skip blank WS)
+    const grouped = {};
+    Object.entries(wsMap).forEach(([ppId, { ws, grp }]) => {
+        if (!ws) return;
+        if (!grouped[ws]) grouped[ws] = { group: grp, ppIds: [] };
+        grouped[ws].ppIds.push(parseInt(ppId, 10));
+    });
+
+    const wsCodes = Object.keys(grouped).sort();
+    if (!wsCodes.length) { showToast('Assign at least one process to a workstation', 'error'); return; }
+
+    const workstations = wsCodes.map((code, i) => ({
+        workstation_code:   code,
+        workstation_number: i + 1,
+        group_name:         grouped[code].group || null,
+        ot_minutes:         0,
+        processes:          grouped[code].ppIds
+    }));
+
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/layout`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, workstations })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to save layout', 'error'); return; }
+        modal.remove();
+        showToast('OT layout saved', 'success');
+        loadOtLineCard(lineId, date);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -5290,6 +5942,467 @@ async function downloadDailyPlansExcel() {
 }
 
 // ============================================================================
+// OT PLAN DETAILS (Line Details Overlay — OT Tab)
+// ============================================================================
+function switchLdTab(tab, lineId) {
+    if (!_ldData) return;
+    _ldData.otTab = (tab === 'ot');
+    const content = document.getElementById('ld-overlay-content');
+    if (!content) return;
+    // Update tab button styles
+    const tabRegular = document.getElementById('ld-tab-regular');
+    const tabOT = document.getElementById('ld-tab-ot');
+    if (tabRegular) {
+        tabRegular.style.background = tab === 'regular' ? '#3b82f6' : '#fff';
+        tabRegular.style.color = tab === 'regular' ? '#fff' : '#374151';
+        tabRegular.style.borderColor = tab === 'regular' ? '#3b82f6' : '#d1d5db';
+    }
+    if (tabOT) {
+        tabOT.style.background = tab === 'ot' ? '#7c3aed' : '#fff';
+        tabOT.style.color = tab === 'ot' ? '#fff' : '#374151';
+        tabOT.style.borderColor = tab === 'ot' ? '#7c3aed' : '#d1d5db';
+    }
+    if (tab === 'ot') {
+        loadOTPlanDetails(content, lineId, _ldData.date);
+    } else {
+        renderLineDetailsContent(content, lineId, _ldData.date, _ldData.data);
+    }
+}
+
+async function loadOTPlanDetails(panel, lineId, date) {
+    panel.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Loading OT Plan...</div>';
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan?date=${date}`);
+        const result = await res.json();
+        if (!result.success) throw new Error(result.error);
+        if (!result.data) {
+            panel.innerHTML = '<div style="padding:24px;color:#6b7280;">No OT plan found. Try disabling and re-enabling OT.</div>';
+            return;
+        }
+        renderOTPlanDetails(panel, lineId, date, result.data);
+    } catch (err) {
+        panel.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function renderOTPlanDetails(panel, lineId, date, data) {
+    const { ot_plan, workstations, products, employees } = data;
+    const globalMins = ot_plan.global_ot_minutes || 60;
+    const otTarget = ot_plan.ot_target_units || 0;
+
+    // Build employee map for quick lookup
+    const empMap = new Map(employees.map(e => [e.id, e]));
+
+    // Helper: effective ot_minutes for a workstation
+    const effectiveMins = (ws) => (ws.ot_minutes && ws.ot_minutes > 0) ? ws.ot_minutes : globalMins;
+
+    // Helper: workload color
+    const effColor = e => e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
+
+    // Build workstation rows
+    const wsRows = workstations.map(ws => {
+        const efMins = effectiveMins(ws);
+        const taktSecs = (otTarget > 0 && efMins > 0) ? (efMins * 60) / otTarget : 0;
+        const wl = (taktSecs > 0 && ws.actual_sam_seconds > 0)
+            ? Math.round((ws.actual_sam_seconds / taktSecs) * 1000) / 10 : null;
+        const wlCell = ws.is_active && wl != null
+            ? `<span style="font-weight:700;color:${effColor(wl)};">${wl}%</span>`
+            : `<span style="color:#9ca3af;">—</span>`;
+        const procNames = ws.processes.map(p => p.operation_name).join(' / ') || '—';
+        const samDisplay = ws.actual_sam_seconds ? Math.round(ws.actual_sam_seconds * 10) / 10 + 's' : '—';
+        const assignedEmp = ws.assigned_employee;
+        const empOptions = employees.map(e =>
+            `<option value="${e.id}" ${assignedEmp && assignedEmp.employee_id === e.id ? 'selected' : ''}>${e.emp_code} - ${e.emp_name}</option>`
+        ).join('');
+        return `
+            <tr style="${ws.is_active ? '' : 'opacity:0.45;'}">
+                <td style="text-align:center;">
+                    <input type="checkbox" ${ws.is_active ? 'checked' : ''}
+                        onchange="otToggleWs(this, '${ws.workstation_code}')">
+                </td>
+                <td style="font-weight:600;">${ws.workstation_code}</td>
+                <td style="color:#6b7280;font-size:12px;">${ws.group_name || '—'}</td>
+                <td style="font-size:12px;max-width:220px;">${procNames}</td>
+                <td style="text-align:center;font-size:13px;">${samDisplay}</td>
+                <td style="text-align:center;">
+                    <input type="number" min="0" max="480" value="${ws.ot_minutes}"
+                        style="width:60px;text-align:center;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;font-size:12px;"
+                        placeholder="0=global"
+                        onchange="otUpdateWsMins(this, '${ws.workstation_code}')"
+                        title="0 = use global OT duration">
+                </td>
+                <td>
+                    <select style="font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;max-width:170px;"
+                        onchange="otUpdateWsEmployee(${lineId}, '${date}', '${ws.workstation_code}', this.value)">
+                        <option value="">— No employee —</option>
+                        ${empOptions}
+                    </select>
+                </td>
+                <td style="text-align:center;">${wlCell}</td>
+            </tr>
+        `;
+    }).join('');
+
+    panel.innerHTML = `
+        <div style="max-width:1200px;margin:0 auto;">
+            <!-- Settings bar -->
+            <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px 20px;margin-bottom:18px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
+                <div>
+                    <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Product</label>
+                    <select id="ot-product-sel" style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;min-width:200px;">
+                        ${products.map(p => `<option value="${p.id}" ${p.id == ot_plan.product_id ? 'selected' : ''}>${p.product_code} — ${p.product_name}</option>`).join('')}
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">Global OT Minutes</label>
+                    <input type="number" id="ot-global-mins" min="0" max="480" value="${globalMins}"
+                        style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;width:90px;">
+                </div>
+                <div>
+                    <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Target (units)</label>
+                    <input type="number" id="ot-target-units" min="0" value="${otTarget}"
+                        style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;width:90px;">
+                </div>
+                <div style="display:flex;gap:8px;align-items:flex-end;">
+                    <button onclick="saveOTPlanSettings(${lineId}, '${date}')"
+                        style="padding:6px 16px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                        Save Settings
+                    </button>
+                    <button onclick="regenOTPlanFromRegular(${lineId}, '${date}')"
+                        style="padding:6px 14px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:12px;">
+                        Reset from Regular Plan
+                    </button>
+                </div>
+            </div>
+
+            <!-- Workstation table -->
+            <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+                <div style="background:#1e1b4b;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
+                    <span style="color:#fff;font-weight:700;font-size:14px;">OT Workstations</span>
+                    <span style="color:#a5b4fc;font-size:12px;">${workstations.filter(w => w.is_active).length} of ${workstations.length} active</span>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                        <thead>
+                            <tr style="background:#f8fafc;border-bottom:2px solid #e5e7eb;">
+                                <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;width:50px;">Active</th>
+                                <th style="padding:10px 8px;font-size:11px;color:#6b7280;">WS</th>
+                                <th style="padding:10px 8px;font-size:11px;color:#6b7280;">Group</th>
+                                <th style="padding:10px 8px;font-size:11px;color:#6b7280;">Processes</th>
+                                <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;">SAM (s)</th>
+                                <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;">OT Min<br><span style="font-weight:400;">(0=global)</span></th>
+                                <th style="padding:10px 8px;font-size:11px;color:#6b7280;">Employee</th>
+                                <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;">Workload%</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ot-ws-tbody">
+                            ${wsRows}
+                        </tbody>
+                    </table>
+                </div>
+                <div style="padding:12px 16px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;">
+                    <button onclick="saveOTPlanWorkstations(${lineId}, '${date}')"
+                        style="padding:8px 20px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                        Save OT Plan
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Store WS state locally for edits before save
+    window._otWsState = {};
+    workstations.forEach(ws => {
+        window._otWsState[ws.workstation_code] = { is_active: ws.is_active, ot_minutes: ws.ot_minutes };
+    });
+}
+
+function otToggleWs(checkbox, wsCode) {
+    if (!window._otWsState) window._otWsState = {};
+    if (!window._otWsState[wsCode]) window._otWsState[wsCode] = { is_active: true, ot_minutes: 0 };
+    window._otWsState[wsCode].is_active = checkbox.checked;
+    const row = checkbox.closest('tr');
+    if (row) row.style.opacity = checkbox.checked ? '1' : '0.45';
+}
+
+function otUpdateWsMins(input, wsCode) {
+    if (!window._otWsState) window._otWsState = {};
+    if (!window._otWsState[wsCode]) window._otWsState[wsCode] = { is_active: true, ot_minutes: 0 };
+    window._otWsState[wsCode].ot_minutes = parseInt(input.value, 10) || 0;
+}
+
+async function otUpdateWsEmployee(lineId, date, wsCode, employeeId) {
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/employee`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, workstation_code: wsCode, employee_id: employeeId || null })
+        });
+        const result = await res.json();
+        if (!result.success) showToast(result.error || 'Failed to update employee', 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function saveOTPlanSettings(lineId, date) {
+    const productId = document.getElementById('ot-product-sel')?.value;
+    const globalMins = parseInt(document.getElementById('ot-global-mins')?.value, 10) || 60;
+    const otTarget = parseInt(document.getElementById('ot-target-units')?.value, 10) || 0;
+    if (!productId) { showToast('Please select a product', 'error'); return; }
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, product_id: productId, global_ot_minutes: globalMins, ot_target_units: otTarget })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to save OT settings', 'error'); return; }
+        showToast('OT settings saved', 'success');
+        // Reload OT details to reflect any regenerated workstations
+        const content = document.getElementById('ld-overlay-content');
+        if (content) loadOTPlanDetails(content, lineId, date);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function regenOTPlanFromRegular(lineId, date) {
+    const productSel = document.getElementById('ot-product-sel');
+    const primaryProductId = _ldData?.data?.product?.id;
+    if (productSel && primaryProductId) productSel.value = primaryProductId;
+    await saveOTPlanSettings(lineId, date);
+}
+
+async function saveOTPlanWorkstations(lineId, date) {
+    const state = window._otWsState || {};
+    const workstations = Object.entries(state).map(([workstation_code, s]) => ({
+        workstation_code,
+        is_active: s.is_active,
+        ot_minutes: s.ot_minutes
+    }));
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/workstations`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, workstations })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to save', 'error'); return; }
+        showToast('OT plan saved', 'success');
+        // Reload to recalculate workload%
+        const content = document.getElementById('ld-overlay-content');
+        if (content) loadOTPlanDetails(content, lineId, date);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ============================================================================
+// PLAN HISTORY — view any past date's line setup and copy to any line
+// ============================================================================
+async function loadPlanHistory() {
+    const content = document.getElementById('main-content');
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div style="padding:24px;max-width:1400px;margin:0 auto;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
+                <h2 style="margin:0;font-size:1.3rem;font-weight:700;color:#1e293b;">Plan History</h2>
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <label style="font-size:13px;color:#6b7280;font-weight:600;">Date:</label>
+                    <input type="date" id="ph-date" value="${yesterday}" max="${yesterday}"
+                        style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 10px;">
+                    <button onclick="refreshPlanHistory()"
+                        style="padding:6px 18px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                        Load
+                    </button>
+                </div>
+            </div>
+            <div id="ph-content">
+                <div style="text-align:center;padding:40px;color:#9ca3af;">Select a date and click Load to view past plans.</div>
+            </div>
+        </div>
+    `;
+    document.getElementById('ph-date').addEventListener('keydown', e => { if (e.key === 'Enter') refreshPlanHistory(); });
+}
+
+async function refreshPlanHistory() {
+    const date = document.getElementById('ph-date')?.value;
+    if (!date) return;
+    const container = document.getElementById('ph-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Loading...</div>';
+    try {
+        const res = await fetch(`/api/plan-history?date=${date}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        if (!data.lines.length) {
+            container.innerHTML = `<div style="text-align:center;padding:40px;color:#9ca3af;">No workstation plans found for ${date}.</div>`;
+            return;
+        }
+        container.innerHTML = renderPlanHistoryCards(data.lines, date);
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function renderPlanHistoryCards(lines, date) {
+    const effColor = p => p >= 90 ? '#16a34a' : p >= 80 ? '#d97706' : '#dc2626';
+
+    return lines.map(line => {
+        const rows = line.workstations.map(ws => {
+            const wl = ws.workload_pct != null ? Math.round(ws.workload_pct * 10) / 10 : null;
+            const wlCell = wl != null
+                ? `<span style="font-weight:700;color:${effColor(wl)};">${wl}%</span>`
+                : '<span style="color:#9ca3af;">—</span>';
+            const procText = ws.processes.map(p => `${p.operation_code} ${p.operation_name}`).join(' / ') || '—';
+            const empText = ws.employee ? `<span style="font-size:12px;">${ws.employee.emp_code}<br><span style="color:#6b7280;">${ws.employee.emp_name}</span></span>` : '<span style="color:#9ca3af;">—</span>';
+            const samText = ws.actual_sam_seconds ? `${Math.round(ws.actual_sam_seconds * 10) / 10}s` : '—';
+            return `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:7px 10px;font-weight:600;white-space:nowrap;">${ws.workstation_code}</td>
+                    <td style="padding:7px 10px;color:#6b7280;font-size:12px;">${ws.group_name || '—'}</td>
+                    <td style="padding:7px 10px;font-size:12px;max-width:260px;">${procText}</td>
+                    <td style="padding:7px 10px;text-align:center;font-size:12px;">${samText}</td>
+                    <td style="padding:7px 10px;text-align:center;">${wlCell}</td>
+                    <td style="padding:7px 10px;">${empText}</td>
+                </tr>
+            `;
+        }).join('');
+
+        const lockBadge = line.is_locked
+            ? '<span style="background:#fee2e2;color:#b91c1c;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600;">Locked</span>'
+            : '';
+
+        return `
+            <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:20px;overflow:hidden;">
+                <!-- Card header -->
+                <div style="background:#1e293b;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                    <div>
+                        <span style="color:#fff;font-weight:700;font-size:14px;">${line.line_code}</span>
+                        <span style="color:#94a3b8;font-size:13px;margin-left:8px;">${line.line_name}</span>
+                        ${lockBadge ? `<span style="margin-left:8px;">${lockBadge}</span>` : ''}
+                    </div>
+                    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+                        <span style="color:#93c5fd;font-size:12px;">
+                            <span style="color:#64748b;">Product:</span>
+                            <strong style="color:#e2e8f0;">${line.product_code} — ${line.product_name}</strong>
+                        </span>
+                        <span style="color:#93c5fd;font-size:12px;">
+                            <span style="color:#64748b;">Target:</span>
+                            <strong style="color:#e2e8f0;">${line.target_units} units</strong>
+                        </span>
+                        <span style="color:#64748b;font-size:12px;">${line.workstation_count} WS &middot; ${line.process_count} processes</span>
+                    </div>
+                </div>
+                <!-- Workstation table -->
+                <div style="overflow-x:auto;">
+                    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                        <thead>
+                            <tr style="background:#f8fafc;border-bottom:2px solid #e5e7eb;">
+                                <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">WS</th>
+                                <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Group</th>
+                                <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Processes</th>
+                                <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;font-weight:600;">SAM (s)</th>
+                                <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;font-weight:600;">Workload%</th>
+                                <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Employee</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+                <!-- Card footer -->
+                <div style="padding:10px 16px;border-top:1px solid #e5e7eb;background:#f9fafb;display:flex;justify-content:flex-end;">
+                    <button onclick="openCopyPlanModal(${line.line_id},'${date}',${line.product_id},'${line.product_code} ${line.product_name.replace(/'/g,"\\'")}','${line.line_code} — ${line.line_name.replace(/'/g,"\\'")}')"
+                        style="padding:6px 16px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                        Replicate Plan →
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function openCopyPlanModal(fromLineId, fromDate, fromProductId, fromProductLabel, fromLineLabel) {
+    const existing = document.getElementById('copy-plan-modal');
+    if (existing) existing.remove();
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Fetch all active lines to populate the target dropdown
+    fetch('/api/lines')
+        .then(r => r.json())
+        .then(data => {
+            const lines = (data.data || data.lines || []);
+            const lineOptions = lines.map(l =>
+                `<option value="${l.id}" ${String(l.id) === String(fromLineId) ? 'selected' : ''}>${l.line_code} — ${l.line_name}</option>`
+            ).join('');
+
+            const overlay = document.createElement('div');
+            overlay.id = 'copy-plan-modal';
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:3000;display:flex;align-items:center;justify-content:center;';
+            overlay.innerHTML = `
+                <div style="background:#fff;border-radius:12px;padding:28px;width:440px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                    <h3 style="margin:0 0 6px;font-size:17px;font-weight:700;color:#1e293b;">Replicate Workstation Plan</h3>
+                    <p style="margin:0 0 20px;font-size:13px;color:#64748b;">
+                        Source: <strong>${fromLineLabel}</strong><br>
+                        Product: <strong>${fromProductLabel}</strong><br>
+                        Date: <strong>${fromDate}</strong>
+                    </p>
+                    <div style="margin-bottom:14px;">
+                        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;text-transform:uppercase;">Target Line</label>
+                        <select id="cpm-target-line" class="form-control" style="width:100%;">
+                            <option value="">— Select target line —</option>
+                            ${lineOptions}
+                        </select>
+                    </div>
+                    <div style="margin-bottom:20px;">
+                        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;text-transform:uppercase;">Target Date</label>
+                        <input type="date" id="cpm-target-date" value="${today}" class="form-control" style="width:100%;">
+                        <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Target line must have a daily plan set for this date with the same product. Can be any line including the source line.</div>
+                    </div>
+                    <div id="cpm-error" style="display:none;background:#fee2e2;color:#b91c1c;padding:8px 12px;border-radius:6px;font-size:13px;margin-bottom:14px;"></div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                        <button class="btn btn-secondary" onclick="document.getElementById('copy-plan-modal').remove()">Cancel</button>
+                        <button onclick="executeCopyPlan(${fromLineId},'${fromDate}',${fromProductId})"
+                            style="padding:7px 20px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                            Copy Plan
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+        })
+        .catch(err => showToast('Failed to load lines: ' + err.message, 'error'));
+}
+
+async function executeCopyPlan(fromLineId, fromDate, productId) {
+    const toLineId = document.getElementById('cpm-target-line')?.value;
+    const toDate = document.getElementById('cpm-target-date')?.value;
+    const errEl = document.getElementById('cpm-error');
+    if (!toLineId) { if (errEl) { errEl.textContent = 'Please select a target line.'; errEl.style.display = 'block'; } return; }
+    if (!toDate) { if (errEl) { errEl.textContent = 'Please select a target date.'; errEl.style.display = 'block'; } return; }
+    if (errEl) errEl.style.display = 'none';
+    try {
+        const res = await fetch(`/api/lines/${toLineId}/workstation-plan/copy-from-date`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId })
+        });
+        const result = await res.json();
+        if (!result.success) {
+            if (errEl) { errEl.textContent = result.error; errEl.style.display = 'block'; }
+            return;
+        }
+        document.getElementById('copy-plan-modal')?.remove();
+        showToast(`Plan copied successfully to target line for ${toDate}`, 'success');
+    } catch (err) {
+        if (errEl) { errEl.textContent = err.message; errEl.style.display = 'block'; }
+    }
+}
+
+// ============================================================================
 // OSM REPORT — Stagewise Hourly OSM Report
 // ============================================================================
 async function loadOsmReport() {
@@ -5311,7 +6424,8 @@ async function loadOsmReport() {
                     <input type="date" id="osm-date" value="${today}">
                 </div>
                 <button class="btn btn-secondary" onclick="refreshOsmReport()">Refresh</button>
-                <button class="btn btn-secondary" onclick="printOsmReport()">Print</button>
+                <button class="btn btn-secondary" onclick="printOsmReport()">&#9113; Print</button>
+                <button class="btn btn-secondary" onclick="downloadOsmExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
             </div>
         </div>
         <div id="osm-content">
@@ -5429,7 +6543,7 @@ function _buildOsmTable(data) {
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
             <td style="${tcS}">${totalOutput}</td>
             <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
-            <td style="${tdS}font-size:11px;max-width:220px;word-break:break-word;">${ws.process_details}</td>
+            <td style="${tdS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${ws.process_details}</td>
             ${hourCells}
             <td style="${tcS}font-weight:700;">${totalTargetSoFar}</td>
             <td style="${tcS}font-weight:700;">${totalOutput}</td>
@@ -5481,22 +6595,296 @@ function _buildOsmTable(data) {
 function printOsmReport() {
     const area = document.getElementById('osm-print-area');
     if (!area) { alert('No report loaded.'); return; }
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><style>
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:8mm;}
+        .card{border:1px solid #d1d5db;border-radius:4px;overflow:hidden;}
+        .card-header{padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
+        .card-title{font-size:14px;font-weight:700;margin:0 0 4px;}
+        .card-body{padding:0;}
+        table{border-collapse:collapse;width:100%;}
+        @media print{@page{size:A4 landscape;margin:8mm;}body{padding:0;}}
+    </style></head><body>${area.outerHTML}</body></html>`;
+    iframe.onload = function() {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+    };
+    document.body.appendChild(iframe);
+}
+
+function downloadOsmExcel() {
+    const area = document.getElementById('osm-print-area');
+    if (!area) { showToast('No report loaded', 'error'); return; }
     const sel = document.getElementById('osm-line');
-    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || 'Line') : 'Line';
     const date = document.getElementById('osm-date')?.value || '';
-    const w = window.open('', '_blank');
-    w.document.write(`<!DOCTYPE html><html><head>
-        <title>OSM Report - ${lineText} - ${date}</title>
+    const filename = `OSM_${lineText.replace(/[^a-zA-Z0-9]/g, '_')}_${date}.xls`;
+
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+        xmlns:x="urn:schemas-microsoft-com:office:excel"
+        xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="UTF-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
+        <x:ExcelWorksheet><x:Name>OSM Report</x:Name>
+        <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+        </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
         <style>
-            body { font-family: Arial, sans-serif; font-size: 11px; margin: 10px; }
-            table { border-collapse: collapse; width: 100%; }
-            th, td { border: 1px solid #999; padding: 3px 5px; }
-            .card-header { margin-bottom: 8px; }
-            .card-title { font-size: 14px; font-weight: bold; margin: 0 0 4px; }
-            @media print { body { margin: 0; } }
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #999; padding: 4px 6px; font-size: 11px; font-family: Arial, sans-serif; }
+            th { background: #1e3a5f; color: #fff; font-weight: bold; }
+            .card-title { font-size: 14px; font-weight: bold; }
         </style>
-        </head><body>${area.innerHTML}
-        <script>window.onload=function(){window.print();}<\/script>
-        </body></html>`);
-    w.document.close();
+        </head><body>${area.innerHTML}</body></html>`;
+
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ============================================================================
+// EFFICIENCY REPORT
+// ============================================================================
+async function loadEfficiencyReport() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Efficiency Report</h1>
+                <p class="page-subtitle">Line Efficiency &amp; Worker Efficiency per workstation</p>
+            </div>
+            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
+                <div class="ie-date">
+                    <label for="eff-line">Line</label>
+                    <select id="eff-line" class="form-control" style="min-width:180px;"></select>
+                </div>
+                <div class="ie-date">
+                    <label for="eff-date">Date</label>
+                    <input type="date" id="eff-date" value="${today}">
+                </div>
+                <button class="btn btn-secondary" onclick="refreshEfficiencyReport()">Refresh</button>
+                <button class="btn btn-secondary" onclick="printEfficiencyReport()">&#9113; Print</button>
+                <button class="btn btn-secondary" onclick="downloadEfficiencyExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
+            </div>
+        </div>
+        <div id="eff-content">
+            <div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>
+        </div>
+    `;
+
+    try {
+        const r = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await r.json();
+        if (result.success) {
+            const sel = document.getElementById('eff-line');
+            sel.innerHTML = '<option value="">-- Select Line --</option>' +
+                result.data.filter(l => l.is_active).map(l =>
+                    `<option value="${l.id}">${l.line_name} (${l.line_code})</option>`
+                ).join('');
+            sel.addEventListener('change', refreshEfficiencyReport);
+        }
+    } catch (e) { /* ignore */ }
+
+    document.getElementById('eff-date').addEventListener('change', refreshEfficiencyReport);
+}
+
+async function refreshEfficiencyReport() {
+    const lineId = document.getElementById('eff-line')?.value;
+    const date   = document.getElementById('eff-date')?.value;
+    const container = document.getElementById('eff-content');
+    if (!container) return;
+
+    if (!lineId) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
+        return;
+    }
+
+    container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+
+    try {
+        const r = await fetch(`${API_BASE}/efficiency-report?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const resp = await r.json();
+
+        if (!resp.success) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${resp.error || 'Failed to load report'}</div></div>`;
+            return;
+        }
+        if (!resp.data) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">${resp.message || 'No plan found for this line on the selected date.'}</div></div>`;
+            return;
+        }
+        if (!resp.data.workstations?.length) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No workstation plan found for <strong>${resp.data.line.line_name}</strong> on <strong>${date}</strong>.<br>Upload a line plan or generate workstations first.</div></div>`;
+            return;
+        }
+
+        container.innerHTML = _buildEfficiencyTable(resp.data);
+    } catch (err) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
+    }
+}
+
+function _buildEfficiencyTable(data) {
+    const { line, plan, summary, ot_summary, workstations } = data;
+    const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
+    const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
+    const tcS = tdS + 'text-align:center;';
+
+    // Line Efficiency color
+    const le = summary.line_efficiency_pct;
+    const leColor = le === null ? '#6b7280' : le >= 75 ? '#16a34a' : le >= 50 ? '#d97706' : '#dc2626';
+    const leText = le === null ? 'N/A' : le.toFixed(2) + '%';
+
+    // Summary bar
+    const summaryBar = `
+        <div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:12px;align-items:center;">
+            <span style="font-size:12px;"><strong>Product:</strong> ${plan.product_name || '-'} (${plan.product_code || '-'})</span>
+            <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
+            <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
+            <span style="font-size:12px;"><strong>Working Hours:</strong> ${plan.working_hours.toFixed(1)} h</span>
+            <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
+            <span style="font-size:12px;"><strong>Line Output:</strong> ${summary.line_output}</span>
+            <span style="font-size:12px;"><strong>Target:</strong> ${plan.target_units}</span>
+            ${summary.total_ot_hours > 0 ? `<span style="font-size:12px;"><strong>Total OT Hours:</strong> ${summary.total_ot_hours.toFixed(2)} h</span>` : ''}
+            <span style="font-size:14px;font-weight:700;color:${leColor};margin-left:auto;">LINE EFFICIENCY: ${leText}</span>
+        </div>`;
+
+    // OT summary row (if OT data exists)
+    const otRow = ot_summary ? `
+        <tr style="background:#fef9c3;">
+            <td colspan="10" style="${tdS}font-size:12px;font-weight:600;text-align:center;">
+                OT: ${ot_summary.active_ot_workstations} active workstations
+                &nbsp;&bull;&nbsp; OT Output: ${ot_summary.total_ot_output}
+                &nbsp;&bull;&nbsp; OT Target: ${ot_summary.ot_target_units}
+            </td>
+        </tr>` : '';
+
+    const dataRows = workstations.map(ws => {
+        // Workload% color
+        const wl = parseFloat(ws.workload_pct || 0);
+        const wlColor = wl >= 100 ? '#dc2626' : wl >= 80 ? '#d97706' : '#16a34a';
+        const wlBg    = wl >= 100 ? '#fee2e2' : wl >= 80 ? '#fef3c7' : '#dcfce7';
+
+        // Worker Efficiency color
+        const we = ws.worker_efficiency_pct;
+        let weText, weColor, weBg;
+        if (we === null || !ws.employee_code) {
+            weText = '—'; weColor = '#6b7280'; weBg = '#f9fafb';
+        } else {
+            weText = we.toFixed(2) + '%';
+            weColor = we >= 75 ? '#16a34a' : we >= 50 ? '#d97706' : '#dc2626';
+            weBg    = we >= 75 ? '#dcfce7'  : we >= 50 ? '#fef3c7'  : '#fee2e2';
+        }
+
+        const otMinDisplay = ws.ot_minutes > 0 ? ws.ot_minutes.toFixed(0) + ' min' : '—';
+        const otOutDisplay = ws.ot_output > 0 ? ws.ot_output : '—';
+
+        return `<tr>
+            <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
+            <td style="${tdS}">${ws.employee_code ? `${ws.employee_name} (${ws.employee_code})` : '<span style="color:#9ca3af;">Unassigned</span>'}</td>
+            <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
+            <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
+            <td style="${tcS}font-weight:700;color:${wlColor};background:${wlBg};">${wl.toFixed(1)}%</td>
+            <td style="${tcS}font-weight:700;">${ws.regular_output}</td>
+            <td style="${tcS}color:#7c3aed;">${otMinDisplay}</td>
+            <td style="${tcS}color:#7c3aed;">${otOutDisplay}</td>
+            <td style="${tcS}font-weight:700;color:${weColor};background:${weBg};">${weText}</td>
+        </tr>`;
+    }).join('');
+
+    return `<div id="efficiency-print-area">
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title">EFFICIENCY REPORT</h3>
+                    <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
+                        ${line.line_name} (${line.line_code})
+                        &nbsp;&bull;&nbsp; Date: ${document.getElementById('eff-date')?.value || ''}
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                ${summaryBar}
+                <div style="overflow-x:auto;">
+                    <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
+                        <thead>
+                            <tr>
+                                <th style="${thS}min-width:60px;">GROUP</th>
+                                <th style="${thS}min-width:70px;">WS</th>
+                                <th style="${thS}min-width:160px;white-space:normal;">EMPLOYEE</th>
+                                <th style="${thS}min-width:80px;">CYCLE TIME<br>(s)</th>
+                                <th style="${thS}min-width:75px;">TAKT TIME<br>(s)</th>
+                                <th style="${thS}min-width:70px;">WKLD%</th>
+                                <th style="${thS}min-width:70px;">OUTPUT</th>
+                                <th style="${thS}min-width:70px;">OT MIN</th>
+                                <th style="${thS}min-width:75px;">OT OUTPUT</th>
+                                <th style="${thS}min-width:90px;">WORKER EFF%</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${dataRows}
+                            ${otRow}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+function printEfficiencyReport() {
+    const area = document.getElementById('efficiency-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><style>
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:8mm;}
+        .card{border:1px solid #d1d5db;border-radius:4px;overflow:hidden;}
+        .card-header{padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
+        .card-title{font-size:14px;font-weight:700;margin:0 0 4px;}
+        .card-body{padding:8px;}
+        table{border-collapse:collapse;width:100%;}
+        @media print{@page{size:A4 landscape;margin:8mm;}body{padding:0;}}
+    </style></head><body>${area.outerHTML}</body></html>`;
+    iframe.onload = function() {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+    };
+    document.body.appendChild(iframe);
+}
+
+function downloadEfficiencyExcel() {
+    const area = document.getElementById('efficiency-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const sel = document.getElementById('eff-line');
+    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    const date = document.getElementById('eff-date')?.value || '';
+    const filename = `Efficiency_${lineText.replace(/[^a-zA-Z0-9]/g, '_')}_${date}.xls`;
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+        xmlns:x="urn:schemas-microsoft-com:office:excel"
+        xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="UTF-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
+        <x:ExcelWorksheet><x:Name>Efficiency</x:Name>
+        <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+        </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+        <style>
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #999; padding: 4px 6px; font-size: 11px; font-family: Arial, sans-serif; }
+            th { background: #1e3a5f; color: #fff; font-weight: bold; }
+        </style>
+        </head><body>${area.innerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

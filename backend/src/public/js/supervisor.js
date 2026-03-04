@@ -675,6 +675,8 @@ function showReasonRequiredBanner(violations) {
     banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+window._hourlyMode = 'regular';
+
 async function loadHourlyProcedure() {
     const content = document.getElementById('supervisor-content');
     content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
@@ -700,10 +702,10 @@ async function loadHourlyProcedure() {
 
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Select Line & Hour</h3>
+                    <h3 class="card-title">Select Line & Date</h3>
                 </div>
                 <div class="card-body">
-                    <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:end;">
+                    <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:end; margin-bottom:14px;">
                         <div style="flex:1; min-width:180px;">
                             <label class="form-label">Line</label>
                             <select class="form-control" id="hourly-line">
@@ -715,7 +717,7 @@ async function loadHourlyProcedure() {
                             <label class="form-label">Date</label>
                             <input type="date" class="form-control" id="hourly-date" value="${today}">
                         </div>
-                        <div style="min-width:100px;">
+                        <div style="min-width:100px;" id="hourly-hour-wrap">
                             <label class="form-label">Hour</label>
                             <select class="form-control" id="hourly-hour">
                                 ${Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
@@ -725,29 +727,57 @@ async function loadHourlyProcedure() {
                             </select>
                         </div>
                     </div>
-                </div>
-            </div>
-
-            <div id="hourly-summary" style="margin-top:16px;"></div>
-
-            <div id="hourly-scan-panel" class="card" style="margin-top:16px; display:none;">
-                <div class="card-header">
-                    <h3 class="card-title">Scan Workstation QR</h3>
-                    <button class="btn btn-secondary btn-sm" id="hourly-cancel-scan">Cancel</button>
-                </div>
-                <div class="card-body">
-                    <div class="camera-panel">
-                        <video id="hourly-camera" playsinline muted style="width:100%; max-height:300px; border-radius:8px; background:#000;"></video>
+                    <div style="display:flex; gap:8px; border-bottom:2px solid #e5e7eb; padding-bottom:0;">
+                        <button id="ht-regular-btn" onclick="switchHourlyMode('regular')"
+                            style="padding:8px 18px; border:none; border-radius:6px 6px 0 0; cursor:pointer; font-weight:600; font-size:14px; background:#3b82f6; color:#fff;">
+                            Regular Shift
+                        </button>
+                        <button id="ht-ot-btn" onclick="switchHourlyMode('ot')"
+                            style="padding:8px 18px; border:none; border-radius:6px 6px 0 0; cursor:pointer; font-weight:600; font-size:14px; background:#f3f4f6; color:#374151;">
+                            OT Progress
+                        </button>
                     </div>
                 </div>
             </div>
 
-            <div id="hourly-entry-panel" class="card" style="margin-top:16px; display:none;">
-                <div class="card-header">
-                    <h3 class="card-title" id="hourly-entry-title">Enter Output</h3>
+            <div id="hourly-regular-section">
+                <div id="hourly-summary" style="margin-top:16px;"></div>
+
+                <div id="hourly-scan-panel" class="card" style="margin-top:16px; display:none;">
+                    <div class="card-header">
+                        <h3 class="card-title">Scan Workstation QR</h3>
+                        <button class="btn btn-secondary btn-sm" id="hourly-cancel-scan">Cancel</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="camera-panel">
+                            <video id="hourly-camera" playsinline muted style="width:100%; max-height:300px; border-radius:8px; background:#000;"></video>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <div id="hourly-entry-form"></div>
+
+                <div id="hourly-entry-panel" class="card" style="margin-top:16px; display:none;">
+                    <div class="card-header">
+                        <h3 class="card-title" id="hourly-entry-title">Enter Output</h3>
+                    </div>
+                    <div class="card-body">
+                        <div id="hourly-entry-form"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="hourly-ot-section" style="display:none; margin-top:16px;">
+                <div id="ot-summary-area"></div>
+                <div id="ot-scan-panel" class="card" style="margin-top:16px; display:none;">
+                    <div class="card-header">
+                        <h3 class="card-title" id="ot-scan-label">Scan Worker QR</h3>
+                        <button class="btn btn-secondary btn-sm" onclick="cancelOtScan()">Cancel</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="camera-panel">
+                            <video id="ot-camera" playsinline muted style="width:100%; max-height:300px; border-radius:8px; background:#000;"></video>
+                        </div>
+                        <div id="ot-scan-result" style="margin-top:12px;"></div>
+                    </div>
                 </div>
             </div>
         `;
@@ -758,6 +788,10 @@ async function loadHourlyProcedure() {
         const dateSel = document.getElementById('hourly-date');
         dateSel.addEventListener('focus', function () { this._prevValue = this.value; });
         dateSel.addEventListener('change', function () {
+            if (window._hourlyMode === 'ot') {
+                if (hourlyState.lineId) loadOtPlanData(hourlyState.lineId, this.value);
+                return;
+            }
             const prevHour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
             const violations = checkHourPendingReasons(prevHour);
             if (violations.length > 0) {
@@ -772,6 +806,7 @@ async function loadHourlyProcedure() {
         const hourSel = document.getElementById('hourly-hour');
         hourSel.addEventListener('mousedown', function () { this._prevValue = this.value; });
         hourSel.addEventListener('change', function () {
+            if (window._hourlyMode === 'ot') return;
             const prevHour = parseInt(this._prevValue || this.value, 10);
             const violations = checkHourPendingReasons(prevHour);
             if (violations.length > 0) {
@@ -785,11 +820,44 @@ async function loadHourlyProcedure() {
 
         document.getElementById('hourly-cancel-scan').addEventListener('click', cancelHourlyScan);
 
+        window._hourlyMode = 'regular';
         hourlyState.lineId = null;
         hourlyState.processes = [];
         hourlyState.selectedProcess = null;
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function switchHourlyMode(mode) {
+    window._hourlyMode = mode;
+    const regularBtn = document.getElementById('ht-regular-btn');
+    const otBtn = document.getElementById('ht-ot-btn');
+    const regularSec = document.getElementById('hourly-regular-section');
+    const otSec = document.getElementById('hourly-ot-section');
+    const hourWrap = document.getElementById('hourly-hour-wrap');
+    if (!regularBtn || !otBtn) return;
+    if (mode === 'ot') {
+        regularBtn.style.background = '#f3f4f6'; regularBtn.style.color = '#374151';
+        otBtn.style.background = '#7c3aed'; otBtn.style.color = '#fff';
+        if (regularSec) regularSec.style.display = 'none';
+        if (otSec) otSec.style.display = '';
+        if (hourWrap) hourWrap.style.display = 'none';
+        stopCamera();
+        if (hourlyState.lineId) {
+            const date = document.getElementById('hourly-date')?.value || new Date().toISOString().slice(0, 10);
+            loadOtPlanData(hourlyState.lineId, date);
+        } else {
+            const area = document.getElementById('ot-summary-area');
+            if (area) area.innerHTML = '<div class="card"><div class="card-body"><div class="alert alert-info">Select a line to view OT plan.</div></div></div>';
+        }
+    } else {
+        regularBtn.style.background = '#3b82f6'; regularBtn.style.color = '#fff';
+        otBtn.style.background = '#f3f4f6'; otBtn.style.color = '#374151';
+        if (regularSec) regularSec.style.display = '';
+        if (otSec) otSec.style.display = 'none';
+        if (hourWrap) hourWrap.style.display = '';
+        stopCamera();
     }
 }
 
@@ -800,6 +868,16 @@ async function onHourlyLineChange() {
     hourlyState.workstations = null;
     stopCamera();
     hideHourlyPanels();
+
+    if (window._hourlyMode === 'ot') {
+        const date = document.getElementById('hourly-date')?.value || new Date().toISOString().slice(0, 10);
+        if (lineId) loadOtPlanData(lineId, date);
+        else {
+            const area = document.getElementById('ot-summary-area');
+            if (area) area.innerHTML = '';
+        }
+        return;
+    }
 
     const container = document.getElementById('hourly-summary');
     if (!lineId) {
@@ -1434,4 +1512,325 @@ function hideHourlyPanels() {
     const entryPanel = document.getElementById('hourly-entry-panel');
     if (scanPanel) scanPanel.style.display = 'none';
     if (entryPanel) entryPanel.style.display = 'none';
+}
+
+// ==========================================
+// OT PROGRESS SECTION
+// ==========================================
+const otPlanState = {
+    lineId: null,
+    date: null,
+    otPlan: null,
+    workstations: [],
+    employees: [],
+    selectedWsCode: null   // workstation code currently being assigned an employee
+};
+
+async function loadOtPlanData(lineId, date) {
+    const area = document.getElementById('ot-summary-area');
+    if (!area) return;
+    otPlanState.lineId = lineId;
+    otPlanState.date = date;
+    area.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/ot-plan/${lineId}?date=${date}`);
+        const result = await r.json();
+        if (!result.success) throw new Error(result.error || 'Failed to load OT plan');
+        if (!result.data || !result.ot_enabled) {
+            area.innerHTML = `<div class="card"><div class="card-body"><div class="alert alert-info">No OT plan enabled for this line on the selected date. Ask admin to enable OT from the Daily Plans page.</div></div></div>`;
+            return;
+        }
+        otPlanState.otPlan = result.data.ot_plan;
+        otPlanState.workstations = result.data.workstations || [];
+        otPlanState.employees = result.data.employees || [];
+        renderOtPlanSection();
+    } catch (err) {
+        area.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function renderOtPlanSection() {
+    const area = document.getElementById('ot-summary-area');
+    if (!area) return;
+    const plan = otPlanState.otPlan;
+    const workstations = otPlanState.workstations;
+
+    const globalMins = plan.global_ot_minutes || 0;
+    const globalTarget = plan.ot_target_units || 0;
+
+    const wsRows = workstations.map(ws => {
+        const wsMins = ws.ot_minutes || 0;
+        const isActive = ws.is_active !== false;
+        const processList = (ws.processes || []).map(p => p.operation_name).join(', ') || '—';
+        const empCell = ws.assigned_emp_name
+            ? `<span style="color:#16a34a;font-weight:600;">${ws.assigned_emp_code} - ${ws.assigned_emp_name}</span>
+               <button onclick="startOtScan(${JSON.stringify(ws.workstation_code)})" class="btn btn-secondary btn-sm" style="margin-left:6px;">Change</button>`
+            : `<span style="color:#dc2626;font-size:0.85em;">Unassigned</span>
+               <button onclick="startOtScan(${JSON.stringify(ws.workstation_code)})" class="btn btn-primary btn-sm" style="margin-left:6px;">Scan Worker</button>`;
+        const qty = ws.progress ? ws.progress.quantity : '';
+        const qaRej = ws.progress ? ws.progress.qa_rejection : '';
+        const remarks = ws.progress ? (ws.progress.remarks || '') : '';
+        const rowStyle = isActive ? '' : 'opacity:0.5;';
+        const samSecs = parseFloat(ws.actual_sam_seconds || 0);
+        const taktSecs = globalTarget > 0 ? (globalMins * 60 / globalTarget) : 0;
+        const wkld = (taktSecs > 0 && samSecs > 0) ? Math.round((samSecs / taktSecs) * 100) : 0;
+        const wkldColor = wkld >= 90 ? '#16a34a' : wkld >= 80 ? '#d97706' : '#dc2626';
+
+        return `<tr style="${rowStyle}" id="ot-row-${ws.workstation_code}">
+            <td style="font-weight:700;">${ws.workstation_code}</td>
+            <td>${ws.group_name || '—'}</td>
+            <td style="font-size:0.82em;color:#6b7280;">${processList}</td>
+            <td style="text-align:center;">
+                <button onclick="toggleOtWsActive(${JSON.stringify(ws.workstation_code)}, ${!isActive})"
+                    class="btn btn-sm" style="min-width:70px; background:${isActive ? '#dcfce7' : '#fee2e2'}; color:${isActive ? '#16a34a' : '#dc2626'}; border:1px solid ${isActive ? '#bbf7d0' : '#fecaca'};">
+                    ${isActive ? '● Active' : '○ Inactive'}
+                </button>
+            </td>
+            <td style="text-align:center;${wkld > 0 ? 'color:' + wkldColor + ';font-weight:600;' : ''}">${wkld > 0 ? wkld + '%' : '—'}</td>
+            <td style="text-align:center;">
+                <input type="number" id="ot-mins-${ws.workstation_code}" min="0" value="${wsMins > 0 ? wsMins : ''}"
+                    placeholder="${globalMins}" class="form-control" style="width:70px;display:inline-block;text-align:center;">
+            </td>
+            <td>${empCell}</td>
+            <td style="text-align:center;">
+                <input type="number" id="ot-qty-${ws.workstation_code}" min="0" value="${qty}"
+                    placeholder="0" class="form-control" style="width:80px;display:inline-block;text-align:center;" ${isActive ? '' : 'disabled'}>
+            </td>
+            <td style="text-align:center;">
+                <input type="number" id="ot-qar-${ws.workstation_code}" min="0" value="${qaRej}"
+                    placeholder="0" class="form-control" style="width:70px;display:inline-block;text-align:center;" ${isActive ? '' : 'disabled'}>
+            </td>
+            <td>
+                <input type="text" id="ot-rem-${ws.workstation_code}" value="${remarks}"
+                    placeholder="Remarks" class="form-control" style="min-width:100px;" ${isActive ? '' : 'disabled'}>
+            </td>
+            <td>
+                <button onclick="saveOtProgress(${JSON.stringify(ws.workstation_code)}, ${ws.id})" class="btn btn-primary btn-sm" ${isActive ? '' : 'disabled'}>Save</button>
+            </td>
+        </tr>`;
+    }).join('');
+
+    area.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+                <h3 class="card-title">OT Plan — ${plan.product_name}</h3>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <span style="font-size:0.85em;color:#6b7280;">
+                        Global OT Min: <input type="number" id="ot-global-mins" value="${globalMins}" min="0"
+                            class="form-control" style="width:70px;display:inline-block;text-align:center;margin:0 4px;">
+                        &nbsp;Target: <input type="number" id="ot-global-target" value="${globalTarget}" min="0"
+                            class="form-control" style="width:80px;display:inline-block;text-align:center;margin:0 4px;">
+                    </span>
+                    <button onclick="saveOtGlobalSettings()" class="btn btn-secondary btn-sm">Save Global Settings</button>
+                    <button onclick="saveAllOtMinutes()" class="btn btn-secondary btn-sm">Save OT Minutes</button>
+                </div>
+            </div>
+            <div class="card-body table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>WS</th>
+                            <th>Group</th>
+                            <th>Processes</th>
+                            <th style="text-align:center;">Status</th>
+                            <th style="text-align:center;">Wkld%</th>
+                            <th style="text-align:center;">OT Min</th>
+                            <th>Employee</th>
+                            <th style="text-align:center;">Output</th>
+                            <th style="text-align:center;">QA Rej</th>
+                            <th>Remarks</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>${wsRows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+async function toggleOtWsActive(wsCode, makeActive) {
+    const plan = otPlanState.otPlan;
+    if (!plan || !otPlanState.lineId) return;
+    // Update locally for immediate feedback
+    const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
+    if (!ws) return;
+    ws.is_active = makeActive;
+    // Save to server
+    try {
+        const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan/workstations`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                date: otPlanState.date,
+                workstations: [{ workstation_code: wsCode, is_active: makeActive, ot_minutes: ws.ot_minutes || 0 }]
+            })
+        });
+        const result = await r.json();
+        if (!result.success) { showToast(result.error || 'Failed to update status', 'error'); ws.is_active = !makeActive; }
+        else showToast(`${wsCode} ${makeActive ? 'activated' : 'deactivated'}`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error'); ws.is_active = !makeActive;
+    }
+    renderOtPlanSection();
+}
+
+async function saveOtGlobalSettings() {
+    const mins = parseInt(document.getElementById('ot-global-mins')?.value || 0, 10);
+    const target = parseInt(document.getElementById('ot-global-target')?.value || 0, 10);
+    if (!otPlanState.lineId || !otPlanState.date) return;
+    try {
+        const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: otPlanState.date, product_id: otPlanState.otPlan.product_id, global_ot_minutes: mins, ot_target_units: target })
+        });
+        const result = await r.json();
+        if (!result.success) throw new Error(result.error || 'Failed');
+        otPlanState.otPlan.global_ot_minutes = mins;
+        otPlanState.otPlan.ot_target_units = target;
+        showToast('Global OT settings saved', 'success');
+        renderOtPlanSection();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function saveAllOtMinutes() {
+    if (!otPlanState.lineId || !otPlanState.date) return;
+    const payload = otPlanState.workstations.map(ws => ({
+        workstation_code: ws.workstation_code,
+        is_active: ws.is_active !== false,
+        ot_minutes: parseInt(document.getElementById('ot-mins-' + ws.workstation_code)?.value || 0, 10)
+    }));
+    try {
+        const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan/workstations`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: otPlanState.date, workstations: payload })
+        });
+        const result = await r.json();
+        if (!result.success) throw new Error(result.error || 'Failed');
+        // Update local state
+        payload.forEach(p => {
+            const ws = otPlanState.workstations.find(w => w.workstation_code === p.workstation_code);
+            if (ws) ws.ot_minutes = p.ot_minutes;
+        });
+        showToast('OT minutes saved', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function saveOtProgress(wsCode, otWorkstationId) {
+    const qty = parseInt(document.getElementById('ot-qty-' + wsCode)?.value || 0, 10);
+    const qaRej = parseInt(document.getElementById('ot-qar-' + wsCode)?.value || 0, 10);
+    const remarks = document.getElementById('ot-rem-' + wsCode)?.value || '';
+    if (!otPlanState.lineId || !otPlanState.date) return;
+    if (qty < 0) { showToast('Output must be 0 or more', 'error'); return; }
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/ot-progress`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: otPlanState.lineId, work_date: otPlanState.date, ot_workstation_id: otWorkstationId, quantity: qty, qa_rejection: qaRej, remarks })
+        });
+        const result = await r.json();
+        if (!result.success) throw new Error(result.error || 'Failed');
+        // Update local progress state
+        const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
+        if (ws) ws.progress = { quantity: qty, qa_rejection: qaRej, remarks };
+        showToast(`OT output saved for ${wsCode}`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function startOtScan(wsCode) {
+    otPlanState.selectedWsCode = wsCode;
+    const scanPanel = document.getElementById('ot-scan-panel');
+    const scanLabel = document.getElementById('ot-scan-label');
+    const scanResult = document.getElementById('ot-scan-result');
+    if (!scanPanel) return;
+    scanPanel.style.display = 'block';
+    if (scanLabel) scanLabel.textContent = `Scan Worker QR — ${wsCode}`;
+    if (scanResult) scanResult.innerHTML = '<p style="color:#6b7280;">Point camera at worker ID QR code...</p>';
+    scanPanel.scrollIntoView({ behavior: 'smooth' });
+
+    startCamera('ot-camera', null, async (rawValue) => {
+        stopCamera();
+        const payload = parseScanPayload(rawValue);
+        if (!payload) {
+            if (scanResult) scanResult.innerHTML = '<p style="color:#dc2626;">Invalid QR code. Try again.</p>';
+            return;
+        }
+        if (scanResult) scanResult.innerHTML = '<p>Resolving employee...</p>';
+        try {
+            // Try resolve-employee first
+            const r1 = await fetch(`${API_BASE}/supervisor/resolve-employee`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ line_id: otPlanState.lineId, employee_qr: rawValue })
+            });
+            const res1 = await r1.json();
+            let employee = null;
+            if (res1.success && res1.data?.employee) {
+                employee = res1.data.employee;
+            } else {
+                // Fallback: scan all employees
+                const r2 = await fetch(`${API_BASE}/employees`);
+                const res2 = await r2.json();
+                const employees = res2.data || [];
+                if (payload.id) employee = employees.find(e => e.id === payload.id);
+                else if (payload.raw) employee = employees.find(e => String(e.emp_code).trim() === String(payload.raw).trim());
+                else if (payload.emp_code) employee = employees.find(e => String(e.emp_code).trim() === String(payload.emp_code).trim());
+            }
+            if (!employee) {
+                if (scanResult) scanResult.innerHTML = '<p style="color:#dc2626;">Employee not found</p>';
+                return;
+            }
+            if (scanResult) scanResult.innerHTML = `
+                <div style="padding:12px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;">
+                    <p style="font-weight:700;font-size:1.1em;">${employee.emp_code} - ${employee.emp_name}</p>
+                    <button class="btn btn-primary" onclick="confirmOtAssign(${employee.id}, ${JSON.stringify(employee.emp_code)}, ${JSON.stringify(employee.emp_name)})" style="margin-top:8px;">Assign to ${wsCode}</button>
+                </div>`;
+        } catch (err) {
+            if (scanResult) scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
+        }
+    });
+}
+
+async function confirmOtAssign(empId, empCode, empName) {
+    const wsCode = otPlanState.selectedWsCode;
+    if (!wsCode || !otPlanState.lineId || !otPlanState.date) return;
+    try {
+        const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan/employee`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: otPlanState.date, workstation_code: wsCode, employee_id: empId })
+        });
+        const result = await r.json();
+        if (!result.success) throw new Error(result.error || 'Assignment failed');
+        // Update local state
+        const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
+        if (ws) {
+            ws.assigned_employee_id = empId;
+            ws.assigned_emp_code = empCode;
+            ws.assigned_emp_name = empName;
+        }
+        showToast(`${empName} assigned to OT ${wsCode}`, 'success');
+        // Hide scan panel and re-render
+        const scanPanel = document.getElementById('ot-scan-panel');
+        if (scanPanel) scanPanel.style.display = 'none';
+        otPlanState.selectedWsCode = null;
+        renderOtPlanSection();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function cancelOtScan() {
+    stopCamera();
+    const scanPanel = document.getElementById('ot-scan-panel');
+    if (scanPanel) scanPanel.style.display = 'none';
+    otPlanState.selectedWsCode = null;
 }

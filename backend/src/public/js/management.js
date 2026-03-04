@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             link.classList.add('active');
             const section = link.dataset.section;
             if (section === 'osm') loadMgmtOsmReport();
+            else if (section === 'efficiency') loadMgmtEfficiencyReport();
             else loadManagementDashboard();
         });
     });
@@ -440,7 +441,8 @@ async function loadMgmtOsmReport() {
                     <input type="date" id="osm-date" value="${today}">
                 </div>
                 <button class="btn btn-secondary" onclick="refreshMgmtOsmReport()">Refresh</button>
-                <button class="btn btn-secondary" onclick="printMgmtOsmReport()">Print</button>
+                <button class="btn btn-secondary" onclick="printMgmtOsmReport()">&#9113; Print</button>
+                <button class="btn btn-secondary" onclick="downloadMgmtOsmExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
             </div>
         </div>
         <div id="osm-content">
@@ -557,7 +559,7 @@ function _buildMgmtOsmTable(data) {
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
             <td style="${tcS}">${totalOutput}</td>
             <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
-            <td style="${tdS}font-size:11px;max-width:220px;word-break:break-word;">${ws.process_details}</td>
+            <td style="${tdS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${ws.process_details}</td>
             ${hourCells}
             <td style="${tcS}font-weight:700;">${totalTargetSoFar}</td>
             <td style="${tcS}font-weight:700;">${totalOutput}</td>
@@ -609,22 +611,288 @@ function _buildMgmtOsmTable(data) {
 function printMgmtOsmReport() {
     const area = document.getElementById('mgmt-osm-print-area');
     if (!area) { alert('No report loaded.'); return; }
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><style>
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:8mm;}
+        .card{border:1px solid #d1d5db;border-radius:4px;overflow:hidden;}
+        .card-header{padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
+        .card-title{font-size:14px;font-weight:700;margin:0 0 4px;}
+        .card-body{padding:0;}
+        table{border-collapse:collapse;width:100%;}
+        @media print{@page{size:A4 landscape;margin:8mm;}body{padding:0;}}
+    </style></head><body>${area.outerHTML}</body></html>`;
+    iframe.onload = function() {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+    };
+    document.body.appendChild(iframe);
+}
+
+function downloadMgmtOsmExcel() {
+    const area = document.getElementById('mgmt-osm-print-area');
+    if (!area) { alert('No report loaded.'); return; }
     const sel = document.getElementById('osm-line');
-    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || 'Line') : 'Line';
     const date = document.getElementById('osm-date')?.value || '';
-    const w = window.open('', '_blank');
-    w.document.write(`<!DOCTYPE html><html><head>
-        <title>OSM Report - ${lineText} - ${date}</title>
+    const filename = `OSM_${lineText.replace(/[^a-zA-Z0-9]/g, '_')}_${date}.xls`;
+
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+        xmlns:x="urn:schemas-microsoft-com:office:excel"
+        xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="UTF-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
+        <x:ExcelWorksheet><x:Name>OSM Report</x:Name>
+        <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+        </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
         <style>
-            body { font-family: Arial, sans-serif; font-size: 11px; margin: 10px; }
-            table { border-collapse: collapse; width: 100%; }
-            th, td { border: 1px solid #999; padding: 3px 5px; }
-            .card-header { margin-bottom: 8px; }
-            .card-title { font-size: 14px; font-weight: bold; margin: 0 0 4px; }
-            @media print { body { margin: 0; } }
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #999; padding: 4px 6px; font-size: 11px; font-family: Arial, sans-serif; }
+            th { background: #1e3a5f; color: #fff; font-weight: bold; }
+            .card-title { font-size: 14px; font-weight: bold; }
         </style>
-        </head><body>${area.innerHTML}
-        <script>window.onload=function(){window.print();}<\/script>
-        </body></html>`);
-    w.document.close();
+        </head><body>${area.innerHTML}</body></html>`;
+
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ============================================================================
+// EFFICIENCY REPORT
+// ============================================================================
+async function loadMgmtEfficiencyReport() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Efficiency Report</h1>
+                <p class="page-subtitle">Line Efficiency &amp; Worker Efficiency per workstation</p>
+            </div>
+            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
+                <div class="ie-date">
+                    <label for="mgmt-eff-line">Line</label>
+                    <select id="mgmt-eff-line" class="form-control" style="min-width:180px;"></select>
+                </div>
+                <div class="ie-date">
+                    <label for="mgmt-eff-date">Date</label>
+                    <input type="date" id="mgmt-eff-date" value="${today}">
+                </div>
+                <button class="btn btn-secondary" onclick="refreshMgmtEfficiencyReport()">Refresh</button>
+                <button class="btn btn-secondary" onclick="printMgmtEfficiencyReport()">&#9113; Print</button>
+                <button class="btn btn-secondary" onclick="downloadMgmtEfficiencyExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
+            </div>
+        </div>
+        <div id="mgmt-eff-content">
+            <div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>
+        </div>
+    `;
+
+    try {
+        const r = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await r.json();
+        if (result.success) {
+            const sel = document.getElementById('mgmt-eff-line');
+            sel.innerHTML = '<option value="">-- Select Line --</option>' +
+                result.data.filter(l => l.is_active).map(l =>
+                    `<option value="${l.id}">${l.line_name} (${l.line_code})</option>`
+                ).join('');
+            sel.addEventListener('change', refreshMgmtEfficiencyReport);
+        }
+    } catch (e) { /* ignore */ }
+
+    document.getElementById('mgmt-eff-date').addEventListener('change', refreshMgmtEfficiencyReport);
+}
+
+async function refreshMgmtEfficiencyReport() {
+    const lineId = document.getElementById('mgmt-eff-line')?.value;
+    const date   = document.getElementById('mgmt-eff-date')?.value;
+    const container = document.getElementById('mgmt-eff-content');
+    if (!container) return;
+
+    if (!lineId) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
+        return;
+    }
+
+    container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+
+    try {
+        const r = await fetch(`${API_BASE}/efficiency-report?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const resp = await r.json();
+
+        if (!resp.success) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${resp.error || 'Failed to load report'}</div></div>`;
+            return;
+        }
+        if (!resp.data) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">${resp.message || 'No plan found for this line on the selected date.'}</div></div>`;
+            return;
+        }
+        if (!resp.data.workstations?.length) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No workstation plan found for <strong>${resp.data.line.line_name}</strong> on <strong>${date}</strong>.<br>Upload a line plan or generate workstations first.</div></div>`;
+            return;
+        }
+
+        container.innerHTML = _buildMgmtEfficiencyTable(resp.data, date);
+    } catch (err) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
+    }
+}
+
+function _buildMgmtEfficiencyTable(data, date) {
+    const { line, plan, summary, ot_summary, workstations } = data;
+    const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
+    const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
+    const tcS = tdS + 'text-align:center;';
+
+    const le = summary.line_efficiency_pct;
+    const leColor = le === null ? '#6b7280' : le >= 75 ? '#16a34a' : le >= 50 ? '#d97706' : '#dc2626';
+    const leText = le === null ? 'N/A' : le.toFixed(2) + '%';
+
+    const summaryBar = `
+        <div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:12px;align-items:center;">
+            <span style="font-size:12px;"><strong>Product:</strong> ${plan.product_name || '-'} (${plan.product_code || '-'})</span>
+            <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
+            <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
+            <span style="font-size:12px;"><strong>Working Hours:</strong> ${plan.working_hours.toFixed(1)} h</span>
+            <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
+            <span style="font-size:12px;"><strong>Line Output:</strong> ${summary.line_output}</span>
+            <span style="font-size:12px;"><strong>Target:</strong> ${plan.target_units}</span>
+            ${summary.total_ot_hours > 0 ? `<span style="font-size:12px;"><strong>Total OT Hours:</strong> ${summary.total_ot_hours.toFixed(2)} h</span>` : ''}
+            <span style="font-size:14px;font-weight:700;color:${leColor};margin-left:auto;">LINE EFFICIENCY: ${leText}</span>
+        </div>`;
+
+    const otRow = ot_summary ? `
+        <tr style="background:#fef9c3;">
+            <td colspan="10" style="${tdS}font-size:12px;font-weight:600;text-align:center;">
+                OT: ${ot_summary.active_ot_workstations} active workstations
+                &nbsp;&bull;&nbsp; OT Output: ${ot_summary.total_ot_output}
+                &nbsp;&bull;&nbsp; OT Target: ${ot_summary.ot_target_units}
+            </td>
+        </tr>` : '';
+
+    const dataRows = workstations.map(ws => {
+        const wl = parseFloat(ws.workload_pct || 0);
+        const wlColor = wl >= 100 ? '#dc2626' : wl >= 80 ? '#d97706' : '#16a34a';
+        const wlBg    = wl >= 100 ? '#fee2e2' : wl >= 80 ? '#fef3c7' : '#dcfce7';
+
+        const we = ws.worker_efficiency_pct;
+        let weText, weColor, weBg;
+        if (we === null || !ws.employee_code) {
+            weText = '—'; weColor = '#6b7280'; weBg = '#f9fafb';
+        } else {
+            weText = we.toFixed(2) + '%';
+            weColor = we >= 75 ? '#16a34a' : we >= 50 ? '#d97706' : '#dc2626';
+            weBg    = we >= 75 ? '#dcfce7'  : we >= 50 ? '#fef3c7'  : '#fee2e2';
+        }
+
+        return `<tr>
+            <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
+            <td style="${tdS}">${ws.employee_code ? `${ws.employee_name} (${ws.employee_code})` : '<span style="color:#9ca3af;">Unassigned</span>'}</td>
+            <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
+            <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
+            <td style="${tcS}font-weight:700;color:${wlColor};background:${wlBg};">${wl.toFixed(1)}%</td>
+            <td style="${tcS}font-weight:700;">${ws.regular_output}</td>
+            <td style="${tcS}color:#7c3aed;">${ws.ot_minutes > 0 ? ws.ot_minutes.toFixed(0) + ' min' : '—'}</td>
+            <td style="${tcS}color:#7c3aed;">${ws.ot_output > 0 ? ws.ot_output : '—'}</td>
+            <td style="${tcS}font-weight:700;color:${weColor};background:${weBg};">${weText}</td>
+        </tr>`;
+    }).join('');
+
+    return `<div id="mgmt-efficiency-print-area">
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title">EFFICIENCY REPORT</h3>
+                    <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
+                        ${line.line_name} (${line.line_code})
+                        &nbsp;&bull;&nbsp; Date: ${date}
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                ${summaryBar}
+                <div style="overflow-x:auto;">
+                    <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
+                        <thead>
+                            <tr>
+                                <th style="${thS}min-width:60px;">GROUP</th>
+                                <th style="${thS}min-width:70px;">WS</th>
+                                <th style="${thS}min-width:160px;white-space:normal;">EMPLOYEE</th>
+                                <th style="${thS}min-width:80px;">CYCLE TIME<br>(s)</th>
+                                <th style="${thS}min-width:75px;">TAKT TIME<br>(s)</th>
+                                <th style="${thS}min-width:70px;">WKLD%</th>
+                                <th style="${thS}min-width:70px;">OUTPUT</th>
+                                <th style="${thS}min-width:70px;">OT MIN</th>
+                                <th style="${thS}min-width:75px;">OT OUTPUT</th>
+                                <th style="${thS}min-width:90px;">WORKER EFF%</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${dataRows}
+                            ${otRow}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+function printMgmtEfficiencyReport() {
+    const area = document.getElementById('mgmt-efficiency-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><style>
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:8mm;}
+        .card{border:1px solid #d1d5db;border-radius:4px;overflow:hidden;}
+        .card-header{padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
+        .card-title{font-size:14px;font-weight:700;margin:0 0 4px;}
+        .card-body{padding:8px;}
+        table{border-collapse:collapse;width:100%;}
+        @media print{@page{size:A4 landscape;margin:8mm;}body{padding:0;}}
+    </style></head><body>${area.outerHTML}</body></html>`;
+    iframe.onload = function() {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+    };
+    document.body.appendChild(iframe);
+}
+
+function downloadMgmtEfficiencyExcel() {
+    const area = document.getElementById('mgmt-efficiency-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const sel = document.getElementById('mgmt-eff-line');
+    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    const date = document.getElementById('mgmt-eff-date')?.value || '';
+    const filename = `Efficiency_${lineText.replace(/[^a-zA-Z0-9]/g, '_')}_${date}.xls`;
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+        xmlns:x="urn:schemas-microsoft-com:office:excel"
+        xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="UTF-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
+        <x:ExcelWorksheet><x:Name>Efficiency</x:Name>
+        <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+        </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+        <style>
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #999; padding: 4px 6px; font-size: 11px; font-family: Arial, sans-serif; }
+            th { background: #1e3a5f; color: #fff; font-weight: bold; }
+        </style>
+        </head><body>${area.innerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
