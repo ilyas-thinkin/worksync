@@ -199,7 +199,7 @@ async function loadDashboard() {
                     </div>
                     <div class="stat-info">
                         <h3>${stats.products_count}</h3>
-                        <p>Products</p>
+                        <p>Styles</p>
                     </div>
                 </div>
 
@@ -232,7 +232,7 @@ async function loadDashboard() {
                         <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
                         </svg>
-                        Add Product
+                        Add Style
                     </button>
                     <button class="btn btn-secondary" onclick="loadSection('operations'); document.querySelector('[data-section=operations]').click();">
                         View Operations Library
@@ -268,7 +268,7 @@ async function loadDashboard() {
                                 <thead>
                                     <tr>
                                         <th>Line</th>
-                                        <th>Product</th>
+                                        <th>Style</th>
                                         <th>Target</th>
                                         <th>Output</th>
                                         <th>Efficiency</th>
@@ -370,7 +370,7 @@ async function loadLines() {
                                     <th>Code</th>
                                     <th>Name</th>
                                     <th>Hall</th>
-                                    <th>Product</th>
+                                    <th>Style</th>
                                     <th>Target</th>
                                     <th>Actions</th>
                                 </tr>
@@ -623,10 +623,10 @@ async function showLineModal(line = null) {
                         <input type="text" class="form-control" name="hall_location" value="${line?.hall_location || ''}">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Product</label>
+                        <label class="form-label">Style</label>
                         <select class="form-control" name="current_product_id">
-                            <option value="">-- No Product --</option>
-                            ${products.map(p => `<option value="${p.id}" ${String(p.id) === String(currentProductId) ? 'selected' : ''}>${p.product_code} - ${p.product_name} (${p.buyer_name || 'No buyer'})</option>`).join('')}
+                            <option value="">-- No Style --</option>
+                            ${products.map(p => `<option value="${p.id}" ${String(p.id) === String(currentProductId) ? 'selected' : ''}>${p.product_code} — ${p.product_name} (${p.buyer_name || 'No buyer'})</option>`).join('')}
                         </select>
                     </div>
                     <div class="form-group">
@@ -908,7 +908,7 @@ async function viewLineDetails(lineId) {
                 <div class="stat-card">
                     <div class="stat-info">
                         <h3>${line.product_code ? `${line.product_code}` : '-'}</h3>
-                        <p>${line.changeover ? 'Primary Product' : 'Current Product'}</p>
+                        <p>${line.changeover ? 'Primary Style' : 'Current Style'}</p>
                         ${line.changeover ? `<div style="margin-top:4px;font-size:12px;color:#92400e;font-weight:600;">Incoming: ${line.incoming_product_code}</div>` : ''}
                     </div>
                 </div>
@@ -959,10 +959,10 @@ async function viewLineDetails(lineId) {
                             <table>
                                 <thead>
                                     <tr>
-                                        ${line.changeover ? '<th>Product</th>' : ''}
+                                        ${line.changeover ? '<th>Style</th>' : ''}
                                         <th>Seq</th>
                                         <th>Operation</th>
-                                        <th>Product</th>
+                                        <th>Style</th>
                                         <th>Workstation</th>
                                         <th>QR</th>
                                         <th>Cycle Time</th>
@@ -1851,15 +1851,15 @@ async function loadProducts() {
         content.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Products</h1>
-                    <p class="page-subtitle">Manage products and their process flows. Line assignment is handled in Line Product Setup.</p>
+                    <h1 class="page-title">Styles</h1>
+                    <p class="page-subtitle">Manage styles and their process flows. Line assignment is handled in Daily Plans.</p>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                     <button class="btn btn-primary" onclick="showProductModal()">
                         <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
                         </svg>
-                        Add Product
+                        Add Style
                     </button>
                     <button class="btn btn-secondary" onclick="downloadProductTemplate()">
                         <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1900,7 +1900,7 @@ async function loadProducts() {
                                 ${products.length === 0 ? `
                                     <tr>
                                         <td colspan="11" class="text-center" style="padding: 40px;">
-                                            No products found. Click "Add Product" to create one.
+                                            No styles found. Click "Add Style" to create one.
                                         </td>
                                     </tr>
                                 ` : products.map(prod => `
@@ -2584,7 +2584,7 @@ async function loadOperations() {
                                 <tr>
                                     <th>Code</th>
                                     <th>Name</th>
-                                    <th>Product</th>
+                                    <th>Category</th>
                                     <th>Used In</th>
                                     <th>Status</th>
                                     <th>Actions</th>
@@ -2682,7 +2682,7 @@ function showOperationModal(op = null) {
                         <textarea class="form-control" name="operation_description" rows="3">${op?.operation_description || ''}</textarea>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Product *</label>
+                        <label class="form-label">Category *</label>
                         <select class="form-control" name="operation_category" required>
                             ${categories.map(c => `<option value="${c}" ${op?.operation_category === c ? 'selected' : ''}>${c}</option>`).join('')}
                         </select>
@@ -3046,8 +3046,8 @@ async function loadDailyPlans() {
         <div class="ie-section">
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Line Product Setup</h1>
-                    <p class="page-subtitle">Set the main product and changeover product for each line.</p>
+                    <h1 class="page-title">Line Style Setup</h1>
+                    <p class="page-subtitle">Set the main style and changeover style for each line.</p>
                 </div>
                 <div class="ie-actions">
                     <div class="ie-date">
@@ -3239,9 +3239,9 @@ async function loadDailyPlanData() {
                 <thead>
                     <tr>
                         <th>Line</th>
-                        <th>Product (Primary)</th>
+                        <th>Style (Primary)</th>
                         <th>Target</th>
-                        <th>Incoming Product</th>
+                        <th>Incoming Style</th>
                         <th>Incoming Target</th>
                         <th>Changeover Progress</th>
                         <th>Status</th>
@@ -3269,10 +3269,10 @@ async function loadDailyPlanData() {
                                 </td>
                                 <td>
                                     <select class="form-control" id="plan-product-${line.id}" ${locked ? 'disabled' : ''}>
-                                        <option value="">Select product</option>
+                                        <option value="">Select Style</option>
                                         ${products.map(product => `
                                             <option value="${product.id}" ${Number(selectedProduct) === product.id ? 'selected' : ''}>
-                                                ${product.product_code} - ${product.product_name}
+                                                ${product.product_code} — ${product.product_name}
                                             </option>
                                         `).join('')}
                                     </select>
@@ -3635,6 +3635,24 @@ function ldEmpPickerSelect(optionEl, lineId) {
     picker.dataset.value = empId;
     picker.querySelector('.ld-emp-current-label').textContent = label;
     dropdown.style.display = 'none';
+
+    // OT mode: auto-save employee assignment via OT API
+    if (picker.dataset.otMode === '1') {
+        const otLine = optionEl.dataset.otLine || lineId;
+        const otDate = optionEl.dataset.otDate;
+        const otWs   = optionEl.dataset.otWs || picker.dataset.ws;
+        if (otDate && otWs) {
+            const empCode = label.split(' — ')[0];
+            assignOtEmployee(otLine, otDate, otWs, empId ? parseInt(empId, 10) : null, empCode);
+            if (empId) {
+                if (!window._otEmpState) window._otEmpState = {};
+                if (!window._otEmpState[otDate]) window._otEmpState[otDate] = {};
+                window._otEmpState[otDate][String(empId)] = { line_id: otLine, ws_code: otWs };
+            }
+        }
+        return;
+    }
+
     syncEmpDropdowns(lineId);
 }
 
@@ -3818,9 +3836,18 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
                 : '';
             // Dim the entire row when the WS is skipped in OT mode
             const rowOpacity = (useOT && g.is_ot_skipped) ? 'opacity:0.45;' : '';
+            const lpwpId = p.lpwp_id || null;
+            const osmChecked = !!p.osm_checked;
+            const osmCell = `<td style="text-align:center;">
+                       <input type="checkbox" class="ld-osm-check" data-process-id="${p.id}"
+                           title="OSM observation point" ${osmChecked ? 'checked' : ''}
+                           style="width:15px;height:15px;cursor:pointer;accent-color:#7c3aed;"
+                           ${lpwpId ? `onchange="toggleOsmCheck(${lpwpId}, this.checked)"` : ''}>
+                   </td>`;
             return `<tr style="background:${g.color};${rowOpacity}" data-process-id="${p.id}">
                 <td style="text-align:center;font-weight:600;">${p.sequence_number}</td>
                 <td><input type="text" class="form-control ld-group" style="font-size:0.82em;padding:3px 6px;width:64px;" value="${(p.group_name||'').trim()}" placeholder="G1" data-pid="${p.id}" onblur="recolorDetailRows(${lineId})"></td>
+                ${osmCell}
                 <td><input type="text" class="form-control ld-ws" style="font-size:0.82em;padding:3px 6px;width:64px;" value="${g.ws}" placeholder="W1" data-pid="${p.id}" onfocus="this.dataset.prev=this.value" onblur="validateAndApplyWs(this,${lineId})"></td>
                 ${wsQrCell}
                 <td>${p.operation_name}<br><small style="color:#9ca3af;font-size:0.78em;">${p.operation_code||''}</small></td>
@@ -4030,7 +4057,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
         <!-- Plan Settings Card -->
         <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
             <div style="flex:1;min-width:200px;">
-                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Product (Primary)</label>
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Style (Primary)</label>
                 <select id="ld-product-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
                     ${productOpts}
                 </select>
@@ -4040,7 +4067,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 <input type="number" id="ld-target-${lineId}" class="form-control" style="font-size:0.88em;width:90px;" value="${planPrimaryTarget}" min="0" ${lockedAttr}>
             </div>
             <div style="flex:1;min-width:200px;">
-                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Product</label>
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Style</label>
                 <select id="ld-incoming-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
                     ${incomingOpts}
                 </select>
@@ -4095,6 +4122,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                     <tr>
                         <th style="text-align:center;">Seq</th>
                         <th>Group</th>
+                        <th style="text-align:center;" title="OSM observation point — checked processes appear in OSM report">OSM</th>
                         <th>Workstation</th>
                         <th style="text-align:center;">WS QR</th>
                         <th>Operation</th>
@@ -4305,7 +4333,7 @@ function recolorDetailRows(lineId) {
             wsSkipMap.set(btn.dataset.ws, btn.dataset.otSkipped === 'true');
         });
     }
-    // Collect group/ws per process from text inputs.
+    // Collect group/ws/osm per process from text inputs and checkboxes.
     // In OT mode write employee back to ot_employee_id so regular assignments are preserved.
     const pidState = new Map();
     tbody.querySelectorAll('tr[data-process-id]').forEach(row => {
@@ -4313,7 +4341,8 @@ function recolorDetailRows(lineId) {
         const ws = row.querySelector('.ld-ws')?.value.trim() || '';
         const group = row.querySelector('.ld-group')?.value.trim() || '';
         const empVal = wsEmpMap.get(ws) || null;
-        const state = { workstation_code: ws, group_name: group || null };
+        const osmCb = row.querySelector('.ld-osm-check');
+        const state = { workstation_code: ws, group_name: group || null, osm_checked: osmCb ? osmCb.checked : false };
         if (isOT) {
             state.ot_employee_id = empVal;
             if (wsSkipMap.has(ws)) state.is_ot_skipped = wsSkipMap.get(ws);
@@ -4509,11 +4538,17 @@ async function saveLineDetails(lineId) {
     tbody.querySelectorAll('.ld-emp-picker').forEach(p => {
         wsEmpMap.set(p.dataset.ws, p.dataset.value || null);
     });
+    // Collect OSM checkbox state per process
+    const osmMap = new Map();
+    tbody.querySelectorAll('.ld-osm-check').forEach(cb => {
+        osmMap.set(parseInt(cb.dataset.processId, 10), cb.checked);
+    });
     const rows = activeProcesses.map(p => ({
         process_id: p.id,
         group_name: p.group_name || null,
         workstation_code: p.workstation_code || '',
-        employee_id: wsEmpMap.get(p.workstation_code) || null
+        employee_id: wsEmpMap.get(p.workstation_code) || null,
+        osm_checked: osmMap.get(p.id) || false
     }));
     try {
         const res = await fetch(`/api/lines/${lineId}/workstation-plan/save`, {
@@ -4793,19 +4828,47 @@ function fillOtLineCard(lineId, date, data) {
         const procs   = ws.processes.map(p => p.operation_code).join(' / ') || '—';
         const samDisp = ws.actual_sam_seconds ? (Math.round(parseFloat(ws.actual_sam_seconds) * 10) / 10) + 's' : '—';
         const emp     = ws.assigned_employee;
-        const empCell = emp
-            ? `<button id="${idPfx}-emp-btn-${ws.workstation_code}"
-                   onclick="openOtEmpPicker(${lineId},'${date}','${ws.workstation_code}',this)"
-                   style="font-size:12px;font-weight:600;padding:3px 10px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;border-radius:5px;cursor:pointer;">
-                   ${emp.emp_code} ▼
-               </button>
-               <button onclick="clearOtEmployee(${lineId},'${date}','${ws.workstation_code}')"
-                   style="margin-left:3px;background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px;line-height:1;" title="Remove">×</button>`
-            : `<button id="${idPfx}-emp-btn-${ws.workstation_code}"
-                   onclick="openOtEmpPicker(${lineId},'${date}','${ws.workstation_code}',this)"
-                   style="font-size:11px;padding:3px 10px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:5px;cursor:pointer;">
-                   Assign ▼
-               </button>`;
+        const taken   = window._otEmpState?.[date] || {};
+        const currentEmpLabel = emp ? `${emp.emp_code} — ${emp.emp_name}` : '— Not assigned —';
+        const noneOpt = `<div class="ld-emp-option" data-emp-id="" data-emp-label="— Not assigned —"
+            onclick="ldEmpPickerSelect(this,${lineId})" data-ot-line="${lineId}" data-ot-date="${date}" data-ot-ws="${ws.workstation_code}"
+            style="padding:7px 10px;cursor:pointer;font-size:0.82em;color:#9ca3af;border-bottom:1px solid #f3f4f6;">— Not assigned —</div>`;
+        const empOpts = noneOpt + employees.map(e => {
+            const eStr = String(e.id);
+            const isSel = emp && String(emp.employee_id || emp.id) === eStr;
+            const takenEntry = taken[eStr];
+            const isTaken = !isSel && takenEntry && takenEntry.ws_code !== ws.workstation_code;
+            const lbl = `${e.emp_code} — ${e.emp_name}`;
+            return `<div class="ld-emp-option${isTaken ? ' ld-emp-taken' : ''}"
+                data-emp-id="${eStr}" data-emp-label="${lbl.replace(/"/g,'&quot;')}"
+                data-ot-line="${lineId}" data-ot-date="${date}" data-ot-ws="${ws.workstation_code}"
+                onclick="ldEmpPickerSelect(this,${lineId})"
+                style="padding:7px 10px;cursor:${isTaken?'default':'pointer'};font-size:0.82em;
+                       background:${isSel?'#eff6ff':''};font-weight:${isSel?'600':'400'};
+                       color:${isTaken?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;">
+                <span>${e.emp_code} — ${e.emp_name}</span>
+                ${isTaken ? '<span style="color:#f87171;font-size:11px;margin-left:6px;">Taken ✗</span>' : ''}
+            </div>`;
+        }).join('');
+        const empCell = `<div class="ld-emp-picker" data-ws="${ws.workstation_code}" data-value="${emp ? (emp.employee_id || emp.id) : ''}" data-ot-mode="1" style="position:relative;">
+            <div class="ld-emp-display" onclick="ldEmpPickerToggle(this.parentElement,${lineId})"
+                style="cursor:pointer;padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;
+                       font-size:0.82em;min-width:175px;background:#fff;display:flex;
+                       justify-content:space-between;align-items:center;gap:4px;user-select:none;">
+                <span class="ld-emp-current-label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${currentEmpLabel}</span>
+                <span style="color:#9ca3af;font-size:10px;flex-shrink:0;">▾</span>
+            </div>
+            <div class="ld-emp-dropdown" style="display:none;position:absolute;left:0;top:calc(100% + 3px);
+                 z-index:600;background:#fff;border:1px solid #d1d5db;border-radius:8px;
+                 box-shadow:0 6px 24px rgba(0,0,0,.15);min-width:260px;overflow:hidden;">
+                <div style="padding:6px 6px 4px;border-bottom:1px solid #f3f4f6;">
+                    <input class="ld-emp-search form-control" style="font-size:0.82em;padding:5px 8px;"
+                        placeholder="🔍 Search by name or code..."
+                        oninput="ldEmpPickerFilter(this)" onclick="event.stopPropagation()">
+                </div>
+                <div class="ld-emp-options" style="max-height:220px;overflow-y:auto;">${empOpts}</div>
+            </div>
+        </div>`;
         return `
         <tr style="${isActive ? '' : 'opacity:0.45;'}">
             <td style="font-weight:600;padding:8px 10px;">${ws.workstation_code}</td>
@@ -4845,7 +4908,7 @@ function fillOtLineCard(lineId, date, data) {
         <!-- Settings row -->
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;">
             <div>
-                <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Product</label>
+                <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Style</label>
                 <select id="${idPfx}-product" style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;min-width:180px;">${productOpts}</select>
             </div>
             <div>
@@ -5060,18 +5123,16 @@ async function assignOtEmployee(lineId, date, wsCode, empId, empCode) {
         if (!window._otEmpState[date]) window._otEmpState[date] = {};
         window._otEmpState[date][String(empId)] = { line_id: lineId, ws_code: wsCode };
 
-        // Update the cell — use same clickable-chip style so employee can be changed again
+        // Update the ld-emp-picker display inline
         const pfx  = `otc-${lineId}`;
         const cell = document.getElementById(`${pfx}-emp-${wsCode}`);
         if (cell) {
-            cell.innerHTML = `
-                <button id="${pfx}-emp-btn-${wsCode}"
-                    onclick="openOtEmpPicker(${lineId},'${date}','${wsCode}',this)"
-                    style="font-size:12px;font-weight:600;padding:3px 10px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;border-radius:5px;cursor:pointer;">
-                    ${empCode} ▼
-                </button>
-                <button onclick="clearOtEmployee(${lineId},'${date}','${wsCode}')"
-                    style="margin-left:3px;background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px;line-height:1;" title="Remove">×</button>`;
+            const picker = cell.querySelector('.ld-emp-picker');
+            if (picker) {
+                picker.dataset.value = String(empId || '');
+                const lbl = picker.querySelector('.ld-emp-current-label');
+                if (lbl) lbl.textContent = empCode ? `${empCode}` : '— Not assigned —';
+            }
         }
     } catch (err) {
         showToast(err.message, 'error');
@@ -5096,14 +5157,16 @@ async function clearOtEmployee(lineId, date, wsCode) {
                 }
             });
         }
-        // Update cell to show Assign button
+        // Reset the ld-emp-picker display to unassigned
         const pfx  = `otc-${lineId}`;
         const cell = document.getElementById(`${pfx}-emp-${wsCode}`);
         if (cell) {
-            cell.innerHTML = `<button id="${pfx}-emp-btn-${wsCode}"
-                onclick="openOtEmpPicker(${lineId},'${date}','${wsCode}',this)"
-                style="font-size:11px;padding:3px 10px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:5px;cursor:pointer;">
-                Assign ▼</button>`;
+            const picker = cell.querySelector('.ld-emp-picker');
+            if (picker) {
+                picker.dataset.value = '';
+                const lbl = picker.querySelector('.ld-emp-current-label');
+                if (lbl) lbl.textContent = '— Not assigned —';
+            }
         }
     } catch (err) {
         showToast(err.message, 'error');
@@ -6048,7 +6111,7 @@ function renderOTPlanDetails(panel, lineId, date, data) {
             <!-- Settings bar -->
             <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px 20px;margin-bottom:18px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
                 <div>
-                    <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Product</label>
+                    <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Style</label>
                     <select id="ot-product-sel" style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;min-width:200px;">
                         ${products.map(p => `<option value="${p.id}" ${p.id == ot_plan.product_id ? 'selected' : ''}>${p.product_code} — ${p.product_name}</option>`).join('')}
                     </select>
@@ -6402,6 +6465,22 @@ async function executeCopyPlan(fromLineId, fromDate, productId) {
     }
 }
 
+// Toggle OSM observation point checkbox for a workstation process
+async function toggleOsmCheck(lpwpId, checked) {
+    try {
+        const r = await fetch(`/api/workstation-plan/processes/${lpwpId}/osm`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ osm_checked: checked })
+        });
+        const result = await r.json();
+        if (!result.success) { showToast(result.error || 'Failed to update OSM', 'error'); return; }
+        showToast(checked ? 'Marked as OSM point' : 'OSM point removed', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 // ============================================================================
 // OSM REPORT — Stagewise Hourly OSM Report
 // ============================================================================
@@ -6412,7 +6491,7 @@ async function loadOsmReport() {
         <div class="page-header">
             <div>
                 <h1 class="page-title">Stagewise Hourly OSM Report</h1>
-                <p class="page-subtitle">Workstation-level hourly output tracking</p>
+                <p class="page-subtitle">Process-level OSM observation points with cumulative output</p>
             </div>
             <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
                 <div class="ie-date">
@@ -6420,8 +6499,12 @@ async function loadOsmReport() {
                     <select id="osm-line" class="form-control" style="min-width:180px;"></select>
                 </div>
                 <div class="ie-date">
-                    <label for="osm-date">Date</label>
-                    <input type="date" id="osm-date" value="${today}">
+                    <label for="osm-from-date">From</label>
+                    <input type="date" id="osm-from-date" value="${today}">
+                </div>
+                <div class="ie-date">
+                    <label for="osm-to-date">To</label>
+                    <input type="date" id="osm-to-date" value="${today}">
                 </div>
                 <button class="btn btn-secondary" onclick="refreshOsmReport()">Refresh</button>
                 <button class="btn btn-secondary" onclick="printOsmReport()">&#9113; Print</button>
@@ -6446,12 +6529,14 @@ async function loadOsmReport() {
         }
     } catch (e) { /* ignore */ }
 
-    document.getElementById('osm-date').addEventListener('change', refreshOsmReport);
+    document.getElementById('osm-from-date').addEventListener('change', refreshOsmReport);
+    document.getElementById('osm-to-date').addEventListener('change', refreshOsmReport);
 }
 
 async function refreshOsmReport() {
-    const lineId = document.getElementById('osm-line')?.value;
-    const date   = document.getElementById('osm-date')?.value;
+    const lineId  = document.getElementById('osm-line')?.value;
+    const fromDate = document.getElementById('osm-from-date')?.value;
+    const toDate   = document.getElementById('osm-to-date')?.value;
     const container = document.getElementById('osm-content');
     if (!container) return;
 
@@ -6463,7 +6548,9 @@ async function refreshOsmReport() {
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
 
     try {
-        const r = await fetch(`${API_BASE}/osm-report?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const params = new URLSearchParams({ line_id: lineId, to_date: toDate });
+        if (fromDate && fromDate !== toDate) params.set('from_date', fromDate);
+        const r = await fetch(`${API_BASE}/osm-report?${params}`, { credentials: 'include' });
         const data = await r.json();
 
         if (!data.success) {
@@ -6471,12 +6558,12 @@ async function refreshOsmReport() {
             return;
         }
 
-        if (!data.workstations?.length) {
+        if (data.no_osm_points || !data.osm_points?.length) {
             container.innerHTML = `
                 <div class="card">
                     <div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
-                        No workstation plan found for <strong>${data.line_name}</strong> on <strong>${date}</strong>.<br>
-                        Upload a line plan or generate workstations first.
+                        No OSM observation points configured for <strong>${data.line_name}</strong> on <strong>${toDate}</strong>.<br>
+                        Open <em>Daily Plans → Details</em> and check the <strong>OSM</strong> checkbox next to the processes you want to track.
                     </div>
                 </div>`;
             return;
@@ -6489,7 +6576,7 @@ async function refreshOsmReport() {
 }
 
 function _buildOsmTable(data) {
-    const { workstations, target_units, working_hours, in_time, out_time } = data;
+    const { osm_points, target_units, total_target, working_hours, in_time, out_time, from_date, to_date, buyer_name, product_code, product_name } = data;
     const inH  = parseInt((in_time  || '08:00').split(':')[0]);
     const outH = parseInt((out_time || '17:00').split(':')[0]);
 
@@ -6500,14 +6587,13 @@ function _buildOsmTable(data) {
         ? Math.round(target_units / working_hours) : 0;
 
     let maxDataHour = -1;
-    for (const ws of workstations) {
-        for (const h of Object.keys(ws.hourly)) {
+    for (const pt of osm_points) {
+        for (const h of Object.keys(pt.hourly)) {
             const hInt = parseInt(h);
             if (hInt > maxDataHour) maxDataHour = hInt;
         }
     }
-    const elapsedHours = maxDataHour >= inH
-        ? hours.filter(h => h <= maxDataHour).length : 0;
+    const elapsedHours = maxDataHour >= inH ? hours.filter(h => h <= maxDataHour).length : 0;
     const totalTargetSoFar = elapsedHours * perHourTarget;
 
     const ordinals = ['1ST','2ND','3RD','4TH','5TH','6TH','7TH','8TH','9TH','10TH','11TH','12TH'];
@@ -6523,45 +6609,52 @@ function _buildOsmTable(data) {
         `<td style="${tcS}font-weight:700;">${perHourTarget}</td>`
     ).join('');
 
-    const dataRows = workstations.map(ws => {
+    const dataRows = osm_points.map(pt => {
         const hourCells = hours.map(h => {
-            const d = ws.hourly[h];
+            const d = pt.hourly[h];
             const qty = (d && d.quantity != null) ? d.quantity : '';
             return `<td style="${tcS}">${qty}</td>`;
         }).join('');
 
-        const totalOutput = Object.values(ws.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
-        const blog = totalOutput - totalTargetSoFar;
+        const todayOutput = Object.values(pt.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
+        const cumOutput   = pt.cumulative_output || 0;
+        const blog = todayOutput - totalTargetSoFar;
         const blogColor = blog >= 0 ? '#16a34a' : '#dc2626';
-        const balToProd = totalOutput - target_units;
+        const balToProd = total_target - cumOutput;
 
         const reasons = [...new Set(
-            Object.values(ws.hourly).map(d => d.shortfall_reason).filter(Boolean)
+            Object.values(pt.hourly).map(d => d.shortfall_reason).filter(Boolean)
         )].join('; ');
 
         return `<tr>
-            <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
-            <td style="${tcS}">${totalOutput}</td>
-            <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
-            <td style="${tdS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${ws.process_details}</td>
+            <td style="${tcS}font-weight:700;color:#7c3aed;">${pt.osm_label}</td>
+            <td style="${tcS}font-weight:600;">${cumOutput}</td>
+            <td style="${tcS}font-weight:600;">${pt.workstation_code}</td>
+            <td style="${tdS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${pt.operation_code} - ${pt.operation_name}</td>
             ${hourCells}
-            <td style="${tcS}font-weight:700;">${totalTargetSoFar}</td>
-            <td style="${tcS}font-weight:700;">${totalOutput}</td>
+            <td style="${tcS}font-weight:700;">${total_target}</td>
+            <td style="${tcS}font-weight:700;">${todayOutput}</td>
             <td style="${tcS}font-weight:700;color:${blogColor};">${blog >= 0 ? '+' : ''}${blog}</td>
-            <td style="${tcS}">${balToProd >= 0 ? '+' : ''}${balToProd}</td>
+            <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
             <td style="${tdS}font-size:11px;">${reasons}</td>
         </tr>`;
     }).join('');
 
-    return `<div class="card" id="osm-print-area">
+    const dateRange = from_date && from_date !== to_date ? `${from_date} → ${to_date}` : to_date;
+    return `<div class="card" id="osm-print-area"
+        data-buyer="${(buyer_name||'').replace(/"/g,'&quot;')}"
+        data-style="${(product_code||'').replace(/"/g,'&quot;')}"
+        data-from="${from_date||to_date}"
+        data-to="${to_date}">
         <div class="card-header">
             <div>
                 <h3 class="card-title">STAGEWISE HOURLY OSM REPORT</h3>
                 <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
                     ${data.line_name} (${data.line_code})
-                    &nbsp;&bull;&nbsp; ${data.product_code} ${data.product_name}
-                    &nbsp;&bull;&nbsp; Date: ${data.date}
-                    &nbsp;&bull;&nbsp; Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
+                    &nbsp;&bull;&nbsp; Style: ${data.product_code} — ${data.product_name}
+                    &nbsp;&bull;&nbsp; Date: ${dateRange}
+                    &nbsp;&bull;&nbsp; Total Target: ${total_target} &nbsp;&bull;&nbsp; Daily Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
+                    &nbsp;&bull;&nbsp; ${osm_points.length} OSM points
                 </div>
             </div>
         </div>
@@ -6569,15 +6662,15 @@ function _buildOsmTable(data) {
             <table style="border-collapse:collapse;white-space:nowrap;width:100%;" id="osm-table">
                 <thead>
                     <tr>
-                        <th style="${thS}min-width:60px;">GROUP</th>
+                        <th style="${thS}min-width:55px;">OSM #</th>
                         <th style="${thS}min-width:80px;">CUMULATIVE<br>OUTPUT AS ON DATE</th>
-                        <th style="${thS}min-width:70px;">WORK<br>STATION</th>
+                        <th style="${thS}min-width:60px;">WS</th>
                         <th style="${thS}min-width:200px;white-space:normal;">PROCESS DETAILS</th>
                         ${hourHeaders}
                         <th style="${thS}min-width:75px;">TOTAL<br>TARGET</th>
                         <th style="${thS}min-width:80px;">TOTAL OUTPUT<br>(AS ON TIME)</th>
                         <th style="${thS}min-width:65px;">B.LOG</th>
-                        <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD<br>AS PER TODAY'S TARGET</th>
+                        <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD<br>(REMAINING)</th>
                         <th style="${thS}min-width:120px;white-space:normal;">REASON</th>
                     </tr>
                     <tr style="background:#dbeafe;">
@@ -6595,22 +6688,48 @@ function _buildOsmTable(data) {
 function printOsmReport() {
     const area = document.getElementById('osm-print-area');
     if (!area) { alert('No report loaded.'); return; }
+
+    const buyer  = area.dataset.buyer  || '';
+    const style  = area.dataset.style  || '';
+    const fromDt = area.dataset.from   || '';
+    const toDt   = area.dataset.to     || '';
+    const parts  = [buyer, style, 'OSM', fromDt, toDt !== fromDt ? toDt : ''].filter(Boolean);
+    const title  = parts.join(' - ');
+
     const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;';
-    iframe.srcdoc = `<!DOCTYPE html><html><head><style>
+    iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1400px;height:1000px;border:0;visibility:hidden;';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><title>${title}</title><style>
         *{box-sizing:border-box;margin:0;padding:0;}
-        body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:8mm;}
-        .card{border:1px solid #d1d5db;border-radius:4px;overflow:hidden;}
-        .card-header{padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
-        .card-title{font-size:14px;font-weight:700;margin:0 0 4px;}
-        .card-body{padding:0;}
-        table{border-collapse:collapse;width:100%;}
-        @media print{@page{size:A4 landscape;margin:8mm;}body{padding:0;}}
+        body{font-family:Arial,sans-serif;color:#111;background:#fff;}
+        .card{border:none;}
+        .card-header{padding:6px 10px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
+        .card-title{font-size:12px;font-weight:700;margin:0 0 2px;}
+        .card-header div{font-size:9px;}
+        .card-body{padding:0;overflow:visible;}
+        table{border-collapse:collapse;width:100%;table-layout:auto;}
+        th,td{padding:2px 4px!important;font-size:8px!important;white-space:normal!important;
+              min-width:0!important;max-width:none!important;word-break:break-word;border:1px solid #ccc!important;}
+        th{background:#1e3a5f!important;color:#fff!important;font-weight:700;text-align:center;}
+        @media print{@page{size:A4 landscape;margin:5mm;}body{margin:0;padding:0;}}
     </style></head><body>${area.outerHTML}</body></html>`;
     iframe.onload = function() {
-        iframe.contentWindow.focus();
-        iframe.contentWindow.print();
-        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+        setTimeout(() => {
+            const doc = iframe.contentDocument;
+            const printArea = doc.getElementById('osm-print-area');
+            const table = doc.querySelector('table');
+            if (table && printArea) {
+                // A4 landscape @ 96dpi with 5mm margins each side ≈ 1084px usable
+                const pageW = 1084;
+                const tableW = table.offsetWidth;
+                if (tableW > pageW) {
+                    const z = (pageW / tableW).toFixed(4);
+                    printArea.style.zoom = z;
+                }
+            }
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+            setTimeout(() => document.body.removeChild(iframe), 2000);
+        }, 250);
     };
     document.body.appendChild(iframe);
 }

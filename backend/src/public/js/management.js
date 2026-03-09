@@ -146,7 +146,7 @@ async function loadManagementDashboard() {
                     <thead>
                         <tr>
                             <th>Line</th>
-                            <th>Product</th>
+                            <th>Style</th>
                             <th>Target</th>
                             <th>Output</th>
                             <th>Efficiency</th>
@@ -429,7 +429,7 @@ async function loadMgmtOsmReport() {
         <div class="page-header">
             <div>
                 <h1 class="page-title">Stagewise Hourly OSM Report</h1>
-                <p class="page-subtitle">Workstation-level hourly output tracking</p>
+                <p class="page-subtitle">OSM observation points — cumulative output by date range</p>
             </div>
             <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
                 <div class="ie-date">
@@ -437,8 +437,12 @@ async function loadMgmtOsmReport() {
                     <select id="osm-line" class="form-control" style="min-width:180px;"></select>
                 </div>
                 <div class="ie-date">
-                    <label for="osm-date">Date</label>
-                    <input type="date" id="osm-date" value="${today}">
+                    <label for="osm-from-date">From</label>
+                    <input type="date" id="osm-from-date" value="${today}">
+                </div>
+                <div class="ie-date">
+                    <label for="osm-to-date">To</label>
+                    <input type="date" id="osm-to-date" value="${today}">
                 </div>
                 <button class="btn btn-secondary" onclick="refreshMgmtOsmReport()">Refresh</button>
                 <button class="btn btn-secondary" onclick="printMgmtOsmReport()">&#9113; Print</button>
@@ -463,12 +467,14 @@ async function loadMgmtOsmReport() {
         }
     } catch (e) { /* ignore */ }
 
-    document.getElementById('osm-date').addEventListener('change', refreshMgmtOsmReport);
+    document.getElementById('osm-from-date').addEventListener('change', refreshMgmtOsmReport);
+    document.getElementById('osm-to-date').addEventListener('change', refreshMgmtOsmReport);
 }
 
 async function refreshMgmtOsmReport() {
-    const lineId = document.getElementById('osm-line')?.value;
-    const date   = document.getElementById('osm-date')?.value;
+    const lineId   = document.getElementById('osm-line')?.value;
+    const fromDate = document.getElementById('osm-from-date')?.value;
+    const toDate   = document.getElementById('osm-to-date')?.value;
     const container = document.getElementById('osm-content');
     if (!container) return;
 
@@ -480,7 +486,9 @@ async function refreshMgmtOsmReport() {
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
 
     try {
-        const r = await fetch(`${API_BASE}/osm-report?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        let url = `${API_BASE}/osm-report?line_id=${lineId}&date=${toDate}`;
+        if (fromDate && fromDate !== toDate) url += `&from_date=${fromDate}`;
+        const r = await fetch(url, { credentials: 'include' });
         const data = await r.json();
 
         if (!data.success) {
@@ -488,11 +496,12 @@ async function refreshMgmtOsmReport() {
             return;
         }
 
-        if (!data.workstations?.length) {
+        if (data.no_osm_points) {
             container.innerHTML = `
                 <div class="card">
                     <div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
-                        No workstation plan found for <strong>${data.line_name}</strong> on <strong>${date}</strong>.
+                        <strong>No OSM observation points configured</strong> for <strong>${data.line_name}</strong>.<br><br>
+                        Ask IE/Admin to open the line plan, expand a workstation, and check the OSM checkbox on processes to designate them as OSM observation points.
                     </div>
                 </div>`;
             return;
@@ -505,7 +514,7 @@ async function refreshMgmtOsmReport() {
 }
 
 function _buildMgmtOsmTable(data) {
-    const { workstations, target_units, working_hours, in_time, out_time } = data;
+    const { osm_points, target_units, total_target, working_hours, in_time, out_time, from_date, date: toDate, buyer_name, product_code, product_name } = data;
     const inH  = parseInt((in_time  || '08:00').split(':')[0]);
     const outH = parseInt((out_time || '17:00').split(':')[0]);
 
@@ -516,8 +525,8 @@ function _buildMgmtOsmTable(data) {
         ? Math.round(target_units / working_hours) : 0;
 
     let maxDataHour = -1;
-    for (const ws of workstations) {
-        for (const h of Object.keys(ws.hourly)) {
+    for (const pt of osm_points) {
+        for (const h of Object.keys(pt.hourly || {})) {
             const hInt = parseInt(h);
             if (hInt > maxDataHour) maxDataHour = hInt;
         }
@@ -539,45 +548,52 @@ function _buildMgmtOsmTable(data) {
         `<td style="${tcS}font-weight:700;">${perHourTarget}</td>`
     ).join('');
 
-    const dataRows = workstations.map(ws => {
+    const dataRows = osm_points.map(pt => {
         const hourCells = hours.map(h => {
-            const d = ws.hourly[h];
+            const d = (pt.hourly || {})[h];
             const qty = (d && d.quantity != null) ? d.quantity : '';
             return `<td style="${tcS}">${qty}</td>`;
         }).join('');
 
-        const totalOutput = Object.values(ws.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
-        const blog = totalOutput - totalTargetSoFar;
+        const todayOutput = Object.values(pt.hourly || {}).reduce((s, d) => s + (d.quantity || 0), 0);
+        const blog = todayOutput - totalTargetSoFar;
         const blogColor = blog >= 0 ? '#16a34a' : '#dc2626';
-        const balToProd = totalOutput - target_units;
+        const balToProd = total_target - (pt.cumulative_output || 0);
 
         const reasons = [...new Set(
-            Object.values(ws.hourly).map(d => d.shortfall_reason).filter(Boolean)
+            Object.values(pt.hourly || {}).map(d => d.shortfall_reason).filter(Boolean)
         )].join('; ');
 
         return `<tr>
-            <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
-            <td style="${tcS}">${totalOutput}</td>
-            <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
-            <td style="${tdS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${ws.process_details}</td>
+            <td style="${tcS}font-weight:700;color:#1e3a5f;">${pt.osm_label}</td>
+            <td style="${tcS}font-weight:600;">${pt.cumulative_output != null ? pt.cumulative_output : '-'}</td>
+            <td style="${tcS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${pt.operation_code} — ${pt.operation_name}</td>
             ${hourCells}
-            <td style="${tcS}font-weight:700;">${totalTargetSoFar}</td>
-            <td style="${tcS}font-weight:700;">${totalOutput}</td>
+            <td style="${tcS}font-weight:700;">${total_target}</td>
+            <td style="${tcS}font-weight:700;">${todayOutput}</td>
             <td style="${tcS}font-weight:700;color:${blogColor};">${blog >= 0 ? '+' : ''}${blog}</td>
-            <td style="${tcS}">${balToProd >= 0 ? '+' : ''}${balToProd}</td>
+            <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
             <td style="${tdS}font-size:11px;">${reasons}</td>
         </tr>`;
     }).join('');
 
-    return `<div class="card" id="mgmt-osm-print-area">
+    const dateRangeLabel = from_date && from_date !== toDate
+        ? `${from_date} → ${toDate}`
+        : toDate;
+
+    return `<div class="card" id="mgmt-osm-print-area"
+        data-buyer="${(buyer_name||'').replace(/"/g,'&quot;')}"
+        data-style="${(product_code||'').replace(/"/g,'&quot;')}"
+        data-from="${from_date||toDate}"
+        data-to="${toDate}">
         <div class="card-header">
             <div>
                 <h3 class="card-title">STAGEWISE HOURLY OSM REPORT</h3>
                 <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
                     ${data.line_name} (${data.line_code})
-                    &nbsp;&bull;&nbsp; ${data.product_code} ${data.product_name}
-                    &nbsp;&bull;&nbsp; Date: ${data.date}
-                    &nbsp;&bull;&nbsp; Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
+                    &nbsp;&bull;&nbsp; Style: ${data.product_code} — ${data.product_name}
+                    &nbsp;&bull;&nbsp; Date: ${dateRangeLabel}
+                    &nbsp;&bull;&nbsp; Total Target: ${total_target} &nbsp;&bull;&nbsp; Daily Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
                 </div>
             </div>
         </div>
@@ -585,9 +601,8 @@ function _buildMgmtOsmTable(data) {
             <table style="border-collapse:collapse;white-space:nowrap;width:100%;">
                 <thead>
                     <tr>
-                        <th style="${thS}min-width:60px;">GROUP</th>
-                        <th style="${thS}min-width:80px;">CUMULATIVE<br>OUTPUT AS ON DATE</th>
-                        <th style="${thS}min-width:70px;">WORK<br>STATION</th>
+                        <th style="${thS}min-width:60px;">OSM<br>POINT</th>
+                        <th style="${thS}min-width:90px;">CUMULATIVE<br>OUTPUT (${dateRangeLabel})</th>
                         <th style="${thS}min-width:200px;white-space:normal;">PROCESS DETAILS</th>
                         ${hourHeaders}
                         <th style="${thS}min-width:75px;">TOTAL<br>TARGET</th>
@@ -597,7 +612,7 @@ function _buildMgmtOsmTable(data) {
                         <th style="${thS}min-width:120px;white-space:normal;">REASON</th>
                     </tr>
                     <tr style="background:#dbeafe;">
-                        <td colspan="4" style="${tdS}text-align:right;font-weight:700;padding:4px 10px;">TARGET / HOUR</td>
+                        <td colspan="3" style="${tdS}text-align:right;font-weight:700;padding:4px 10px;">TARGET / HOUR</td>
                         ${targetRow}
                         <td colspan="4" style="${tdS}"></td>
                     </tr>
@@ -611,22 +626,47 @@ function _buildMgmtOsmTable(data) {
 function printMgmtOsmReport() {
     const area = document.getElementById('mgmt-osm-print-area');
     if (!area) { alert('No report loaded.'); return; }
+
+    const buyer  = area.dataset.buyer  || '';
+    const style  = area.dataset.style  || '';
+    const fromDt = area.dataset.from   || '';
+    const toDt   = area.dataset.to     || '';
+    const parts  = [buyer, style, 'OSM', fromDt, toDt !== fromDt ? toDt : ''].filter(Boolean);
+    const title  = parts.join(' - ');
+
     const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;';
-    iframe.srcdoc = `<!DOCTYPE html><html><head><style>
+    iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1400px;height:1000px;border:0;visibility:hidden;';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><title>${title}</title><style>
         *{box-sizing:border-box;margin:0;padding:0;}
-        body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:8mm;}
-        .card{border:1px solid #d1d5db;border-radius:4px;overflow:hidden;}
-        .card-header{padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
-        .card-title{font-size:14px;font-weight:700;margin:0 0 4px;}
-        .card-body{padding:0;}
-        table{border-collapse:collapse;width:100%;}
-        @media print{@page{size:A4 landscape;margin:8mm;}body{padding:0;}}
+        body{font-family:Arial,sans-serif;color:#111;background:#fff;}
+        .card{border:none;}
+        .card-header{padding:6px 10px;background:#f8fafc;border-bottom:1px solid #e5e7eb;}
+        .card-title{font-size:12px;font-weight:700;margin:0 0 2px;}
+        .card-header div{font-size:9px;}
+        .card-body{padding:0;overflow:visible;}
+        table{border-collapse:collapse;width:100%;table-layout:auto;}
+        th,td{padding:2px 4px!important;font-size:8px!important;white-space:normal!important;
+              min-width:0!important;max-width:none!important;word-break:break-word;border:1px solid #ccc!important;}
+        th{background:#1e3a5f!important;color:#fff!important;font-weight:700;text-align:center;}
+        @media print{@page{size:A4 landscape;margin:5mm;}body{margin:0;padding:0;}}
     </style></head><body>${area.outerHTML}</body></html>`;
     iframe.onload = function() {
-        iframe.contentWindow.focus();
-        iframe.contentWindow.print();
-        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+        setTimeout(() => {
+            const doc = iframe.contentDocument;
+            const printArea = doc.getElementById('mgmt-osm-print-area');
+            const table = doc.querySelector('table');
+            if (table && printArea) {
+                const pageW = 1084;
+                const tableW = table.offsetWidth;
+                if (tableW > pageW) {
+                    const z = (pageW / tableW).toFixed(4);
+                    printArea.style.zoom = z;
+                }
+            }
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+            setTimeout(() => document.body.removeChild(iframe), 2000);
+        }, 250);
     };
     document.body.appendChild(iframe);
 }
@@ -757,7 +797,7 @@ function _buildMgmtEfficiencyTable(data, date) {
 
     const summaryBar = `
         <div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:12px;align-items:center;">
-            <span style="font-size:12px;"><strong>Product:</strong> ${plan.product_name || '-'} (${plan.product_code || '-'})</span>
+            <span style="font-size:12px;"><strong>Style:</strong> ${plan.product_code || '-'} — ${plan.product_name || '-'}</span>
             <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
             <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
             <span style="font-size:12px;"><strong>Working Hours:</strong> ${plan.working_hours.toFixed(1)} h</span>
