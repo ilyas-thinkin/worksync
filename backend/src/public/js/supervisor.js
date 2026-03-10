@@ -364,7 +364,7 @@ function renderMorningAssignments(hasPlan) {
                 <td style="font-size:0.85em;">${processList}</td>
                 <td style="text-align:center; font-weight:600; color:${workloadColor};">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
                 <td>${assigned}</td>
-                <td style="text-align:center;">${statusBadge}${materialBadge ? '<br>'+materialBadge : ''}</td>
+                <td style="text-align:center;">${statusBadge}</td>
                 <td>${actionBtn}</td>
             </tr>`;
         }).join('');
