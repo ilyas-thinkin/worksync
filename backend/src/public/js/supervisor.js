@@ -353,11 +353,11 @@ function renderMorningAssignments(hasPlan) {
 
             const actionBtn = isLinked
                 ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;"
-                        onclick="startMorningMaterialScan(${JSON.stringify(ws.workstation_code)}, ${ws.id})">
-                        &#128230; Scan &amp; Material
+                        onclick="startMorningMaterialScan('${ws.workstation_code}', ${ws.id})">
+                        &#128230; Material
                    </button>`
                 : `<button class="btn btn-primary btn-sm"
-                        onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, ${ws.id})">
+                        onclick="startMorningScan('${ws.workstation_code}', ${ws.id})">
                         &#128279; Link
                    </button>`;
 
@@ -438,11 +438,11 @@ function renderMorningAssignments(hasPlan) {
 
         const actionBtn = isLinked
             ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;"
-                    onclick="startMorningMaterialScan(${JSON.stringify(ws.workstation_code)}, null)">
-                    &#128230; Scan &amp; Material
+                    onclick="startMorningMaterialScan('${ws.workstation_code}', null)">
+                    &#128230; Material
                </button>`
             : `<button class="btn btn-primary btn-sm"
-                    onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, null)">
+                    onclick="startMorningScan('${ws.workstation_code}', null)">
                     &#128279; Link
                </button>`;
 
@@ -596,8 +596,15 @@ async function confirmMorningAssign() {
         // Re-fetch processes to get updated assignments
         const procResponse = await fetch(`${API_BASE}/supervisor/processes/${morningState.lineId}`);
         const procResult = await procResponse.json();
-        morningState.processes = procResult.data || [];
-        renderMorningAssignments();
+        if (procResult.has_plan && procResult.workstation_plan?.length > 0) {
+            morningState.workstations = procResult.workstation_plan;
+            morningState.processes = procResult.data || [];
+            renderMorningAssignments(true);
+        } else {
+            morningState.workstations = null;
+            morningState.processes = procResult.data || [];
+            renderMorningAssignments(false);
+        }
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -623,10 +630,14 @@ function startMorningMaterialScan(workstationCode, linePlanWorkstationId) {
     const scanLabel = document.getElementById('morning-scan-label');
     const scanResult = document.getElementById('morning-scan-result');
     const title = document.getElementById('morning-scan-title');
-    if (title) title.textContent = 'Scan &amp; Material';
+    if (title) title.textContent = 'Scan & Material';
     scanPanel.style.display = 'block';
     scanLabel.textContent = `Workstation: ${workstationCode} — Scan employee or workstation QR`;
-    scanResult.innerHTML = '<p style="color:#6b7280;">Point camera at employee or workstation QR code...</p>';
+    scanResult.innerHTML = `
+        <p style="color:#6b7280;margin-bottom:10px;">Point camera at employee or workstation QR code...</p>
+        <button class="btn btn-secondary btn-sm" onclick="showMorningMaterialFormDirect('${workstationCode}')">
+            Skip scan — enter material directly
+        </button>`;
     scanPanel.scrollIntoView({ behavior: 'smooth' });
 
     startCamera('morning-camera', null, async (rawValue) => {
@@ -692,13 +703,19 @@ function _morningMaterialForm(workstationCode) {
             <div style="display:flex;align-items:center;gap:10px;">
                 <input type="number" id="morning-material-qty" min="0" value="0"
                     style="width:100px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:1em;text-align:center;">
-                <span style="font-size:0.85em;color:#6b7280;">pcs &nbsp;(enter 0 if nothing provided)</span>
+                <span style="font-size:0.85em;color:#6b7280;">pcs &nbsp;(0 = nothing provided)</span>
             </div>
-            <button class="btn btn-primary" onclick="saveMorningMaterial(${JSON.stringify(workstationCode)})"
+            <button class="btn btn-primary" onclick="saveMorningMaterial('${workstationCode}')"
                 style="margin-top:12px;">
                 &#10003; Confirm
             </button>
         </div>`;
+}
+
+function showMorningMaterialFormDirect(workstationCode) {
+    stopCamera();
+    const scanResult = document.getElementById('morning-scan-result');
+    if (scanResult) scanResult.innerHTML = _morningMaterialForm(workstationCode);
 }
 
 async function saveMorningMaterial(workstationCode) {
