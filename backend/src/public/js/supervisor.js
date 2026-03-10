@@ -352,10 +352,7 @@ function renderMorningAssignments(hasPlan) {
                 : '';
 
             const actionBtn = isLinked
-                ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;"
-                        onclick="startMorningMaterialScan('${ws.workstation_code}', ${ws.id})">
-                        &#128230; Material
-                   </button>`
+                ? `<span style="color:#6b7280;font-size:12px;">—</span>`
                 : `<button class="btn btn-primary btn-sm"
                         onclick="startMorningScan('${ws.workstation_code}', ${ws.id})">
                         &#128279; Link
@@ -437,10 +434,7 @@ function renderMorningAssignments(hasPlan) {
             : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
         const actionBtn = isLinked
-            ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;"
-                    onclick="startMorningMaterialScan('${ws.workstation_code}', null)">
-                    &#128230; Material
-               </button>`
+            ? `<span style="color:#6b7280;font-size:12px;">—</span>`
             : `<button class="btn btn-primary btn-sm"
                     onclick="startMorningScan('${ws.workstation_code}', null)">
                     &#128279; Link
@@ -535,27 +529,37 @@ function startMorningScan(workstationCode, linePlanWorkstationId) {
                 }
 
                 morningState.scannedEmployee = employee;
-                scanResult.innerHTML = `
-                    <div style="padding:12px; background:#f0fdf4; border-radius:8px; border:1px solid #bbf7d0;">
-                        <p style="font-weight:700; font-size:1.1em;">${employee.emp_code} - ${employee.emp_name}</p>
-                        <button class="btn btn-primary" onclick="confirmMorningAssign()" style="margin-top:8px;">Assign to Workstation</button>
-                    </div>
-                `;
+                scanResult.innerHTML = _morningLinkForm(employee.emp_code, employee.emp_name);
                 return;
             }
 
             const emp = result.data.employee;
             morningState.scannedEmployee = emp;
-            scanResult.innerHTML = `
-                <div style="padding:12px; background:#f0fdf4; border-radius:8px; border:1px solid #bbf7d0;">
-                    <p style="font-weight:700; font-size:1.1em;">${emp.emp_code} - ${emp.emp_name}</p>
-                    <button class="btn btn-primary" onclick="confirmMorningAssign()" style="margin-top:8px;">Assign to Workstation</button>
-                </div>
-            `;
+            scanResult.innerHTML = _morningLinkForm(emp.emp_code, emp.emp_name);
         } catch (err) {
             scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
         }
     });
+}
+
+function _morningLinkForm(empCode, empName) {
+    return `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:10px;">
+            <p style="font-weight:700;font-size:1.05em;color:#16a34a;margin:0;">&#128100; ${empCode} — ${empName}</p>
+        </div>
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;">
+            <label style="display:block;font-weight:700;font-size:0.9em;margin-bottom:8px;color:#374151;">
+                &#128230; Material provided to this workstation
+            </label>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                <input type="number" id="morning-material-qty" min="0" value="0"
+                    style="width:100px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:1em;text-align:center;">
+                <span style="font-size:0.85em;color:#6b7280;">pcs &nbsp;(0 = nothing provided)</span>
+            </div>
+            <button class="btn btn-primary" onclick="confirmMorningAssign()">
+                &#128279; Confirm Link
+            </button>
+        </div>`;
 }
 
 async function confirmMorningAssign() {
@@ -564,11 +568,14 @@ async function confirmMorningAssign() {
         return;
     }
 
+    const material = parseInt(document.getElementById('morning-material-qty')?.value || '0', 10);
+
     try {
         const emp = morningState.scannedEmployee;
-
         const today = new Date().toISOString().slice(0, 10);
-        const response = await fetch(`${API_BASE}/workstation-assignments`, {
+
+        // Save employee assignment
+        const res = await fetch(`${API_BASE}/workstation-assignments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -579,21 +586,29 @@ async function confirmMorningAssign() {
                 line_plan_workstation_id: morningState.selectedWorkstationPlanId
             })
         });
-        const result = await response.json();
-        if (!result.success) {
-            showToast(result.error || 'Assignment failed', 'error');
-            return;
-        }
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Assignment failed', 'error'); return; }
 
-        showToast(`${emp.emp_name} assigned to ${morningState.selectedWorkstation}`, 'success');
+        // Save material provided
+        await fetch(`${API_BASE}/workstation-assignments/material`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: morningState.lineId,
+                workstation_code: morningState.selectedWorkstation,
+                material_provided: isNaN(material) ? 0 : material,
+                work_date: today
+            })
+        });
 
-        // Refresh assignments
+        showToast(`${emp.emp_name} linked to ${morningState.selectedWorkstation}`, 'success');
+
         const scanPanel = document.getElementById('morning-scan-panel');
         if (scanPanel) scanPanel.style.display = 'none';
         morningState.selectedWorkstation = null;
         morningState.scannedEmployee = null;
+        morningState.scanMode = 'link';
 
-        // Re-fetch processes to get updated assignments
         const procResponse = await fetch(`${API_BASE}/supervisor/processes/${morningState.lineId}`);
         const procResult = await procResponse.json();
         if (procResult.has_plan && procResult.workstation_plan?.length > 0) {
