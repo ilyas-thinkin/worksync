@@ -6619,7 +6619,8 @@ function _buildOsmTable(data) {
         const todayOutput = Object.values(pt.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
         const cumOutput   = pt.cumulative_output || 0;
         const blog = todayOutput - totalTargetSoFar;
-        const blogColor = blog >= 0 ? '#16a34a' : '#dc2626';
+        const backlog = blog < 0 ? blog : 0;
+        const extra   = blog > 0 ? blog : 0;
         const balToProd = total_target - cumOutput;
 
         const reasons = [...new Set(
@@ -6634,7 +6635,8 @@ function _buildOsmTable(data) {
             ${hourCells}
             <td style="${tcS}font-weight:700;">${total_target}</td>
             <td style="${tcS}font-weight:700;">${todayOutput}</td>
-            <td style="${tcS}font-weight:700;color:${blogColor};">${blog >= 0 ? '+' : ''}${blog}</td>
+            <td style="${tcS}font-weight:700;color:#dc2626;">${backlog < 0 ? backlog : ''}</td>
+            <td style="${tcS}font-weight:700;color:#16a34a;">${extra > 0 ? '+'+extra : ''}</td>
             <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
             <td style="${tdS}font-size:11px;">${reasons}</td>
         </tr>`;
@@ -6670,13 +6672,14 @@ function _buildOsmTable(data) {
                         <th style="${thS}min-width:75px;">TOTAL<br>TARGET</th>
                         <th style="${thS}min-width:80px;">TOTAL OUTPUT<br>(AS ON TIME)</th>
                         <th style="${thS}min-width:65px;">B.LOG</th>
+                        <th style="${thS}min-width:75px;">EXTRA<br>PRODUCED</th>
                         <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD<br>(REMAINING)</th>
                         <th style="${thS}min-width:120px;white-space:normal;">REASON</th>
                     </tr>
                     <tr style="background:#dbeafe;">
                         <td colspan="4" style="${tdS}text-align:right;font-weight:700;padding:4px 10px;">TARGET / HOUR</td>
                         ${targetRow}
-                        <td colspan="4" style="${tdS}"></td>
+                        <td colspan="5" style="${tdS}"></td>
                     </tr>
                 </thead>
                 <tbody>${dataRows}</tbody>
