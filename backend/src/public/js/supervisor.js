@@ -224,7 +224,8 @@ const morningState = {
     targetQty: 0,
     selectedWorkstation: null,
     selectedWorkstationPlanId: null,
-    scannedEmployee: null
+    scannedEmployee: null,
+    scanMode: 'link'  // 'link' | 'material'
 };
 
 async function loadMorningProcedure() {
@@ -262,7 +263,7 @@ async function loadMorningProcedure() {
 
             <div id="morning-scan-panel" class="card" style="margin-top:16px; display:none;">
                 <div class="card-header">
-                    <h3 class="card-title">Scan Worker QR</h3>
+                    <h3 class="card-title" id="morning-scan-title">Scan Worker QR</h3>
                     <button class="btn btn-secondary btn-sm" id="morning-cancel-scan">Cancel</button>
                 </div>
                 <div class="card-body">
@@ -335,24 +336,38 @@ function renderMorningAssignments(hasPlan) {
         const allAssigned = workstations.every(ws => ws.assigned_emp_name);
 
         const rows = workstations.map(ws => {
-            const assigned = ws.assigned_emp_name
+            const isLinked = !!ws.assigned_emp_name;
+            const assigned = isLinked
                 ? `<span style="color:#16a34a; font-weight:600;">${ws.assigned_emp_code} - ${ws.assigned_emp_name}</span>`
-                : '<span style="color:#dc2626;">Not assigned</span>';
-            const icon = ws.assigned_emp_name ? '&#10003;' : '&#9888;';
-            const iconColor = ws.assigned_emp_name ? '#16a34a' : '#f59e0b';
+                : '<span style="color:#6b7280;">Not assigned</span>';
             const processList = (ws.processes || []).map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
+
+            const statusBadge = isLinked
+                ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
+                : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
+
+            const materialBadge = isLinked && ws.material_provided > 0
+                ? `<span style="display:inline-block;margin-top:3px;font-size:11px;color:#6b7280;">&#128230; ${ws.material_provided} pcs</span>`
+                : '';
+
+            const actionBtn = isLinked
+                ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;"
+                        onclick="startMorningMaterialScan(${JSON.stringify(ws.workstation_code)}, ${ws.id})">
+                        &#128230; Scan &amp; Material
+                   </button>`
+                : `<button class="btn btn-primary btn-sm"
+                        onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, ${ws.id})">
+                        &#128279; Link
+                   </button>`;
 
             return `<tr>
                 <td style="font-weight:700;">${ws.workstation_code}</td>
                 <td style="font-size:0.85em;">${processList}</td>
                 <td style="text-align:center; font-weight:600; color:${workloadColor};">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
-                <td><span style="color:${iconColor}; margin-right:6px;">${icon}</span>${assigned}</td>
-                <td>
-                    <button class="btn btn-primary btn-sm" onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, ${ws.id})">
-                        Scan Worker
-                    </button>
-                </td>
+                <td>${assigned}</td>
+                <td style="text-align:center;">${statusBadge}${materialBadge ? '<br>'+materialBadge : ''}</td>
+                <td>${actionBtn}</td>
             </tr>`;
         }).join('');
 
@@ -362,7 +377,7 @@ function renderMorningAssignments(hasPlan) {
                     <h3 class="card-title">Workstation Assignments</h3>
                     <span style="font-size:0.85em; color:#6b7280;">
                         ${workstations.length} workstations &nbsp;|&nbsp;
-                        ${allAssigned ? '<span style="color:#16a34a;">All assigned</span>' : '<span style="color:#dc2626;">Some unassigned</span>'}
+                        ${allAssigned ? '<span style="color:#16a34a;">&#10003; All linked</span>' : '<span style="color:#dc2626;">&#9888; Some unlinked</span>'}
                     </span>
                 </div>
                 <div class="card-body table-container">
@@ -373,6 +388,7 @@ function renderMorningAssignments(hasPlan) {
                                 <th>Processes</th>
                                 <th style="text-align:center;">Workload</th>
                                 <th>Assigned Worker</th>
+                                <th style="text-align:center;">Status</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
@@ -400,7 +416,7 @@ function renderMorningAssignments(hasPlan) {
     processes.forEach(p => {
         const ws = p.workstation_code || p.group_name || '-';
         if (!wsMap.has(ws)) {
-            wsMap.set(ws, { workstation_code: ws, processes: [], assigned_emp_code: null, assigned_emp_name: null, plan_id: null });
+            wsMap.set(ws, { workstation_code: ws, processes: [], assigned_emp_code: null, assigned_emp_name: null, plan_id: null, material_provided: 0 });
         }
         wsMap.get(ws).processes.push(p);
         if (p.assigned_emp_name && !wsMap.get(ws).assigned_emp_name) {
@@ -410,22 +426,32 @@ function renderMorningAssignments(hasPlan) {
     });
 
     const rows = Array.from(wsMap.values()).map(ws => {
-        const assigned = ws.assigned_emp_name
+        const isLinked = !!ws.assigned_emp_name;
+        const assigned = isLinked
             ? `<span style="color:#16a34a; font-weight:600;">${ws.assigned_emp_code} - ${ws.assigned_emp_name}</span>`
-            : '<span style="color:#dc2626;">Not assigned</span>';
-        const icon = ws.assigned_emp_name ? '&#10003;' : '&#9888;';
-        const iconColor = ws.assigned_emp_name ? '#16a34a' : '#f59e0b';
+            : '<span style="color:#6b7280;">Not assigned</span>';
         const processList = ws.processes.map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
+
+        const statusBadge = isLinked
+            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
+            : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
+
+        const actionBtn = isLinked
+            ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;"
+                    onclick="startMorningMaterialScan(${JSON.stringify(ws.workstation_code)}, null)">
+                    &#128230; Scan &amp; Material
+               </button>`
+            : `<button class="btn btn-primary btn-sm"
+                    onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, null)">
+                    &#128279; Link
+               </button>`;
 
         return `<tr>
             <td style="font-weight:600;">${ws.workstation_code}</td>
             <td>${processList}</td>
-            <td><span style="color:${iconColor}; margin-right:6px;">${icon}</span> ${assigned}</td>
-            <td>
-                <button class="btn btn-primary btn-sm" onclick="startMorningScan(${JSON.stringify(ws.workstation_code)}, null)">
-                    Scan Worker
-                </button>
-            </td>
+            <td>${assigned}</td>
+            <td style="text-align:center;">${statusBadge}</td>
+            <td>${actionBtn}</td>
         </tr>`;
     }).join('');
 
@@ -438,7 +464,7 @@ function renderMorningAssignments(hasPlan) {
             <div class="card-body table-container">
                 <table>
                     <thead>
-                        <tr><th>Workstation</th><th>Processes</th><th>Assigned Worker</th><th>Action</th></tr>
+                        <tr><th>Workstation</th><th>Processes</th><th>Assigned Worker</th><th style="text-align:center;">Status</th><th>Action</th></tr>
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
@@ -451,12 +477,15 @@ function startMorningScan(workstationCode, linePlanWorkstationId) {
     morningState.selectedWorkstation = workstationCode;
     morningState.selectedWorkstationPlanId = linePlanWorkstationId || null;
     morningState.scannedEmployee = null;
+    morningState.scanMode = 'link';
 
     const scanPanel = document.getElementById('morning-scan-panel');
     const scanLabel = document.getElementById('morning-scan-label');
     const scanResult = document.getElementById('morning-scan-result');
+    const title = document.getElementById('morning-scan-title');
+    if (title) title.textContent = 'Link Worker to Workstation';
     scanPanel.style.display = 'block';
-    scanLabel.textContent = `Scanning for workstation: ${workstationCode}`;
+    scanLabel.textContent = `Scan employee QR to link to workstation: ${workstationCode}`;
     scanResult.innerHTML = '<p style="color:#6b7280;">Point camera at worker ID QR code...</p>';
 
     scanPanel.scrollIntoView({ behavior: 'smooth' });
@@ -581,6 +610,133 @@ function cancelMorningScan() {
     morningState.selectedWorkstation = null;
     morningState.selectedWorkstationPlanId = null;
     morningState.scannedEmployee = null;
+    morningState.scanMode = 'link';
+}
+
+function startMorningMaterialScan(workstationCode, linePlanWorkstationId) {
+    morningState.selectedWorkstation = workstationCode;
+    morningState.selectedWorkstationPlanId = linePlanWorkstationId || null;
+    morningState.scannedEmployee = null;
+    morningState.scanMode = 'material';
+
+    const scanPanel = document.getElementById('morning-scan-panel');
+    const scanLabel = document.getElementById('morning-scan-label');
+    const scanResult = document.getElementById('morning-scan-result');
+    const title = document.getElementById('morning-scan-title');
+    if (title) title.textContent = 'Scan &amp; Material';
+    scanPanel.style.display = 'block';
+    scanLabel.textContent = `Workstation: ${workstationCode} — Scan employee or workstation QR`;
+    scanResult.innerHTML = '<p style="color:#6b7280;">Point camera at employee or workstation QR code...</p>';
+    scanPanel.scrollIntoView({ behavior: 'smooth' });
+
+    startCamera('morning-camera', null, async (rawValue) => {
+        stopCamera();
+        const payload = parseScanPayload(rawValue);
+        if (!payload) {
+            scanResult.innerHTML = '<p style="color:#dc2626;">Invalid QR code. Try again.</p>';
+            return;
+        }
+
+        // Detect type: workstation QR has payload.type === 'workstation'
+        if (payload.type === 'workstation') {
+            const scannedWs = payload.workstation_code || payload.raw || '';
+            scanResult.innerHTML = `
+                <div style="padding:12px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;margin-bottom:12px;">
+                    <p style="font-weight:700;font-size:1em;color:#0369a1;">&#128274; Workstation: ${scannedWs}</p>
+                    <p style="font-size:0.85em;color:#6b7280;margin-top:2px;">Linked to: ${workstationCode}</p>
+                </div>
+                ${_morningMaterialForm(workstationCode)}`;
+        } else {
+            // Employee QR — resolve
+            scanResult.innerHTML = '<p style="color:#6b7280;">Resolving...</p>';
+            try {
+                let empName = '';
+                const response = await fetch(`${API_BASE}/supervisor/resolve-employee`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ line_id: morningState.lineId, employee_qr: rawValue })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    const emp = result.data.employee;
+                    empName = `${emp.emp_code} - ${emp.emp_name}`;
+                } else {
+                    // Fallback: direct employee lookup
+                    const empRes = await fetch(`${API_BASE}/employees`);
+                    const empData = await empRes.json();
+                    const employees = empData.data || [];
+                    const match = payload.id
+                        ? employees.find(e => e.id === payload.id)
+                        : employees.find(e => String(e.emp_code).trim() === String(payload.raw || payload.emp_code || '').trim());
+                    empName = match ? `${match.emp_code} - ${match.emp_name}` : 'Unknown employee';
+                }
+                scanResult.innerHTML = `
+                    <div style="padding:12px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;margin-bottom:12px;">
+                        <p style="font-weight:700;font-size:1em;color:#16a34a;">&#128100; ${empName}</p>
+                        <p style="font-size:0.85em;color:#6b7280;margin-top:2px;">At workstation: ${workstationCode}</p>
+                    </div>
+                    ${_morningMaterialForm(workstationCode)}`;
+            } catch (err) {
+                scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
+            }
+        }
+    });
+}
+
+function _morningMaterialForm(workstationCode) {
+    return `
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;">
+            <label style="display:block;font-weight:700;font-size:0.9em;margin-bottom:8px;color:#374151;">
+                &#128230; Material provided to workstation ${workstationCode}
+            </label>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="number" id="morning-material-qty" min="0" value="0"
+                    style="width:100px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:1em;text-align:center;">
+                <span style="font-size:0.85em;color:#6b7280;">pcs &nbsp;(enter 0 if nothing provided)</span>
+            </div>
+            <button class="btn btn-primary" onclick="saveMorningMaterial(${JSON.stringify(workstationCode)})"
+                style="margin-top:12px;">
+                &#10003; Confirm
+            </button>
+        </div>`;
+}
+
+async function saveMorningMaterial(workstationCode) {
+    const qty = parseInt(document.getElementById('morning-material-qty')?.value || '0', 10);
+    if (isNaN(qty) || qty < 0) { showToast('Enter a valid quantity', 'error'); return; }
+
+    try {
+        const today = new Date().toISOString().slice(0, 10);
+        const res = await fetch(`${API_BASE}/workstation-assignments/material`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: morningState.lineId, workstation_code: workstationCode, material_provided: qty, work_date: today })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to save material', 'error'); return; }
+
+        showToast(`Material saved: ${qty} pcs for ${workstationCode}`, 'success');
+
+        const scanPanel = document.getElementById('morning-scan-panel');
+        if (scanPanel) scanPanel.style.display = 'none';
+        morningState.selectedWorkstation = null;
+        morningState.scanMode = 'link';
+
+        // Refresh assignments
+        const procResponse = await fetch(`${API_BASE}/supervisor/processes/${morningState.lineId}`);
+        const procResult = await procResponse.json();
+        if (procResult.has_plan && procResult.workstation_plan?.length > 0) {
+            morningState.workstations = procResult.workstation_plan;
+            morningState.processes = procResult.data || [];
+            renderMorningAssignments(true);
+        } else {
+            morningState.processes = procResult.data || [];
+            morningState.workstations = null;
+            renderMorningAssignments(false);
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
 }
 
 // ==========================================

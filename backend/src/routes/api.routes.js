@@ -3400,6 +3400,34 @@ router.post('/workstation-assignments', async (req, res) => {
     }
 });
 
+// PATCH /workstation-assignments/material — save material_provided for an existing assignment
+router.patch('/workstation-assignments/material', async (req, res) => {
+    const { line_id, workstation_code, material_provided, work_date } = req.body;
+    if (!line_id || !workstation_code) {
+        return res.status(400).json({ success: false, error: 'line_id and workstation_code are required' });
+    }
+    const date = work_date || new Date().toISOString().slice(0, 10);
+    const qty = parseInt(material_provided, 10);
+    if (isNaN(qty) || qty < 0) {
+        return res.status(400).json({ success: false, error: 'material_provided must be a non-negative integer' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE employee_workstation_assignments
+             SET material_provided = $1
+             WHERE line_id = $2 AND work_date = $3 AND workstation_code = $4 AND is_overtime = false`,
+            [qty, line_id, date, workstation_code]
+        );
+        if (result.rowCount === 0) {
+            return res.status(404).json({ success: false, error: 'No assignment found for this workstation' });
+        }
+        realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date: date });
+        res.json({ success: true, data: { line_id, workstation_code, material_provided: qty, work_date: date } });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 router.get('/workstation-assignments', async (req, res) => {
     const { line_id, work_date } = req.query;
     if (!line_id) {
@@ -5407,6 +5435,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     ewa.employee_id as assigned_employee_id,
                     e.emp_code as assigned_emp_code,
                     e.emp_name as assigned_emp_name,
+                    COALESCE(ewa.material_provided, 0) as material_provided,
                     lpwp.sequence_in_workstation
              FROM line_plan_workstations lpw
              JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
@@ -5475,6 +5504,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         assigned_employee_id: isCoActive ? (firstCoRow?.assigned_employee_id ?? row.assigned_employee_id) : row.assigned_employee_id,
                         assigned_emp_code: isCoActive ? (firstCoRow?.assigned_emp_code ?? row.assigned_emp_code) : row.assigned_emp_code,
                         assigned_emp_name: isCoActive ? (firstCoRow?.assigned_emp_name ?? row.assigned_emp_name) : row.assigned_emp_name,
+                        material_provided: parseInt(isCoActive ? (firstCoRow?.material_provided ?? row.material_provided) : row.material_provided) || 0,
                         product_id: isCoActive ? incomingId : primaryId,
                         processes: []
                     });
