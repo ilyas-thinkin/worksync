@@ -225,7 +225,8 @@ const morningState = {
     selectedWorkstation: null,
     selectedWorkstationPlanId: null,
     scannedEmployee: null,
-    scanMode: 'link'  // 'link' | 'material'
+    mappedEmployee: null,
+    scanMode: 'link'
 };
 
 async function loadMorningProcedure() {
@@ -333,29 +334,29 @@ function renderMorningAssignments(hasPlan) {
 
     if (hasPlan && morningState.workstations?.length > 0) {
         const workstations = morningState.workstations;
-        const allAssigned = workstations.every(ws => ws.assigned_emp_name);
+        // "Linked" = supervisor confirmed (material_provided is not null)
+        const allLinked = workstations.every(ws => ws.material_provided !== null && ws.material_provided !== undefined);
 
         const rows = workstations.map(ws => {
-            const isLinked = !!ws.assigned_emp_name;
-            const assigned = isLinked
-                ? `<span style="color:#16a34a; font-weight:600;">${ws.assigned_emp_code} - ${ws.assigned_emp_name}</span>`
-                : '<span style="color:#6b7280;">Not assigned</span>';
+            const isMapped   = !!ws.assigned_emp_name;  // IE/Admin mapped an employee
+            const isConfirmed = ws.material_provided !== null && ws.material_provided !== undefined; // supervisor confirmed
             const processList = (ws.processes || []).map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
 
-            const statusBadge = isLinked
-                ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
+            const assigned = isMapped
+                ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
+                : '<span style="color:#9ca3af;font-style:italic;">Not mapped</span>';
+
+            const statusBadge = isConfirmed
+                ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>
+                   <div style="font-size:11px;color:#6b7280;margin-top:2px;">&#128230; ${ws.material_provided} pcs</div>`
                 : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
-            const materialBadge = isLinked && ws.material_provided > 0
-                ? `<span style="display:inline-block;margin-top:3px;font-size:11px;color:#6b7280;">&#128230; ${ws.material_provided} pcs</span>`
-                : '';
-
-            const actionBtn = isLinked
+            const actionBtn = isConfirmed
                 ? `<span style="color:#6b7280;font-size:12px;">—</span>`
                 : `<button class="btn btn-primary btn-sm"
-                        onclick="startMorningScan('${ws.workstation_code}', ${ws.id})">
-                        &#128279; Link
+                        onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${ws.assigned_emp_name || ''}')">
+                        &#128247; Scan &amp; Link
                    </button>`;
 
             return `<tr>
@@ -374,7 +375,7 @@ function renderMorningAssignments(hasPlan) {
                     <h3 class="card-title">Workstation Assignments</h3>
                     <span style="font-size:0.85em; color:#6b7280;">
                         ${workstations.length} workstations &nbsp;|&nbsp;
-                        ${allAssigned ? '<span style="color:#16a34a;">&#10003; All linked</span>' : '<span style="color:#dc2626;">&#9888; Some unlinked</span>'}
+                        ${allLinked ? '<span style="color:#16a34a;">&#10003; All linked</span>' : '<span style="color:#dc2626;">&#9888; Some not linked</span>'}
                     </span>
                 </div>
                 <div class="card-body table-container">
@@ -413,7 +414,7 @@ function renderMorningAssignments(hasPlan) {
     processes.forEach(p => {
         const ws = p.workstation_code || p.group_name || '-';
         if (!wsMap.has(ws)) {
-            wsMap.set(ws, { workstation_code: ws, processes: [], assigned_emp_code: null, assigned_emp_name: null, plan_id: null, material_provided: 0 });
+            wsMap.set(ws, { workstation_code: ws, processes: [], assigned_emp_code: null, assigned_emp_name: null, assigned_employee_id: null, plan_id: null, material_provided: null });
         }
         wsMap.get(ws).processes.push(p);
         if (p.assigned_emp_name && !wsMap.get(ws).assigned_emp_name) {
@@ -423,21 +424,23 @@ function renderMorningAssignments(hasPlan) {
     });
 
     const rows = Array.from(wsMap.values()).map(ws => {
-        const isLinked = !!ws.assigned_emp_name;
-        const assigned = isLinked
-            ? `<span style="color:#16a34a; font-weight:600;">${ws.assigned_emp_code} - ${ws.assigned_emp_name}</span>`
-            : '<span style="color:#6b7280;">Not assigned</span>';
+        const isMapped    = !!ws.assigned_emp_name;
+        const isConfirmed = ws.material_provided !== null && ws.material_provided !== undefined;
+        const assigned = isMapped
+            ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
+            : '<span style="color:#9ca3af;font-style:italic;">Not mapped</span>';
         const processList = ws.processes.map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
 
-        const statusBadge = isLinked
-            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
+        const statusBadge = isConfirmed
+            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>
+               <div style="font-size:11px;color:#6b7280;margin-top:2px;">&#128230; ${ws.material_provided} pcs</div>`
             : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
-        const actionBtn = isLinked
+        const actionBtn = isConfirmed
             ? `<span style="color:#6b7280;font-size:12px;">—</span>`
             : `<button class="btn btn-primary btn-sm"
-                    onclick="startMorningScan('${ws.workstation_code}', null)">
-                    &#128279; Link
+                    onclick="startMorningScan('${ws.workstation_code}', null, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${ws.assigned_emp_name || ''}')">
+                    &#128247; Scan &amp; Link
                </button>`;
 
         return `<tr>
@@ -467,21 +470,25 @@ function renderMorningAssignments(hasPlan) {
     `;
 }
 
-function startMorningScan(workstationCode, linePlanWorkstationId) {
+// mappedEmpId/Code/Name = what IE/Admin assigned (may be null if not mapped yet)
+function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, mappedEmpCode, mappedEmpName) {
     morningState.selectedWorkstation = workstationCode;
     morningState.selectedWorkstationPlanId = linePlanWorkstationId || null;
     morningState.scannedEmployee = null;
-    morningState.scanMode = 'link';
+    morningState.mappedEmployee = mappedEmpId ? { id: mappedEmpId, emp_code: mappedEmpCode, emp_name: mappedEmpName } : null;
 
     const scanPanel = document.getElementById('morning-scan-panel');
     const scanLabel = document.getElementById('morning-scan-label');
     const scanResult = document.getElementById('morning-scan-result');
     const title = document.getElementById('morning-scan-title');
-    if (title) title.textContent = 'Link Worker to Workstation';
+    if (title) title.textContent = 'Scan & Link';
     scanPanel.style.display = 'block';
-    scanLabel.textContent = `Scan employee QR to link to workstation: ${workstationCode}`;
-    scanResult.innerHTML = '<p style="color:#6b7280;">Point camera at worker ID QR code...</p>';
 
+    const mappedInfo = mappedEmpId
+        ? `<span style="color:#1d4ed8;font-weight:600;">${mappedEmpCode} — ${mappedEmpName}</span>`
+        : '<span style="color:#9ca3af;">No employee mapped yet</span>';
+    scanLabel.innerHTML = `Workstation <strong>${workstationCode}</strong> &nbsp;|&nbsp; Mapped: ${mappedInfo}`;
+    scanResult.innerHTML = '<p style="color:#6b7280;margin-top:8px;">Point camera at employee QR code...</p>';
     scanPanel.scrollIntoView({ behavior: 'smooth' });
 
     startCamera('morning-camera', null, async (rawValue) => {
@@ -492,64 +499,79 @@ function startMorningScan(workstationCode, linePlanWorkstationId) {
             return;
         }
 
-        scanResult.innerHTML = '<p>Resolving employee...</p>';
+        scanResult.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
 
         try {
-            const response = await fetch(`${API_BASE}/supervisor/resolve-employee`, {
+            // Resolve scanned QR to an employee
+            let scannedEmp = null;
+            const res = await fetch(`${API_BASE}/supervisor/resolve-employee`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    line_id: morningState.lineId,
-                    employee_qr: rawValue
-                })
+                body: JSON.stringify({ line_id: morningState.lineId, employee_qr: rawValue })
             });
-            const result = await response.json();
+            const resolveResult = await res.json();
 
-            if (!result.success) {
-                // Employee might not be assigned to this line yet - try resolving directly
-                const empResponse = await fetch(`${API_BASE}/employees`);
-                const empResult = await empResponse.json();
-                if (!empResult.success) {
-                    scanResult.innerHTML = `<p style="color:#dc2626;">Employee not found</p>`;
-                    return;
-                }
-                const employees = empResult.data || [];
-                let employee = null;
-                if (payload.id) {
-                    employee = employees.find(e => e.id === payload.id);
-                } else if (payload.raw) {
-                    employee = employees.find(e => String(e.emp_code).trim() === String(payload.raw).trim());
-                } else if (payload.emp_code) {
-                    employee = employees.find(e => String(e.emp_code).trim() === String(payload.emp_code).trim());
-                }
+            if (resolveResult.success) {
+                scannedEmp = resolveResult.data.employee;
+            } else {
+                // Fallback: direct lookup from employees list
+                const empRes = await fetch(`${API_BASE}/employees`);
+                const empData = await empRes.json();
+                const employees = empData.data || [];
+                scannedEmp = payload.id
+                    ? employees.find(e => e.id === payload.id)
+                    : employees.find(e => String(e.emp_code).trim() === String(payload.raw || payload.emp_code || '').trim());
+            }
 
-                if (!employee) {
-                    scanResult.innerHTML = `<p style="color:#dc2626;">Employee not found</p>`;
-                    return;
-                }
-
-                morningState.scannedEmployee = employee;
-                scanResult.innerHTML = _morningLinkForm(employee.emp_code, employee.emp_name);
+            if (!scannedEmp) {
+                scanResult.innerHTML = '<p style="color:#dc2626;">Employee not found. Try again.</p>';
                 return;
             }
 
-            const emp = result.data.employee;
-            morningState.scannedEmployee = emp;
-            scanResult.innerHTML = _morningLinkForm(emp.emp_code, emp.emp_name);
+            morningState.scannedEmployee = scannedEmp;
+            const mapped = morningState.mappedEmployee;
+
+            if (mapped && mapped.id !== scannedEmp.id) {
+                // MISMATCH — ask supervisor
+                scanResult.innerHTML = `
+                    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:14px;margin-bottom:10px;">
+                        <p style="font-weight:700;color:#c2410c;margin:0 0 6px;">&#9888; Mismatch!</p>
+                        <p style="font-size:0.9em;margin:0 0 4px;">Workstation <strong>${workstationCode}</strong> is mapped to:</p>
+                        <p style="font-weight:700;color:#1d4ed8;margin:0 0 10px;">&#128100; ${mapped.emp_code} — ${mapped.emp_name}</p>
+                        <p style="font-size:0.9em;margin:0 0 4px;">You scanned:</p>
+                        <p style="font-weight:700;color:#16a34a;margin:0 0 14px;">&#128100; ${scannedEmp.emp_code} — ${scannedEmp.emp_name}</p>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-secondary btn-sm" onclick="cancelMorningScan()">
+                                Keep ${mapped.emp_code}
+                            </button>
+                            <button class="btn btn-sm" style="background:#dc2626;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;"
+                                onclick="_morningShowMaterialForm()">
+                                Replace with ${scannedEmp.emp_code}
+                            </button>
+                        </div>
+                    </div>`;
+            } else {
+                // Match (or no prior mapping) — proceed to material
+                _morningShowMaterialForm();
+            }
         } catch (err) {
             scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
         }
     });
 }
 
-function _morningLinkForm(empCode, empName) {
-    return `
-        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:10px;">
-            <p style="font-weight:700;font-size:1.05em;color:#16a34a;margin:0;">&#128100; ${empCode} — ${empName}</p>
+function _morningShowMaterialForm() {
+    const scanResult = document.getElementById('morning-scan-result');
+    const emp = morningState.scannedEmployee;
+    const matchedBefore = morningState.mappedEmployee && morningState.mappedEmployee.id === emp?.id;
+    const empLabel = matchedBefore ? '&#10003; Match confirmed' : 'Replacing with';
+    scanResult.innerHTML = `
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:10px;">
+            <p style="font-weight:700;font-size:1em;color:#16a34a;margin:0;">${empLabel}: ${emp?.emp_code} — ${emp?.emp_name}</p>
         </div>
         <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;">
             <label style="display:block;font-weight:700;font-size:0.9em;margin-bottom:8px;color:#374151;">
-                &#128230; Material provided to this workstation
+                &#128230; Material provided to workstation ${morningState.selectedWorkstation}
             </label>
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
                 <input type="number" id="morning-material-qty" min="0" value="0"
@@ -632,6 +654,7 @@ function cancelMorningScan() {
     morningState.selectedWorkstation = null;
     morningState.selectedWorkstationPlanId = null;
     morningState.scannedEmployee = null;
+    morningState.mappedEmployee = null;
     morningState.scanMode = 'link';
 }
 

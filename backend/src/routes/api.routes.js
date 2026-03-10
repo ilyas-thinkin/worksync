@@ -5435,7 +5435,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     ewa.employee_id as assigned_employee_id,
                     e.emp_code as assigned_emp_code,
                     e.emp_name as assigned_emp_name,
-                    COALESCE(ewa.material_provided, 0) as material_provided,
+                    ewa.material_provided,
                     lpwp.sequence_in_workstation
              FROM line_plan_workstations lpw
              JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
@@ -5504,7 +5504,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         assigned_employee_id: isCoActive ? (firstCoRow?.assigned_employee_id ?? row.assigned_employee_id) : row.assigned_employee_id,
                         assigned_emp_code: isCoActive ? (firstCoRow?.assigned_emp_code ?? row.assigned_emp_code) : row.assigned_emp_code,
                         assigned_emp_name: isCoActive ? (firstCoRow?.assigned_emp_name ?? row.assigned_emp_name) : row.assigned_emp_name,
-                        material_provided: parseInt(isCoActive ? (firstCoRow?.material_provided ?? row.material_provided) : row.material_provided) || 0,
+                        material_provided: (isCoActive ? (firstCoRow?.material_provided ?? row.material_provided) : row.material_provided) ?? null,
                         product_id: isCoActive ? incomingId : primaryId,
                         processes: []
                     });
