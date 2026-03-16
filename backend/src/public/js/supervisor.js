@@ -74,6 +74,8 @@ async function loadSection(section) {
     stopCamera();
     if (section === 'hourly') {
         await loadHourlyProcedure();
+    } else if (section === 'adjustment') {
+        await loadAdjustmentPanel();
     } else {
         await loadMorningProcedure();
     }
@@ -502,25 +504,17 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
         scanResult.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
 
         try {
-            // Resolve scanned QR to an employee
+            // Resolve scanned QR to an employee (no line assignment required)
             let scannedEmp = null;
-            const res = await fetch(`${API_BASE}/supervisor/resolve-employee`, {
+            const res = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ line_id: morningState.lineId, employee_qr: rawValue })
+                body: JSON.stringify({ employee_qr: rawValue })
             });
             const resolveResult = await res.json();
 
             if (resolveResult.success) {
                 scannedEmp = resolveResult.data.employee;
-            } else {
-                // Fallback: direct lookup from employees list
-                const empRes = await fetch(`${API_BASE}/employees`);
-                const empData = await empRes.json();
-                const employees = empData.data || [];
-                scannedEmp = payload.id
-                    ? employees.find(e => e.id === payload.id)
-                    : employees.find(e => String(e.emp_code).trim() === String(payload.raw || payload.emp_code || '').trim());
             }
 
             if (!scannedEmp) {
@@ -596,7 +590,7 @@ async function confirmMorningAssign() {
         const emp = morningState.scannedEmployee;
         const today = new Date().toISOString().slice(0, 10);
 
-        // Save employee assignment
+        // Save employee assignment + material in one request
         const res = await fetch(`${API_BASE}/workstation-assignments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -605,23 +599,12 @@ async function confirmMorningAssign() {
                 workstation_code: morningState.selectedWorkstation,
                 employee_id: emp.id,
                 work_date: today,
-                line_plan_workstation_id: morningState.selectedWorkstationPlanId
+                line_plan_workstation_id: morningState.selectedWorkstationPlanId,
+                material_provided: isNaN(material) ? 0 : material
             })
         });
         const result = await res.json();
         if (!result.success) { showToast(result.error || 'Assignment failed', 'error'); return; }
-
-        // Save material provided
-        await fetch(`${API_BASE}/workstation-assignments/material`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                line_id: morningState.lineId,
-                workstation_code: morningState.selectedWorkstation,
-                material_provided: isNaN(material) ? 0 : material,
-                work_date: today
-            })
-        });
 
         showToast(`${emp.emp_name} linked to ${morningState.selectedWorkstation}`, 'success');
 
@@ -813,6 +796,7 @@ const hourlyState = {
 };
 
 const SHORTFALL_REASONS = [
+    'WORKSTATION COMBINED',
     'WORKMANSHIP PROBLEM',
     'MC BREAKDOWN',
     'FEEDING NOT RECEIVED',
@@ -1342,9 +1326,25 @@ function renderHourlySummary() {
             );
             const output = progress ? parseInt(progress.quantity || 0) : 0;
             const reason = progress?.shortfall_reason || '';
-            const worker = ws.assigned_emp_name
-                ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}`
-                : '<span style="color:#dc2626;">Unassigned</span>';
+
+            // Worker status with departure/coverage info
+            const wsStatus = ws.ws_status || 'active';
+            let worker = '';
+            if (wsStatus === 'vacant') {
+                const deptTime = ws.departure_time ? new Date(ws.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+                worker = `<span style="color:#dc2626;font-weight:700;">VACANT</span><br><small style="color:#9ca3af;">${ws.assigned_emp_code || ''} left ${deptTime}</small>`;
+            } else if (wsStatus === 'covered') {
+                if (ws.coverage_type === 'combine') {
+                    worker = `<span style="color:#7c3aed;font-size:11px;font-weight:700;">COMBINED</span><br>${ws.covering_emp_code} - ${ws.covering_emp_name}<br><small style="color:#9ca3af;">also covers ${ws.covering_from_ws}</small>`;
+                } else {
+                    worker = ws.assigned_emp_name ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}` : '<span style="color:#9ca3af;">-</span>';
+                }
+            } else {
+                worker = ws.assigned_emp_name
+                    ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}`
+                    : '<span style="color:#dc2626;">Unassigned</span>';
+            }
+
             const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
 
@@ -1376,8 +1376,13 @@ function renderHourlySummary() {
                 }
             }
 
-            return `<tr style="${needsReason ? 'background:#fff5f5;' : (isWsChangeover ? 'background:#f5f3ff;' : '')}">
-                <td style="font-weight:700;">${ws.workstation_code}${needsReason ? ' <span style="color:#dc2626;">&#9888;</span>' : ''}</td>
+            const rowBg = wsStatus === 'vacant' ? 'background:#fff5f5;' : (needsReason ? 'background:#fff5f5;' : (isWsChangeover ? 'background:#f5f3ff;' : ''));
+            const enterOutputBtn = wsStatus === 'vacant'
+                ? `<button class="btn btn-sm" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant — record an adjustment first">Enter Output</button>`
+                : `<button class="btn btn-primary btn-sm" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
+
+            return `<tr style="${rowBg}">
+                <td style="font-weight:700;">${ws.workstation_code}${needsReason ? ' <span style="color:#dc2626;">&#9888;</span>' : ''}${wsStatus === 'vacant' ? ' <span style="color:#dc2626;font-size:10px;">&#9632;</span>' : ''}</td>
                 <td style="font-size:0.85em; color:#6b7280;">${processList}</td>
                 <td style="text-align:center; color:${workloadColor}; font-weight:600;">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
                 <td>${worker}</td>
@@ -1385,11 +1390,7 @@ function renderHourlySummary() {
                 <td style="text-align:center; font-weight:600;">${output || '-'}</td>
                 <td>${statusHtml}</td>
                 ${hasChangeover ? `<td style="font-size:12px;">${coCell}</td>` : ''}
-                <td>
-                    <button class="btn btn-primary btn-sm" onclick="openWorkstationHourlyEntry(${ws.id})">
-                        Enter Output
-                    </button>
-                </td>
+                <td>${enterOutputBtn}</td>
             </tr>`;
         }).join('');
 
@@ -1661,7 +1662,8 @@ function openWorkstationHourlyEntry(workstationPlanId) {
         d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour
     );
     const existingOutput = existing ? parseInt(existing.quantity || 0) : 0;
-    const existingReason = existing?.shortfall_reason || '';
+    const isCombined = ws.coverage_type === 'combine';
+    const existingReason = existing?.shortfall_reason || (isCombined ? 'WORKSTATION COMBINED' : '');
 
     const scanPanel = document.getElementById('hourly-scan-panel');
     if (scanPanel) scanPanel.style.display = 'none';
@@ -1695,6 +1697,10 @@ function openWorkstationHourlyEntry(workstationPlanId) {
                 placeholder="Enter output quantity" style="max-width:200px;">
         </div>
 
+        ${isCombined ? `<div style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#5b21b6;">
+            &#9888; This workstation is combined — one employee covers two workstations. Shortfall reason will be pre-set to <strong>WORKSTATION COMBINED</strong>.
+        </div>` : ''}
+
         <div id="hourly-reason-section" style="margin-bottom:16px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
             <label class="form-label" style="color:#dc2626; font-weight:700;">Reason for Shortfall (Required)</label>
             <select class="form-control" id="hourly-reason" style="max-width:300px;">
@@ -1715,9 +1721,14 @@ function openWorkstationHourlyEntry(workstationPlanId) {
     const outputInput = document.getElementById('hourly-output-qty');
     outputInput.addEventListener('input', () => {
         const val = parseInt(outputInput.value || 0, 10);
-        document.getElementById('hourly-reason-section').style.display =
-            (hourlyTarget > 0 && val > 0 && val < hourlyTarget) ? 'block' : 'none';
+        const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
+        document.getElementById('hourly-reason-section').style.display = showReason ? 'block' : 'none';
         document.getElementById('hourly-reason-warning').style.display = 'none';
+        // Auto-select "WORKSTATION COMBINED" for combined workstations when below target
+        if (showReason && isCombined) {
+            const sel = document.getElementById('hourly-reason');
+            if (sel && !sel.value) sel.value = 'WORKSTATION COMBINED';
+        }
     });
 
     document.getElementById('hourly-save-btn').addEventListener('click', saveWorkstationHourlyOutput);
@@ -2507,4 +2518,426 @@ function setupOtRealtimeListener() {
         setTimeout(setupOtRealtimeListener, 3000);
     };
     window._otSSESource = source;
+}
+
+// ==========================================
+// WORKER ADJUSTMENT PANEL
+// ==========================================
+
+const adjustState = {
+    lineId: null,
+    date: null,
+    workstations: [],
+    // departure form
+    departureWorkstation: null,
+    departureEmployeeId: null,
+    departureEmpName: null,
+    // adjustment flow
+    departureId: null,
+    vacantWsCode: null,
+    adjStep: null,   // 'scan-employee' | 'choose-type'
+    scannedEmployee: null
+};
+
+async function loadAdjustmentPanel() {
+    const container = document.getElementById('supervisor-content');
+    container.innerHTML = `
+        <div style="padding:16px;">
+            <h1 style="font-size:1.3rem;font-weight:700;margin:0 0 16px;">Worker Adjustment</h1>
+            <div style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                <select id="adj-line-select" class="form-control" style="max-width:280px;" onchange="loadAdjLineStatus()">
+                    <option value="">— Select Line —</option>
+                </select>
+            </div>
+            <div id="adj-status-panel"></div>
+            <div id="adj-departure-panel" style="display:none;"></div>
+            <div id="adj-scan-panel" style="display:none;"></div>
+            <div id="adj-history-panel" style="margin-top:24px;"></div>
+        </div>`;
+
+    // Load lines
+    try {
+        const r = await fetch(`${API_BASE}/lines`);
+        const d = await r.json();
+        const sel = document.getElementById('adj-line-select');
+        (d.data || []).forEach(l => {
+            const opt = document.createElement('option');
+            opt.value = l.id;
+            opt.textContent = `${l.line_name} (${l.line_code})`;
+            sel.appendChild(opt);
+        });
+    } catch (e) { /* ignore */ }
+}
+
+async function loadAdjLineStatus() {
+    const sel = document.getElementById('adj-line-select');
+    const lineId = sel?.value;
+    if (!lineId) return;
+    adjustState.lineId = lineId;
+    adjustState.date = new Date().toISOString().slice(0, 10);
+
+    const panel = document.getElementById('adj-status-panel');
+    panel.innerHTML = '<p style="color:#6b7280;padding:8px;">Loading...</p>';
+
+    try {
+        const [statusRes, histRes] = await Promise.all([
+            fetch(`${API_BASE}/supervisor/line-status/${lineId}?date=${adjustState.date}`),
+            fetch(`${API_BASE}/supervisor/worker-departures/${lineId}?date=${adjustState.date}`)
+        ]);
+        const statusData = await statusRes.json();
+        const histData = await histRes.json();
+
+        adjustState.workstations = statusData.data?.workstations || [];
+        renderAdjStatusTable(adjustState.workstations);
+        renderAdjHistory(histData.data || []);
+    } catch (err) {
+        panel.innerHTML = `<p style="color:#dc2626;">Failed to load: ${err.message}</p>`;
+    }
+}
+
+function renderAdjStatusTable(workstations) {
+    const panel = document.getElementById('adj-status-panel');
+    if (!workstations.length) {
+        panel.innerHTML = '<div class="card"><div class="card-body"><p style="color:#9ca3af;">No employee assignments found for today on this line.</p></div></div>';
+        return;
+    }
+    const rows = workstations.map(ws => {
+        const status = ws.status;
+        let statusBadge = '';
+        let workerCell = `${ws.emp_code} — ${ws.emp_name}`;
+        let actionCell = '';
+
+        if (status === 'active') {
+            statusBadge = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Active</span>`;
+            actionCell = `<button class="btn btn-sm" style="background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;font-size:12px;"
+                onclick="openDepartureForm('${ws.workstation_code}', ${ws.employee_id})">
+                Mark Departure
+            </button>`;
+        } else if (status === 'vacant') {
+            const t = ws.departure_time ? new Date(ws.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+            const reasonLabel = { sick: 'Sick', personal: 'Personal', operational: 'Operational', other: 'Other' }[ws.departure_reason] || '';
+            statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Vacant</span>`;
+            workerCell = `<span style="color:#dc2626;">${ws.emp_code} — ${ws.emp_name}</span><br><small style="color:#9ca3af;">${reasonLabel} ${t ? '@ ' + t : ''}</small>`;
+            actionCell = `<button class="btn btn-sm" style="background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;font-size:12px;"
+                onclick="openAdjustmentScan(${ws.departure_id}, '${ws.workstation_code}')">
+                Assign Worker
+            </button>`;
+        } else {
+            const typeLabel = ws.adjustment_type === 'combine' ? 'Combined' : 'Reassigned';
+            statusBadge = `<span style="background:#ede9fe;color:#7c3aed;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${typeLabel}</span>`;
+            const rTime = ws.reassignment_time ? new Date(ws.reassignment_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+            workerCell += `<br><small style="color:#7c3aed;">${ws.covering_emp_code} covers @ ${rTime}</small>`;
+            actionCell = '<span style="color:#9ca3af;font-size:12px;">Resolved</span>';
+        }
+
+        return `<tr>
+            <td style="font-weight:700;">${ws.workstation_code}</td>
+            <td style="font-size:0.9em;">${workerCell}</td>
+            <td>${statusBadge}</td>
+            <td>${actionCell}</td>
+        </tr>`;
+    }).join('');
+
+    panel.innerHTML = `
+        <div class="card">
+            <div class="card-body" style="padding:0;">
+                <table class="data-table" style="font-size:0.9em;">
+                    <thead><tr>
+                        <th>Workstation</th><th>Employee</th><th>Status</th><th>Action</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>`;
+}
+
+function renderAdjHistory(records) {
+    const panel = document.getElementById('adj-history-panel');
+    if (!records.length) {
+        panel.innerHTML = '';
+        return;
+    }
+    const rows = records.map(r => {
+        const deptTime = r.departure_time ? new Date(r.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '-';
+        const adjLabel = r.adjustment_type ? (r.adjustment_type === 'assign' ? 'Assign' : 'Combine') : '—';
+        const rTime = r.reassignment_time ? new Date(r.reassignment_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+        const coverInfo = r.covering_emp_code ? `${r.covering_emp_code} (${r.covering_from_ws || ''})` : '—';
+        const reasonLabel = { sick: 'Sick', personal: 'Personal', operational: 'Operational', other: 'Other' }[r.departure_reason] || r.departure_reason;
+        return `<tr>
+            <td style="font-weight:600;">${r.workstation_code}</td>
+            <td>${r.dep_emp_code} — ${r.dep_emp_name}</td>
+            <td>${reasonLabel}</td>
+            <td>${deptTime}</td>
+            <td>${adjLabel}</td>
+            <td>${coverInfo}</td>
+            <td>${rTime}</td>
+        </tr>`;
+    }).join('');
+
+    panel.innerHTML = `
+        <div class="card">
+            <div class="card-body" style="padding:0;">
+                <div style="padding:10px 14px 4px;font-weight:700;font-size:13px;color:#374151;">Departure History</div>
+                <table class="data-table" style="font-size:0.85em;">
+                    <thead><tr>
+                        <th>WS</th><th>Departed</th><th>Reason</th><th>Dept. Time</th>
+                        <th>Adj. Type</th><th>Covered By</th><th>Adj. Time</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>`;
+}
+
+// ─── DEPARTURE FORM ───────────────────────────────────────────────────────────
+function openDepartureForm(workstationCode, employeeId) {
+    const wsData = adjustState.workstations.find(w => w.workstation_code === workstationCode && w.employee_id === employeeId);
+    adjustState.departureWorkstation = workstationCode;
+    adjustState.departureEmployeeId = employeeId;
+    adjustState.departureEmpName = wsData?.emp_name || '';
+
+    const now = new Date();
+    const localTime = now.getFullYear() + '-' +
+        String(now.getMonth()+1).padStart(2,'0') + '-' +
+        String(now.getDate()).padStart(2,'0') + 'T' +
+        String(now.getHours()).padStart(2,'0') + ':' +
+        String(now.getMinutes()).padStart(2,'0');
+
+    const panel = document.getElementById('adj-departure-panel');
+    panel.style.display = 'block';
+    panel.innerHTML = `
+        <div class="card" style="border:1px solid #fca5a5;margin-bottom:16px;">
+            <div class="card-body">
+                <h3 style="margin:0 0 14px;font-size:14px;font-weight:700;color:#dc2626;">Mark Departure — ${workstationCode}</h3>
+                <p style="margin:0 0 12px;font-size:13px;">Employee: <strong>${adjustState.departureEmpName}</strong></p>
+                <div style="display:grid;gap:12px;">
+                    <div>
+                        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Departure Reason</label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            ${['sick','personal','operational','other'].map(r =>
+                                `<label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
+                                    <input type="radio" name="dept-reason" value="${r}" ${r==='sick'?'checked':''}> ${r.charAt(0).toUpperCase()+r.slice(1)}
+                                </label>`
+                            ).join('')}
+                        </div>
+                    </div>
+                    <div>
+                        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Departure Time</label>
+                        <input type="datetime-local" id="dept-time-input" value="${localTime}" class="form-control" style="max-width:220px;">
+                    </div>
+                    <div>
+                        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Notes (optional)</label>
+                        <input type="text" id="dept-notes-input" placeholder="e.g. Went to clinic" class="form-control">
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-sm" style="background:#dc2626;color:#fff;border:none;" onclick="confirmDeparture()">Confirm Departure</button>
+                        <button class="btn btn-secondary btn-sm" onclick="closeDepartureForm()">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    panel.scrollIntoView({ behavior: 'smooth' });
+}
+
+function closeDepartureForm() {
+    const panel = document.getElementById('adj-departure-panel');
+    if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+    adjustState.departureWorkstation = null;
+    adjustState.departureEmployeeId = null;
+    adjustState.departureEmpName = null;
+}
+
+async function confirmDeparture() {
+    const reason = document.querySelector('input[name="dept-reason"]:checked')?.value;
+    const timeVal = document.getElementById('dept-time-input')?.value;
+    const notes = document.getElementById('dept-notes-input')?.value || '';
+    if (!reason) { showToast('Select a departure reason', 'error'); return; }
+    if (!timeVal) { showToast('Enter departure time', 'error'); return; }
+
+    // Convert local datetime-local input to ISO string with offset
+    const deptTime = new Date(timeVal).toISOString();
+
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/worker-departure`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: adjustState.lineId,
+                work_date: adjustState.date,
+                employee_id: adjustState.departureEmployeeId,
+                workstation_code: adjustState.departureWorkstation,
+                departure_time: deptTime,
+                departure_reason: reason,
+                notes
+            })
+        });
+        const result = await r.json();
+        if (!result.success) { showToast(result.error || 'Failed to record departure', 'error'); return; }
+        showToast(`Departure recorded for ${result.data.emp_name}`, 'success');
+        closeDepartureForm();
+        await loadAdjLineStatus();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ─── ADJUSTMENT SCAN FLOW ─────────────────────────────────────────────────────
+function openAdjustmentScan(departureId, vacantWsCode) {
+    adjustState.departureId = departureId;
+    adjustState.vacantWsCode = vacantWsCode;
+    adjustState.adjStep = 'scan-employee';
+    adjustState.scannedEmployee = null;
+
+    const panel = document.getElementById('adj-scan-panel');
+    panel.style.display = 'block';
+    panel.innerHTML = `
+        <div class="card" style="border:1px solid #93c5fd;margin-bottom:16px;">
+            <div class="card-body">
+                <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#1d4ed8;">
+                    Worker Adjustment — ${vacantWsCode}
+                </h3>
+                <p style="font-size:13px;color:#6b7280;margin:0 0 12px;">
+                    Scan the <strong>receiving worker's QR</strong> (must be active on this line today).
+                </p>
+                <video id="adj-camera" style="width:100%;max-width:360px;border-radius:8px;background:#000;display:block;"></video>
+                <div id="adj-scan-result" style="margin-top:10px;"></div>
+                <button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="closeAdjustmentScan()">Cancel</button>
+            </div>
+        </div>`;
+    panel.scrollIntoView({ behavior: 'smooth' });
+
+    startCamera('adj-camera', null, async (rawValue) => {
+        stopCamera();
+        const result = document.getElementById('adj-scan-result');
+        result.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
+        try {
+            const r = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ employee_qr: rawValue })
+            });
+            const data = await r.json();
+            if (!data.success) {
+                result.innerHTML = `<p style="color:#dc2626;">${data.error || 'Employee not found. Try again.'}</p>
+                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
+                return;
+            }
+            adjustState.scannedEmployee = data.data.employee;
+
+            // Find their current workstation from the status table
+            const assigned = (adjustState.workstations || []).find(
+                ws => ws.employee_id === adjustState.scannedEmployee.id && ws.status === 'active'
+            );
+            if (!assigned) {
+                result.innerHTML = `<p style="color:#dc2626;">This employee (${data.data.employee.emp_name}) is not active on this line today, or may themselves be departed.</p>
+                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
+                return;
+            }
+            adjustState.scannedFromWs = assigned.workstation_code;
+            showAdjChoicePrompt(data.data.employee, assigned.workstation_code);
+        } catch (err) {
+            document.getElementById('adj-scan-result').innerHTML = `<p style="color:#dc2626;">${err.message}</p>`;
+        }
+    });
+}
+
+function retryAdjScan() {
+    adjustState.scannedEmployee = null;
+    startCamera('adj-camera', null, async (rawValue) => {
+        stopCamera();
+        // reuse same logic — just call openAdjustmentScan equivalent inline
+        const result = document.getElementById('adj-scan-result');
+        result.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
+        try {
+            const r = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ employee_qr: rawValue })
+            });
+            const data = await r.json();
+            if (!data.success) {
+                result.innerHTML = `<p style="color:#dc2626;">${data.error || 'Employee not found.'}</p>
+                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
+                return;
+            }
+            adjustState.scannedEmployee = data.data.employee;
+            const assigned = (adjustState.workstations || []).find(
+                ws => ws.employee_id === adjustState.scannedEmployee.id && ws.status === 'active'
+            );
+            if (!assigned) {
+                result.innerHTML = `<p style="color:#dc2626;">Employee not active on this line today.</p>
+                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
+                return;
+            }
+            adjustState.scannedFromWs = assigned.workstation_code;
+            showAdjChoicePrompt(data.data.employee, assigned.workstation_code);
+        } catch (err) {
+            document.getElementById('adj-scan-result').innerHTML = `<p style="color:#dc2626;">${err.message}</p>`;
+        }
+    });
+}
+
+function showAdjChoicePrompt(emp, fromWs) {
+    const panel = document.getElementById('adj-scan-result');
+    const vacantWs = adjustState.vacantWsCode;
+    panel.innerHTML = `
+        <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px;">
+            <p style="font-weight:700;color:#15803d;margin:0 0 8px;">&#10003; Employee Scanned</p>
+            <p style="font-size:13px;margin:0 0 4px;">
+                <strong>${emp.emp_code} — ${emp.emp_name}</strong> is currently on <strong>${fromWs}</strong>.
+            </p>
+            <p style="font-size:13px;margin:0 0 14px;">
+                <strong>${vacantWs}</strong> is vacant. What would you like to do?
+            </p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-primary btn-sm" onclick="confirmAdjustment('assign')">
+                    &#8594; Assign to ${vacantWs}
+                    <span style="display:block;font-size:10px;font-weight:400;opacity:0.85;">${fromWs} becomes unmanned</span>
+                </button>
+                <button class="btn btn-sm" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" onclick="confirmAdjustment('combine')">
+                    &#8853; Combine ${fromWs} + ${vacantWs}
+                    <span style="display:block;font-size:10px;font-weight:400;opacity:0.85;">${emp.emp_name} covers both</span>
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="retryAdjScan()">&#8635; Scan Different Worker</button>
+            </div>
+        </div>`;
+}
+
+async function confirmAdjustment(type) {
+    const now = new Date().toISOString();
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/worker-adjustment`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: adjustState.lineId,
+                work_date: adjustState.date,
+                departure_id: adjustState.departureId,
+                vacant_workstation_code: adjustState.vacantWsCode,
+                from_employee_id: adjustState.scannedEmployee.id,
+                from_workstation_code: adjustState.scannedFromWs,
+                adjustment_type: type,
+                reassignment_time: now
+            })
+        });
+        const result = await r.json();
+        if (!result.success) { showToast(result.error || 'Adjustment failed', 'error'); return; }
+        const typeLabel = type === 'assign' ? 'Assigned' : 'Combined';
+        showToast(`${typeLabel}: ${result.data.from_emp_name} → ${result.data.vacant_workstation_code}`, 'success');
+        closeAdjustmentScan();
+        await loadAdjLineStatus();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function closeAdjustmentScan() {
+    stopCamera();
+    const panel = document.getElementById('adj-scan-panel');
+    if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+    adjustState.departureId = null;
+    adjustState.vacantWsCode = null;
+    adjustState.scannedEmployee = null;
+    adjustState.scannedFromWs = null;
+    adjustState.adjStep = null;
 }

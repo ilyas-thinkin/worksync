@@ -143,6 +143,9 @@ async function loadSection(section) {
         case 'efficiency':
             await loadEfficiencyReport();
             break;
+        case 'worker-individual-eff':
+            await loadWorkerIndividualEff();
+            break;
     }
 }
 
@@ -6491,26 +6494,48 @@ async function loadOsmReport() {
         <div class="page-header">
             <div>
                 <h1 class="page-title">Stagewise Hourly OSM Report</h1>
-                <p class="page-subtitle">Process-level OSM observation points with cumulative output</p>
-            </div>
-            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
-                <div class="ie-date">
-                    <label for="osm-line">Line</label>
-                    <select id="osm-line" class="form-control" style="min-width:180px;"></select>
-                </div>
-                <div class="ie-date">
-                    <label for="osm-from-date">From</label>
-                    <input type="date" id="osm-from-date" value="${today}">
-                </div>
-                <div class="ie-date">
-                    <label for="osm-to-date">To</label>
-                    <input type="date" id="osm-to-date" value="${today}">
-                </div>
-                <button class="btn btn-secondary" onclick="refreshOsmReport()">Refresh</button>
-                <button class="btn btn-secondary" onclick="printOsmReport()">&#9113; Print</button>
-                <button class="btn btn-secondary" onclick="downloadOsmExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
+                <p class="page-subtitle">Process-level OSM observation points</p>
             </div>
         </div>
+        <div style="display:flex;gap:0;border-bottom:2px solid #e5e7eb;margin-bottom:16px;">
+            <button id="osm-tab-daily" onclick="osmSwitchTab('daily')"
+                style="padding:8px 22px;font-size:13px;font-weight:600;border:none;background:#1e3a5f;color:#fff;cursor:pointer;border-radius:6px 6px 0 0;margin-right:4px;">
+                Daily OSM
+            </button>
+            <button id="osm-tab-range" onclick="osmSwitchTab('range')"
+                style="padding:8px 22px;font-size:13px;font-weight:600;border:none;background:#e5e7eb;color:#374151;cursor:pointer;border-radius:6px 6px 0 0;">
+                Date to Date
+            </button>
+        </div>
+
+        <!-- Daily OSM controls -->
+        <div id="osm-ctrl-daily" style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:16px;">
+            <div class="ie-date"><label>Line</label>
+                <select id="osm-line-daily" class="form-control" style="min-width:180px;" onchange="refreshOsmReport()"></select>
+            </div>
+            <div class="ie-date"><label>Date</label>
+                <input type="date" id="osm-date-daily" value="${today}" onchange="refreshOsmReport()">
+            </div>
+            <button class="btn btn-secondary" onclick="refreshOsmReport()">Refresh</button>
+            <button class="btn btn-secondary" onclick="printOsmReport()">&#9113; Print</button>
+            <button class="btn btn-secondary" onclick="downloadOsmExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
+        </div>
+
+        <!-- Date-to-Date controls -->
+        <div id="osm-ctrl-range" style="display:none;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:16px;">
+            <div class="ie-date"><label>Line</label>
+                <select id="osm-line-range" class="form-control" style="min-width:180px;" onchange="refreshOsmRangeReport()"></select>
+            </div>
+            <div class="ie-date"><label>From</label>
+                <input type="date" id="osm-from-range" value="${today}" onchange="refreshOsmRangeReport()">
+            </div>
+            <div class="ie-date"><label>To</label>
+                <input type="date" id="osm-to-range" value="${today}" onchange="refreshOsmRangeReport()">
+            </div>
+            <button class="btn btn-secondary" onclick="refreshOsmRangeReport()">Refresh</button>
+            <button class="btn btn-secondary" onclick="printOsmReport()">&#9113; Print</button>
+        </div>
+
         <div id="osm-content">
             <div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>
         </div>
@@ -6520,63 +6545,91 @@ async function loadOsmReport() {
         const r = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
         const result = await r.json();
         if (result.success) {
-            const sel = document.getElementById('osm-line');
-            sel.innerHTML = '<option value="">-- Select Line --</option>' +
+            const opts = '<option value="">-- Select Line --</option>' +
                 result.data.filter(l => l.is_active).map(l =>
                     `<option value="${l.id}">${l.line_name} (${l.line_code})</option>`
                 ).join('');
-            sel.addEventListener('change', refreshOsmReport);
+            document.getElementById('osm-line-daily').innerHTML = opts;
+            document.getElementById('osm-line-range').innerHTML = opts;
         }
     } catch (e) { /* ignore */ }
+}
 
-    document.getElementById('osm-from-date').addEventListener('change', refreshOsmReport);
-    document.getElementById('osm-to-date').addEventListener('change', refreshOsmReport);
+function osmSwitchTab(tab) {
+    const isDaily = tab === 'daily';
+    document.getElementById('osm-tab-daily').style.background = isDaily ? '#1e3a5f' : '#e5e7eb';
+    document.getElementById('osm-tab-daily').style.color = isDaily ? '#fff' : '#374151';
+    document.getElementById('osm-tab-range').style.background = isDaily ? '#e5e7eb' : '#1e3a5f';
+    document.getElementById('osm-tab-range').style.color = isDaily ? '#374151' : '#fff';
+    document.getElementById('osm-ctrl-daily').style.display = isDaily ? 'flex' : 'none';
+    document.getElementById('osm-ctrl-range').style.display = isDaily ? 'none' : 'flex';
+    document.getElementById('osm-content').innerHTML =
+        '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
 }
 
 async function refreshOsmReport() {
-    const lineId  = document.getElementById('osm-line')?.value;
-    const fromDate = document.getElementById('osm-from-date')?.value;
-    const toDate   = document.getElementById('osm-to-date')?.value;
+    const lineId = document.getElementById('osm-line-daily')?.value;
+    const date   = document.getElementById('osm-date-daily')?.value;
     const container = document.getElementById('osm-content');
     if (!container) return;
-
     if (!lineId) {
         container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
         return;
     }
-
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
-
     try {
-        const params = new URLSearchParams({ line_id: lineId, to_date: toDate });
-        if (fromDate && fromDate !== toDate) params.set('from_date', fromDate);
-        const r = await fetch(`${API_BASE}/osm-report?${params}`, { credentials: 'include' });
+        const r = await fetch(`${API_BASE}/osm-report?line_id=${lineId}&to_date=${date}`, { credentials: 'include' });
         const data = await r.json();
-
         if (!data.success) {
             container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${data.error || 'Failed to load report'}</div></div>`;
             return;
         }
-
         if (data.no_osm_points || !data.osm_points?.length) {
-            container.innerHTML = `
-                <div class="card">
-                    <div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
-                        No OSM observation points configured for <strong>${data.line_name}</strong> on <strong>${toDate}</strong>.<br>
-                        Open <em>Daily Plans → Details</em> and check the <strong>OSM</strong> checkbox next to the processes you want to track.
-                    </div>
-                </div>`;
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
+                No OSM points configured for <strong>${data.line_name}</strong> on <strong>${date}</strong>.<br>
+                Open <em>Daily Plans → Details</em> and check the <strong>OSM</strong> checkbox.
+            </div></div>`;
             return;
         }
-
         container.innerHTML = _buildOsmTable(data);
     } catch (err) {
         container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
     }
 }
 
+async function refreshOsmRangeReport() {
+    const lineId   = document.getElementById('osm-line-range')?.value;
+    const fromDate = document.getElementById('osm-from-range')?.value;
+    const toDate   = document.getElementById('osm-to-range')?.value;
+    const container = document.getElementById('osm-content');
+    if (!container) return;
+    if (!lineId || !fromDate || !toDate) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line and date range.</div>';
+        return;
+    }
+    container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+    try {
+        const r = await fetch(`${API_BASE}/osm-report-range?line_id=${lineId}&from_date=${fromDate}&to_date=${toDate}`, { credentials: 'include' });
+        const data = await r.json();
+        if (!data.success) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${data.error || 'Failed to load report'}</div></div>`;
+            return;
+        }
+        if (data.no_osm_points || !data.osm_points?.length) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
+                No OSM points configured for <strong>${data.line_name}</strong>.<br>
+                Open <em>Daily Plans → Details</em> and check the <strong>OSM</strong> checkbox.
+            </div></div>`;
+            return;
+        }
+        container.innerHTML = _buildOsmRangeTable(data);
+    } catch (err) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
+    }
+}
+
 function _buildOsmTable(data) {
-    const { osm_points, target_units, total_target, working_hours, in_time, out_time, from_date, to_date, buyer_name, product_code, product_name } = data;
+    const { osm_points, target_units, working_hours, in_time, out_time, to_date, buyer_name, product_code, product_name } = data;
     const inH  = parseInt((in_time  || '08:00').split(':')[0]);
     const outH = parseInt((out_time || '17:00').split(':')[0]);
 
@@ -6586,6 +6639,7 @@ function _buildOsmTable(data) {
     const perHourTarget = (working_hours > 0 && target_units > 0)
         ? Math.round(target_units / working_hours) : 0;
 
+    // Elapsed hours: based on highest hour slot that has any data
     let maxDataHour = -1;
     for (const pt of osm_points) {
         for (const h of Object.keys(pt.hourly)) {
@@ -6594,7 +6648,7 @@ function _buildOsmTable(data) {
         }
     }
     const elapsedHours = maxDataHour >= inH ? hours.filter(h => h <= maxDataHour).length : 0;
-    const totalTargetSoFar = elapsedHours * perHourTarget;
+    const totalTargetSoFar = elapsedHours * perHourTarget;   // target AS ON TIME
 
     const ordinals = ['1ST','2ND','3RD','4TH','5TH','6TH','7TH','8TH','9TH','10TH','11TH','12TH'];
     const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
@@ -6617,11 +6671,25 @@ function _buildOsmTable(data) {
         }).join('');
 
         const todayOutput = Object.values(pt.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
-        const cumOutput   = pt.cumulative_output || 0;
-        const blog = todayOutput - totalTargetSoFar;
-        const backlog = blog < 0 ? blog : 0;
-        const extra   = blog > 0 ? blog : 0;
-        const balToProd = total_target - cumOutput;
+
+        // B.LOG = sum of per-hour deficits only (hours where output < target, no netting with surpluses)
+        let combinedBacklog = 0;
+        for (const h of hours.filter(h => h <= maxDataHour)) {
+            const qty = pt.hourly[h]?.quantity || 0;
+            if (qty < perHourTarget) combinedBacklog += (qty - perHourTarget);
+        }
+        const backlog = combinedBacklog < 0 ? combinedBacklog : 0;
+
+        // Extra produced: sum of per-hour surpluses
+        let combinedExtra = 0;
+        for (const h of hours.filter(h => h <= maxDataHour)) {
+            const qty = pt.hourly[h]?.quantity || 0;
+            if (qty > perHourTarget) combinedExtra += (qty - perHourTarget);
+        }
+        const extra = combinedExtra > 0 ? combinedExtra : 0;
+
+        // BAL TO PROD = remaining from today's target as of now
+        const balToProd = totalTargetSoFar - todayOutput;
 
         const reasons = [...new Set(
             Object.values(pt.hourly).map(d => d.shortfall_reason).filter(Boolean)
@@ -6629,11 +6697,11 @@ function _buildOsmTable(data) {
 
         return `<tr>
             <td style="${tcS}font-weight:700;color:#7c3aed;">${pt.osm_label}</td>
-            <td style="${tcS}font-weight:600;">${cumOutput}</td>
+            <td style="${tcS}font-weight:600;">${pt.cumulative_output || 0}</td>
             <td style="${tcS}font-weight:600;">${pt.workstation_code}</td>
             <td style="${tdS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${pt.operation_code} - ${pt.operation_name}</td>
             ${hourCells}
-            <td style="${tcS}font-weight:700;">${total_target}</td>
+            <td style="${tcS}font-weight:700;">${totalTargetSoFar}</td>
             <td style="${tcS}font-weight:700;">${todayOutput}</td>
             <td style="${tcS}font-weight:700;color:#dc2626;">${backlog < 0 ? backlog : ''}</td>
             <td style="${tcS}font-weight:700;color:#16a34a;">${extra > 0 ? '+'+extra : ''}</td>
@@ -6642,21 +6710,20 @@ function _buildOsmTable(data) {
         </tr>`;
     }).join('');
 
-    const dateRange = from_date && from_date !== to_date ? `${from_date} → ${to_date}` : to_date;
     return `<div class="card" id="osm-print-area"
         data-buyer="${(buyer_name||'').replace(/"/g,'&quot;')}"
         data-style="${(product_code||'').replace(/"/g,'&quot;')}"
-        data-from="${from_date||to_date}"
+        data-from="${to_date}"
         data-to="${to_date}">
         <div class="card-header">
             <div>
-                <h3 class="card-title">STAGEWISE HOURLY OSM REPORT</h3>
+                <h3 class="card-title">STAGEWISE HOURLY OSM REPORT — DAILY</h3>
                 <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
                     ${data.line_name} (${data.line_code})
-                    &nbsp;&bull;&nbsp; Style: ${data.product_code} — ${data.product_name}
-                    &nbsp;&bull;&nbsp; Date: ${dateRange}
-                    &nbsp;&bull;&nbsp; Total Target: ${total_target} &nbsp;&bull;&nbsp; Daily Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
-                    &nbsp;&bull;&nbsp; ${osm_points.length} OSM points
+                    &nbsp;&bull;&nbsp; Style: ${product_code} — ${product_name}
+                    &nbsp;&bull;&nbsp; Date: ${to_date}
+                    &nbsp;&bull;&nbsp; Daily Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
+                    &nbsp;&bull;&nbsp; Elapsed: ${elapsedHours}h &nbsp;&bull;&nbsp; Target as on time: ${totalTargetSoFar}
                 </div>
             </div>
         </div>
@@ -6665,21 +6732,83 @@ function _buildOsmTable(data) {
                 <thead>
                     <tr>
                         <th style="${thS}min-width:55px;">OSM #</th>
-                        <th style="${thS}min-width:80px;">CUMULATIVE<br>OUTPUT AS ON DATE</th>
+                        <th style="${thS}min-width:80px;">CUMULATIVE<br>OUTPUT</th>
                         <th style="${thS}min-width:60px;">WS</th>
                         <th style="${thS}min-width:200px;white-space:normal;">PROCESS DETAILS</th>
                         ${hourHeaders}
-                        <th style="${thS}min-width:75px;">TOTAL<br>TARGET</th>
+                        <th style="${thS}min-width:80px;white-space:normal;">TOTAL TARGET<br>(AS ON TIME)</th>
                         <th style="${thS}min-width:80px;">TOTAL OUTPUT<br>(AS ON TIME)</th>
                         <th style="${thS}min-width:65px;">B.LOG</th>
                         <th style="${thS}min-width:75px;">EXTRA<br>PRODUCED</th>
-                        <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD<br>(REMAINING)</th>
+                        <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD<br>(TODAY'S TARGET)</th>
                         <th style="${thS}min-width:120px;white-space:normal;">REASON</th>
                     </tr>
                     <tr style="background:#dbeafe;">
                         <td colspan="4" style="${tdS}text-align:right;font-weight:700;padding:4px 10px;">TARGET / HOUR</td>
                         ${targetRow}
-                        <td colspan="5" style="${tdS}"></td>
+                        <td style="${tcS}font-weight:700;">${target_units}</td>
+                        <td colspan="4" style="${tdS}"></td>
+                    </tr>
+                </thead>
+                <tbody>${dataRows}</tbody>
+            </table>
+        </div>
+    </div>`;
+}
+
+function _buildOsmRangeTable(data) {
+    const { osm_points, range_target, day_count, from_date, to_date, buyer_name, product_code, product_name, target_units } = data;
+
+    const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
+    const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
+    const tcS = tdS + 'text-align:center;';
+
+    const dataRows = osm_points.map(pt => {
+        const blog = pt.blog;
+        const extra = pt.extra;
+        const balToProd = range_target - pt.total_output;
+        return `<tr>
+            <td style="${tcS}font-weight:700;">${pt.workstation_number || ''}</td>
+            <td style="${tcS}font-weight:700;color:#7c3aed;">${pt.osm_label}</td>
+            <td style="${tcS}font-weight:600;">${pt.workstation_code}</td>
+            <td style="${tdS}font-size:11px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word;">${pt.operation_code} - ${pt.operation_name}</td>
+            <td style="${tcS}font-weight:700;">${range_target}</td>
+            <td style="${tcS}font-weight:700;">${pt.total_output}</td>
+            <td style="${tcS}font-weight:700;color:#dc2626;">${blog < 0 ? blog : ''}</td>
+            <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
+            <td style="${tdS}font-size:11px;white-space:normal;word-break:break-word;">${pt.reasons || ''}</td>
+        </tr>`;
+    }).join('');
+
+    return `<div class="card" id="osm-print-area"
+        data-buyer="${(buyer_name||'').replace(/"/g,'&quot;')}"
+        data-style="${(product_code||'').replace(/"/g,'&quot;')}"
+        data-from="${from_date}"
+        data-to="${to_date}">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">STAGEWISE OSM REPORT — DATE TO DATE</h3>
+                <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
+                    ${data.line_name} (${data.line_code})
+                    &nbsp;&bull;&nbsp; Style: ${product_code} — ${product_name}
+                    &nbsp;&bull;&nbsp; Period: ${from_date} → ${to_date}
+                    &nbsp;&bull;&nbsp; Production Days: ${day_count} &nbsp;&bull;&nbsp; Daily Target: ${target_units} &nbsp;&bull;&nbsp; Range Target: ${range_target}
+                </div>
+            </div>
+        </div>
+        <div class="card-body" style="overflow-x:auto;padding:0;">
+            <table style="border-collapse:collapse;white-space:nowrap;width:100%;" id="osm-table">
+                <thead>
+                    <tr>
+                        <th style="${thS}min-width:60px;">GROUP</th>
+                        <th style="${thS}min-width:55px;">OSM</th>
+                        <th style="${thS}min-width:60px;">WORK<br>STATION</th>
+                        <th style="${thS}min-width:200px;white-space:normal;">PROCESS DETAILS</th>
+                        <th style="${thS}min-width:80px;white-space:normal;">TOTAL TARGET<br>(${from_date} – ${to_date})</th>
+                        <th style="${thS}min-width:80px;white-space:normal;">TOTAL OUTPUT<br>(${from_date} – ${to_date})</th>
+                        <th style="${thS}min-width:65px;">B.LOG</th>
+                        <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD</th>
+                        <th style="${thS}min-width:160px;white-space:normal;">REASON</th>
                     </tr>
                 </thead>
                 <tbody>${dataRows}</tbody>
@@ -7007,6 +7136,226 @@ function downloadEfficiencyExcel() {
     const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ============================================================================
+// WORKER INDIVIDUAL EFFICIENCY REPORT
+// ============================================================================
+async function loadWorkerIndividualEff() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Worker Individual Efficiency</h1>
+                <p class="page-subtitle">All employees across all active lines</p>
+            </div>
+            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
+                <div class="ie-date">
+                    <label for="wie-from">From</label>
+                    <input type="date" id="wie-from" value="${weekAgo}">
+                </div>
+                <div class="ie-date">
+                    <label for="wie-to">To</label>
+                    <input type="date" id="wie-to" value="${today}">
+                </div>
+                <button class="btn btn-secondary" onclick="refreshWorkerIndividualEff()">Refresh</button>
+                <button class="btn btn-secondary" onclick="printWorkerIndividualEff()">&#9113; Print</button>
+                <button class="btn btn-secondary" onclick="downloadWorkerIndividualEffExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
+            </div>
+        </div>
+        <div id="wie-content">
+            <div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>
+        </div>
+    `;
+    document.getElementById('wie-from').addEventListener('change', refreshWorkerIndividualEff);
+    document.getElementById('wie-to').addEventListener('change', refreshWorkerIndividualEff);
+    refreshWorkerIndividualEff();
+}
+
+async function refreshWorkerIndividualEff() {
+    const from = document.getElementById('wie-from')?.value;
+    const to   = document.getElementById('wie-to')?.value;
+    const container = document.getElementById('wie-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+    try {
+        const r = await fetch(`${API_BASE}/worker-individual-efficiency?from_date=${from}&to_date=${to}`, { credentials: 'include' });
+        const resp = await r.json();
+        if (!resp.success) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${resp.error || 'Failed to load'}</div></div>`;
+            return;
+        }
+        if (!resp.data.rows.length) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data found for the selected range.</div></div>`;
+            return;
+        }
+        container.innerHTML = _buildWorkerIndividualEffTable(resp.data);
+    } catch (err) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
+    }
+}
+
+function _buildWorkerIndividualEffTable(data) {
+    const { dates, rows } = data;
+    const thS  = 'background:#1e3a5f;color:#fff;padding:5px 4px;text-align:center;white-space:nowrap;font-size:10px;border:1px solid #0f2744;';
+    const thSS = thS + 'font-size:9px;';
+    const tdS  = 'padding:3px 4px;border:1px solid #6b7280;font-size:11px;';
+    const tcS  = tdS + 'text-align:center;';
+
+    const fmtDate = d => {
+        const [y, m, day] = d.split('-');
+        return `${day}/${m}`;
+    };
+
+    // Date header colspan=3 each
+    const dateHeaders = dates.map(d =>
+        `<th colspan="3" style="${thS}">${fmtDate(d)}</th>`
+    ).join('');
+    const subHeaders = dates.map(() =>
+        `<th style="${thSS}">WIP</th><th style="${thSS}">OUTPUT</th><th style="${thSS}">EFF%</th>`
+    ).join('');
+
+    const tagStyle = {
+        'DEP': 'background:#fee2e2;color:#991b1b;',
+        'PRE': 'background:#eff6ff;color:#1d4ed8;',
+        'POST': 'background:#f0fdf4;color:#166534;',
+        'COMB': 'background:#faf5ff;color:#6b21a8;'
+    };
+
+    const effColor = eff => {
+        if (eff === null || eff === undefined) return '#6b7280';
+        return eff >= 75 ? '#16a34a' : eff >= 50 ? '#d97706' : '#dc2626';
+    };
+
+    const dataRows = rows.map((row, idx) => {
+        const dateCells = dates.map(d => {
+            const cell = row.dates[d];
+            if (!cell) return `<td style="${tcS}">-</td><td style="${tcS}">-</td><td style="${tcS}">-</td>`;
+
+            const tagKey = cell.tag ? cell.tag.split(' ')[0] : null;
+            const tS = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
+            const tagBadge = cell.tag
+                ? `<br><span style="font-size:9px;font-weight:700;">${cell.tag}</span>`
+                : '';
+
+            const effTxt = cell.eff !== null && cell.eff !== undefined ? cell.eff.toFixed(1) + '%' : '-';
+            const effC   = effColor(cell.eff);
+
+            return `<td style="${tcS}${tS}">${cell.wip ?? '-'}${tagBadge}</td>` +
+                   `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` +
+                   `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}</td>`;
+        }).join('');
+
+        const totalEffTxt = row.overall_eff !== null && row.overall_eff !== undefined ? row.overall_eff.toFixed(1) + '%' : '-';
+        const totalEffC   = effColor(row.overall_eff);
+
+        return `<tr>
+            <td style="${tcS}font-weight:600;">${idx + 1}</td>
+            <td style="${tdS}">${row.emp_name || '-'}</td>
+            <td style="${tdS}text-align:center;">${row.emp_code || '-'}</td>
+            ${dateCells}
+            <td style="${tcS}font-weight:700;">${row.total_output}</td>
+            <td style="${tcS}font-weight:700;color:${totalEffC};">${totalEffTxt}</td>
+        </tr>`;
+    }).join('');
+
+    const html = `
+    <div id="wie-print-area">
+        <div style="text-align:center;margin-bottom:8px;">
+            <div style="font-size:15px;font-weight:700;">Worker Individual Efficiency — All Lines</div>
+            <div style="font-size:12px;color:#6b7280;">Period: ${dates[0]} to ${dates[dates.length - 1]}</div>
+        </div>
+        <div style="font-size:10px;margin-bottom:6px;display:flex;gap:12px;flex-wrap:wrap;">
+            <span><span style="background:#fee2e2;color:#991b1b;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">DEP HH:MM</span> Departed mid-day (partial hours)</span>
+            <span><span style="background:#eff6ff;color:#1d4ed8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">PRE</span> Before reassignment</span>
+            <span><span style="background:#f0fdf4;color:#166534;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">POST</span> After reassignment to vacant WS</span>
+            <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation (double SAH)</span>
+        </div>
+        <div style="overflow-x:auto;">
+        <table style="border-collapse:collapse;width:100%;min-width:600px;">
+            <thead>
+                <tr>
+                    <th rowspan="2" style="${thS}">S.No</th>
+                    <th rowspan="2" style="${thS}">WORKER NAME</th>
+                    <th rowspan="2" style="${thS}">ID NO</th>
+                    ${dateHeaders}
+                    <th rowspan="2" style="${thS}">TOTAL<br>OUTPUT</th>
+                    <th rowspan="2" style="${thS}">OVERALL<br>EFF%</th>
+                </tr>
+                <tr>${subHeaders}</tr>
+            </thead>
+            <tbody>
+                ${dataRows}
+            </tbody>
+        </table>
+        </div>
+    </div>`;
+    return html;
+}
+
+function printWorkerIndividualEff() {
+    const area = document.getElementById('wie-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.onload = () => {
+        const doc = iframe.contentDocument;
+        // Clone and force-set borders directly on every cell as inline styles
+        const clone = area.cloneNode(true);
+        clone.querySelectorAll('table').forEach(t => {
+            t.style.borderCollapse = 'collapse';
+            t.style.width = '100%';
+            t.style.fontSize = '9px';
+        });
+        clone.querySelectorAll('th, td').forEach(el => {
+            el.style.border = '1px solid #333';
+            el.style.padding = '3px 4px';
+        });
+        doc.open();
+        doc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+            <title>Worker Individual Efficiency</title>
+            <style>
+                * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+                body { font-family: Arial, sans-serif; margin: 10px; }
+                @media print { @page { size: A3 landscape; margin: 8mm; } }
+            </style></head><body>${clone.innerHTML}</body></html>`);
+        doc.close();
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+    };
+    document.body.appendChild(iframe);
+}
+
+function downloadWorkerIndividualEffExcel() {
+    const area = document.getElementById('wie-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const sel = document.getElementById('wie-line');
+    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    const from = document.getElementById('wie-from')?.value || '';
+    const to   = document.getElementById('wie-to')?.value   || '';
+    const filename = `WorkerEfficiency_${lineText.replace(/[^a-zA-Z0-9]/g, '_')}_${from}_${to}.xls`;
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+        xmlns:x="urn:schemas-microsoft-com:office:excel"
+        xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="UTF-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
+        <x:ExcelWorksheet><x:Name>Worker Efficiency</x:Name>
+        <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+        </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+        <style>
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #999; padding: 4px 6px; font-size: 10px; font-family: Arial, sans-serif; }
+            th { background: #1e3a5f; color: #fff; font-weight: bold; }
+        </style>
+        </head><body>${area.innerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
     a.href = url; a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

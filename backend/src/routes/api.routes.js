@@ -3371,21 +3371,23 @@ router.put('/process-assignments/workspace', async (req, res) => {
 // WORKSTATION ASSIGNMENTS (Workstation -> Employee) — date-aware
 // ============================================================================
 router.post('/workstation-assignments', async (req, res) => {
-    const { line_id, workstation_code, employee_id, work_date, line_plan_workstation_id } = req.body;
+    const { line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided } = req.body;
     if (!line_id || !workstation_code) {
         return res.status(400).json({ success: false, error: 'line_id and workstation_code are required' });
     }
     const date = work_date || new Date().toISOString().slice(0, 10);
+    const matQty = (material_provided !== undefined && material_provided !== null) ? parseInt(material_provided, 10) : null;
     try {
         if (employee_id) {
             await pool.query(
-                `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (line_id, work_date, workstation_code)
+                `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
                  DO UPDATE SET employee_id = EXCLUDED.employee_id,
                                line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                               material_provided = EXCLUDED.material_provided,
                                assigned_at = NOW()`,
-                [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null]
+                [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null, isNaN(matQty) ? null : matQty]
             );
         } else {
             await pool.query(
@@ -5436,7 +5438,15 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     e.emp_code as assigned_emp_code,
                     e.emp_name as assigned_emp_name,
                     ewa.material_provided,
-                    lpwp.sequence_in_workstation
+                    lpwp.sequence_in_workstation,
+                    wd.id AS departure_id,
+                    wd.departure_time, wd.departure_reason,
+                    wa.id AS adjustment_id,
+                    COALESCE(wa.adjustment_type, wa_emp_comb.adjustment_type) AS coverage_type,
+                    COALESCE(wa.reassignment_time, wa_emp_comb.reassignment_time) AS reassignment_time,
+                    e_cov.emp_code AS covering_emp_code,
+                    e_cov.emp_name AS covering_emp_name,
+                    COALESCE(wa.from_workstation_code, wa_emp_comb.vacant_workstation_code) AS covering_from_ws
              FROM line_plan_workstations lpw
              JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
              JOIN product_processes pp ON lpwp.product_process_id = pp.id
@@ -5447,6 +5457,19 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     AND ewa.workstation_code = lpw.workstation_code)
                 AND ewa.is_overtime = false
              LEFT JOIN employees e ON ewa.employee_id = e.id
+             LEFT JOIN worker_departures wd
+                ON wd.line_id = lpw.line_id AND wd.work_date = lpw.work_date
+                AND wd.workstation_code = lpw.workstation_code
+                AND wd.employee_id = ewa.employee_id
+             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
+             LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
+             -- Detect when this WS's employee is doing a combine (their original WS)
+             LEFT JOIN worker_adjustments wa_emp_comb
+                ON wa_emp_comb.from_employee_id = ewa.employee_id
+                AND wa_emp_comb.adjustment_type = 'combine'
+                AND wa_emp_comb.line_id = lpw.line_id
+                AND wa_emp_comb.work_date = lpw.work_date
+                AND wa_emp_comb.from_workstation_code = lpw.workstation_code
              WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
              ORDER BY lpw.workstation_number, lpwp.sequence_in_workstation`,
             [lineId, date, productId]
@@ -5506,6 +5529,16 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         assigned_emp_name: isCoActive ? (firstCoRow?.assigned_emp_name ?? row.assigned_emp_name) : row.assigned_emp_name,
                         material_provided: (isCoActive ? (firstCoRow?.material_provided ?? row.material_provided) : row.material_provided) ?? null,
                         product_id: isCoActive ? incomingId : primaryId,
+                        departure_id: row.departure_id || null,
+                        departure_time: row.departure_time || null,
+                        departure_reason: row.departure_reason || null,
+                        adjustment_id: row.adjustment_id || null,
+                        coverage_type: row.coverage_type || null,
+                        reassignment_time: row.reassignment_time || null,
+                        covering_emp_code: row.covering_emp_code || null,
+                        covering_emp_name: row.covering_emp_name || null,
+                        covering_from_ws: row.covering_from_ws || null,
+                        ws_status: row.coverage_type ? 'covered' : (!row.departure_id ? 'active' : (!row.adjustment_id ? 'vacant' : 'covered')),
                         processes: []
                     });
                 }
@@ -5932,6 +5965,44 @@ router.post('/supervisor/resolve-process', async (req, res) => {
     }
 });
 
+// Resolve employee by QR without requiring line process assignment (used for morning linking)
+router.post('/supervisor/resolve-employee-by-qr', async (req, res) => {
+    const { employee_qr } = req.body;
+    if (!employee_qr) {
+        return res.status(400).json({ success: false, error: 'employee_qr is required' });
+    }
+    const parsed = parseSupervisorQr(employee_qr);
+    if (!parsed) {
+        return res.status(400).json({ success: false, error: 'Invalid employee QR payload' });
+    }
+    try {
+        let employee = null;
+        if (parsed.id) {
+            const r = await pool.query(
+                `SELECT id, emp_code, emp_name FROM employees WHERE id = $1 AND is_active = true`,
+                [parsed.id]
+            );
+            employee = r.rows[0] || null;
+        }
+        if (!employee) {
+            const rawCode = parsed.code || parsed.emp_code || parsed.raw;
+            if (rawCode) {
+                const r = await pool.query(
+                    `SELECT id, emp_code, emp_name FROM employees WHERE emp_code = $1 AND is_active = true`,
+                    [rawCode]
+                );
+                employee = r.rows[0] || null;
+            }
+        }
+        if (!employee) {
+            return res.status(404).json({ success: false, error: 'Employee not found' });
+        }
+        res.json({ success: true, data: { employee } });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 router.post('/supervisor/resolve-employee', async (req, res) => {
     const { line_id, employee_qr, work_date } = req.body;
     if (!line_id || !employee_qr) {
@@ -5997,6 +6068,222 @@ router.post('/supervisor/resolve-employee', async (req, res) => {
                 employee
             }
         });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─── WORKER DEPARTURE & ADJUSTMENT ───────────────────────────────────────────
+
+// GET /supervisor/line-status/:lineId — workstation list with departure/vacancy/coverage status
+router.get('/supervisor/line-status/:lineId', async (req, res) => {
+    const { lineId } = req.params;
+    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    try {
+        const result = await pool.query(
+            `SELECT
+                ewa.workstation_code,
+                lpw.id AS workstation_plan_id,
+                ewa.employee_id,
+                e.emp_code,
+                e.emp_name,
+                wd.id           AS departure_id,
+                wd.departure_time,
+                wd.departure_reason,
+                wd.notes        AS departure_notes,
+                wa.id           AS adjustment_id,
+                wa.adjustment_type,
+                wa.reassignment_time,
+                wa.from_employee_id  AS covering_employee_id,
+                e_cov.emp_code  AS covering_emp_code,
+                e_cov.emp_name  AS covering_emp_name,
+                wa.from_workstation_code AS covering_from_ws
+             FROM employee_workstation_assignments ewa
+             JOIN employees e ON e.id = ewa.employee_id
+             LEFT JOIN line_plan_workstations lpw
+                ON lpw.line_id = ewa.line_id AND lpw.work_date = ewa.work_date
+                AND lpw.workstation_code = ewa.workstation_code
+             LEFT JOIN worker_departures wd
+                ON wd.line_id = ewa.line_id AND wd.work_date = ewa.work_date
+                AND wd.workstation_code = ewa.workstation_code AND wd.employee_id = ewa.employee_id
+             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
+             LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
+             WHERE ewa.line_id = $1 AND ewa.work_date = $2 AND ewa.is_overtime = false
+             ORDER BY ewa.workstation_code`,
+            [lineId, date]
+        );
+        const workstations = result.rows.map(row => ({
+            workstation_code: row.workstation_code,
+            workstation_plan_id: row.workstation_plan_id,
+            employee_id: row.employee_id,
+            emp_code: row.emp_code,
+            emp_name: row.emp_name,
+            status: !row.departure_id ? 'active' : (!row.adjustment_id ? 'vacant' : 'covered'),
+            departure_id: row.departure_id || null,
+            departure_time: row.departure_time || null,
+            departure_reason: row.departure_reason || null,
+            departure_notes: row.departure_notes || null,
+            adjustment_id: row.adjustment_id || null,
+            adjustment_type: row.adjustment_type || null,
+            reassignment_time: row.reassignment_time || null,
+            covering_employee_id: row.covering_employee_id || null,
+            covering_emp_code: row.covering_emp_code || null,
+            covering_emp_name: row.covering_emp_name || null,
+            covering_from_ws: row.covering_from_ws || null
+        }));
+        res.json({ success: true, data: { workstations, date } });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// POST /supervisor/worker-departure — log employee departure
+router.post('/supervisor/worker-departure', async (req, res) => {
+    const { line_id, work_date, employee_id, workstation_code, departure_time, departure_reason, notes } = req.body;
+    if (!line_id || !employee_id || !workstation_code || !departure_reason) {
+        return res.status(400).json({ success: false, error: 'line_id, employee_id, workstation_code and departure_reason are required' });
+    }
+    const validReasons = ['sick', 'personal', 'operational', 'other'];
+    if (!validReasons.includes(departure_reason)) {
+        return res.status(400).json({ success: false, error: 'Invalid departure_reason' });
+    }
+    const date = work_date || new Date().toISOString().slice(0, 10);
+    const deptTime = departure_time || new Date().toISOString();
+    try {
+        // Verify employee is assigned to this workstation
+        const assignCheck = await pool.query(
+            `SELECT id FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND employee_id = $4 AND is_overtime = false`,
+            [line_id, date, workstation_code, employee_id]
+        );
+        if (!assignCheck.rows[0]) {
+            return res.status(400).json({ success: false, error: 'Employee is not assigned to this workstation today' });
+        }
+        const result = await pool.query(
+            `INSERT INTO worker_departures (line_id, work_date, employee_id, workstation_code, departure_time, departure_reason, notes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, departure_time`,
+            [line_id, date, employee_id, workstation_code, deptTime, departure_reason, notes || null]
+        );
+        const row = result.rows[0];
+        const empResult = await pool.query(`SELECT emp_code, emp_name FROM employees WHERE id = $1`, [employee_id]);
+        const emp = empResult.rows[0];
+        realtime.broadcast('data_change', { entity: 'worker_departure', action: 'created', line_id, work_date: date });
+        res.json({ success: true, data: { departure_id: row.id, departure_time: row.departure_time, emp_code: emp?.emp_code, emp_name: emp?.emp_name, workstation_code } });
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.status(409).json({ success: false, error: 'Departure already recorded for this employee and workstation today' });
+        }
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// POST /supervisor/worker-adjustment — assign or combine after a departure
+router.post('/supervisor/worker-adjustment', async (req, res) => {
+    const { line_id, work_date, departure_id, vacant_workstation_code, from_employee_id, from_workstation_code, adjustment_type, reassignment_time } = req.body;
+    if (!line_id || !departure_id || !vacant_workstation_code || !from_employee_id || !from_workstation_code || !adjustment_type) {
+        return res.status(400).json({ success: false, error: 'line_id, departure_id, vacant_workstation_code, from_employee_id, from_workstation_code and adjustment_type are required' });
+    }
+    if (!['assign', 'combine'].includes(adjustment_type)) {
+        return res.status(400).json({ success: false, error: 'adjustment_type must be assign or combine' });
+    }
+    const date = work_date || new Date().toISOString().slice(0, 10);
+    const rTime = reassignment_time || new Date().toISOString();
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        // Validate departure exists and belongs to this line/date
+        const deptCheck = await client.query(
+            `SELECT id FROM worker_departures WHERE id = $1 AND line_id = $2 AND work_date = $3`,
+            [departure_id, line_id, date]
+        );
+        if (!deptCheck.rows[0]) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: 'Departure record not found for this line/date' });
+        }
+        // Check not already adjusted
+        const adjCheck = await client.query(`SELECT id FROM worker_adjustments WHERE departure_id = $1`, [departure_id]);
+        if (adjCheck.rows[0]) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ success: false, error: 'This departure has already been resolved with an adjustment' });
+        }
+        // Validate receiving employee is assigned to from_workstation_code
+        const rcvCheck = await client.query(
+            `SELECT id, line_plan_workstation_id FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND employee_id = $4 AND is_overtime = false`,
+            [line_id, date, from_workstation_code, from_employee_id]
+        );
+        if (!rcvCheck.rows[0]) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: 'Receiving employee is not assigned to the specified workstation' });
+        }
+
+        // Insert adjustment record
+        const adjResult = await client.query(
+            `INSERT INTO worker_adjustments (line_id, work_date, departure_id, vacant_workstation_code, from_employee_id, from_workstation_code, adjustment_type, reassignment_time)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING id`,
+            [line_id, date, departure_id, vacant_workstation_code, from_employee_id, from_workstation_code, adjustment_type, rTime]
+        );
+        const adjustmentId = adjResult.rows[0].id;
+
+        if (adjustment_type === 'assign') {
+            // Lookup line_plan_workstation_id for vacant WS
+            const vacantPlanWs = await client.query(
+                `SELECT id FROM line_plan_workstations WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3`,
+                [line_id, date, vacant_workstation_code]
+            );
+            const vacantPlanWsId = vacantPlanWs.rows[0]?.id || null;
+            // Remove receiver from their original WS
+            await client.query(
+                `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
+                [line_id, date, from_workstation_code]
+            );
+            // Assign receiver to vacant WS
+            await client.query(
+                `INSERT INTO employee_workstation_assignments (line_id, work_date, workstation_code, employee_id, is_overtime, line_plan_workstation_id, assigned_at)
+                 VALUES ($1, $2, $3, $4, false, $5, NOW())
+                 ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+                 DO UPDATE SET employee_id = EXCLUDED.employee_id, line_plan_workstation_id = EXCLUDED.line_plan_workstation_id, assigned_at = NOW()`,
+                [line_id, date, vacant_workstation_code, from_employee_id, vacantPlanWsId]
+            );
+        }
+        // For combine: no change to assignments — the adjustment record is the coverage
+
+        await client.query('COMMIT');
+        const empResult = await pool.query(`SELECT emp_code, emp_name FROM employees WHERE id = $1`, [from_employee_id]);
+        const emp = empResult.rows[0];
+        realtime.broadcast('data_change', { entity: 'worker_adjustment', action: 'created', line_id, work_date: date });
+        res.json({ success: true, data: { adjustment_id: adjustmentId, adjustment_type, vacant_workstation_code, from_emp_code: emp?.emp_code, from_emp_name: emp?.emp_name } });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// GET /supervisor/worker-departures/:lineId — departure + adjustment history for the shift
+router.get('/supervisor/worker-departures/:lineId', async (req, res) => {
+    const { lineId } = req.params;
+    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    try {
+        const result = await pool.query(
+            `SELECT
+                wd.id AS departure_id, wd.workstation_code, wd.departure_time, wd.departure_reason, wd.notes,
+                e_dep.emp_code AS dep_emp_code, e_dep.emp_name AS dep_emp_name,
+                wa.id AS adjustment_id, wa.adjustment_type, wa.reassignment_time,
+                wa.from_workstation_code AS covering_from_ws,
+                e_cov.emp_code AS covering_emp_code, e_cov.emp_name AS covering_emp_name
+             FROM worker_departures wd
+             JOIN employees e_dep ON e_dep.id = wd.employee_id
+             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
+             LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
+             WHERE wd.line_id = $1 AND wd.work_date = $2
+             ORDER BY wd.departure_time DESC`,
+            [lineId, date]
+        );
+        res.json({ success: true, data: result.rows });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -7787,6 +8074,120 @@ router.get('/osm-report', async (req, res) => {
     }
 });
 
+// GET /api/osm-report-range — date-range aggregated OSM (no hourly breakdown)
+router.get('/osm-report-range', async (req, res) => {
+    const { line_id, from_date, to_date } = req.query;
+    if (!line_id || !from_date || !to_date) {
+        return res.status(400).json({ success: false, error: 'line_id, from_date and to_date are required' });
+    }
+    try {
+        const lineResult = await pool.query(`
+            SELECT pl.line_name, pl.line_code,
+                   ldp.target_units, ldp.product_id,
+                   p.product_code, p.product_name,
+                   COALESCE(p.buyer_name, '') AS buyer_name
+            FROM production_lines pl
+            LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
+            LEFT JOIN products p ON p.id = ldp.product_id
+            WHERE pl.id = $1
+        `, [line_id, to_date]);
+
+        const line = lineResult.rows[0];
+        if (!line) return res.status(404).json({ success: false, error: 'Line not found' });
+        if (!line.product_id) {
+            return res.json({ success: true, line_name: line.line_name, line_code: line.line_code, osm_points: [], no_plan: true });
+        }
+
+        // Count distinct production days in range
+        const daysResult = await pool.query(`
+            SELECT COUNT(DISTINCT work_date) AS day_count
+            FROM line_process_hourly_progress
+            WHERE line_id = $1 AND work_date BETWEEN $2 AND $3
+        `, [line_id, from_date, to_date]);
+        const dayCount = parseInt(daysResult.rows[0]?.day_count || 0);
+        const rangeTarget = dayCount * parseInt(line.target_units || 0);
+
+        // Fetch OSM-checked processes (use to_date for plan reference)
+        const osmResult = await pool.query(`
+            SELECT lpwp.id AS lpwp_id,
+                   lpw.workstation_code, lpw.workstation_number,
+                   pp.id AS process_id, pp.sequence_number,
+                   o.operation_code, o.operation_name
+            FROM line_plan_workstations lpw
+            JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+            JOIN product_processes pp ON lpwp.product_process_id = pp.id
+            JOIN operations o ON pp.operation_id = o.id
+            WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
+              AND lpwp.osm_checked = true
+            ORDER BY pp.sequence_number, lpwp.sequence_in_workstation
+        `, [line_id, to_date, line.product_id]);
+
+        if (!osmResult.rows.length) {
+            return res.json({ success: true, line_name: line.line_name, line_code: line.line_code, osm_points: [], no_osm_points: true });
+        }
+
+        const processIds = osmResult.rows.map(r => r.process_id);
+
+        // Aggregate output + reasons per process across date range
+        const aggResult = await pool.query(`
+            SELECT process_id,
+                   SUM(ph.qty) AS total_output,
+                   string_agg(
+                       CASE WHEN ph.reason IS NOT NULL AND ph.reason <> ''
+                            THEN TO_CHAR(ph.work_date, 'DD/MM/YY') || ': ' || ph.reason END,
+                       '; ' ORDER BY ph.work_date
+                   ) FILTER (WHERE ph.reason IS NOT NULL AND ph.reason <> '') AS reasons
+            FROM (
+                SELECT process_id, work_date, hour_slot,
+                       MAX(quantity) AS qty,
+                       string_agg(DISTINCT shortfall_reason, '; ')
+                           FILTER (WHERE shortfall_reason IS NOT NULL AND shortfall_reason <> '') AS reason
+                FROM line_process_hourly_progress
+                WHERE process_id = ANY($1::int[]) AND line_id = $2
+                  AND work_date BETWEEN $3 AND $4
+                GROUP BY process_id, work_date, hour_slot
+            ) ph
+            GROUP BY process_id
+        `, [processIds, line_id, from_date, to_date]);
+
+        const aggMap = {};
+        for (const row of aggResult.rows) {
+            aggMap[row.process_id] = { total_output: parseInt(row.total_output || 0), reasons: row.reasons || '' };
+        }
+
+        const osmPoints = osmResult.rows.map((row, idx) => {
+            const agg = aggMap[row.process_id] || { total_output: 0, reasons: '' };
+            const blog = agg.total_output - rangeTarget;
+            return {
+                osm_number: idx + 1,
+                osm_label: `OSM${idx + 1}`,
+                workstation_number: row.workstation_number,
+                workstation_code: row.workstation_code,
+                operation_code: row.operation_code,
+                operation_name: row.operation_name,
+                total_output: agg.total_output,
+                blog: blog < 0 ? blog : 0,
+                extra: blog > 0 ? blog : 0,
+                reasons: agg.reasons
+            };
+        });
+
+        res.json({
+            success: true,
+            line_name: line.line_name, line_code: line.line_code,
+            product_code: line.product_code || '', product_name: line.product_name || '',
+            buyer_name: line.buyer_name || '',
+            from_date, to_date,
+            target_units: parseInt(line.target_units || 0),
+            range_target: rangeTarget,
+            day_count: dayCount,
+            osm_points: osmPoints
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // GET /api/efficiency-report?line_id=&date=
 // Returns Line Efficiency and per-workstation Worker Efficiency for a given line and date
 router.get('/efficiency-report', async (req, res) => {
@@ -7979,6 +8380,256 @@ router.get('/efficiency-report', async (req, res) => {
                 workstations: wsData
             }
         });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// GET /api/worker-individual-efficiency?from_date=&to_date=
+// Returns per-workstation per-employee efficiency grid across a date range for ALL active lines,
+// handling mid-day departures (DEP), assign (PRE/POST), and combine (COMB) adjustments.
+router.get('/worker-individual-efficiency', async (req, res) => {
+    const { from_date, to_date } = req.query;
+    if (!from_date || !to_date) {
+        return res.status(400).json({ success: false, error: 'from_date and to_date are required' });
+    }
+    try {
+        // All active lines
+        const linesResult = await pool.query(
+            `SELECT id, line_code, line_name FROM production_lines WHERE is_active = true ORDER BY line_code`);
+        const lines = linesResult.rows;
+
+        const inTime  = await getSettingValue('default_in_time',  '08:00');
+        const outTime = await getSettingValue('default_out_time', '17:00');
+        const [inH, inM]   = inTime.split(':').map(Number);
+        const [outH, outM] = outTime.split(':').map(Number);
+        const shiftHours = (outH + outM / 60) - (inH + inM / 60);
+
+        // Build date array (inclusive), use T12:00:00 to avoid UTC offset issues
+        const dates = [];
+        let cur = new Date(from_date + 'T12:00:00');
+        const endDate = new Date(to_date + 'T12:00:00');
+        while (cur <= endDate) {
+            const y = cur.getFullYear();
+            const m = String(cur.getMonth() + 1).padStart(2, '0');
+            const d = String(cur.getDate()).padStart(2, '0');
+            dates.push(`${y}-${m}-${d}`);
+            cur.setDate(cur.getDate() + 1);
+            if (dates.length > 365) break;
+        }
+
+        // rowMap key = `${line_id}|${workstation_code}|${employee_id}`
+        const rowMap = {};
+        function getRow(lineId, lineCode, lineName, wsCode, wsNum, grp, samSec, empId, empCode, empName) {
+            const key = `${lineId}|${wsCode}|${empId}`;
+            if (!rowMap[key]) {
+                rowMap[key] = {
+                    line_id: lineId,
+                    line_code: lineCode,
+                    line_name: lineName,
+                    workstation_code: wsCode,
+                    workstation_number: parseInt(wsNum),
+                    group_name: grp || '',
+                    actual_sam_seconds: parseFloat(samSec || 0),
+                    employee_id: empId,
+                    emp_code: empCode,
+                    emp_name: empName,
+                    dates: {}
+                };
+            }
+            return rowMap[key];
+        }
+
+        for (const line of lines) {
+            const lid = line.id;
+            for (const date of dates) {
+                const planRes = await pool.query(`
+                    SELECT
+                        lpw.id            AS ws_id,
+                        lpw.workstation_number,
+                        lpw.workstation_code,
+                        lpw.group_name,
+                        lpw.actual_sam_seconds,
+                        ldp.target_units,
+                        ewa.employee_id,
+                        e.emp_code,
+                        e.emp_name,
+                        wd.id             AS dep_id,
+                        wd.departure_time,
+                        wa.id             AS wa_id,
+                        wa.adjustment_type,
+                        wa.reassignment_time,
+                        wa.vacant_workstation_code,
+                        lpw_vac.workstation_number  AS vac_ws_number,
+                        lpw_vac.group_name          AS vac_group_name,
+                        lpw_vac.actual_sam_seconds  AS vac_sam_seconds
+                    FROM line_plan_workstations lpw
+                    JOIN line_daily_plans ldp
+                        ON ldp.line_id = $1 AND ldp.work_date = $2
+                        AND ldp.product_id = lpw.product_id
+                    LEFT JOIN employee_workstation_assignments ewa
+                        ON ewa.line_id = $1 AND ewa.work_date = $2
+                        AND ewa.workstation_code = lpw.workstation_code
+                        AND ewa.is_overtime = false
+                    LEFT JOIN employees e ON e.id = ewa.employee_id
+                    LEFT JOIN worker_departures wd
+                        ON wd.line_id = $1 AND wd.work_date = $2
+                        AND wd.employee_id = ewa.employee_id
+                        AND wd.workstation_code = lpw.workstation_code
+                    LEFT JOIN worker_adjustments wa
+                        ON wa.line_id = $1 AND wa.work_date = $2
+                        AND wa.from_employee_id = ewa.employee_id
+                        AND wa.from_workstation_code = lpw.workstation_code
+                    LEFT JOIN line_plan_workstations lpw_vac
+                        ON lpw_vac.line_id = $1 AND lpw_vac.work_date = $2
+                        AND lpw_vac.workstation_code = wa.vacant_workstation_code
+                    WHERE lpw.line_id = $1 AND lpw.work_date = $2
+                        AND lpw.product_id = (
+                            SELECT product_id FROM line_daily_plans
+                            WHERE line_id = $1 AND work_date = $2 LIMIT 1
+                        )
+                    ORDER BY lpw.workstation_number
+                `, [lid, date]);
+
+                const wsRows = planRes.rows;
+                if (wsRows.length === 0) continue;
+
+                const targetUnits = parseInt(wsRows[0]?.target_units || 0);
+                const wsIds = wsRows.map(r => r.ws_id).filter(Boolean);
+
+                const hourlyMap = {};
+                if (wsIds.length > 0) {
+                    const hourRes = await pool.query(`
+                        SELECT lpwp.workstation_id, lph.hour_slot, MAX(lph.quantity) AS qty
+                        FROM line_plan_workstation_processes lpwp
+                        JOIN line_process_hourly_progress lph
+                            ON lph.process_id = lpwp.product_process_id
+                            AND lph.line_id = $1 AND lph.work_date = $2
+                        WHERE lpwp.workstation_id = ANY($3::int[])
+                        GROUP BY lpwp.workstation_id, lph.hour_slot
+                    `, [lid, date, wsIds]);
+                    hourRes.rows.forEach(r => {
+                        if (!hourlyMap[r.workstation_id]) hourlyMap[r.workstation_id] = {};
+                        hourlyMap[r.workstation_id][r.hour_slot] = parseInt(r.qty || 0);
+                    });
+                }
+
+                const wsIdByCode = {};
+                wsRows.forEach(r => { if (r.workstation_code) wsIdByCode[r.workstation_code] = r.ws_id; });
+
+                for (const ws of wsRows) {
+                    if (!ws.employee_id) continue;
+
+                    const samH    = parseFloat(ws.actual_sam_seconds || 0) / 3600;
+                    const wsHours = hourlyMap[ws.ws_id] || {};
+
+                    if (ws.dep_id) {
+                        const depTime    = new Date(ws.departure_time);
+                        const shiftStart = new Date(`${date}T${inTime}:00`);
+                        const hoursWorked = Math.max(0.001, (depTime - shiftStart) / 3600000);
+                        const depHour    = depTime.getHours();
+                        const depHHMM    = depTime.toTimeString().slice(0, 5);
+                        const output = Object.entries(wsHours)
+                            .filter(([h]) => parseInt(h) <= depHour)
+                            .reduce((s, [, q]) => s + q, 0);
+                        const wip = Math.round(targetUnits * hoursWorked / shiftHours);
+                        const eff = samH > 0 ? Math.round(output * samH / hoursWorked * 10000) / 100 : null;
+                        const row = getRow(lid, line.line_code, line.line_name,
+                            ws.workstation_code, ws.workstation_number, ws.group_name,
+                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
+                        row.dates[date] = { wip, output, eff, tag: `DEP ${depHHMM}`, hours_worked: hoursWorked };
+
+                    } else if (ws.wa_id && ws.adjustment_type === 'assign') {
+                        const reassignTime = new Date(ws.reassignment_time);
+                        const shiftStart   = new Date(`${date}T${inTime}:00`);
+                        const shiftEnd     = new Date(`${date}T${outTime}:00`);
+                        const reassignHour = reassignTime.getHours();
+                        const preHours  = Math.max(0.001, (reassignTime - shiftStart) / 3600000);
+                        const postHours = Math.max(0.001, (shiftEnd - reassignTime) / 3600000);
+
+                        const preOutput = Object.entries(wsHours)
+                            .filter(([h]) => parseInt(h) <= reassignHour)
+                            .reduce((s, [, q]) => s + q, 0);
+                        const preWip = Math.round(targetUnits * preHours / shiftHours);
+                        const preEff = samH > 0 ? Math.round(preOutput * samH / preHours * 10000) / 100 : null;
+                        const rowPre = getRow(lid, line.line_code, line.line_name,
+                            ws.workstation_code, ws.workstation_number, ws.group_name,
+                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
+                        rowPre.dates[date] = { wip: preWip, output: preOutput, eff: preEff, tag: 'PRE', hours_worked: preHours };
+
+                        const vacWsId  = wsIdByCode[ws.vacant_workstation_code];
+                        const vacHours = vacWsId ? (hourlyMap[vacWsId] || {}) : {};
+                        const vacSamH  = parseFloat(ws.vac_sam_seconds || 0) / 3600;
+                        const postOutput = Object.entries(vacHours)
+                            .filter(([h]) => parseInt(h) > reassignHour)
+                            .reduce((s, [, q]) => s + q, 0);
+                        const postWip = Math.round(targetUnits * postHours / shiftHours);
+                        const postEff = vacSamH > 0 ? Math.round(postOutput * vacSamH / postHours * 10000) / 100 : null;
+                        const rowPost = getRow(lid, line.line_code, line.line_name,
+                            ws.vacant_workstation_code, ws.vac_ws_number, ws.vac_group_name,
+                            ws.vac_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
+                        rowPost.dates[date] = { wip: postWip, output: postOutput, eff: postEff, tag: 'POST', hours_worked: postHours };
+
+                    } else if (ws.wa_id && ws.adjustment_type === 'combine') {
+                        const reassignTime = new Date(ws.reassignment_time);
+                        const shiftStart   = new Date(`${date}T${inTime}:00`);
+                        const shiftEnd     = new Date(`${date}T${outTime}:00`);
+                        const reassignHour = reassignTime.getHours();
+                        const vacSamH      = parseFloat(ws.vac_sam_seconds || 0) / 3600;
+                        const preOutput = Object.entries(wsHours)
+                            .filter(([h]) => parseInt(h) <= reassignHour)
+                            .reduce((s, [, q]) => s + q, 0);
+                        const postOutput = Object.entries(wsHours)
+                            .filter(([h]) => parseInt(h) > reassignHour)
+                            .reduce((s, [, q]) => s + q, 0);
+                        const totalSAHEarned = preOutput * samH + postOutput * (samH + vacSamH);
+                        const eff = shiftHours > 0 ? Math.round(totalSAHEarned / shiftHours * 10000) / 100 : null;
+                        const row = getRow(lid, line.line_code, line.line_name,
+                            ws.workstation_code, ws.workstation_number, ws.group_name,
+                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
+                        row.dates[date] = { wip: targetUnits, output: preOutput + postOutput, eff, tag: 'COMB', hours_worked: shiftHours, vac_ws_code: ws.vacant_workstation_code };
+
+                    } else {
+                        const totalOutput = Object.values(wsHours).reduce((s, q) => s + q, 0);
+                        const eff = (shiftHours > 0 && samH > 0)
+                            ? Math.round(totalOutput * samH / shiftHours * 10000) / 100 : null;
+                        const row = getRow(lid, line.line_code, line.line_name,
+                            ws.workstation_code, ws.workstation_number, ws.group_name,
+                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
+                        row.dates[date] = { wip: targetUnits, output: totalOutput, eff, tag: null, hours_worked: shiftHours };
+                    }
+                }
+            }
+        }
+
+        // Sort: line_code → workstation_number → emp_name
+        const rows = Object.values(rowMap).sort((a, b) => {
+            const lc = (a.line_code || '').localeCompare(b.line_code || '');
+            if (lc !== 0) return lc;
+            if (a.workstation_number !== b.workstation_number) return a.workstation_number - b.workstation_number;
+            return (a.emp_name || '').localeCompare(b.emp_name || '');
+        });
+
+        rows.forEach(row => {
+            let totalOutput = 0, totalSAHEarned = 0, totalHoursWorked = 0;
+            const samH = row.actual_sam_seconds / 3600;
+            for (const d of dates) {
+                const cell = row.dates[d];
+                if (!cell) continue;
+                totalOutput      += cell.output || 0;
+                if (cell.tag === 'COMB' && cell.eff !== null) {
+                    totalSAHEarned += cell.eff * (cell.hours_worked || 0) / 100;
+                } else {
+                    totalSAHEarned += (cell.output || 0) * samH;
+                }
+                totalHoursWorked += cell.hours_worked || 0;
+            }
+            row.total_output = totalOutput;
+            row.overall_eff  = totalHoursWorked > 0
+                ? Math.round(totalSAHEarned / totalHoursWorked * 10000) / 100 : null;
+        });
+
+        res.json({ success: true, data: { dates, rows, shift_hours: shiftHours } });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
