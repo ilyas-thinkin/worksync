@@ -558,7 +558,7 @@ async function refreshMgmtOsmRangeReport() {
 }
 
 function _buildMgmtOsmTable(data) {
-    const { osm_points, target_units, working_hours, in_time, out_time, to_date, buyer_name, product_code, product_name } = data;
+    const { osm_points, target_units, total_target, working_hours, in_time, out_time, to_date, buyer_name, product_code, product_name } = data;
     const toDate = to_date || data.date;
     const inH  = parseInt((in_time  || '08:00').split(':')[0]);
     const outH = parseInt((out_time || '17:00').split(':')[0]);
@@ -614,6 +614,9 @@ function _buildMgmtOsmTable(data) {
         }
         const extra = combinedExtra > 0 ? combinedExtra : 0;
         const balToProd = totalTargetSoFar - todayOutput;
+        const orderBalProd = (total_target || 0) - (pt.cumulative_output || 0);
+        const remainingDays = (target_units > 0 && orderBalProd > 0)
+            ? Math.ceil(orderBalProd / target_units) : 0;
 
         const reasons = [...new Set(
             Object.values(pt.hourly || {}).map(d => d.shortfall_reason).filter(Boolean)
@@ -629,6 +632,8 @@ function _buildMgmtOsmTable(data) {
             <td style="${tcS}font-weight:700;color:#dc2626;">${backlog < 0 ? backlog : ''}</td>
             <td style="${tcS}font-weight:700;color:#16a34a;">${extra > 0 ? '+'+extra : ''}</td>
             <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
+            <td style="${tcS}font-weight:700;color:${orderBalProd > 0 ? '#dc2626' : '#16a34a'};">${orderBalProd}</td>
+            <td style="${tcS}font-weight:700;color:${remainingDays > 0 ? '#b45309' : '#16a34a'};">${remainingDays}</td>
             <td style="${tdS}font-size:11px;">${reasons}</td>
         </tr>`;
     }).join('');
@@ -659,13 +664,15 @@ function _buildMgmtOsmTable(data) {
                         <th style="${thS}min-width:65px;">B.LOG</th>
                         <th style="${thS}min-width:75px;">EXTRA<br>PRODUCED</th>
                         <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD<br>(TODAY'S TARGET)</th>
+                        <th style="${thS}min-width:90px;white-space:normal;">ORDER BAL<br>PROD</th>
+                        <th style="${thS}min-width:80px;white-space:normal;">REMAINING<br>DAYS</th>
                         <th style="${thS}min-width:120px;white-space:normal;">REASON</th>
                     </tr>
                     <tr style="background:#dbeafe;">
                         <td colspan="3" style="${tdS}text-align:right;font-weight:700;padding:4px 10px;">TARGET / HOUR</td>
                         ${targetRow}
                         <td style="${tcS}font-weight:700;">${target_units}</td>
-                        <td colspan="4" style="${tdS}"></td>
+                        <td colspan="6" style="${tdS}"></td>
                     </tr>
                 </thead>
                 <tbody>${dataRows}</tbody>
@@ -683,6 +690,9 @@ function _buildMgmtOsmRangeTable(data) {
     const dataRows = osm_points.map(pt => {
         const blog = pt.blog;
         const balToProd = range_target - pt.total_output;
+        const orderBalProd = (total_target || 0) - pt.total_output;
+        const remainingDays = (target_units > 0 && orderBalProd > 0)
+            ? Math.ceil(orderBalProd / target_units) : 0;
         return `<tr>
             <td style="${tcS}font-weight:700;">${pt.workstation_number || ''}</td>
             <td style="${tcS}font-weight:700;color:#1e3a5f;">${pt.osm_label}</td>
@@ -692,6 +702,8 @@ function _buildMgmtOsmRangeTable(data) {
             <td style="${tcS}font-weight:700;">${pt.total_output}</td>
             <td style="${tcS}font-weight:700;color:#dc2626;">${blog < 0 ? blog : ''}</td>
             <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
+            <td style="${tcS}font-weight:700;color:${orderBalProd > 0 ? '#dc2626' : '#16a34a'};">${orderBalProd}</td>
+            <td style="${tcS}font-weight:700;color:${remainingDays > 0 ? '#b45309' : '#16a34a'};">${remainingDays}</td>
             <td style="${tdS}font-size:11px;white-space:normal;word-break:break-word;">${pt.reasons || ''}</td>
         </tr>`;
     }).join('');
@@ -720,6 +732,8 @@ function _buildMgmtOsmRangeTable(data) {
                     <th style="${thS}min-width:80px;white-space:normal;">TOTAL OUTPUT<br>(${from_date} – ${to_date})</th>
                     <th style="${thS}min-width:65px;">B.LOG</th>
                     <th style="${thS}min-width:90px;white-space:normal;">BAL TO PROD</th>
+                    <th style="${thS}min-width:90px;white-space:normal;">ORDER BAL<br>PROD</th>
+                    <th style="${thS}min-width:80px;white-space:normal;">REMAINING<br>DAYS</th>
                     <th style="${thS}min-width:160px;white-space:normal;">REASON</th>
                 </tr></thead>
                 <tbody>${dataRows}</tbody>

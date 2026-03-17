@@ -3732,12 +3732,23 @@ router.put('/workstation-plan/processes/:lpwpId/osm', async (req, res) => {
         return res.status(400).json({ success: false, error: 'osm_checked (boolean) is required' });
     }
     try {
-        const result = await pool.query(
-            `UPDATE line_plan_workstation_processes SET osm_checked = $1 WHERE id = $2 RETURNING id, osm_checked`,
-            [osm_checked, lpwpId]
+        // Resolve product_process_id from this lpwp
+        const ppRes = await pool.query(
+            `SELECT product_process_id FROM line_plan_workstation_processes WHERE id = $1`,
+            [lpwpId]
         );
-        if (!result.rows[0]) return res.status(404).json({ success: false, error: 'Process mapping not found' });
-        res.json({ success: true, data: result.rows[0] });
+        if (!ppRes.rows[0]) return res.status(404).json({ success: false, error: 'Process mapping not found' });
+        const ppId = ppRes.rows[0].product_process_id;
+
+        // Persist at product level so it applies to all days/plans for this product
+        await pool.query(`UPDATE product_processes SET osm_checked = $1 WHERE id = $2`, [osm_checked, ppId]);
+
+        // Propagate to all line_plan_workstation_processes rows sharing this product_process
+        const result = await pool.query(
+            `UPDATE line_plan_workstation_processes SET osm_checked = $1 WHERE product_process_id = $2 RETURNING id`,
+            [osm_checked, ppId]
+        );
+        res.json({ success: true, updated_count: result.rows.length });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -5839,7 +5850,7 @@ router.post('/supervisor/changeover/activate', async (req, res) => {
 // Returns a warning (target_warning) if the workstation hasn't met its share of the daily target,
 // but allows override if force=true is passed in the body.
 router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
-    const { line_id, work_date, workstation_code, force } = req.body;
+    const { line_id, work_date, workstation_code, force, employee_id } = req.body;
     if (!line_id || !work_date || !workstation_code)
         return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
     if (!CHANGEOVER_ENABLED)
@@ -5907,13 +5918,38 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
             });
         }
 
-        // Activate per-workstation changeover
-        await pool.query(
-            `UPDATE line_plan_workstations
-             SET ws_changeover_active = true, ws_changeover_started_at = NOW(), updated_at = NOW()
-             WHERE id = $1`,
-            [ws.id]
-        );
+        // Activate per-workstation changeover (with optional employee reassignment)
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            await client.query(
+                `UPDATE line_plan_workstations
+                 SET ws_changeover_active = true, ws_changeover_started_at = NOW(), updated_at = NOW()
+                 WHERE id = $1`,
+                [ws.id]
+            );
+
+            if (employee_id) {
+                await client.query(
+                    `INSERT INTO employee_workstation_assignments
+                       (line_id, work_date, workstation_code, employee_id, is_overtime, line_plan_workstation_id)
+                     VALUES ($1, $2, $3, $4, false, $5)
+                     ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+                     DO UPDATE SET employee_id = EXCLUDED.employee_id,
+                                   line_plan_workstation_id = EXCLUDED.line_plan_workstation_id`,
+                    [line_id, work_date, workstation_code, employee_id, ws.id]
+                );
+            }
+
+            await client.query('COMMIT');
+        } catch (txErr) {
+            await client.query('ROLLBACK');
+            throw txErr;
+        } finally {
+            client.release();
+        }
+
         realtime.broadcast('data_change', {
             entity: 'changeover', action: 'ws_activated', line_id, work_date, workstation_code
         });
@@ -8085,7 +8121,8 @@ router.get('/osm-report-range', async (req, res) => {
             SELECT pl.line_name, pl.line_code,
                    ldp.target_units, ldp.product_id,
                    p.product_code, p.product_name,
-                   COALESCE(p.buyer_name, '') AS buyer_name
+                   COALESCE(p.buyer_name, '') AS buyer_name,
+                   COALESCE(p.target_qty, 0) AS total_target
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
             LEFT JOIN products p ON p.id = ldp.product_id
@@ -8179,6 +8216,7 @@ router.get('/osm-report-range', async (req, res) => {
             buyer_name: line.buyer_name || '',
             from_date, to_date,
             target_units: parseInt(line.target_units || 0),
+            total_target: parseInt(line.total_target || 0),
             range_target: rangeTarget,
             day_count: dayCount,
             osm_points: osmPoints

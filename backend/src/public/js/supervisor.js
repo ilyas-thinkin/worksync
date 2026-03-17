@@ -339,36 +339,57 @@ function renderMorningAssignments(hasPlan) {
         // "Linked" = supervisor confirmed (material_provided is not null)
         const allLinked = workstations.every(ws => ws.material_provided !== null && ws.material_provided !== undefined);
 
-        const rows = workstations.map(ws => {
-            const isMapped   = !!ws.assigned_emp_name;  // IE/Admin mapped an employee
-            const isConfirmed = ws.material_provided !== null && ws.material_provided !== undefined; // supervisor confirmed
-            const processList = (ws.processes || []).map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
+        const cards = workstations.map(ws => {
+            const isMapped   = !!ws.assigned_emp_name;
+            const isConfirmed = ws.material_provided !== null && ws.material_provided !== undefined;
+            const processList = (ws.processes || []).map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
+            const workloadPct = parseFloat(ws.workload_pct||0).toFixed(0);
 
-            const assigned = isMapped
+            const assignedHtml = isMapped
                 ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
                 : '<span style="color:#9ca3af;font-style:italic;">Not mapped</span>';
 
             const statusBadge = isConfirmed
-                ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>
-                   <div style="font-size:11px;color:#6b7280;margin-top:2px;">&#128230; ${ws.material_provided} pcs</div>`
+                ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
                 : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
-            const actionBtn = isConfirmed
-                ? `<span style="color:#6b7280;font-size:12px;">—</span>`
-                : `<button class="btn btn-primary btn-sm"
+            const materialLine = isConfirmed
+                ? `<div class="ws-card-row"><span class="ws-card-label">Material</span><span style="color:#6b7280;">&#128230; ${ws.material_provided} pcs</span></div>`
+                : '';
+
+            const footerContent = isConfirmed
+                ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
+                : `<button class="btn btn-primary ws-card-action"
                         onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${ws.assigned_emp_name || ''}')">
                         &#128247; Scan &amp; Link
                    </button>`;
 
-            return `<tr>
-                <td style="font-weight:700;">${ws.workstation_code}</td>
-                <td style="font-size:0.85em;">${processList}</td>
-                <td style="text-align:center; font-weight:600; color:${workloadColor};">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
-                <td>${assigned}</td>
-                <td style="text-align:center;">${statusBadge}</td>
-                <td>${actionBtn}</td>
-            </tr>`;
+            const cardClass = isConfirmed ? '' : 'ws-card--alert';
+            return `
+                <div class="ws-card ${cardClass}" id="ws-card-${ws.workstation_code}">
+                    <div class="ws-card-header">
+                        <span class="ws-card-code">${ws.workstation_code}</span>
+                        <div class="ws-card-badges">
+                            ${statusBadge}
+                            <span style="font-size:12px;font-weight:600;color:${workloadColor};">${workloadPct}%</span>
+                        </div>
+                    </div>
+                    <div class="ws-card-body">
+                        <div class="ws-card-row">
+                            <span class="ws-card-label">Processes</span>
+                            <span style="font-size:12px;color:#6b7280;">${processList}</span>
+                        </div>
+                        <div class="ws-card-row">
+                            <span class="ws-card-label">Worker</span>
+                            <span>${assignedHtml}</span>
+                        </div>
+                        ${materialLine}
+                    </div>
+                    <div class="ws-card-footer">
+                        ${footerContent}
+                    </div>
+                </div>`;
         }).join('');
 
         container.innerHTML = `
@@ -380,20 +401,8 @@ function renderMorningAssignments(hasPlan) {
                         ${allLinked ? '<span style="color:#16a34a;">&#10003; All linked</span>' : '<span style="color:#dc2626;">&#9888; Some not linked</span>'}
                     </span>
                 </div>
-                <div class="card-body table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Workstation</th>
-                                <th>Processes</th>
-                                <th style="text-align:center;">Workload</th>
-                                <th>Assigned Worker</th>
-                                <th style="text-align:center;">Status</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>${rows}</tbody>
-                    </table>
+                <div class="card-body">
+                    <div class="ws-cards-grid">${cards}</div>
                 </div>
             </div>
         `;
@@ -425,33 +434,51 @@ function renderMorningAssignments(hasPlan) {
         }
     });
 
-    const rows = Array.from(wsMap.values()).map(ws => {
+    const cards = Array.from(wsMap.values()).map(ws => {
         const isMapped    = !!ws.assigned_emp_name;
         const isConfirmed = ws.material_provided !== null && ws.material_provided !== undefined;
-        const assigned = isMapped
+        const assignedHtml = isMapped
             ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
             : '<span style="color:#9ca3af;font-style:italic;">Not mapped</span>';
-        const processList = ws.processes.map(p => `${p.operation_code} - ${p.operation_name}`).join(', ');
+        const processList = ws.processes.map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
 
         const statusBadge = isConfirmed
-            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>
-               <div style="font-size:11px;color:#6b7280;margin-top:2px;">&#128230; ${ws.material_provided} pcs</div>`
+            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
             : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
-        const actionBtn = isConfirmed
-            ? `<span style="color:#6b7280;font-size:12px;">—</span>`
-            : `<button class="btn btn-primary btn-sm"
+        const materialLine = isConfirmed
+            ? `<div class="ws-card-row"><span class="ws-card-label">Material</span><span style="color:#6b7280;">&#128230; ${ws.material_provided} pcs</span></div>`
+            : '';
+
+        const footerContent = isConfirmed
+            ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
+            : `<button class="btn btn-primary ws-card-action"
                     onclick="startMorningScan('${ws.workstation_code}', null, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${ws.assigned_emp_name || ''}')">
                     &#128247; Scan &amp; Link
                </button>`;
 
-        return `<tr>
-            <td style="font-weight:600;">${ws.workstation_code}</td>
-            <td>${processList}</td>
-            <td>${assigned}</td>
-            <td style="text-align:center;">${statusBadge}</td>
-            <td>${actionBtn}</td>
-        </tr>`;
+        const cardClass = isConfirmed ? '' : 'ws-card--alert';
+        return `
+            <div class="ws-card ${cardClass}" id="ws-card-${ws.workstation_code}">
+                <div class="ws-card-header">
+                    <span class="ws-card-code">${ws.workstation_code}</span>
+                    <div class="ws-card-badges">${statusBadge}</div>
+                </div>
+                <div class="ws-card-body">
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Processes</span>
+                        <span style="font-size:12px;color:#6b7280;">${processList}</span>
+                    </div>
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Worker</span>
+                        <span>${assignedHtml}</span>
+                    </div>
+                    ${materialLine}
+                </div>
+                <div class="ws-card-footer">
+                    ${footerContent}
+                </div>
+            </div>`;
     }).join('');
 
     container.innerHTML = `
@@ -460,16 +487,20 @@ function renderMorningAssignments(hasPlan) {
                 <h3 class="card-title">Workstation Assignments</h3>
                 <small style="color:#f59e0b;">No balance plan — using product-level grouping</small>
             </div>
-            <div class="card-body table-container">
-                <table>
-                    <thead>
-                        <tr><th>Workstation</th><th>Processes</th><th>Assigned Worker</th><th style="text-align:center;">Status</th><th>Action</th></tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
+            <div class="card-body">
+                <div class="ws-cards-grid">${cards}</div>
             </div>
         </div>
     `;
+}
+
+// Returns the default "Scan & Link" button HTML for a workstation card footer
+function _morningDefaultScanBtn(wsCode, planId, empId, empCode, empName) {
+    const safeEmpName = (empName || '').replace(/'/g, "\\'");
+    return `<button class="btn btn-primary ws-card-action"
+        onclick="startMorningScan('${wsCode}', ${planId || 'null'}, ${empId || 'null'}, '${empCode || ''}', '${safeEmpName}')">
+        &#128247; Scan &amp; Link
+    </button>`;
 }
 
 // mappedEmpId/Code/Name = what IE/Admin assigned (may be null if not mapped yet)
@@ -479,29 +510,62 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
     morningState.scannedEmployee = null;
     morningState.mappedEmployee = mappedEmpId ? { id: mappedEmpId, emp_code: mappedEmpCode, emp_name: mappedEmpName } : null;
 
-    const scanPanel = document.getElementById('morning-scan-panel');
-    const scanLabel = document.getElementById('morning-scan-label');
-    const scanResult = document.getElementById('morning-scan-result');
-    const title = document.getElementById('morning-scan-title');
-    if (title) title.textContent = 'Scan & Link';
-    scanPanel.style.display = 'block';
+    // Close any other open inline scan first
+    const prevScanEl = document.getElementById('morning-inline-scan');
+    if (prevScanEl) {
+        const prevCard = prevScanEl.closest('.ws-card');
+        if (prevCard) {
+            const prevFooter = prevCard.querySelector('.ws-card-footer');
+            if (prevFooter) prevFooter.innerHTML = _morningDefaultScanBtn(
+                prevCard.id.replace('ws-card-', ''),
+                prevScanEl.dataset.planId || 'null',
+                prevScanEl.dataset.empId || 'null',
+                prevScanEl.dataset.empCode || '',
+                prevScanEl.dataset.empName || ''
+            );
+        }
+    }
 
-    const mappedInfo = mappedEmpId
-        ? `<span style="color:#1d4ed8;font-weight:600;">${mappedEmpCode} — ${mappedEmpName}</span>`
-        : '<span style="color:#9ca3af;">No employee mapped yet</span>';
-    scanLabel.innerHTML = `Workstation <strong>${workstationCode}</strong> &nbsp;|&nbsp; Mapped: ${mappedInfo}`;
-    scanResult.innerHTML = '<p style="color:#6b7280;margin-top:8px;">Point camera at employee QR code...</p>';
-    scanPanel.scrollIntoView({ behavior: 'smooth' });
+    // Inject inline camera into this card's footer
+    const card = document.getElementById(`ws-card-${workstationCode}`);
+    const footer = card ? card.querySelector('.ws-card-footer') : null;
+    if (footer) {
+        footer.innerHTML = `
+            <div id="morning-inline-scan" style="width:100%;"
+                data-plan-id="${linePlanWorkstationId || ''}"
+                data-emp-id="${mappedEmpId || ''}"
+                data-emp-code="${mappedEmpCode || ''}"
+                data-emp-name="${(mappedEmpName || '').replace(/"/g, '&quot;')}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:13px;font-weight:600;color:#374151;">
+                        &#128247; Scanning ${workstationCode}
+                        ${mappedEmpId ? `<span style="color:#9ca3af;font-weight:400;"> — mapped: ${mappedEmpCode}</span>` : ''}
+                    </span>
+                    <button class="btn btn-secondary btn-sm" onclick="cancelMorningScan()">Cancel</button>
+                </div>
+                <video id="morning-camera" playsinline muted style="width:100%;border-radius:8px;background:#000;max-height:260px;display:block;"></video>
+                <div id="morning-scan-result" style="margin-top:10px;">
+                    <p style="color:#6b7280;font-size:13px;">Point camera at employee QR code...</p>
+                </div>
+            </div>`;
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } else {
+        // Fallback: old fixed panel
+        const scanPanel = document.getElementById('morning-scan-panel');
+        if (scanPanel) { scanPanel.style.display = 'block'; scanPanel.scrollIntoView({ behavior: 'smooth' }); }
+    }
+
+    const scanResult = document.getElementById('morning-scan-result');
 
     startCamera('morning-camera', null, async (rawValue) => {
         stopCamera();
         const payload = parseScanPayload(rawValue);
         if (!payload) {
-            scanResult.innerHTML = '<p style="color:#dc2626;">Invalid QR code. Try again.</p>';
+            if (scanResult) scanResult.innerHTML = '<p style="color:#dc2626;">Invalid QR code. Try again.</p>';
             return;
         }
 
-        scanResult.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
+        if (scanResult) scanResult.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
 
         try {
             // Resolve scanned QR to an employee (no line assignment required)
@@ -534,11 +598,11 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
                         <p style="font-weight:700;color:#1d4ed8;margin:0 0 10px;">&#128100; ${mapped.emp_code} — ${mapped.emp_name}</p>
                         <p style="font-size:0.9em;margin:0 0 4px;">You scanned:</p>
                         <p style="font-weight:700;color:#16a34a;margin:0 0 14px;">&#128100; ${scannedEmp.emp_code} — ${scannedEmp.emp_name}</p>
-                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                            <button class="btn btn-secondary btn-sm" onclick="cancelMorningScan()">
+                        <div class="mismatch-actions">
+                            <button class="btn btn-secondary" onclick="cancelMorningScan()">
                                 Keep ${mapped.emp_code}
                             </button>
-                            <button class="btn btn-sm" style="background:#dc2626;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;"
+                            <button class="btn" style="background:#dc2626;color:#fff;border:none;"
                                 onclick="_morningShowMaterialForm()">
                                 Replace with ${scannedEmp.emp_code}
                             </button>
@@ -567,12 +631,10 @@ function _morningShowMaterialForm() {
             <label style="display:block;font-weight:700;font-size:0.9em;margin-bottom:8px;color:#374151;">
                 &#128230; Material provided to workstation ${morningState.selectedWorkstation}
             </label>
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
-                <input type="number" id="morning-material-qty" min="0" value="0"
-                    style="width:100px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:1em;text-align:center;">
-                <span style="font-size:0.85em;color:#6b7280;">pcs &nbsp;(0 = nothing provided)</span>
-            </div>
-            <button class="btn btn-primary" onclick="confirmMorningAssign()">
+            <input type="number" id="morning-material-qty" min="0" value="0"
+                class="form-control material-qty-input" style="margin-bottom:6px;">
+            <p style="font-size:0.8em;color:#6b7280;margin:0 0 12px;">pcs &nbsp;(0 = nothing provided)</p>
+            <button class="btn btn-primary ws-card-action" onclick="confirmMorningAssign()">
                 &#128279; Confirm Link
             </button>
         </div>`;
@@ -632,8 +694,28 @@ async function confirmMorningAssign() {
 
 function cancelMorningScan() {
     stopCamera();
+    const ws = morningState.selectedWorkstation;
+    const planId = morningState.selectedWorkstationPlanId;
+    const mapped = morningState.mappedEmployee;
+
+    // Restore the inline card footer to the default Scan & Link button
+    if (ws) {
+        const card = document.getElementById(`ws-card-${ws}`);
+        const footer = card ? card.querySelector('.ws-card-footer') : null;
+        if (footer) {
+            footer.innerHTML = _morningDefaultScanBtn(
+                ws, planId,
+                mapped?.id || null,
+                mapped?.emp_code || '',
+                mapped?.emp_name || ''
+            );
+        }
+    }
+
+    // Also hide fixed fallback panel if it was used
     const scanPanel = document.getElementById('morning-scan-panel');
     if (scanPanel) scanPanel.style.display = 'none';
+
     morningState.selectedWorkstation = null;
     morningState.selectedWorkstationPlanId = null;
     morningState.scannedEmployee = null;
@@ -721,13 +803,10 @@ function _morningMaterialForm(workstationCode) {
             <label style="display:block;font-weight:700;font-size:0.9em;margin-bottom:8px;color:#374151;">
                 &#128230; Material provided to workstation ${workstationCode}
             </label>
-            <div style="display:flex;align-items:center;gap:10px;">
-                <input type="number" id="morning-material-qty" min="0" value="0"
-                    style="width:100px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:1em;text-align:center;">
-                <span style="font-size:0.85em;color:#6b7280;">pcs &nbsp;(0 = nothing provided)</span>
-            </div>
-            <button class="btn btn-primary" onclick="saveMorningMaterial('${workstationCode}')"
-                style="margin-top:12px;">
+            <input type="number" id="morning-material-qty" min="0" value="0"
+                class="form-control material-qty-input" style="margin-bottom:6px;">
+            <p style="font-size:0.8em;color:#6b7280;margin:0 0 12px;">pcs &nbsp;(0 = nothing provided)</p>
+            <button class="btn btn-primary ws-card-action" onclick="saveMorningMaterial('${workstationCode}')">
                 &#10003; Confirm
             </button>
         </div>`;
@@ -900,19 +979,19 @@ async function loadHourlyProcedure() {
                     <h3 class="card-title">Select Line & Date</h3>
                 </div>
                 <div class="card-body">
-                    <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:end; margin-bottom:14px;">
-                        <div style="flex:1; min-width:180px;">
+                    <div class="hourly-controls">
+                        <div class="hc-field" style="flex:2; min-width:160px;">
                             <label class="form-label">Line</label>
                             <select class="form-control" id="hourly-line">
                                 <option value="">Select Line</option>
                                 ${lines.map(l => `<option value="${l.id}">${l.line_name} (${l.line_code})${l.product_code ? ' - ' + l.product_code : ''}</option>`).join('')}
                             </select>
                         </div>
-                        <div style="min-width:140px;">
+                        <div class="hc-field" style="min-width:130px;">
                             <label class="form-label">Date</label>
                             <input type="date" class="form-control" id="hourly-date" value="${today}">
                         </div>
-                        <div style="min-width:100px;" id="hourly-hour-wrap">
+                        <div class="hc-field" id="hourly-hour-wrap" style="min-width:90px;">
                             <label class="form-label">Hour</label>
                             <select class="form-control" id="hourly-hour">
                                 ${Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
@@ -922,13 +1001,11 @@ async function loadHourlyProcedure() {
                             </select>
                         </div>
                     </div>
-                    <div style="display:flex; gap:8px; border-bottom:2px solid #e5e7eb; padding-bottom:0;">
-                        <button id="ht-regular-btn" onclick="switchHourlyMode('regular')"
-                            style="padding:8px 18px; border:none; border-radius:6px 6px 0 0; cursor:pointer; font-weight:600; font-size:14px; background:#3b82f6; color:#fff;">
+                    <div class="hourly-tabs">
+                        <button id="ht-regular-btn" class="hourly-tab-btn active-regular" onclick="switchHourlyMode('regular')">
                             Regular Shift
                         </button>
-                        <button id="ht-ot-btn" onclick="switchHourlyMode('ot')"
-                            style="padding:8px 18px; border:none; border-radius:6px 6px 0 0; cursor:pointer; font-weight:600; font-size:14px; background:#f3f4f6; color:#374151;">
+                        <button id="ht-ot-btn" class="hourly-tab-btn" onclick="switchHourlyMode('ot')">
                             OT Progress
                         </button>
                     </div>
@@ -1033,8 +1110,8 @@ function switchHourlyMode(mode) {
     const hourWrap = document.getElementById('hourly-hour-wrap');
     if (!regularBtn || !otBtn) return;
     if (mode === 'ot') {
-        regularBtn.style.background = '#f3f4f6'; regularBtn.style.color = '#374151';
-        otBtn.style.background = '#7c3aed'; otBtn.style.color = '#fff';
+        regularBtn.className = 'hourly-tab-btn';
+        otBtn.className = 'hourly-tab-btn active-ot';
         if (regularSec) regularSec.style.display = 'none';
         if (otSec) otSec.style.display = '';
         if (hourWrap) hourWrap.style.display = 'none';
@@ -1042,8 +1119,8 @@ function switchHourlyMode(mode) {
         const date = document.getElementById('hourly-date')?.value || new Date().toISOString().slice(0, 10);
         loadOtPlanList(date);
     } else {
-        regularBtn.style.background = '#3b82f6'; regularBtn.style.color = '#fff';
-        otBtn.style.background = '#f3f4f6'; otBtn.style.color = '#374151';
+        regularBtn.className = 'hourly-tab-btn active-regular';
+        otBtn.className = 'hourly-tab-btn';
         if (regularSec) regularSec.style.display = '';
         if (otSec) otSec.style.display = 'none';
         if (hourWrap) hourWrap.style.display = '';
@@ -1263,6 +1340,204 @@ async function confirmCoEmpAssign(wsCode, linePlanWsId) {
     }
 }
 
+// ─── PER-WORKSTATION CHANGEOVER INLINE FLOW ───────────────────────────────────
+
+const coPromptState = {
+    wsCode: null, wsId: null, date: null,
+    origEmpId: null, origEmpCode: null, origEmpName: null,
+    scannedEmployee: null
+};
+
+function _coBtnHtml(wsCode, wsId, date, empId, empCode, empName) {
+    const safeCode = (empCode || '').replace(/"/g, '&quot;');
+    const safeName = (empName || '').replace(/"/g, '&quot;');
+    return `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
+        data-ws-code="${wsCode}" data-ws-id="${wsId}" data-date="${date}"
+        data-emp-id="${empId || ''}" data-emp-code="${safeCode}" data-emp-name="${safeName}"
+        onclick="promptWsChangeover(this)">&#8652; Start CO</button>`;
+}
+
+function promptWsChangeover(btn) {
+    stopCamera();
+    const wsCode = btn.dataset.wsCode;
+    const wsId = parseInt(btn.dataset.wsId);
+    const date = btn.dataset.date;
+    const empId = btn.dataset.empId ? parseInt(btn.dataset.empId) : null;
+    const empCode = btn.dataset.empCode || '';
+    const empName = btn.dataset.empName || '';
+
+    coPromptState.wsCode = wsCode;
+    coPromptState.wsId = wsId;
+    coPromptState.date = date;
+    coPromptState.origEmpId = empId;
+    coPromptState.origEmpCode = empCode;
+    coPromptState.origEmpName = empName;
+    coPromptState.scannedEmployee = null;
+
+    const card = document.getElementById(`hourly-ws-card-${wsId}`);
+    if (!card) return;
+    const footer = card.querySelector('.ws-card-footer');
+    if (!footer) return;
+
+    const empLine = empId
+        ? `<p style="font-size:13px;color:#374151;margin:0 0 10px;">Continue with: <strong>${empCode} — ${empName}</strong></p>`
+        : `<p style="font-size:13px;color:#6b7280;margin:0 0 10px;">No employee currently assigned.</p>`;
+
+    footer.innerHTML = `
+        <div style="width:100%;padding:4px 0;">
+            <p style="font-weight:700;color:#5b21b6;font-size:13px;margin:0 0 8px;">&#8652; Start Changeover — ${wsCode}</p>
+            ${empLine}
+            <div class="mismatch-actions">
+                ${empId ? `<button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
+                    onclick="confirmWsCo(${empId}, false)">Continue with same employee</button>` : ''}
+                <button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
+                    onclick="startCoScan()">&#128247; Assign Different Employee</button>
+                <button class="btn ws-card-action" style="background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
+                    onclick="cancelCoPrompt()">Cancel</button>
+            </div>
+        </div>`;
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function startCoScan() {
+    const { wsId, wsCode } = coPromptState;
+    if (!wsId || isNaN(wsId)) { showToast('Error: workstation state lost, please close and retry', 'error'); return; }
+
+    const card = document.getElementById(`hourly-ws-card-${wsId}`);
+    if (!card) { showToast('Error: card not found — please refresh', 'error'); return; }
+    const footer = card.querySelector('.ws-card-footer');
+    if (!footer) { showToast('Error: footer not found — please refresh', 'error'); return; }
+
+    footer.innerHTML = `
+        <div style="width:100%;padding:4px 0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
+                <span style="font-size:13px;font-weight:600;color:#374151;">&#128247; Scan Employee QR — ${wsCode}</span>
+                <button class="btn btn-secondary btn-sm" onclick="cancelCoPrompt()">Cancel</button>
+            </div>
+            <video id="co-camera-${wsId}" playsinline muted
+                style="width:100%;border-radius:8px;background:#000;display:block;max-height:260px;"></video>
+            <div id="co-scan-result-${wsId}" style="margin-top:10px;">
+                <p style="color:#6b7280;font-size:13px;">Starting camera...</p>
+            </div>
+        </div>`;
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    await startCamera(`co-camera-${wsId}`, `co-scan-result-${wsId}`, async (rawValue) => {
+        stopCamera();
+        const result = document.getElementById(`co-scan-result-${wsId}`);
+        if (result) result.innerHTML = '<p style="color:#6b7280;font-size:13px;">Resolving employee...</p>';
+        try {
+            const r = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ employee_qr: rawValue })
+            });
+            const data = await r.json();
+            if (!data.success || !data.data?.employee) {
+                if (result) result.innerHTML = `
+                    <p style="color:#dc2626;font-size:13px;">${data.error || 'Employee not found.'}</p>
+                    <button class="btn ws-card-action" style="margin-top:6px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
+                        onclick="startCoScan()">&#8635; Retry Scan</button>`;
+                return;
+            }
+            coPromptState.scannedEmployee = data.data.employee;
+            showCoEmployeeConfirm(data.data.employee);
+        } catch (err) {
+            const result2 = document.getElementById(`co-scan-result-${wsId}`);
+            if (result2) result2.innerHTML = `<p style="color:#dc2626;font-size:13px;">${err.message}</p>`;
+        }
+    });
+
+    // If camera failed to start, show inline message (startCamera shows a toast too)
+    if (!scanning) {
+        const result = document.getElementById(`co-scan-result-${wsId}`);
+        if (result && result.querySelector('p')?.textContent === 'Starting camera...') {
+            result.innerHTML = `<p style="color:#dc2626;font-size:13px;">Camera unavailable. Check permissions or use HTTPS.</p>
+                <button class="btn ws-card-action" style="margin-top:6px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
+                    onclick="cancelCoPrompt()">Back</button>`;
+        }
+    }
+}
+
+function showCoEmployeeConfirm(emp) {
+    const { wsId, wsCode } = coPromptState;
+    const card = document.getElementById(`hourly-ws-card-${wsId}`);
+    if (!card) return;
+    const footer = card.querySelector('.ws-card-footer');
+    if (!footer) return;
+
+    footer.innerHTML = `
+        <div style="width:100%;padding:4px 0;">
+            <p style="font-weight:700;color:#5b21b6;font-size:13px;margin:0 0 8px;">&#8652; Start Changeover — ${wsCode}</p>
+            <p style="font-size:13px;color:#16a34a;margin:0 0 12px;">&#10003; ${emp.emp_code} — ${emp.emp_name}</p>
+            <div class="mismatch-actions">
+                <button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
+                    onclick="confirmWsCo(${emp.id}, false)">Confirm CO</button>
+                <button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
+                    onclick="startCoScan()">&#128247; Scan Different</button>
+                <button class="btn ws-card-action" style="background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
+                    onclick="cancelCoPrompt()">Cancel</button>
+            </div>
+        </div>`;
+}
+
+async function confirmWsCo(employeeId, force) {
+    const { wsCode, wsId, date } = coPromptState;
+    const lineId = hourlyState.lineId;
+    if (!lineId || !date || !wsCode) return;
+
+    const card = document.getElementById(`hourly-ws-card-${wsId}`);
+    const footer = card ? card.querySelector('.ws-card-footer') : null;
+
+    try {
+        const body = { line_id: lineId, work_date: date, workstation_code: wsCode, force: !!force };
+        if (employeeId) body.employee_id = employeeId;
+
+        const r = await fetch(`${API_BASE}/supervisor/changeover/activate-workstation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await r.json();
+
+        if (data.target_warning) {
+            if (footer) {
+                footer.innerHTML = `
+                    <div style="width:100%;padding:4px 0;">
+                        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px;margin-bottom:10px;">
+                            <p style="font-weight:700;color:#c2410c;margin:0 0 6px;">&#9888; Target Not Met</p>
+                            <p style="font-size:13px;color:#374151;margin:0;">${data.message}</p>
+                        </div>
+                        <div class="mismatch-actions">
+                            <button class="btn ws-card-action" style="background:#dc2626;color:#fff;border:none;"
+                                onclick="confirmWsCo(${employeeId || 'null'}, true)">Proceed Anyway</button>
+                            <button class="btn ws-card-action" style="background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
+                                onclick="cancelCoPrompt()">Cancel</button>
+                        </div>
+                    </div>`;
+            }
+            return;
+        }
+
+        if (!data.success) { showToast(data.error || 'Failed to activate changeover', 'error'); return; }
+        showToast(`Changeover started for ${wsCode}`, 'success');
+        await onHourlyLineChange();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function cancelCoPrompt() {
+    stopCamera();
+    const { wsId, wsCode, date, origEmpId, origEmpCode, origEmpName } = coPromptState;
+    if (wsId) {
+        const card = document.getElementById(`hourly-ws-card-${wsId}`);
+        const footer = card ? card.querySelector('.ws-card-footer') : null;
+        if (footer) footer.innerHTML = _coBtnHtml(wsCode, wsId, date, origEmpId, origEmpCode, origEmpName);
+    }
+    Object.assign(coPromptState, { wsCode: null, wsId: null, date: null, origEmpId: null, origEmpCode: null, origEmpName: null, scannedEmployee: null });
+}
+
 function renderHourlySummary() {
     const container = document.getElementById('hourly-summary');
     const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
@@ -1313,13 +1588,12 @@ function renderHourlySummary() {
         const perHourIncoming = hourlyState.perHourIncomingTarget || 0;
         const hasChangeover = !!hourlyState.incomingProductId;
 
-        const rows = workstations.map(ws => {
+        const cards = workstations.map(ws => {
             const isWsChangeover = !!ws.ws_changeover_active;
             const wsHourlyTarget = isWsChangeover
                 ? (ws.ws_changeover_target != null ? ws.ws_changeover_target : Math.round(perHourIncoming))
                 : Math.round(perHourTarget);
 
-            // Progress for this workstation = look at any process in it for this hour
             const wsProcessIds = (ws.processes || []).map(p => p.process_id || p.id);
             const progress = hourlyState.progressData.find(
                 d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour
@@ -1327,71 +1601,106 @@ function renderHourlySummary() {
             const output = progress ? parseInt(progress.quantity || 0) : 0;
             const reason = progress?.shortfall_reason || '';
 
-            // Worker status with departure/coverage info
             const wsStatus = ws.ws_status || 'active';
-            let worker = '';
+            let workerHtml = '';
             if (wsStatus === 'vacant') {
                 const deptTime = ws.departure_time ? new Date(ws.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
-                worker = `<span style="color:#dc2626;font-weight:700;">VACANT</span><br><small style="color:#9ca3af;">${ws.assigned_emp_code || ''} left ${deptTime}</small>`;
-            } else if (wsStatus === 'covered') {
-                if (ws.coverage_type === 'combine') {
-                    worker = `<span style="color:#7c3aed;font-size:11px;font-weight:700;">COMBINED</span><br>${ws.covering_emp_code} - ${ws.covering_emp_name}<br><small style="color:#9ca3af;">also covers ${ws.covering_from_ws}</small>`;
-                } else {
-                    worker = ws.assigned_emp_name ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}` : '<span style="color:#9ca3af;">-</span>';
-                }
+                workerHtml = `<span style="color:#dc2626;font-weight:700;">VACANT</span> <small style="color:#9ca3af;">${ws.assigned_emp_code || ''} left ${deptTime}</small>`;
+            } else if (wsStatus === 'covered' && ws.coverage_type === 'combine') {
+                workerHtml = `<span style="color:#7c3aed;font-size:11px;font-weight:700;">COMBINED</span> ${ws.covering_emp_code} – ${ws.covering_emp_name}<br><small style="color:#9ca3af;">also covers ${ws.covering_from_ws}</small>`;
             } else {
-                worker = ws.assigned_emp_name
-                    ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}`
+                workerHtml = ws.assigned_emp_name
+                    ? `${ws.assigned_emp_code} – ${ws.assigned_emp_name}`
                     : '<span style="color:#dc2626;">Unassigned</span>';
             }
 
             const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
-
             const needsReason = output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
-            let statusHtml = '';
-            if (output > 0) {
-                if (wsHourlyTarget > 0 && output < wsHourlyTarget) {
-                    statusHtml = needsReason
-                        ? `<span style="color:#dc2626;font-weight:700;">&#9888; Below target</span><br><small style="color:#dc2626;font-weight:600;">Please Update Reason</small>`
-                        : `<span style="color:#dc2626;font-weight:600;">Below target</span><br><small style="color:#6b7280;">${reason}</small>`;
-                } else {
-                    statusHtml = `<span style="color:#16a34a;font-weight:600;">On track</span>`;
-                }
-            } else {
-                statusHtml = '<span style="color:#6b7280;">-</span>';
+
+            const morningDone = ws.material_provided !== null && ws.material_provided !== undefined;
+
+            // Status badge for card header
+            let statusBadge = '';
+            if (!morningDone && wsStatus !== 'vacant') {
+                statusBadge = `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#128274; Not Linked</span>`;
+            } else if (isWsChangeover) {
+                const coTime = ws.ws_changeover_started_at ? new Date(ws.ws_changeover_started_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+                statusBadge = `<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#8652; CO${coTime ? ' '+coTime : ''}</span>`;
+            } else if (wsStatus === 'vacant') {
+                statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">VACANT</span>`;
+            } else if (needsReason) {
+                statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#9888; Needs Reason</span>`;
+            } else if (output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget) {
+                statusBadge = `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Below target</span>`;
+            } else if (output > 0 && output >= wsHourlyTarget) {
+                statusBadge = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">On track</span>`;
             }
 
-            // Per-WS changeover badge and action button
-            let coCell = '';
+            const outputColor = output > 0 ? (output >= wsHourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
+
+            // Footer buttons — block if vacant or morning procedure not done
+            const enterOutputBtn = wsStatus === 'vacant'
+                ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant">Enter Output</button>`
+                : !morningDone
+                    ? `<button class="btn ws-card-action" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:not-allowed;" disabled title="Complete morning procedure (Scan &amp; Link) first">&#128274; Morning Required</button>`
+                    : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
+
+            let coBtn = '';
             if (hasChangeover) {
                 if (isWsChangeover) {
-                    const coTime = ws.ws_changeover_started_at ? new Date(ws.ws_changeover_started_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
-                    coCell = `<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#8652; CO</span>
-                        ${coTime ? `<br><small style="color:#7c3aed;">${coTime}</small>` : ''}
-                        <br><button class="btn btn-secondary btn-sm" style="margin-top:3px;font-size:11px;" onclick="openWsChangeoverEmployeeChange(${JSON.stringify(ws.workstation_code)}, ${ws.id || ws.primary_ws_id || 'null'})">Change Employee</button>`;
+                    coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" onclick="openWsChangeoverEmployeeChange(${JSON.stringify(ws.workstation_code)}, ${ws.id || ws.primary_ws_id || 'null'})">Change Employee</button>`;
                 } else {
-                    coCell = `<button class="btn btn-sm" style="font-size:11px;padding:2px 8px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
-                        onclick="activateWsChangeover(${JSON.stringify(ws.workstation_code)}, '${date}', false)">&#8652; Start CO</button>`;
+                    coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
+                        data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
+                        data-emp-id="${ws.assigned_employee_id || ''}"
+                        data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
+                        data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"
+                        onclick="promptWsChangeover(this)">&#8652; Start CO</button>`;
                 }
             }
 
-            const rowBg = wsStatus === 'vacant' ? 'background:#fff5f5;' : (needsReason ? 'background:#fff5f5;' : (isWsChangeover ? 'background:#f5f3ff;' : ''));
-            const enterOutputBtn = wsStatus === 'vacant'
-                ? `<button class="btn btn-sm" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant — record an adjustment first">Enter Output</button>`
-                : `<button class="btn btn-primary btn-sm" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
+            const reasonLine = reason && output > 0 && output < wsHourlyTarget
+                ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
+                : '';
 
-            return `<tr style="${rowBg}">
-                <td style="font-weight:700;">${ws.workstation_code}${needsReason ? ' <span style="color:#dc2626;">&#9888;</span>' : ''}${wsStatus === 'vacant' ? ' <span style="color:#dc2626;font-size:10px;">&#9632;</span>' : ''}</td>
-                <td style="font-size:0.85em; color:#6b7280;">${processList}</td>
-                <td style="text-align:center; color:${workloadColor}; font-weight:600;">${parseFloat(ws.workload_pct||0).toFixed(0)}%</td>
-                <td>${worker}</td>
-                <td style="text-align:center;"><strong>${wsHourlyTarget || '-'}</strong><br><small style="color:#9ca3af;font-size:10px;">per hr</small></td>
-                <td style="text-align:center; font-weight:600;">${output || '-'}</td>
-                <td>${statusHtml}</td>
-                ${hasChangeover ? `<td style="font-size:12px;">${coCell}</td>` : ''}
-                <td>${enterOutputBtn}</td>
-            </tr>`;
+            let cardClass = '';
+            if (wsStatus === 'vacant' || needsReason) cardClass = 'ws-card--alert';
+            else if (!morningDone) cardClass = 'ws-card--alert';
+            else if (isWsChangeover) cardClass = 'ws-card--changeover';
+
+            return `
+                <div class="ws-card ${cardClass}" id="hourly-ws-card-${ws.id}">
+                    <div class="ws-card-header">
+                        <span class="ws-card-code">${ws.workstation_code} <span style="font-size:12px;font-weight:600;color:${workloadColor};">${parseFloat(ws.workload_pct||0).toFixed(0)}%</span></span>
+                        <div class="ws-card-badges">${statusBadge}</div>
+                    </div>
+                    <div class="ws-card-body">
+                        <div class="ws-card-row">
+                            <span class="ws-card-label">Worker</span>
+                            <span style="font-size:13px;">${workerHtml}</span>
+                        </div>
+                        <div class="ws-card-row">
+                            <span class="ws-card-label">Processes</span>
+                            <span style="font-size:12px;color:#6b7280;">${processList}</span>
+                        </div>
+                        <div class="ws-card-kpi">
+                            <div class="ws-kpi-box">
+                                <div class="ws-kpi-label">Target/hr</div>
+                                <div class="ws-kpi-val">${wsHourlyTarget || '–'}</div>
+                            </div>
+                            <div class="ws-kpi-box">
+                                <div class="ws-kpi-label">Output</div>
+                                <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
+                            </div>
+                        </div>
+                        ${reasonLine}
+                    </div>
+                    <div class="ws-card-footer">
+                        ${enterOutputBtn}
+                        ${coBtn}
+                    </div>
+                </div>`;
         }).join('');
 
         const perHourDisplay = Math.round(perHourTarget * 10) / 10;
@@ -1400,29 +1709,13 @@ function renderHourlySummary() {
                 <div class="card-header">
                     <h3 class="card-title">Workstation Output Summary</h3>
                     <span style="font-size:0.85em; color:#6b7280;">
-                        Per Hour Target: <strong>${perHourDisplay || '-'}</strong> &nbsp;|&nbsp;
-                        Daily Target: <strong>${hourlyState.primaryTarget || hourlyState.targetQty || '-'}</strong>
-                        ${hourlyState.incomingTarget ? ` &nbsp;|&nbsp; CO Target: <strong>${hourlyState.incomingTarget}</strong> (${Math.round(perHourIncoming)}/hr)` : ''}
-                        &nbsp;|&nbsp; ${workstations.length} workstations
+                        /hr: <strong>${perHourDisplay || '–'}</strong> &nbsp;|&nbsp;
+                        Daily: <strong>${hourlyState.primaryTarget || hourlyState.targetQty || '–'}</strong>
+                        ${hourlyState.incomingTarget ? ` &nbsp;|&nbsp; CO: <strong>${hourlyState.incomingTarget}</strong>` : ''}
                     </span>
                 </div>
-                <div class="card-body table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Workstation</th>
-                                <th>Processes</th>
-                                <th style="text-align:center;">Workload</th>
-                                <th>Worker</th>
-                                <th style="text-align:center;">Target/hr</th>
-                                <th style="text-align:center;">Output</th>
-                                <th>Status</th>
-                                ${hasChangeover ? '<th>Changeover</th>' : ''}
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>${rows}</tbody>
-                    </table>
+                <div class="card-body">
+                    <div class="ws-cards-grid">${cards}</div>
                 </div>
             </div>
         `;
@@ -1436,69 +1729,76 @@ function renderHourlySummary() {
         return;
     }
 
-    const rows = processes.map(p => {
+    const procCards = processes.map(p => {
         const progress = hourlyState.progressData.find(
             d => parseInt(d.process_id) === p.id && parseInt(d.hour_slot) === hour
         );
         const output = progress ? parseInt(progress.quantity || 0) : 0;
         const reason = progress?.shortfall_reason || '';
-        const worker = p.assigned_emp_name ? `${p.assigned_emp_code} - ${p.assigned_emp_name}` : '<span style="color:#dc2626;">Unassigned</span>';
+        const workerHtml = p.assigned_emp_name
+            ? `${p.assigned_emp_code} – ${p.assigned_emp_name}`
+            : '<span style="color:#dc2626;">Unassigned</span>';
 
         const needsReason = output > 0 && hourlyTarget > 0 && output < hourlyTarget && !reason;
-        let statusHtml = '';
-        if (output > 0) {
-            if (hourlyTarget > 0 && output < hourlyTarget) {
-                if (needsReason) {
-                    statusHtml = `<span style="color:#dc2626;font-weight:700;">&#9888; Below target</span><br><small style="color:#dc2626;font-weight:600;">Please Update Reason</small>`;
-                } else {
-                    statusHtml = `<span style="color:#dc2626;font-weight:600;">Below target</span><br><small style="color:#6b7280;">${reason}</small>`;
-                }
-            } else {
-                statusHtml = `<span style="color:#16a34a;font-weight:600;">On track</span>`;
-            }
-        } else {
-            statusHtml = '<span style="color:#6b7280;">-</span>';
+        const outputColor = output > 0 ? (output >= hourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
+
+        let statusBadge = '';
+        if (needsReason) {
+            statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#9888; Needs Reason</span>`;
+        } else if (output > 0 && output < hourlyTarget) {
+            statusBadge = `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Below target</span>`;
+        } else if (output >= hourlyTarget && output > 0) {
+            statusBadge = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">On track</span>`;
         }
 
-        return `<tr style="${needsReason ? 'background:#fff5f5;' : ''}">
-            <td style="font-weight:600;">${(p.workstation_code || p.group_name || '-')}${needsReason ? ' <span style="color:#dc2626;">&#9888;</span>' : ''}</td>
-            <td>${p.operation_code} - ${p.operation_name}</td>
-            <td>${worker}</td>
-            <td style="text-align:center;">${hourlyTarget || '-'}</td>
-            <td style="text-align:center; font-weight:600;">${output || '-'}</td>
-            <td>${statusHtml}</td>
-            <td>
-                <button class="btn btn-primary btn-sm" onclick="openHourlyEntry(${p.id})">
-                    Enter Output
-                </button>
-            </td>
-        </tr>`;
+        const reasonLine = reason && output > 0 && output < hourlyTarget
+            ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
+            : '';
+
+        return `
+            <div class="ws-card ${needsReason ? 'ws-card--alert' : ''}" id="hourly-proc-card-${p.id}">
+                <div class="ws-card-header">
+                    <span class="ws-card-code">${p.workstation_code || p.group_name || '–'}</span>
+                    <div class="ws-card-badges">${statusBadge}</div>
+                </div>
+                <div class="ws-card-body">
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Process</span>
+                        <span style="font-size:12px;">${p.operation_code} – ${p.operation_name}</span>
+                    </div>
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Worker</span>
+                        <span style="font-size:13px;">${workerHtml}</span>
+                    </div>
+                    <div class="ws-card-kpi">
+                        <div class="ws-kpi-box">
+                            <div class="ws-kpi-label">Target/hr</div>
+                            <div class="ws-kpi-val">${hourlyTarget || '–'}</div>
+                        </div>
+                        <div class="ws-kpi-box">
+                            <div class="ws-kpi-label">Output</div>
+                            <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
+                        </div>
+                    </div>
+                    ${reasonLine}
+                </div>
+                <div class="ws-card-footer">
+                    <button class="btn btn-primary ws-card-action" onclick="openHourlyEntry(${p.id})">Enter Output</button>
+                </div>
+            </div>`;
     }).join('');
 
     container.innerHTML = changeoverBanner + `
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">Process Output Summary</h3>
-                <div>
-                    <span style="font-size:0.85em; color:#6b7280;">Target/hr: <strong>${hourlyTarget || '-'}</strong> | Product target: <strong>${hourlyState.targetQty || '-'}</strong></span>
-                    <button class="btn btn-secondary btn-sm" onclick="startHourlyScan()" style="margin-left:12px;">Scan Workstation QR</button>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span style="font-size:0.85em; color:#6b7280;">/hr: <strong>${hourlyTarget || '–'}</strong> | Daily: <strong>${hourlyState.targetQty || '–'}</strong></span>
+                    <button class="btn btn-secondary btn-sm" onclick="startHourlyScan()">Scan QR</button>
                 </div>
             </div>
-            <div class="card-body table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Workstation</th>
-                            <th>Process</th>
-                            <th>Worker</th>
-                            <th style="text-align:center;">Target/hr</th>
-                            <th style="text-align:center;">Output</th>
-                            <th>Status</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
+            <div class="card-body">
+                <div class="ws-cards-grid">${procCards}</div>
             </div>
         </div>
     `;
@@ -1552,6 +1852,12 @@ function startHourlyScan() {
     });
 }
 
+function cancelHourlyEntry() {
+    hourlyState.selectedProcess = null;
+    hourlyState.selectedWorkstation = null;
+    refreshHourlySummary();
+}
+
 function openHourlyEntry(processId) {
     const process = hourlyState.processes.find(p => p.id === processId);
     if (!process) {
@@ -1570,81 +1876,58 @@ function openHourlyEntry(processId) {
     const existingOutput = existing ? parseInt(existing.quantity || 0) : 0;
     const existingReason = existing?.shortfall_reason || '';
 
-    const scanPanel = document.getElementById('hourly-scan-panel');
-    if (scanPanel) scanPanel.style.display = 'none';
+    // Inject entry form inline into this card's footer
+    const card = document.getElementById(`hourly-proc-card-${processId}`);
+    const footer = card ? card.querySelector('.ws-card-footer') : null;
+    if (!footer) { showToast('Card not found', 'error'); return; }
 
-    const entryPanel = document.getElementById('hourly-entry-panel');
-    const entryTitle = document.getElementById('hourly-entry-title');
-    const entryForm = document.getElementById('hourly-entry-form');
-
-    entryTitle.textContent = `Enter Output - ${process.workstation_code || process.group_name || ''} - ${process.operation_name}`;
-    entryPanel.style.display = 'block';
+    document.querySelectorAll('.hourly-inline-entry').forEach(el => el.remove());
 
     const workerInfo = process.assigned_emp_name
-        ? `${process.assigned_emp_code} - ${process.assigned_emp_name}`
+        ? `${process.assigned_emp_code} – ${process.assigned_emp_name}`
         : 'Unassigned';
 
-    entryForm.innerHTML = `
-        <div style="margin-bottom:16px;">
-            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px;">
-                <div><strong>Worker:</strong> ${workerInfo}</div>
-                <div><strong>Hourly Target:</strong> ${hourlyTarget || 'N/A'}</div>
-                <div><strong>Hour:</strong> ${String(hour).padStart(2, '0')}:00</div>
+    footer.innerHTML = `
+        <div class="hourly-inline-entry" style="width:100%;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div>
+                    <div style="font-weight:700;font-size:14px;">${process.workstation_code || process.group_name || ''} — Enter Output</div>
+                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${String(hour).padStart(2,'0')}:00 &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}/hr</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="cancelHourlyEntry()">Cancel</button>
             </div>
-        </div>
 
-        <div style="margin-bottom:16px;">
             <label class="form-label">Output Quantity</label>
-            <input type="number" class="form-control" id="hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="Enter output quantity" style="max-width:200px;">
-        </div>
+            <input type="number" class="form-control output-qty-input" id="hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="0" style="margin-bottom:10px;">
 
-        <div id="hourly-reason-section" style="margin-bottom:16px; display:none;">
-            <label class="form-label" style="color:#dc2626; font-weight:700;">
-                Reason for Shortfall (Required)
-            </label>
-            <select class="form-control" id="hourly-reason" style="max-width:300px;">
-                <option value="">-- Select Reason --</option>
-                ${SHORTFALL_REASONS.map(r => `<option value="${r}" ${existingReason === r ? 'selected' : ''}>${r}</option>`).join('')}
-            </select>
-            <div id="hourly-reason-warning" style="display:none; color:#dc2626; font-weight:600; margin-top:8px; padding:8px 12px; background:#fef2f2; border-radius:6px; border:1px solid #fecaca;">
-                &#9888; Please Update Reason
+            <div id="hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
+                <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
+                <select class="form-control reason-select" id="hourly-reason">
+                    <option value="">-- Select Reason --</option>
+                    ${SHORTFALL_REASONS.map(r => `<option value="${r}" ${existingReason === r ? 'selected' : ''}>${r}</option>`).join('')}
+                </select>
+                <div id="hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
+                    &#9888; Please Update Reason
+                </div>
             </div>
-        </div>
 
-        <div style="display:flex; gap:12px;">
-            <button class="btn btn-primary" id="hourly-save-btn">Save Output</button>
-            <button class="btn btn-secondary" id="hourly-entry-cancel">Cancel</button>
-        </div>
-    `;
+            <div class="entry-form-actions">
+                <button class="btn btn-primary" id="hourly-save-btn">Save Output</button>
+                <button class="btn btn-secondary" id="hourly-entry-cancel" onclick="cancelHourlyEntry()">Cancel</button>
+            </div>
+        </div>`;
 
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     const outputInput = document.getElementById('hourly-output-qty');
-    const reasonSection = document.getElementById('hourly-reason-section');
-    const reasonSelect = document.getElementById('hourly-reason');
+    outputInput?.focus();
 
-    // Show reason section if existing output is below target
-    if (existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget) {
-        reasonSection.style.display = 'block';
-    }
-
-    outputInput.addEventListener('input', () => {
+    outputInput?.addEventListener('input', () => {
         const val = parseInt(outputInput.value || 0, 10);
-        if (hourlyTarget > 0 && val < hourlyTarget && val > 0) {
-            reasonSection.style.display = 'block';
-        } else {
-            reasonSection.style.display = 'none';
-        }
-        // Hide warning when typing
+        const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
+        document.getElementById('hourly-reason-section').style.display = showReason ? 'block' : 'none';
         document.getElementById('hourly-reason-warning').style.display = 'none';
     });
-
-    document.getElementById('hourly-save-btn').addEventListener('click', saveHourlyOutput);
-    document.getElementById('hourly-entry-cancel').addEventListener('click', () => {
-        entryPanel.style.display = 'none';
-        hourlyState.selectedProcess = null;
-    });
-
-    entryPanel.scrollIntoView({ behavior: 'smooth' });
-    outputInput.focus();
+    document.getElementById('hourly-save-btn')?.addEventListener('click', saveHourlyOutput);
 }
 
 // New workstation-based entry (uses workstation_plan_id for fan-out)
@@ -1665,80 +1948,69 @@ function openWorkstationHourlyEntry(workstationPlanId) {
     const isCombined = ws.coverage_type === 'combine';
     const existingReason = existing?.shortfall_reason || (isCombined ? 'WORKSTATION COMBINED' : '');
 
-    const scanPanel = document.getElementById('hourly-scan-panel');
-    if (scanPanel) scanPanel.style.display = 'none';
+    // Inject entry form inline into this card's footer
+    const card = document.getElementById(`hourly-ws-card-${workstationPlanId}`);
+    const footer = card ? card.querySelector('.ws-card-footer') : null;
+    if (!footer) { showToast('Card not found', 'error'); return; }
 
-    const entryPanel = document.getElementById('hourly-entry-panel');
-    const entryTitle = document.getElementById('hourly-entry-title');
-    const entryForm = document.getElementById('hourly-entry-form');
+    // Close any previously open inline hourly entry
+    document.querySelectorAll('.hourly-inline-entry').forEach(el => el.remove());
 
     const processList = (ws.processes || []).map(p => p.operation_name).join(' → ');
-    entryTitle.textContent = `${ws.workstation_code} — Enter Output`;
-    entryPanel.style.display = 'block';
-
     const workerInfo = ws.assigned_emp_name
-        ? `${ws.assigned_emp_code} - ${ws.assigned_emp_name}`
+        ? `${ws.assigned_emp_code} – ${ws.assigned_emp_name}`
         : '<span style="color:#dc2626;">Unassigned</span>';
 
-    entryForm.innerHTML = `
-        <div style="margin-bottom:12px;">
-            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:8px;">
-                <div><strong>Workstation:</strong> ${ws.workstation_code}</div>
-                <div><strong>Worker:</strong> ${workerInfo}</div>
-                <div><strong>Hourly Target:</strong> ${hourlyTarget || 'N/A'}</div>
-                <div><strong>Hour:</strong> ${String(hour).padStart(2, '0')}:00</div>
+    footer.innerHTML = `
+        <div class="hourly-inline-entry" style="width:100%;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div>
+                    <div style="font-weight:700;font-size:14px;">${ws.workstation_code} — Enter Output</div>
+                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${String(hour).padStart(2,'0')}:00 &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}/hr</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="cancelHourlyEntry()">Cancel</button>
             </div>
-            <div style="font-size:0.85em; color:#6b7280;">Processes: ${processList}</div>
-        </div>
+            <div style="font-size:11px;color:#9ca3af;margin-bottom:10px;">${processList}</div>
 
-        <div style="margin-bottom:16px;">
             <label class="form-label">Output Quantity</label>
-            <input type="number" class="form-control" id="hourly-output-qty" min="0" value="${existingOutput || ''}"
-                placeholder="Enter output quantity" style="max-width:200px;">
-        </div>
+            <input type="number" class="form-control output-qty-input" id="hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="0" style="margin-bottom:10px;">
 
-        ${isCombined ? `<div style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#5b21b6;">
-            &#9888; This workstation is combined — one employee covers two workstations. Shortfall reason will be pre-set to <strong>WORKSTATION COMBINED</strong>.
-        </div>` : ''}
+            ${isCombined ? `<div style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#5b21b6;">
+                &#9888; Combined — reason pre-set to WORKSTATION COMBINED.
+            </div>` : ''}
 
-        <div id="hourly-reason-section" style="margin-bottom:16px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
-            <label class="form-label" style="color:#dc2626; font-weight:700;">Reason for Shortfall (Required)</label>
-            <select class="form-control" id="hourly-reason" style="max-width:300px;">
-                <option value="">-- Select Reason --</option>
-                ${SHORTFALL_REASONS.map(r => `<option value="${r}" ${existingReason === r ? 'selected' : ''}>${r}</option>`).join('')}
-            </select>
-            <div id="hourly-reason-warning" style="display:none; color:#dc2626; font-weight:600; margin-top:8px; padding:8px 12px; background:#fef2f2; border-radius:6px; border:1px solid #fecaca;">
-                &#9888; Please select a shortfall reason
+            <div id="hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
+                <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
+                <select class="form-control reason-select" id="hourly-reason">
+                    <option value="">-- Select Reason --</option>
+                    ${SHORTFALL_REASONS.map(r => `<option value="${r}" ${existingReason === r ? 'selected' : ''}>${r}</option>`).join('')}
+                </select>
+                <div id="hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
+                    &#9888; Please select a shortfall reason
+                </div>
             </div>
-        </div>
 
-        <div style="display:flex; gap:12px;">
-            <button class="btn btn-primary" id="hourly-save-btn">Save Output</button>
-            <button class="btn btn-secondary" id="hourly-entry-cancel">Cancel</button>
-        </div>
-    `;
+            <div class="entry-form-actions">
+                <button class="btn btn-primary" id="hourly-save-btn">Save Output</button>
+                <button class="btn btn-secondary" id="hourly-entry-cancel" onclick="cancelHourlyEntry()">Cancel</button>
+            </div>
+        </div>`;
 
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     const outputInput = document.getElementById('hourly-output-qty');
-    outputInput.addEventListener('input', () => {
+    outputInput?.focus();
+
+    outputInput?.addEventListener('input', () => {
         const val = parseInt(outputInput.value || 0, 10);
         const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
         document.getElementById('hourly-reason-section').style.display = showReason ? 'block' : 'none';
         document.getElementById('hourly-reason-warning').style.display = 'none';
-        // Auto-select "WORKSTATION COMBINED" for combined workstations when below target
         if (showReason && isCombined) {
             const sel = document.getElementById('hourly-reason');
             if (sel && !sel.value) sel.value = 'WORKSTATION COMBINED';
         }
     });
-
-    document.getElementById('hourly-save-btn').addEventListener('click', saveWorkstationHourlyOutput);
-    document.getElementById('hourly-entry-cancel').addEventListener('click', () => {
-        entryPanel.style.display = 'none';
-        hourlyState.selectedWorkstation = null;
-    });
-
-    entryPanel.scrollIntoView({ behavior: 'smooth' });
-    outputInput.focus();
+    document.getElementById('hourly-save-btn')?.addEventListener('click', saveWorkstationHourlyOutput);
 }
 
 async function saveWorkstationHourlyOutput() {
@@ -2601,15 +2873,16 @@ function renderAdjStatusTable(workstations) {
         panel.innerHTML = '<div class="card"><div class="card-body"><p style="color:#9ca3af;">No employee assignments found for today on this line.</p></div></div>';
         return;
     }
-    const rows = workstations.map(ws => {
+    const cards = workstations.map(ws => {
         const status = ws.status;
         let statusBadge = '';
-        let workerCell = `${ws.emp_code} — ${ws.emp_name}`;
-        let actionCell = '';
+        let workerHtml = `<span style="font-weight:600;">${ws.emp_code} — ${ws.emp_name}</span>`;
+        let footerBtn = '';
+        let cardClass = '';
 
         if (status === 'active') {
             statusBadge = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Active</span>`;
-            actionCell = `<button class="btn btn-sm" style="background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;font-size:12px;"
+            footerBtn = `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;"
                 onclick="openDepartureForm('${ws.workstation_code}', ${ws.employee_id})">
                 Mark Departure
             </button>`;
@@ -2617,8 +2890,10 @@ function renderAdjStatusTable(workstations) {
             const t = ws.departure_time ? new Date(ws.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
             const reasonLabel = { sick: 'Sick', personal: 'Personal', operational: 'Operational', other: 'Other' }[ws.departure_reason] || '';
             statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Vacant</span>`;
-            workerCell = `<span style="color:#dc2626;">${ws.emp_code} — ${ws.emp_name}</span><br><small style="color:#9ca3af;">${reasonLabel} ${t ? '@ ' + t : ''}</small>`;
-            actionCell = `<button class="btn btn-sm" style="background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;font-size:12px;"
+            workerHtml = `<span style="color:#dc2626;font-weight:600;">${ws.emp_code} — ${ws.emp_name}</span>
+                <span style="color:#9ca3af;font-size:11px;display:block;">${reasonLabel}${t ? ' @ '+t : ''}</span>`;
+            cardClass = 'ws-card--alert';
+            footerBtn = `<button class="btn ws-card-action" style="background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;"
                 onclick="openAdjustmentScan(${ws.departure_id}, '${ws.workstation_code}')">
                 Assign Worker
             </button>`;
@@ -2626,67 +2901,68 @@ function renderAdjStatusTable(workstations) {
             const typeLabel = ws.adjustment_type === 'combine' ? 'Combined' : 'Reassigned';
             statusBadge = `<span style="background:#ede9fe;color:#7c3aed;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${typeLabel}</span>`;
             const rTime = ws.reassignment_time ? new Date(ws.reassignment_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
-            workerCell += `<br><small style="color:#7c3aed;">${ws.covering_emp_code} covers @ ${rTime}</small>`;
-            actionCell = '<span style="color:#9ca3af;font-size:12px;">Resolved</span>';
+            workerHtml += `<span style="color:#7c3aed;font-size:11px;display:block;">${ws.covering_emp_code} covers @ ${rTime}</span>`;
+            cardClass = 'ws-card--changeover';
+            footerBtn = `<span style="color:#9ca3af;font-size:13px;padding:8px 0;display:block;text-align:center;">Resolved</span>`;
         }
 
-        return `<tr>
-            <td style="font-weight:700;">${ws.workstation_code}</td>
-            <td style="font-size:0.9em;">${workerCell}</td>
-            <td>${statusBadge}</td>
-            <td>${actionCell}</td>
-        </tr>`;
+        return `
+            <div class="ws-card ${cardClass}" id="adj-ws-card-${ws.workstation_code}">
+                <div class="ws-card-header">
+                    <span class="ws-card-code">${ws.workstation_code}</span>
+                    <div class="ws-card-badges">${statusBadge}</div>
+                </div>
+                <div class="ws-card-body">
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Worker</span>
+                        <span style="font-size:13px;">${workerHtml}</span>
+                    </div>
+                </div>
+                <div class="ws-card-footer" id="adj-card-footer-${ws.workstation_code}">
+                    ${footerBtn}
+                </div>
+            </div>`;
     }).join('');
 
     panel.innerHTML = `
         <div class="card">
-            <div class="card-body" style="padding:0;">
-                <table class="data-table" style="font-size:0.9em;">
-                    <thead><tr>
-                        <th>Workstation</th><th>Employee</th><th>Status</th><th>Action</th>
-                    </tr></thead>
-                    <tbody>${rows}</tbody>
-                </table>
+            <div class="card-body">
+                <div class="ws-cards-grid">${cards}</div>
             </div>
         </div>`;
 }
 
 function renderAdjHistory(records) {
     const panel = document.getElementById('adj-history-panel');
-    if (!records.length) {
-        panel.innerHTML = '';
-        return;
-    }
-    const rows = records.map(r => {
+    if (!records.length) { panel.innerHTML = ''; return; }
+
+    const cards = records.map(r => {
         const deptTime = r.departure_time ? new Date(r.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '-';
-        const adjLabel = r.adjustment_type ? (r.adjustment_type === 'assign' ? 'Assign' : 'Combine') : '—';
-        const rTime = r.reassignment_time ? new Date(r.reassignment_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
-        const coverInfo = r.covering_emp_code ? `${r.covering_emp_code} (${r.covering_from_ws || ''})` : '—';
+        const adjLabel = r.adjustment_type ? (r.adjustment_type === 'assign' ? 'Assign' : 'Combine') : 'Pending';
+        const rTime = r.reassignment_time ? new Date(r.reassignment_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : null;
+        const coverInfo = r.covering_emp_code ? `${r.covering_emp_code} (${r.covering_from_ws || ''})` : null;
         const reasonLabel = { sick: 'Sick', personal: 'Personal', operational: 'Operational', other: 'Other' }[r.departure_reason] || r.departure_reason;
-        return `<tr>
-            <td style="font-weight:600;">${r.workstation_code}</td>
-            <td>${r.dep_emp_code} — ${r.dep_emp_name}</td>
-            <td>${reasonLabel}</td>
-            <td>${deptTime}</td>
-            <td>${adjLabel}</td>
-            <td>${coverInfo}</td>
-            <td>${rTime}</td>
-        </tr>`;
+        const resolved = !!r.adjustment_type;
+        const badgeStyle = resolved ? 'background:#d1fae5;color:#065f46;' : 'background:#fee2e2;color:#991b1b;';
+        return `
+            <div class="ws-card ${resolved ? 'ws-card--changeover' : 'ws-card--alert'}">
+                <div class="ws-card-header">
+                    <span class="ws-card-code">${r.workstation_code}</span>
+                    <div class="ws-card-badges">
+                        <span style="${badgeStyle}padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">${adjLabel}</span>
+                    </div>
+                </div>
+                <div class="ws-card-body">
+                    <div class="ws-card-row"><span class="ws-card-label">Departed</span><span>${r.dep_emp_code} — ${r.dep_emp_name}</span></div>
+                    <div class="ws-card-row"><span class="ws-card-label">Reason / Time</span><span>${reasonLabel} · ${deptTime}</span></div>
+                    ${coverInfo ? `<div class="ws-card-row"><span class="ws-card-label">Covered By</span><span>${coverInfo}${rTime ? ' · ' + rTime : ''}</span></div>` : ''}
+                </div>
+            </div>`;
     }).join('');
 
     panel.innerHTML = `
-        <div class="card">
-            <div class="card-body" style="padding:0;">
-                <div style="padding:10px 14px 4px;font-weight:700;font-size:13px;color:#374151;">Departure History</div>
-                <table class="data-table" style="font-size:0.85em;">
-                    <thead><tr>
-                        <th>WS</th><th>Departed</th><th>Reason</th><th>Dept. Time</th>
-                        <th>Adj. Type</th><th>Covered By</th><th>Adj. Time</th>
-                    </tr></thead>
-                    <tbody>${rows}</tbody>
-                </table>
-            </div>
-        </div>`;
+        <div style="padding:4px 0 8px;font-weight:700;font-size:13px;color:#374151;">Departure History</div>
+        <div style="display:grid;grid-template-columns:1fr;gap:8px;">${cards}</div>`;
 }
 
 // ─── DEPARTURE FORM ───────────────────────────────────────────────────────────
@@ -2703,45 +2979,48 @@ function openDepartureForm(workstationCode, employeeId) {
         String(now.getHours()).padStart(2,'0') + ':' +
         String(now.getMinutes()).padStart(2,'0');
 
-    const panel = document.getElementById('adj-departure-panel');
-    panel.style.display = 'block';
-    panel.innerHTML = `
-        <div class="card" style="border:1px solid #fca5a5;margin-bottom:16px;">
-            <div class="card-body">
-                <h3 style="margin:0 0 14px;font-size:14px;font-weight:700;color:#dc2626;">Mark Departure — ${workstationCode}</h3>
-                <p style="margin:0 0 12px;font-size:13px;">Employee: <strong>${adjustState.departureEmpName}</strong></p>
-                <div style="display:grid;gap:12px;">
-                    <div>
-                        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Departure Reason</label>
-                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                            ${['sick','personal','operational','other'].map(r =>
-                                `<label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
-                                    <input type="radio" name="dept-reason" value="${r}" ${r==='sick'?'checked':''}> ${r.charAt(0).toUpperCase()+r.slice(1)}
-                                </label>`
-                            ).join('')}
-                        </div>
+    const footer = document.getElementById(`adj-card-footer-${workstationCode}`);
+    if (!footer) return;
+    footer.innerHTML = `
+        <div style="padding:12px 0 4px;">
+            <div style="font-weight:700;font-size:13px;color:#dc2626;margin-bottom:10px;">Mark Departure — ${workstationCode}</div>
+            <p style="margin:0 0 10px;font-size:13px;">Employee: <strong>${adjustState.departureEmpName}</strong></p>
+            <div style="display:grid;gap:10px;">
+                <div>
+                    <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Departure Reason</label>
+                    <div class="mismatch-actions" style="gap:6px;">
+                        ${['sick','personal','operational','other'].map(r =>
+                            `<label style="display:flex;align-items:center;gap:6px;min-height:44px;font-size:14px;cursor:pointer;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;">
+                                <input type="radio" name="dept-reason" value="${r}" ${r==='sick'?'checked':''}> ${r.charAt(0).toUpperCase()+r.slice(1)}
+                            </label>`
+                        ).join('')}
                     </div>
-                    <div>
-                        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Departure Time</label>
-                        <input type="datetime-local" id="dept-time-input" value="${localTime}" class="form-control" style="max-width:220px;">
-                    </div>
-                    <div>
-                        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Notes (optional)</label>
-                        <input type="text" id="dept-notes-input" placeholder="e.g. Went to clinic" class="form-control">
-                    </div>
-                    <div style="display:flex;gap:8px;">
-                        <button class="btn btn-sm" style="background:#dc2626;color:#fff;border:none;" onclick="confirmDeparture()">Confirm Departure</button>
-                        <button class="btn btn-secondary btn-sm" onclick="closeDepartureForm()">Cancel</button>
-                    </div>
+                </div>
+                <div>
+                    <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Departure Time</label>
+                    <input type="datetime-local" id="dept-time-input" value="${localTime}" class="form-control" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Notes (optional)</label>
+                    <input type="text" id="dept-notes-input" placeholder="e.g. Went to clinic" class="form-control">
+                </div>
+                <div class="mismatch-actions">
+                    <button class="ws-card-action" style="background:#dc2626;color:#fff;border:none;" onclick="confirmDeparture()">Confirm Departure</button>
+                    <button class="ws-card-action" style="background:#f3f4f6;color:#374151;border:1px solid #d1d5db;" onclick="closeDepartureForm()">Cancel</button>
                 </div>
             </div>
         </div>`;
-    panel.scrollIntoView({ behavior: 'smooth' });
+    footer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function closeDepartureForm() {
-    const panel = document.getElementById('adj-departure-panel');
-    if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+    const wsCode = adjustState.departureWorkstation;
+    const empId = adjustState.departureEmployeeId;
+    const footer = document.getElementById(`adj-card-footer-${wsCode}`);
+    if (footer) {
+        footer.innerHTML = `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;"
+            onclick="openDepartureForm('${wsCode}', ${empId})">Mark Departure</button>`;
+    }
     adjustState.departureWorkstation = null;
     adjustState.departureEmployeeId = null;
     adjustState.departureEmpName = null;
@@ -2788,23 +3067,17 @@ function openAdjustmentScan(departureId, vacantWsCode) {
     adjustState.adjStep = 'scan-employee';
     adjustState.scannedEmployee = null;
 
-    const panel = document.getElementById('adj-scan-panel');
-    panel.style.display = 'block';
-    panel.innerHTML = `
-        <div class="card" style="border:1px solid #93c5fd;margin-bottom:16px;">
-            <div class="card-body">
-                <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#1d4ed8;">
-                    Worker Adjustment — ${vacantWsCode}
-                </h3>
-                <p style="font-size:13px;color:#6b7280;margin:0 0 12px;">
-                    Scan the <strong>receiving worker's QR</strong> (must be active on this line today).
-                </p>
-                <video id="adj-camera" style="width:100%;max-width:360px;border-radius:8px;background:#000;display:block;"></video>
-                <div id="adj-scan-result" style="margin-top:10px;"></div>
-                <button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="closeAdjustmentScan()">Cancel</button>
-            </div>
+    const footer = document.getElementById(`adj-card-footer-${vacantWsCode}`);
+    if (!footer) return;
+    footer.innerHTML = `
+        <div style="padding:12px 0 4px;">
+            <div style="font-weight:700;font-size:13px;color:#1d4ed8;margin-bottom:8px;">Worker Adjustment — ${vacantWsCode}</div>
+            <p style="font-size:13px;color:#6b7280;margin:0 0 10px;">Scan the <strong>receiving worker's QR</strong> (must be active on this line today).</p>
+            <video id="adj-camera" style="width:100%;border-radius:8px;background:#000;display:block;"></video>
+            <div id="adj-scan-result" style="margin-top:10px;"></div>
+            <button class="ws-card-action" style="margin-top:8px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;" onclick="closeAdjustmentScan()">Cancel</button>
         </div>`;
-    panel.scrollIntoView({ behavior: 'smooth' });
+    footer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
     startCamera('adj-camera', null, async (rawValue) => {
         stopCamera();
@@ -2889,16 +3162,16 @@ function showAdjChoicePrompt(emp, fromWs) {
             <p style="font-size:13px;margin:0 0 14px;">
                 <strong>${vacantWs}</strong> is vacant. What would you like to do?
             </p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <button class="btn btn-primary btn-sm" onclick="confirmAdjustment('assign')">
+            <div class="mismatch-actions">
+                <button class="ws-card-action" style="background:#2563eb;color:#fff;border:none;" onclick="confirmAdjustment('assign')">
                     &#8594; Assign to ${vacantWs}
-                    <span style="display:block;font-size:10px;font-weight:400;opacity:0.85;">${fromWs} becomes unmanned</span>
+                    <span style="display:block;font-size:11px;font-weight:400;opacity:0.85;">${fromWs} becomes unmanned</span>
                 </button>
-                <button class="btn btn-sm" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" onclick="confirmAdjustment('combine')">
+                <button class="ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" onclick="confirmAdjustment('combine')">
                     &#8853; Combine ${fromWs} + ${vacantWs}
-                    <span style="display:block;font-size:10px;font-weight:400;opacity:0.85;">${emp.emp_name} covers both</span>
+                    <span style="display:block;font-size:11px;font-weight:400;opacity:0.85;">${emp.emp_name} covers both</span>
                 </button>
-                <button class="btn btn-secondary btn-sm" onclick="retryAdjScan()">&#8635; Scan Different Worker</button>
+                <button class="ws-card-action" style="background:#f3f4f6;color:#374151;border:1px solid #d1d5db;" onclick="retryAdjScan()">&#8635; Scan Different Worker</button>
             </div>
         </div>`;
 }
@@ -2933,8 +3206,15 @@ async function confirmAdjustment(type) {
 
 function closeAdjustmentScan() {
     stopCamera();
-    const panel = document.getElementById('adj-scan-panel');
-    if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+    const wsCode = adjustState.vacantWsCode;
+    const depId = adjustState.departureId;
+    if (wsCode) {
+        const footer = document.getElementById(`adj-card-footer-${wsCode}`);
+        if (footer) {
+            footer.innerHTML = `<button class="btn ws-card-action" style="background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;"
+                onclick="openAdjustmentScan(${depId}, '${wsCode}')">Assign Worker</button>`;
+        }
+    }
     adjustState.departureId = null;
     adjustState.vacantWsCode = null;
     adjustState.scannedEmployee = null;
