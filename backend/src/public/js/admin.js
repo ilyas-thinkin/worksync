@@ -3538,7 +3538,7 @@ function _buildWsGroups(processes, taktSecs, useOT) {
         const key = ws || `__u_${p.id}`;
         if (!indexMap.has(key)) {
             indexMap.set(key, groups.length);
-            groups.push({ ws, processes: [], sam: 0, employee_id: null, emp_name: '', emp_code: '', group_name: '', is_ot_skipped: false });
+            groups.push({ ws, processes: [], sam: 0, employee_id: null, emp_name: '', emp_code: '', group_name: '', is_ot_skipped: false, lpw_id: null, co_employee_id: null, co_emp_code: '', co_emp_name: '' });
         }
         const g = groups[indexMap.get(key)];
         g.processes.push(p);
@@ -3552,6 +3552,12 @@ function _buildWsGroups(processes, taktSecs, useOT) {
             if (empId) { g.employee_id = empId; g.emp_name = empName; g.emp_code = empCode; }
         }
         if (!g.group_name && (p.group_name || '').trim()) g.group_name = (p.group_name || '').trim();
+        if (!g.lpw_id && p.lpw_id) g.lpw_id = p.lpw_id;
+        if (!g.co_employee_id && p.co_employee_id) {
+            g.co_employee_id = p.co_employee_id;
+            g.co_emp_code = p.co_emp_code || '';
+            g.co_emp_name = p.co_emp_name || '';
+        }
         // is_ot_skipped is the same for every process in the same workstation
         if (p.is_ot_skipped) g.is_ot_skipped = true;
     });
@@ -3848,6 +3854,25 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
                            ${lpwpId ? `onchange="toggleOsmCheck(${lpwpId}, this.checked, this)"` : ''}>
                        <div class="osm-seq-label" style="font-size:10px;color:#7c3aed;font-weight:700;margin-top:1px;min-height:12px;line-height:1;"></div>
                    </td>`;
+            // CO Employee cell — rowspan on first row only; only when WS plan is saved (lpw_id set)
+            const coEmpCellStyle = (useOT && g.is_ot_skipped)
+                ? 'vertical-align:middle;padding:6px;opacity:0.35;pointer-events:none;'
+                : 'vertical-align:middle;padding:6px;';
+            const coEmpCell = isFirst
+                ? `<td${rs} style="${coEmpCellStyle}">
+                       ${g.lpw_id
+                           ? `<select class="form-control ld-co-emp-select"
+                                  style="font-size:0.82em;padding:3px 6px;"
+                                  data-lpw-id="${g.lpw_id}"
+                                  onchange="saveCOEmployee(this)">
+                                  <option value="">— Not set —</option>
+                                  ${employees.map(e => `<option value="${e.id}"${String(e.id) === String(g.co_employee_id||'') ? ' selected' : ''}>${e.emp_code} — ${e.emp_name}</option>`).join('')}
+                              </select>
+                              ${g.co_employee_id ? `<div style="font-size:10px;color:#7c3aed;margin-top:3px;">&#10003; ${g.co_emp_code}</div>` : ''}`
+                           : '<span style="color:#d1d5db;font-size:11px;">Save plan first</span>'}
+                   </td>`
+                : '';
+
             return `<tr style="background:${g.color};${rowOpacity}" data-process-id="${p.id}">
                 <td style="text-align:center;font-weight:600;">${p.sequence_number}</td>
                 <td><input type="text" class="form-control ld-group" style="font-size:0.82em;padding:3px 6px;width:64px;" value="${(p.group_name||'').trim()}" placeholder="G1" data-pid="${p.id}" onblur="recolorDetailRows(${lineId})"></td>
@@ -3860,12 +3885,44 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
                 ${regEffCell}
                 <td style="text-align:center;">${parseFloat(p.operation_sah||0).toFixed(4)}</td>
                 ${empCell}
+                ${coEmpCell}
             </tr>`;
         }).join('')
     ).join('');
     // Run sync after render to apply correct disable states
     syncEmpDropdowns(lineId);
     refreshOsmLabels(tbody);
+}
+
+// Save IE-pre-assigned changeover employee for a workstation plan row
+async function saveCOEmployee(selectEl) {
+    const lpwId = selectEl.dataset.lpwId;
+    if (!lpwId) return;
+    const empId = selectEl.value ? parseInt(selectEl.value, 10) : null;
+    try {
+        const r = await fetch(`/api/workstation-plan/workstations/${lpwId}/co-employee`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ co_employee_id: empId })
+        });
+        const d = await r.json();
+        if (!d.success) { showToast(d.error || 'Failed to save CO employee', 'error'); return; }
+        // Update the label below the select
+        const td = selectEl.closest('td');
+        const label = td ? td.querySelector('div') : null;
+        if (label) {
+            if (empId) {
+                const opt = selectEl.options[selectEl.selectedIndex];
+                const code = (opt?.text || '').split(' — ')[0];
+                label.textContent = '✓ ' + code;
+                label.style.display = '';
+            } else {
+                label.textContent = '';
+            }
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
 }
 
 // Re-evaluate taken states across all WS pickers and update QR images.
@@ -4136,6 +4193,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                         <th style="text-align:center;">Workload%</th>
                         <th style="text-align:center;">SAH</th>
                         <th style="min-width:180px;">Employee</th>
+                        <th style="min-width:160px;" title="IE-pre-assigned changeover employee (suggestion for supervisor)">CO Emp</th>
                     </tr>
                 </thead>
                 <tbody id="ld-body-${lineId}"></tbody>

@@ -3754,6 +3754,23 @@ router.put('/workstation-plan/processes/:lpwpId/osm', async (req, res) => {
     }
 });
 
+// PUT /workstation-plan/workstations/:wsId/co-employee — IE pre-assigns changeover employee for a workstation
+router.put('/workstation-plan/workstations/:wsId/co-employee', async (req, res) => {
+    const { wsId } = req.params;
+    const { co_employee_id } = req.body;
+    try {
+        const result = await pool.query(
+            `UPDATE line_plan_workstations SET co_employee_id = $1, updated_at = NOW() WHERE id = $2 RETURNING id`,
+            [co_employee_id || null, wsId]
+        );
+        if (!result.rows[0]) return res.status(404).json({ success: false, error: 'Workstation not found' });
+        realtime.broadcast('data_change', { type: 'co_employee_update', workstation_id: parseInt(wsId) });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // PUT /workstation-plan/workstations/:wsId/processes — update processes in a workstation (manual adjustment)
 router.put('/workstation-plan/workstations/:wsId/processes', async (req, res) => {
     const { wsId } = req.params;
@@ -3955,6 +3972,8 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
                     ws_info.group_name, ws_info.workstation_code,
                     ws_info.workload_pct, ws_info.actual_sam_seconds,
                     ws_info.is_ot_skipped,
+                    ws_info.co_employee_id,
+                    e_co.emp_code AS co_emp_code, e_co.emp_name AS co_emp_name,
                     ewa.employee_id,    e.emp_code,    e.emp_name,    e.qr_code_path    AS emp_qr_code_path,
                     ewa_ot.employee_id AS ot_employee_id,
                     e_ot.emp_code      AS ot_emp_code,
@@ -3968,12 +3987,13 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
                         lpwp.id AS lpwp_id, lpwp.osm_checked,
                         lpw.id AS lpw_id, lpw.group_name, lpw.workstation_code,
                         lpw.workload_pct, lpw.actual_sam_seconds,
-                        lpw.is_ot_skipped
+                        lpw.is_ot_skipped, lpw.co_employee_id
                  FROM line_plan_workstations lpw
                  JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
                  WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
                  ORDER BY lpwp.product_process_id, lpw.id
              ) ws_info ON ws_info.product_process_id = pp.id
+             LEFT JOIN employees e_co ON e_co.id = ws_info.co_employee_id
              LEFT JOIN employee_workstation_assignments ewa
                  ON (ewa.line_plan_workstation_id = ws_info.lpw_id OR (ewa.workstation_code = ws_info.workstation_code AND ewa.line_id = $1 AND ewa.work_date = $2))
                  AND ewa.line_id = $1 AND ewa.work_date = $2 AND ewa.is_overtime = false
@@ -5440,7 +5460,8 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
         const buildWsPlanQuery = (productId) => pool.query(
             `SELECT lpw.id as workstation_plan_id, lpw.workstation_number, lpw.workstation_code,
                     lpw.takt_time_seconds, lpw.actual_sam_seconds, lpw.workload_pct,
-                    lpw.product_id, lpw.group_name,
+                    lpw.product_id, lpw.group_name, lpw.co_employee_id,
+                    e_co.emp_code AS co_emp_code, e_co.emp_name AS co_emp_name,
                     lpw.ws_changeover_active, lpw.ws_changeover_started_at,
                     pp.id as process_id, pp.sequence_number, pp.operation_sah,
                     o.operation_code, o.operation_name,
@@ -5463,6 +5484,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
              JOIN product_processes pp ON lpwp.product_process_id = pp.id
              JOIN operations o ON pp.operation_id = o.id
              JOIN products p ON pp.product_id = p.id
+             LEFT JOIN employees e_co ON e_co.id = lpw.co_employee_id
              LEFT JOIN employee_workstation_assignments ewa
                 ON (ewa.line_id = lpw.line_id AND ewa.work_date = lpw.work_date
                     AND ewa.workstation_code = lpw.workstation_code)
@@ -5498,10 +5520,17 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             }
 
             // Build changeover WS map keyed by workstation_code
+            // Captures co_employee_id from the INCOMING product's WS plan (IE pre-assignment)
             const coWsMap = new Map();
             for (const row of coPlanRows) {
                 if (!coWsMap.has(row.workstation_code)) {
-                    coWsMap.set(row.workstation_code, { plan_id: row.workstation_plan_id, rows: [] });
+                    coWsMap.set(row.workstation_code, {
+                        plan_id: row.workstation_plan_id,
+                        rows: [],
+                        co_emp_id: row.co_employee_id || null,
+                        co_emp_code: row.co_emp_code || null,
+                        co_emp_name: row.co_emp_name || null
+                    });
                 }
                 coWsMap.get(row.workstation_code).rows.push(row);
             }
@@ -5524,12 +5553,18 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         wsChangeoverTarget = Math.round(perHourIncomingTarget * remainingHours);
                     }
 
+                    // CO employee suggestion — from incoming product's WS plan (IE pre-assignment)
+                    const incomingCoData = coWsMap.has(row.workstation_code) ? coWsMap.get(row.workstation_code) : null;
+
                     wsMap.set(primaryWsId, {
                         id: isCoActive ? coData.plan_id : primaryWsId,
                         primary_ws_id: primaryWsId,
                         workstation_number: row.workstation_number,
                         workstation_code: row.workstation_code,
                         group_name: row.group_name || null,
+                        co_suggested_emp_id: incomingCoData?.co_emp_id ?? null,
+                        co_suggested_emp_code: incomingCoData?.co_emp_code ?? null,
+                        co_suggested_emp_name: incomingCoData?.co_emp_name ?? null,
                         takt_time_seconds: isCoActive ? (firstCoRow?.takt_time_seconds ?? row.takt_time_seconds) : row.takt_time_seconds,
                         actual_sam_seconds: isCoActive ? (firstCoRow?.actual_sam_seconds ?? row.actual_sam_seconds) : row.actual_sam_seconds,
                         workload_pct: isCoActive ? (firstCoRow?.workload_pct ?? row.workload_pct) : row.workload_pct,

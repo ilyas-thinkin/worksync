@@ -1378,16 +1378,21 @@ async function confirmCoEmpAssign(wsCode, linePlanWsId) {
 const coPromptState = {
     wsCode: null, wsId: null, date: null,
     origEmpId: null, origEmpCode: null, origEmpName: null,
+    coSuggestedEmpId: null, coSuggestedEmpCode: null, coSuggestedEmpName: null,
     scannedEmployee: null
 };
 
-function _coBtnHtml(wsCode, wsId, date, empId, empCode, empName) {
+function _coBtnHtml(wsCode, wsId, date, empId, empCode, empName, coEmpId, coEmpCode, coEmpName) {
     const safeCode = (empCode || '').replace(/"/g, '&quot;');
     const safeName = (empName || '').replace(/"/g, '&quot;');
+    const safeCoCode = (coEmpCode || '').replace(/"/g, '&quot;');
+    const safeCoPName = (coEmpName || '').replace(/"/g, '&quot;');
+    const coHint = coEmpId ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${coEmpCode}</span>` : '';
     return `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
         data-ws-code="${wsCode}" data-ws-id="${wsId}" data-date="${date}"
         data-emp-id="${empId || ''}" data-emp-code="${safeCode}" data-emp-name="${safeName}"
-        onclick="promptWsChangeover(this)">&#8652; Start CO</button>`;
+        data-co-emp-id="${coEmpId || ''}" data-co-emp-code="${safeCoCode}" data-co-emp-name="${safeCoPName}"
+        onclick="promptWsChangeover(this)">&#8652; Start CO${coHint}</button>`;
 }
 
 function promptWsChangeover(btn) {
@@ -1398,6 +1403,9 @@ function promptWsChangeover(btn) {
     const empId = btn.dataset.empId ? parseInt(btn.dataset.empId) : null;
     const empCode = btn.dataset.empCode || '';
     const empName = btn.dataset.empName || '';
+    const coEmpId = btn.dataset.coEmpId ? parseInt(btn.dataset.coEmpId) : null;
+    const coEmpCode = btn.dataset.coEmpCode || '';
+    const coEmpName = btn.dataset.coEmpName || '';
 
     coPromptState.wsCode = wsCode;
     coPromptState.wsId = wsId;
@@ -1405,6 +1413,9 @@ function promptWsChangeover(btn) {
     coPromptState.origEmpId = empId;
     coPromptState.origEmpCode = empCode;
     coPromptState.origEmpName = empName;
+    coPromptState.coSuggestedEmpId = coEmpId;
+    coPromptState.coSuggestedEmpCode = coEmpCode;
+    coPromptState.coSuggestedEmpName = coEmpName;
     coPromptState.scannedEmployee = null;
 
     const card = document.getElementById(`hourly-ws-card-${wsId}`);
@@ -1412,17 +1423,31 @@ function promptWsChangeover(btn) {
     const footer = card.querySelector('.ws-card-footer');
     if (!footer) return;
 
-    const empLine = empId
-        ? `<p style="font-size:13px;color:#374151;margin:0 0 10px;">Continue with: <strong>${empCode} — ${empName}</strong></p>`
-        : `<p style="font-size:13px;color:#6b7280;margin:0 0 10px;">No employee currently assigned.</p>`;
+    // IE suggestion block (shown when IE pre-assigned a CO employee)
+    const ieSuggestionHtml = coEmpId ? `
+        <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+            <p style="font-size:11px;font-weight:700;color:#7c3aed;margin:0 0 4px;text-transform:uppercase;letter-spacing:.4px;">IE Pre-Assigned</p>
+            <p style="font-size:13px;font-weight:700;color:#5b21b6;margin:0;">&#128100; ${coEmpCode} — ${coEmpName}</p>
+        </div>` : '';
+
+    // Current employee line (only shown when different from IE suggestion or no suggestion)
+    const isSameasSuggestion = coEmpId && empId === coEmpId;
+    const currentEmpHtml = empId && !isSameasSuggestion
+        ? `<p style="font-size:12px;color:#6b7280;margin:0 0 10px;">Currently: <strong>${empCode} — ${empName}</strong></p>`
+        : (!empId ? `<p style="font-size:12px;color:#6b7280;margin:0 0 10px;">No employee currently assigned.</p>` : '');
 
     footer.innerHTML = `
         <div style="width:100%;padding:4px 0;">
             <p style="font-weight:700;color:#5b21b6;font-size:13px;margin:0 0 8px;">&#8652; Start Changeover — ${wsCode}</p>
-            ${empLine}
+            ${ieSuggestionHtml}
+            ${currentEmpHtml}
             <div class="mismatch-actions">
-                ${empId ? `<button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
-                    onclick="confirmWsCo(${empId}, false)">Continue with same employee</button>` : ''}
+                ${coEmpId ? `<button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
+                    onclick="confirmWsCo(${coEmpId}, false)">&#10003; Confirm IE Assignment</button>` : ''}
+                ${empId && !isSameasSuggestion ? `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
+                    onclick="confirmWsCo(${empId}, false)">Keep Current (${empCode})</button>` : ''}
+                ${!coEmpId && empId ? `<button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
+                    onclick="confirmWsCo(${empId}, false)">Continue with ${empCode}</button>` : ''}
                 <button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
                     onclick="startCoScan()">&#128247; Assign Different Employee</button>
                 <button class="btn ws-card-action" style="background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
@@ -1562,13 +1587,13 @@ async function confirmWsCo(employeeId, force) {
 
 function cancelCoPrompt() {
     stopCamera();
-    const { wsId, wsCode, date, origEmpId, origEmpCode, origEmpName } = coPromptState;
+    const { wsId, wsCode, date, origEmpId, origEmpCode, origEmpName, coSuggestedEmpId, coSuggestedEmpCode, coSuggestedEmpName } = coPromptState;
     if (wsId) {
         const card = document.getElementById(`hourly-ws-card-${wsId}`);
         const footer = card ? card.querySelector('.ws-card-footer') : null;
-        if (footer) footer.innerHTML = _coBtnHtml(wsCode, wsId, date, origEmpId, origEmpCode, origEmpName);
+        if (footer) footer.innerHTML = _coBtnHtml(wsCode, wsId, date, origEmpId, origEmpCode, origEmpName, coSuggestedEmpId, coSuggestedEmpCode, coSuggestedEmpName);
     }
-    Object.assign(coPromptState, { wsCode: null, wsId: null, date: null, origEmpId: null, origEmpCode: null, origEmpName: null, scannedEmployee: null });
+    Object.assign(coPromptState, { wsCode: null, wsId: null, date: null, origEmpId: null, origEmpCode: null, origEmpName: null, coSuggestedEmpId: null, coSuggestedEmpCode: null, coSuggestedEmpName: null, scannedEmployee: null });
 }
 
 function renderHourlySummary() {
@@ -1686,12 +1711,16 @@ function renderHourlySummary() {
                 if (isWsChangeover) {
                     coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" onclick="openWsChangeoverEmployeeChange(${JSON.stringify(ws.workstation_code)}, ${ws.id || ws.primary_ws_id || 'null'})">Change Employee</button>`;
                 } else {
+                    const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
                     coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
                         data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
                         data-emp-id="${ws.assigned_employee_id || ''}"
                         data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
                         data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"
-                        onclick="promptWsChangeover(this)">&#8652; Start CO</button>`;
+                        data-co-emp-id="${ws.co_suggested_emp_id || ''}"
+                        data-co-emp-code="${(ws.co_suggested_emp_code || '').replace(/"/g, '&quot;')}"
+                        data-co-emp-name="${(ws.co_suggested_emp_name || '').replace(/"/g, '&quot;')}"
+                        onclick="promptWsChangeover(this)">&#8652; Start CO${_coHint}</button>`;
                 }
             }
 
