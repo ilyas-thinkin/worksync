@@ -4865,7 +4865,7 @@ function fillOtLineCard(lineId, date, data) {
     const { ot_plan, workstations, products, employees, all_ot_assignments } = data;
     const globalMins     = ot_plan.global_ot_minutes || 60;
     const otTarget       = ot_plan.ot_target_units   || 0;
-    const perHourTarget  = ot_plan.per_hour_target    || 0;
+    const perHourTarget  = data.per_hour_target        || 0;
     const supAuthorized  = ot_plan.supervisor_authorized === true;
 
     // Build factory-wide OT assignment map for this date (employee_id → {line_id, ws_code})
@@ -4982,10 +4982,10 @@ function fillOtLineCard(lineId, date, data) {
                 <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Duration</label>
                 <select id="${idPfx}-hrs" onchange="calcOtTarget(${lineId})"
                     style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;">
-                    <option value="60"  ${globalMins <= 60  ? 'selected' : ''}>1 Hour</option>
-                    <option value="120" ${globalMins == 120 ? 'selected' : ''}>2 Hours</option>
-                    <option value="180" ${globalMins == 180 ? 'selected' : ''}>3 Hours</option>
-                    <option value="240" ${globalMins >= 240 ? 'selected' : ''}>4 Hours</option>
+                    <option value="60"  ${globalMins <= 60                     ? 'selected' : ''}>1 Hour</option>
+                    <option value="120" ${globalMins > 60  && globalMins <= 120 ? 'selected' : ''}>2 Hours</option>
+                    <option value="180" ${globalMins > 120 && globalMins <= 180 ? 'selected' : ''}>3 Hours</option>
+                    <option value="240" ${globalMins > 180                      ? 'selected' : ''}>4 Hours</option>
                 </select>
             </div>
             <div>
@@ -5075,7 +5075,7 @@ function calcOtTarget(lineId) {
     const pfx = `otc-${lineId}`;
     const hrsEl = document.getElementById(`${pfx}-hrs`);
     const hrs = parseInt(hrsEl?.value || 60, 10) / 60;
-    const perHour = window._otCardData?.[lineId]?.ot_plan?.per_hour_target || 0;
+    const perHour = window._otCardData?.[lineId]?.per_hour_target || 0;
     const target = Math.round(perHour * hrs);
     const display = document.getElementById(`${pfx}-target-display`);
     const hidden  = document.getElementById(`${pfx}-target`);

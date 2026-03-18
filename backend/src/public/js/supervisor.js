@@ -706,138 +706,6 @@ function cancelMorningScan() {
     morningState.scanMode = 'link';
 }
 
-function startMorningMaterialScan(workstationCode, linePlanWorkstationId) {
-    morningState.selectedWorkstation = workstationCode;
-    morningState.selectedWorkstationPlanId = linePlanWorkstationId || null;
-    morningState.scannedEmployee = null;
-    morningState.scanMode = 'material';
-
-    const scanPanel = document.getElementById('morning-scan-panel');
-    const scanLabel = document.getElementById('morning-scan-label');
-    const scanResult = document.getElementById('morning-scan-result');
-    const title = document.getElementById('morning-scan-title');
-    if (title) title.textContent = 'Scan & Material';
-    scanPanel.style.display = 'block';
-    scanLabel.textContent = `Workstation: ${workstationCode} — Scan employee or workstation QR`;
-    scanResult.innerHTML = `
-        <p style="color:#6b7280;margin-bottom:10px;">Point camera at employee or workstation QR code...</p>
-        <button class="btn btn-secondary btn-sm" onclick="showMorningMaterialFormDirect('${workstationCode}')">
-            Skip scan — enter material directly
-        </button>`;
-    scanPanel.scrollIntoView({ behavior: 'smooth' });
-
-    startCamera('morning-camera', null, async (rawValue) => {
-        stopCamera();
-        const payload = parseScanPayload(rawValue);
-        if (!payload) {
-            scanResult.innerHTML = '<p style="color:#dc2626;">Invalid QR code. Try again.</p>';
-            return;
-        }
-
-        // Detect type: workstation QR has payload.type === 'workstation'
-        if (payload.type === 'workstation') {
-            const scannedWs = payload.workstation_code || payload.raw || '';
-            scanResult.innerHTML = `
-                <div style="padding:12px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;margin-bottom:12px;">
-                    <p style="font-weight:700;font-size:1em;color:#0369a1;">&#128274; Workstation: ${scannedWs}</p>
-                    <p style="font-size:0.85em;color:#6b7280;margin-top:2px;">Linked to: ${workstationCode}</p>
-                </div>
-                ${_morningMaterialForm(workstationCode)}`;
-        } else {
-            // Employee QR — resolve
-            scanResult.innerHTML = '<p style="color:#6b7280;">Resolving...</p>';
-            try {
-                let empName = '';
-                const response = await fetch(`${API_BASE}/supervisor/resolve-employee`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ line_id: morningState.lineId, employee_qr: rawValue })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    const emp = result.data.employee;
-                    empName = `${emp.emp_code} - ${emp.emp_name}`;
-                } else {
-                    // Fallback: direct employee lookup
-                    const empRes = await fetch(`${API_BASE}/employees`);
-                    const empData = await empRes.json();
-                    const employees = empData.data || [];
-                    const match = payload.id
-                        ? employees.find(e => e.id === payload.id)
-                        : employees.find(e => String(e.emp_code).trim() === String(payload.raw || payload.emp_code || '').trim());
-                    empName = match ? `${match.emp_code} - ${match.emp_name}` : 'Unknown employee';
-                }
-                scanResult.innerHTML = `
-                    <div style="padding:12px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;margin-bottom:12px;">
-                        <p style="font-weight:700;font-size:1em;color:#16a34a;">&#128100; ${empName}</p>
-                        <p style="font-size:0.85em;color:#6b7280;margin-top:2px;">At workstation: ${workstationCode}</p>
-                    </div>
-                    ${_morningMaterialForm(workstationCode)}`;
-            } catch (err) {
-                scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
-            }
-        }
-    });
-}
-
-function _morningMaterialForm(workstationCode) {
-    return `
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;">
-            <label style="display:block;font-weight:700;font-size:0.9em;margin-bottom:8px;color:#374151;">
-                &#128230; Material provided to workstation ${workstationCode}
-            </label>
-            <input type="number" id="morning-material-qty" min="0" value="0"
-                class="form-control material-qty-input" style="margin-bottom:6px;">
-            <p style="font-size:0.8em;color:#6b7280;margin:0 0 12px;">pcs &nbsp;(0 = nothing provided)</p>
-            <button class="btn btn-primary ws-card-action" onclick="saveMorningMaterial('${workstationCode}')">
-                &#10003; Confirm
-            </button>
-        </div>`;
-}
-
-function showMorningMaterialFormDirect(workstationCode) {
-    stopCamera();
-    const scanResult = document.getElementById('morning-scan-result');
-    if (scanResult) scanResult.innerHTML = _morningMaterialForm(workstationCode);
-}
-
-async function saveMorningMaterial(workstationCode) {
-    const qty = parseInt(document.getElementById('morning-material-qty')?.value || '0', 10);
-    if (isNaN(qty) || qty < 0) { showToast('Enter a valid quantity', 'error'); return; }
-
-    try {
-        const today = new Date().toISOString().slice(0, 10);
-        const res = await fetch(`${API_BASE}/workstation-assignments/material`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: morningState.lineId, workstation_code: workstationCode, material_provided: qty, work_date: today })
-        });
-        const result = await res.json();
-        if (!result.success) { showToast(result.error || 'Failed to save material', 'error'); return; }
-
-        showToast(`Material saved: ${qty} pcs for ${workstationCode}`, 'success');
-
-        const scanPanel = document.getElementById('morning-scan-panel');
-        if (scanPanel) scanPanel.style.display = 'none';
-        morningState.selectedWorkstation = null;
-        morningState.scanMode = 'link';
-
-        // Refresh assignments
-        const procResponse = await fetch(`${API_BASE}/supervisor/processes/${morningState.lineId}`);
-        const procResult = await procResponse.json();
-        if (procResult.has_plan && procResult.workstation_plan?.length > 0) {
-            morningState.workstations = procResult.workstation_plan;
-            morningState.processes = procResult.data || [];
-            renderMorningAssignments(true);
-        } else {
-            morningState.processes = procResult.data || [];
-            morningState.workstations = null;
-            renderMorningAssignments(false);
-        }
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-}
 
 // ==========================================
 // FEED INPUT
@@ -1915,7 +1783,9 @@ function renderHourlySummary() {
         const outputColor = output > 0 ? (output >= hourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
 
         let statusBadge = '';
-        if (needsReason) {
+        if (!p.assigned_emp_name) {
+            statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Not Assigned</span>`;
+        } else if (needsReason) {
             statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#9888; Needs Reason</span>`;
         } else if (output > 0 && output < hourlyTarget) {
             statusBadge = `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Below target</span>`;
@@ -1927,8 +1797,13 @@ function renderHourlySummary() {
             ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
             : '';
 
+        const procNoEmployee = !p.assigned_emp_name;
+        const procEnterBtn = procNoEmployee
+            ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in morning procedure">&#128683; Not Assigned</button>`
+            : `<button class="btn btn-primary ws-card-action" onclick="openHourlyEntry(${p.id})">Enter Output</button>`;
+
         return `
-            <div class="ws-card ${needsReason ? 'ws-card--alert' : ''}" id="hourly-proc-card-${p.id}">
+            <div class="ws-card ${needsReason || procNoEmployee ? 'ws-card--alert' : ''}" id="hourly-proc-card-${p.id}">
                 <div class="ws-card-header">
                     <span class="ws-card-code">${p.workstation_code || p.group_name || '–'}</span>
                     <div class="ws-card-badges">${statusBadge}</div>
@@ -1955,7 +1830,7 @@ function renderHourlySummary() {
                     ${reasonLine}
                 </div>
                 <div class="ws-card-footer">
-                    <button class="btn btn-primary ws-card-action" onclick="openHourlyEntry(${p.id})">Enter Output</button>
+                    ${procEnterBtn}
                 </div>
             </div>`;
     }).join('');
