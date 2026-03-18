@@ -76,6 +76,8 @@ async function loadSection(section) {
         await loadHourlyProcedure();
     } else if (section === 'adjustment') {
         await loadAdjustmentPanel();
+    } else if (section === 'feed') {
+        await loadFeedInput();
     } else {
         await loadMorningProcedure();
     }
@@ -337,28 +339,11 @@ function renderMorningAssignments(hasPlan) {
     if (hasPlan && morningState.workstations?.length > 0) {
         const workstations = morningState.workstations;
 
-        // Group-aware "all linked" check:
-        // - standalone WS (no group) → needs own material_provided
-        // - group first WS → needs own material_provided
-        // - non-first group WS → needs group leader's material (group_material_provided)
-        const allLinked = workstations.every(ws => {
-            const isFirst = ws.is_group_first !== false;
-            const mat = isFirst ? ws.material_provided : ws.group_material_provided;
-            return mat !== null && mat !== undefined;
-        });
-
-        // Build group → leader WS code map for display
-        const groupLeaderCodeMap = {};
-        for (const ws of workstations) {
-            if (ws.group_name && ws.is_group_first) groupLeaderCodeMap[ws.group_name] = ws.workstation_code;
-        }
+        // All linked = every workstation has an employee assigned
+        const allLinked = workstations.every(ws => !!ws.assigned_emp_name);
 
         const cards = workstations.map(ws => {
-            const isGroupFirst = ws.is_group_first !== false;
             const isMapped   = !!ws.assigned_emp_name;
-            // Effective material: own if first/standalone, group leader's otherwise
-            const effectiveMaterial = isGroupFirst ? ws.material_provided : ws.group_material_provided;
-            const isConfirmed = effectiveMaterial !== null && effectiveMaterial !== undefined;
             const processList = (ws.processes || []).map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
             const workloadPct = parseFloat(ws.workload_pct||0).toFixed(0);
@@ -367,39 +352,23 @@ function renderMorningAssignments(hasPlan) {
                 ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
                 : '<span style="color:#9ca3af;font-style:italic;">Not mapped</span>';
 
-            const statusBadge = isConfirmed
+            const statusBadge = isMapped
                 ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
                 : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
-            // Group badge shown on all cards that have a group
             const groupBadge = ws.group_name
                 ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#ede9fe;color:#5b21b6;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:700;">&#128209; ${ws.group_name}</span>`
                 : '';
 
-            const materialLine = isConfirmed
-                ? `<div class="ws-card-row"><span class="ws-card-label">Material</span><span style="color:#6b7280;">&#128230; ${effectiveMaterial} pcs${!isGroupFirst ? ` <span style="font-size:10px;color:#a78bfa;">(group)</span>` : ''}</span></div>`
-                : '';
+            const footerContent = isMapped
+                ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
+                : `<button class="btn btn-primary ws-card-action"
+                        onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${(ws.assigned_emp_name || '').replace(/'/g, "\\'")}')">
+                        &#128247; Scan &amp; Link
+                   </button>`;
 
-            let footerContent;
-            if (isGroupFirst) {
-                // First WS of its group (or standalone) — show Scan & Link or Completed
-                footerContent = isConfirmed
-                    ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
-                    : `<button class="btn btn-primary ws-card-action"
-                            onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${(ws.assigned_emp_name || '').replace(/'/g, "\\'")}')">
-                            &#128247; Scan &amp; Link
-                       </button>`;
-            } else {
-                // Non-first member of a group — material comes from group leader
-                const leaderCode = groupLeaderCodeMap[ws.group_name] || ws.group_name;
-                footerContent = isConfirmed
-                    ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; WIP from group ${ws.group_name}</span>`
-                    : `<span style="color:#d97706;font-size:12px;padding:6px 0;display:block;text-align:center;">&#128274; Awaiting material at ${leaderCode}</span>`;
-            }
-
-            const cardClass = isConfirmed ? '' : 'ws-card--alert';
             return `
-                <div class="ws-card ${cardClass}" id="ws-card-${ws.workstation_code}">
+                <div class="ws-card ${isMapped ? '' : 'ws-card--alert'}" id="ws-card-${ws.workstation_code}">
                     <div class="ws-card-header">
                         <span class="ws-card-code">${ws.workstation_code}</span>
                         <div class="ws-card-badges">
@@ -417,7 +386,6 @@ function renderMorningAssignments(hasPlan) {
                             <span class="ws-card-label">Worker</span>
                             <span>${assignedHtml}</span>
                         </div>
-                        ${materialLine}
                     </div>
                     <div class="ws-card-footer">
                         ${footerContent}
@@ -469,30 +437,24 @@ function renderMorningAssignments(hasPlan) {
 
     const cards = Array.from(wsMap.values()).map(ws => {
         const isMapped    = !!ws.assigned_emp_name;
-        const isConfirmed = ws.material_provided !== null && ws.material_provided !== undefined;
         const assignedHtml = isMapped
             ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
             : '<span style="color:#9ca3af;font-style:italic;">Not mapped</span>';
         const processList = ws.processes.map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
 
-        const statusBadge = isConfirmed
+        const statusBadge = isMapped
             ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
             : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
-        const materialLine = isConfirmed
-            ? `<div class="ws-card-row"><span class="ws-card-label">Material</span><span style="color:#6b7280;">&#128230; ${ws.material_provided} pcs</span></div>`
-            : '';
-
-        const footerContent = isConfirmed
+        const footerContent = isMapped
             ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
             : `<button class="btn btn-primary ws-card-action"
                     onclick="startMorningScan('${ws.workstation_code}', null, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${ws.assigned_emp_name || ''}')">
                     &#128247; Scan &amp; Link
                </button>`;
 
-        const cardClass = isConfirmed ? '' : 'ws-card--alert';
         return `
-            <div class="ws-card ${cardClass}" id="ws-card-${ws.workstation_code}">
+            <div class="ws-card ${isMapped ? '' : 'ws-card--alert'}" id="ws-card-${ws.workstation_code}">
                 <div class="ws-card-header">
                     <span class="ws-card-code">${ws.workstation_code}</span>
                     <div class="ws-card-badges">${statusBadge}</div>
@@ -506,7 +468,6 @@ function renderMorningAssignments(hasPlan) {
                         <span class="ws-card-label">Worker</span>
                         <span>${assignedHtml}</span>
                     </div>
-                    ${materialLine}
                 </div>
                 <div class="ws-card-footer">
                     ${footerContent}
@@ -636,14 +597,14 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
                                 Keep ${mapped.emp_code}
                             </button>
                             <button class="btn" style="background:#dc2626;color:#fff;border:none;"
-                                onclick="_morningShowMaterialForm()">
+                                onclick="_morningShowConfirmEmployee()">
                                 Replace with ${scannedEmp.emp_code}
                             </button>
                         </div>
                     </div>`;
             } else {
-                // Match (or no prior mapping) — proceed to material
-                _morningShowMaterialForm();
+                // Match (or no prior mapping) — confirm directly
+                _morningShowConfirmEmployee();
             }
         } catch (err) {
             scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
@@ -651,7 +612,7 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
     });
 }
 
-function _morningShowMaterialForm() {
+function _morningShowConfirmEmployee() {
     const scanResult = document.getElementById('morning-scan-result');
     const emp = morningState.scannedEmployee;
     const matchedBefore = morningState.mappedEmployee && morningState.mappedEmployee.id === emp?.id;
@@ -660,17 +621,9 @@ function _morningShowMaterialForm() {
         <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:10px;">
             <p style="font-weight:700;font-size:1em;color:#16a34a;margin:0;">${empLabel}: ${emp?.emp_code} — ${emp?.emp_name}</p>
         </div>
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;">
-            <label style="display:block;font-weight:700;font-size:0.9em;margin-bottom:8px;color:#374151;">
-                &#128230; Material provided to workstation ${morningState.selectedWorkstation}
-            </label>
-            <input type="number" id="morning-material-qty" min="0" value="0"
-                class="form-control material-qty-input" style="margin-bottom:6px;">
-            <p style="font-size:0.8em;color:#6b7280;margin:0 0 12px;">pcs &nbsp;(0 = nothing provided)</p>
-            <button class="btn btn-primary ws-card-action" onclick="confirmMorningAssign()">
-                &#128279; Confirm Link
-            </button>
-        </div>`;
+        <button class="btn btn-primary ws-card-action" onclick="confirmMorningAssign()">
+            &#128279; Confirm Link
+        </button>`;
 }
 
 async function confirmMorningAssign() {
@@ -679,13 +632,11 @@ async function confirmMorningAssign() {
         return;
     }
 
-    const material = parseInt(document.getElementById('morning-material-qty')?.value || '0', 10);
-
     try {
         const emp = morningState.scannedEmployee;
         const today = new Date().toISOString().slice(0, 10);
 
-        // Save employee assignment + material in one request
+        // Save employee assignment
         const res = await fetch(`${API_BASE}/workstation-assignments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -694,8 +645,7 @@ async function confirmMorningAssign() {
                 workstation_code: morningState.selectedWorkstation,
                 employee_id: emp.id,
                 work_date: today,
-                line_plan_workstation_id: morningState.selectedWorkstationPlanId,
-                material_provided: isNaN(material) ? 0 : material
+                line_plan_workstation_id: morningState.selectedWorkstationPlanId
             })
         });
         const result = await res.json();
@@ -884,6 +834,160 @@ async function saveMorningMaterial(workstationCode) {
             morningState.workstations = null;
             renderMorningAssignments(false);
         }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ==========================================
+// FEED INPUT
+// ==========================================
+const feedState = { lineId: null, workstations: null };
+
+async function loadFeedInput() {
+    const content = document.getElementById('supervisor-content');
+    content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/lines`);
+        const result = await response.json();
+        const lines = result.data || [];
+        const today = new Date().toISOString().slice(0, 10);
+
+        content.innerHTML = `
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Feed Input</h1>
+                    <p class="page-subtitle">Enter initial material input for each group's first workstation</p>
+                </div>
+                <span class="status-badge">${today}</span>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3 class="card-title">Select Line</h3></div>
+                <div class="card-body">
+                    <select class="form-control" id="feed-line">
+                        <option value="">Select Line</option>
+                        ${lines.map(l => `<option value="${l.id}">${l.line_name} (${l.line_code})${l.product_code ? ' - ' + l.product_code : ''}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+            <div id="feed-assignments" style="margin-top:16px;"></div>`;
+
+        document.getElementById('feed-line').addEventListener('change', onFeedLineChange);
+        feedState.lineId = null;
+        feedState.workstations = null;
+    } catch (err) {
+        content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+async function onFeedLineChange() {
+    const lineId = document.getElementById('feed-line').value;
+    feedState.lineId = lineId;
+    const container = document.getElementById('feed-assignments');
+    if (!lineId) { container.innerHTML = ''; return; }
+    container.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
+    try {
+        const today = new Date().toISOString().slice(0, 10);
+        const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${today}`);
+        const result = await response.json();
+        feedState.workstations = (result.has_plan && result.workstation_plan?.length > 0) ? result.workstation_plan : null;
+        renderFeedInput();
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function renderFeedInput() {
+    const container = document.getElementById('feed-assignments');
+    if (!feedState.workstations?.length) {
+        container.innerHTML = `<div class="card"><div class="card-body"><div class="alert alert-info">No workstation plan found for today. Ask IE/Admin to generate a workstation plan first.</div></div></div>`;
+        return;
+    }
+
+    // Only group-first (or standalone) workstations handle material input
+    const feedWs = feedState.workstations.filter(ws => ws.is_group_first !== false);
+    if (!feedWs.length) {
+        container.innerHTML = `<div class="card"><div class="card-body"><div class="alert alert-info">No group-leader workstations found in this plan.</div></div></div>`;
+        return;
+    }
+
+    const cards = feedWs.map(ws => {
+        const isAssigned = !!ws.assigned_emp_name;
+        const processList = (ws.processes || []).map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
+        const groupBadge = ws.group_name
+            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#ede9fe;color:#5b21b6;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:700;">&#128209; ${ws.group_name}</span>`
+            : '';
+        const materialBadge = ws.material_provided != null
+            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; ${ws.material_provided} pcs</span>`
+            : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not entered</span>`;
+        const assignedHtml = isAssigned
+            ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
+            : `<span style="color:#dc2626;font-style:italic;">No employee assigned</span>`;
+        const inputSection = isAssigned
+            ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+                <input type="number" id="feed-qty-${ws.workstation_code}" min="0"
+                    value="${ws.material_provided ?? 0}"
+                    class="form-control" style="width:100px;text-align:center;">
+                <span style="font-size:13px;color:#6b7280;">pcs</span>
+                <button class="btn btn-primary" onclick="saveFeedInput('${ws.workstation_code}')">
+                    &#10003; Save
+                </button>
+               </div>`
+            : `<p style="color:#9ca3af;font-size:12px;font-style:italic;margin:4px 0 0;">Assign an employee via Morning Procedure first.</p>`;
+
+        return `
+            <div class="ws-card ${ws.material_provided == null ? 'ws-card--alert' : ''}" id="feed-card-${ws.workstation_code}">
+                <div class="ws-card-header">
+                    <span class="ws-card-code">${ws.workstation_code}</span>
+                    <div class="ws-card-badges">${groupBadge}${materialBadge}</div>
+                </div>
+                <div class="ws-card-body">
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Processes</span>
+                        <span style="font-size:12px;color:#6b7280;">${processList}</span>
+                    </div>
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Worker</span>
+                        <span>${assignedHtml}</span>
+                    </div>
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Material</span>
+                        <div>${inputSection}</div>
+                    </div>
+                </div>
+            </div>`;
+    }).join('');
+
+    const allFed = feedWs.every(ws => ws.material_provided != null);
+    container.innerHTML = `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Feed Input</h3>
+                <span style="font-size:0.85em;color:#6b7280;">
+                    ${feedWs.length} workstation${feedWs.length !== 1 ? 's' : ''} &nbsp;|&nbsp;
+                    ${allFed ? '<span style="color:#16a34a;">&#10003; All entered</span>' : '<span style="color:#dc2626;">&#9888; Pending</span>'}
+                </span>
+            </div>
+            <div class="card-body">
+                <div class="ws-cards-grid">${cards}</div>
+            </div>
+        </div>`;
+}
+
+async function saveFeedInput(wsCode) {
+    const qty = parseInt(document.getElementById(`feed-qty-${wsCode}`)?.value || '0', 10);
+    if (isNaN(qty) || qty < 0) { showToast('Enter a valid quantity', 'error'); return; }
+    try {
+        const today = new Date().toISOString().slice(0, 10);
+        const res = await fetch(`${API_BASE}/workstation-assignments/material`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: feedState.lineId, workstation_code: wsCode, material_provided: qty, work_date: today })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed to save', 'error'); return; }
+        showToast(`Material saved: ${qty} pcs for ${wsCode}`, 'success');
+        await onFeedLineChange();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1187,6 +1291,7 @@ async function onHourlyLineChange() {
         const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${date}`);
         const result = await response.json();
         hourlyState.processes = result.data || [];
+        hourlyState.hasDailyPlan = result.has_daily_plan === true;
         hourlyState.workstations = (result.has_plan && result.workstation_plan?.length > 0) ? result.workstation_plan : null;
         hourlyState.changeoverActive = !!result.changeover_active;
         hourlyState.incomingProductId = result.incoming_product_id || null;
@@ -1676,14 +1781,16 @@ function renderHourlySummary() {
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
             const needsReason = output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
 
-            // Group-aware morning done: non-first group WSes use group leader's material
-            const _effectiveMat = ws.is_group_first !== false ? ws.material_provided : ws.group_material_provided;
-            const morningDone = _effectiveMat !== null && _effectiveMat !== undefined;
+            // Block hourly input if no daily plan or no employee assigned
+            const noDailyPlan = !hourlyState.hasDailyPlan;
+            const noEmployee  = !ws.assigned_emp_name && wsStatus !== 'covered';
 
             // Status badge for card header
             let statusBadge = '';
-            if (!morningDone && wsStatus !== 'vacant') {
-                statusBadge = `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#128274; Not Linked</span>`;
+            if (noDailyPlan) {
+                statusBadge = `<span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">No Plan</span>`;
+            } else if (noEmployee && wsStatus !== 'vacant') {
+                statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Not Assigned</span>`;
             } else if (isWsChangeover) {
                 const coTime = ws.ws_changeover_started_at ? new Date(ws.ws_changeover_started_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
                 statusBadge = `<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#8652; CO${coTime ? ' '+coTime : ''}</span>`;
@@ -1699,12 +1806,14 @@ function renderHourlySummary() {
 
             const outputColor = output > 0 ? (output >= wsHourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
 
-            // Footer buttons — block if vacant or morning procedure not done
-            const enterOutputBtn = wsStatus === 'vacant'
-                ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant">Enter Output</button>`
-                : !morningDone
-                    ? `<button class="btn ws-card-action" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:not-allowed;" disabled title="Complete morning procedure (Scan &amp; Link) first">&#128274; Morning Required</button>`
-                    : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
+            // Footer buttons — block if no daily plan, no employee assigned, or vacant
+            const enterOutputBtn = noDailyPlan
+                ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="No production day plan set for this line">&#128683; No Plan</button>`
+                : wsStatus === 'vacant'
+                    ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant">Enter Output</button>`
+                    : noEmployee
+                        ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in morning procedure">&#128683; Not Assigned</button>`
+                        : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
             let coBtn = '';
             if (hasChangeover) {
@@ -1729,8 +1838,7 @@ function renderHourlySummary() {
                 : '';
 
             let cardClass = '';
-            if (wsStatus === 'vacant' || needsReason) cardClass = 'ws-card--alert';
-            else if (!morningDone) cardClass = 'ws-card--alert';
+            if (wsStatus === 'vacant' || needsReason || noEmployee) cardClass = 'ws-card--alert';
             else if (isWsChangeover) cardClass = 'ws-card--changeover';
 
             return `

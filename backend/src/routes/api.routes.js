@@ -5443,7 +5443,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
     try {
         const { primaryId, incomingId, changeoverSequence, incomingMaxSequence } = await getLineProductIds(lineId, date);
         if (!primaryId) {
-            return res.json({ success: true, data: [], workstation_plan: [] });
+            return res.json({ success: true, data: [], workstation_plan: [], has_daily_plan: false });
         }
 
         // Fetch daily-plan meta for changeover state and targets
@@ -5474,6 +5474,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
 
         // Build shared response fields
         const sharedFields = {
+            has_daily_plan: true,
             changeover: incomingId ? true : false,
             changeover_active: changeoverActive,
             changeover_started_at: meta.changeover_started_at || null,
