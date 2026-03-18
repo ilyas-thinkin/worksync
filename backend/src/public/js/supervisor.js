@@ -336,12 +336,29 @@ function renderMorningAssignments(hasPlan) {
 
     if (hasPlan && morningState.workstations?.length > 0) {
         const workstations = morningState.workstations;
-        // "Linked" = supervisor confirmed (material_provided is not null)
-        const allLinked = workstations.every(ws => ws.material_provided !== null && ws.material_provided !== undefined);
+
+        // Group-aware "all linked" check:
+        // - standalone WS (no group) → needs own material_provided
+        // - group first WS → needs own material_provided
+        // - non-first group WS → needs group leader's material (group_material_provided)
+        const allLinked = workstations.every(ws => {
+            const isFirst = ws.is_group_first !== false;
+            const mat = isFirst ? ws.material_provided : ws.group_material_provided;
+            return mat !== null && mat !== undefined;
+        });
+
+        // Build group → leader WS code map for display
+        const groupLeaderCodeMap = {};
+        for (const ws of workstations) {
+            if (ws.group_name && ws.is_group_first) groupLeaderCodeMap[ws.group_name] = ws.workstation_code;
+        }
 
         const cards = workstations.map(ws => {
+            const isGroupFirst = ws.is_group_first !== false;
             const isMapped   = !!ws.assigned_emp_name;
-            const isConfirmed = ws.material_provided !== null && ws.material_provided !== undefined;
+            // Effective material: own if first/standalone, group leader's otherwise
+            const effectiveMaterial = isGroupFirst ? ws.material_provided : ws.group_material_provided;
+            const isConfirmed = effectiveMaterial !== null && effectiveMaterial !== undefined;
             const processList = (ws.processes || []).map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
             const workloadPct = parseFloat(ws.workload_pct||0).toFixed(0);
@@ -354,16 +371,31 @@ function renderMorningAssignments(hasPlan) {
                 ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
                 : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
-            const materialLine = isConfirmed
-                ? `<div class="ws-card-row"><span class="ws-card-label">Material</span><span style="color:#6b7280;">&#128230; ${ws.material_provided} pcs</span></div>`
+            // Group badge shown on all cards that have a group
+            const groupBadge = ws.group_name
+                ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#ede9fe;color:#5b21b6;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:700;">&#128209; ${ws.group_name}</span>`
                 : '';
 
-            const footerContent = isConfirmed
-                ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
-                : `<button class="btn btn-primary ws-card-action"
-                        onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${ws.assigned_emp_name || ''}')">
-                        &#128247; Scan &amp; Link
-                   </button>`;
+            const materialLine = isConfirmed
+                ? `<div class="ws-card-row"><span class="ws-card-label">Material</span><span style="color:#6b7280;">&#128230; ${effectiveMaterial} pcs${!isGroupFirst ? ` <span style="font-size:10px;color:#a78bfa;">(group)</span>` : ''}</span></div>`
+                : '';
+
+            let footerContent;
+            if (isGroupFirst) {
+                // First WS of its group (or standalone) — show Scan & Link or Completed
+                footerContent = isConfirmed
+                    ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
+                    : `<button class="btn btn-primary ws-card-action"
+                            onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${(ws.assigned_emp_name || '').replace(/'/g, "\\'")}')">
+                            &#128247; Scan &amp; Link
+                       </button>`;
+            } else {
+                // Non-first member of a group — material comes from group leader
+                const leaderCode = groupLeaderCodeMap[ws.group_name] || ws.group_name;
+                footerContent = isConfirmed
+                    ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; WIP from group ${ws.group_name}</span>`
+                    : `<span style="color:#d97706;font-size:12px;padding:6px 0;display:block;text-align:center;">&#128274; Awaiting material at ${leaderCode}</span>`;
+            }
 
             const cardClass = isConfirmed ? '' : 'ws-card--alert';
             return `
@@ -371,6 +403,7 @@ function renderMorningAssignments(hasPlan) {
                     <div class="ws-card-header">
                         <span class="ws-card-code">${ws.workstation_code}</span>
                         <div class="ws-card-badges">
+                            ${groupBadge}
                             ${statusBadge}
                             <span style="font-size:12px;font-weight:600;color:${workloadColor};">${workloadPct}%</span>
                         </div>
@@ -1618,7 +1651,9 @@ function renderHourlySummary() {
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
             const needsReason = output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
 
-            const morningDone = ws.material_provided !== null && ws.material_provided !== undefined;
+            // Group-aware morning done: non-first group WSes use group leader's material
+            const _effectiveMat = ws.is_group_first !== false ? ws.material_provided : ws.group_material_provided;
+            const morningDone = _effectiveMat !== null && _effectiveMat !== undefined;
 
             // Status badge for card header
             let statusBadge = '';

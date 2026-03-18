@@ -5440,7 +5440,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
         const buildWsPlanQuery = (productId) => pool.query(
             `SELECT lpw.id as workstation_plan_id, lpw.workstation_number, lpw.workstation_code,
                     lpw.takt_time_seconds, lpw.actual_sam_seconds, lpw.workload_pct,
-                    lpw.product_id,
+                    lpw.product_id, lpw.group_name,
                     lpw.ws_changeover_active, lpw.ws_changeover_started_at,
                     pp.id as process_id, pp.sequence_number, pp.operation_sah,
                     o.operation_code, o.operation_name,
@@ -5529,6 +5529,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         primary_ws_id: primaryWsId,
                         workstation_number: row.workstation_number,
                         workstation_code: row.workstation_code,
+                        group_name: row.group_name || null,
                         takt_time_seconds: isCoActive ? (firstCoRow?.takt_time_seconds ?? row.takt_time_seconds) : row.takt_time_seconds,
                         actual_sam_seconds: isCoActive ? (firstCoRow?.actual_sam_seconds ?? row.actual_sam_seconds) : row.actual_sam_seconds,
                         workload_pct: isCoActive ? (firstCoRow?.workload_pct ?? row.workload_pct) : row.workload_pct,
@@ -5589,6 +5590,24 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             }
 
             const workstations = Array.from(wsMap.values());
+
+            // Compute is_group_first and group_material_provided for group-level material tracking
+            // Workstations are already ordered by workstation_number, so first occurrence = group leader
+            const groupLeaderMap = new Map(); // group_name -> leader ws object
+            for (const ws of workstations) {
+                const g = ws.group_name;
+                if (g && !groupLeaderMap.has(g)) groupLeaderMap.set(g, ws);
+            }
+            for (const ws of workstations) {
+                const g = ws.group_name;
+                if (!g) {
+                    ws.is_group_first = true;
+                    ws.group_material_provided = null;
+                } else {
+                    ws.is_group_first = (groupLeaderMap.get(g) === ws);
+                    ws.group_material_provided = ws.is_group_first ? null : (groupLeaderMap.get(g)?.material_provided ?? null);
+                }
+            }
 
             // Flat process list for backward compat
             const seenProcessIds = new Set();
