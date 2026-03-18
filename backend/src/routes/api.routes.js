@@ -757,6 +757,22 @@ router.get('/lines/:lineId/ot-plan', async (req, res) => {
             )
         ]);
 
+        // Compute per_hour_target from daily plan target and shift working hours
+        let perHourTarget = 0;
+        try {
+            const dpRes = await pool.query(
+                `SELECT target_units FROM line_daily_plans WHERE line_id=$1 AND work_date=$2`,
+                [lineId, date]
+            );
+            const dailyTarget = parseInt(dpRes.rows[0]?.target_units, 10) || 0;
+            const inTime  = await getSettingValue('default_in_time',  '08:00');
+            const outTime = await getSettingValue('default_out_time', '17:00');
+            const [inH, inM]   = inTime.split(':').map(Number);
+            const [outH, outM] = outTime.split(':').map(Number);
+            const workingHours = ((outH * 60 + outM) - (inH * 60 + inM)) / 60;
+            if (dailyTarget > 0 && workingHours > 0) perHourTarget = dailyTarget / workingHours;
+        } catch (_) { /* non-fatal */ }
+
         res.json({
             success: true,
             data: {
@@ -765,9 +781,31 @@ router.get('/lines/:lineId/ot-plan', async (req, res) => {
                 products: prodsRes.rows,
                 employees: empsRes.rows,
                 all_ot_assignments: allOtRes.rows,
-                all_processes: allProcsRes.rows
+                all_processes: allProcsRes.rows,
+                per_hour_target: Math.round(perHourTarget * 100) / 100
             }
         });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PATCH /lines/:lineId/ot-plan/supervisor-auth — IE toggles supervisor authorization
+router.patch('/lines/:lineId/ot-plan/supervisor-auth', async (req, res) => {
+    const { lineId } = req.params;
+    const { date, supervisor_authorized } = req.body;
+    if (!date || typeof supervisor_authorized !== 'boolean') {
+        return res.status(400).json({ success: false, error: 'date and supervisor_authorized (boolean) required' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE line_ot_plans SET supervisor_authorized=$3, updated_at=NOW()
+             WHERE line_id=$1 AND work_date=$2 RETURNING id`,
+            [lineId, date, supervisor_authorized]
+        );
+        if (!result.rows[0]) return res.status(404).json({ success: false, error: 'OT plan not found' });
+        realtime.broadcast('data_change', { entity: 'ot_plan', line_id: lineId, work_date: date, supervisor_authorized });
+        res.json({ success: true, supervisor_authorized });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

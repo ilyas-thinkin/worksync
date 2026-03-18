@@ -2390,6 +2390,7 @@ function renderOtPlanSection() {
 
     const globalMins = plan.global_ot_minutes || 0;
     const globalTarget = plan.ot_target_units || 0;
+    const supAuthorized = plan.supervisor_authorized === true;
     const allAssigned = workstations.every(ws => ws.assigned_emp_name);
     const effColor = e => e == null ? '#9ca3af' : e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
 
@@ -2458,7 +2459,8 @@ function renderOtPlanSection() {
             const effCell = isFirst
                 ? `<td style="text-align:center;font-weight:700;color:${effColor(eff)};vertical-align:middle;"${rs}>${eff != null ? eff.toFixed(1)+'%' : '—'}</td>` : '';
             const empCell = isFirst ? `<td${rs} style="vertical-align:middle;padding:6px;">
-                <div class="ot-emp-picker" data-ws="${ws.workstation_code}" data-value="${ws.assigned_employee_id||''}" style="position:relative;">
+                ${supAuthorized
+                    ? `<div class="ot-emp-picker" data-ws="${ws.workstation_code}" data-value="${ws.assigned_employee_id||''}" style="position:relative;">
                     <div class="ot-emp-display" onclick="otEmpPickerToggle(this.parentElement)"
                         style="cursor:pointer;padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;
                                font-size:0.82em;min-width:175px;background:#fff;display:flex;
@@ -2478,12 +2480,18 @@ function renderOtPlanSection() {
                             ${empPickerOpts(ws.assigned_employee_id, ws.workstation_code)}
                         </div>
                     </div>
-                </div>
+                </div>`
+                    : `<span style="font-size:0.82em;color:#6b7280;padding:5px 8px;display:inline-block;">${currEmpLabel}</span>`
+                }
             </td>` : '';
             const statusCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <button onclick="toggleOtWsActive(${JSON.stringify(ws.workstation_code)}, ${!isActive})"
-                    class="btn btn-sm" style="min-width:80px;background:${isActive?'#dcfce7':'#fee2e2'};color:${isActive?'#16a34a':'#dc2626'};border:1px solid ${isActive?'#bbf7d0':'#fecaca'};">
-                    ${isActive ? '● Active' : '○ Inactive'}</button></td>` : '';
+                ${supAuthorized
+                    ? `<button onclick="toggleOtWsActive(${JSON.stringify(ws.workstation_code)}, ${!isActive})"
+                        class="btn btn-sm" style="min-width:80px;background:${isActive?'#dcfce7':'#fee2e2'};color:${isActive?'#16a34a':'#dc2626'};border:1px solid ${isActive?'#bbf7d0':'#fecaca'};">
+                        ${isActive ? '● Active' : '○ Inactive'}</button>`
+                    : `<span style="font-size:12px;font-weight:600;color:${isActive?'#16a34a':'#dc2626'};">${isActive ? '● Active' : '○ Inactive'}</span>`
+                }
+            </td>` : '';
             const otMinCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
                 <input type="number" id="ot-mins-${ws.workstation_code}" min="0" value="${wsMins>0?wsMins:''}"
                     placeholder="${globalMins}" class="form-control" style="width:60px;display:inline-block;text-align:center;"></td>` : '';
@@ -2540,6 +2548,13 @@ function renderOtPlanSection() {
                 </div>
             </div>
             <div class="card-body" style="padding:0;overflow-x:auto;">
+                ${!supAuthorized ? `<div style="margin:10px 16px 4px;padding:10px 14px;background:#fef9c3;border:1px solid #fde68a;border-radius:8px;display:flex;align-items:center;gap:10px;">
+                    <span style="font-size:18px;">⚠️</span>
+                    <div>
+                        <div style="font-weight:700;color:#92400e;font-size:13px;">Awaiting IE Authorization</div>
+                        <div style="font-size:12px;color:#78350f;">Employee assignment and workstation toggles are locked until the IE authorizes OT for this line.</div>
+                    </div>
+                </div>` : ''}
                 <p style="font-size:0.82em;color:#6b7280;padding:8px 16px 4px;margin:0;">
                     Processes with the same workstation share one employee assignment. Tab out to regroup.
                 </p>

@@ -4863,8 +4863,10 @@ function fillOtLineCard(lineId, date, data) {
     const body = document.getElementById(`ot-card-body-${lineId}`);
     if (!body) return;
     const { ot_plan, workstations, products, employees, all_ot_assignments } = data;
-    const globalMins = ot_plan.global_ot_minutes || 60;
-    const otTarget   = ot_plan.ot_target_units   || 0;
+    const globalMins     = ot_plan.global_ot_minutes || 60;
+    const otTarget       = ot_plan.ot_target_units   || 0;
+    const perHourTarget  = ot_plan.per_hour_target    || 0;
+    const supAuthorized  = ot_plan.supervisor_authorized === true;
 
     // Build factory-wide OT assignment map for this date (employee_id → {line_id, ws_code})
     if (!window._otEmpState) window._otEmpState = {};
@@ -4939,13 +4941,15 @@ function fillOtLineCard(lineId, date, data) {
             <td style="font-size:12px;padding:8px 10px;max-width:260px;">${procs}</td>
             <td style="text-align:center;font-size:12px;padding:8px 10px;">${samDisp}</td>
             <td style="text-align:center;padding:6px 8px;">
-                <input type="number" min="0" max="480"
-                    data-ws="${ws.workstation_code}"
-                    class="${idPfx}-ws-mins"
-                    value="${ws.ot_minutes || 0}"
-                    placeholder="${globalMins}"
+                <select data-ws="${ws.workstation_code}" class="${idPfx}-ws-mins"
                     title="0 = use global (${globalMins} min)"
-                    style="width:58px;text-align:center;border:1px solid #d1d5db;border-radius:4px;padding:3px 4px;font-size:12px;">
+                    style="font-size:12px;border:1px solid #d1d5db;border-radius:4px;padding:3px 4px;">
+                    <option value="0"   ${!ws.ot_minutes ? 'selected' : ''}>Global</option>
+                    <option value="60"  ${ws.ot_minutes == 60  ? 'selected' : ''}>1h</option>
+                    <option value="120" ${ws.ot_minutes == 120 ? 'selected' : ''}>2h</option>
+                    <option value="180" ${ws.ot_minutes == 180 ? 'selected' : ''}>3h</option>
+                    <option value="240" ${ws.ot_minutes == 240 ? 'selected' : ''}>4h</option>
+                </select>
             </td>
             <td style="text-align:center;padding:8px 10px;">${wlCell}</td>
             <td style="text-align:center;padding:6px 8px;">
@@ -4975,18 +4979,34 @@ function fillOtLineCard(lineId, date, data) {
                 <select id="${idPfx}-product" style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;min-width:180px;">${productOpts}</select>
             </div>
             <div>
-                <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Minutes</label>
-                <input type="number" id="${idPfx}-mins" min="0" max="480" value="${globalMins}"
-                    style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;width:80px;">
+                <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Duration</label>
+                <select id="${idPfx}-hrs" onchange="calcOtTarget(${lineId})"
+                    style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;">
+                    <option value="60"  ${globalMins <= 60  ? 'selected' : ''}>1 Hour</option>
+                    <option value="120" ${globalMins == 120 ? 'selected' : ''}>2 Hours</option>
+                    <option value="180" ${globalMins == 180 ? 'selected' : ''}>3 Hours</option>
+                    <option value="240" ${globalMins >= 240 ? 'selected' : ''}>4 Hours</option>
+                </select>
             </div>
             <div>
                 <label style="display:block;font-size:11px;font-weight:600;color:#6b7280;margin-bottom:3px;text-transform:uppercase;">OT Target (units)</label>
-                <input type="number" id="${idPfx}-target" min="0" value="${otTarget}"
-                    style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;width:90px;">
+                <div style="display:flex;align-items:center;gap:6px;padding:6px 0;">
+                    <span id="${idPfx}-target-display" style="font-size:18px;font-weight:700;color:#1e1b4b;">${otTarget}</span>
+                    <span style="font-size:11px;color:#9ca3af;">units</span>
+                    <input type="hidden" id="${idPfx}-target" value="${otTarget}">
+                </div>
+                ${perHourTarget ? `<div style="font-size:10px;color:#9ca3af;">${perHourTarget.toFixed(1)} units/hr</div>` : ''}
             </div>
             <button onclick="saveOtCardSettings(${lineId},'${date}')"
                 style="padding:6px 16px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
                 Save Settings
+            </button>
+            <button id="${idPfx}-auth-btn" onclick="toggleOtSupervisorAuth(${lineId},'${date}',${supAuthorized})"
+                style="padding:6px 16px;background:${supAuthorized ? '#dcfce7' : '#f1f5f9'};
+                       color:${supAuthorized ? '#16a34a' : '#6b7280'};
+                       border:1px solid ${supAuthorized ? '#bbf7d0' : '#d1d5db'};
+                       border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                ${supAuthorized ? '✓ Supervisor Authorized' : 'Authorize Supervisor'}
             </button>
         </div>
         <!-- Workstation table -->
@@ -5033,7 +5053,7 @@ function fillOtLineCard(lineId, date, data) {
 async function saveOtCardSettings(lineId, date) {
     const pfx = `otc-${lineId}`;
     const productId  = document.getElementById(`${pfx}-product`)?.value;
-    const globalMins = parseInt(document.getElementById(`${pfx}-mins`)?.value, 10)   || 60;
+    const globalMins = parseInt(document.getElementById(`${pfx}-hrs`)?.value, 10)    || 60;
     const otTarget   = parseInt(document.getElementById(`${pfx}-target`)?.value, 10) || 0;
     if (!productId) { showToast('Please select a product', 'error'); return; }
     try {
@@ -5049,6 +5069,44 @@ async function saveOtCardSettings(lineId, date) {
     } catch (err) {
         showToast(err.message, 'error');
     }
+}
+
+function calcOtTarget(lineId) {
+    const pfx = `otc-${lineId}`;
+    const hrsEl = document.getElementById(`${pfx}-hrs`);
+    const hrs = parseInt(hrsEl?.value || 60, 10) / 60;
+    const perHour = window._otCardData?.[lineId]?.ot_plan?.per_hour_target || 0;
+    const target = Math.round(perHour * hrs);
+    const display = document.getElementById(`${pfx}-target-display`);
+    const hidden  = document.getElementById(`${pfx}-target`);
+    if (display) display.textContent = target;
+    if (hidden)  hidden.value = target;
+}
+
+async function toggleOtSupervisorAuth(lineId, date, currentAuth) {
+    const newAuth = !currentAuth;
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan/supervisor-auth`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, supervisor_authorized: newAuth })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Failed', 'error'); return; }
+        showToast(newAuth ? 'Supervisor authorized for OT' : 'OT authorization revoked', 'success');
+        const pfx = `otc-${lineId}`;
+        const btn = document.getElementById(`${pfx}-auth-btn`);
+        if (btn) {
+            btn.style.background   = newAuth ? '#dcfce7' : '#f1f5f9';
+            btn.style.color        = newAuth ? '#16a34a' : '#6b7280';
+            btn.style.borderColor  = newAuth ? '#bbf7d0' : '#d1d5db';
+            btn.textContent        = newAuth ? '✓ Supervisor Authorized' : 'Authorize Supervisor';
+            btn.setAttribute('onclick', `toggleOtSupervisorAuth(${lineId},'${date}',${newAuth})`);
+        }
+        if (window._otCardData?.[lineId]?.ot_plan) {
+            window._otCardData[lineId].ot_plan.supervisor_authorized = newAuth;
+        }
+    } catch (err) { showToast(err.message, 'error'); }
 }
 
 async function toggleOtWsAdminBtn(lineId, date, wsCode, btn) {
