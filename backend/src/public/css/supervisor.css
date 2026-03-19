@@ -1063,10 +1063,11 @@
 
     .mismatch-actions {
         flex-direction: row;
+        flex-wrap: wrap;
     }
 
     .mismatch-actions .btn {
-        flex: 1;
+        flex: 1 1 120px;
         width: auto;
     }
 

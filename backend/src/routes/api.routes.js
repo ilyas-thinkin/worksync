@@ -3418,12 +3418,13 @@ router.post('/workstation-assignments', async (req, res) => {
     try {
         if (employee_id) {
             await pool.query(
-                `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided)
-                 VALUES ($1, $2, $3, $4, $5, $6)
+                `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided, is_linked)
+                 VALUES ($1, $2, $3, $4, $5, $6, true)
                  ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
                  DO UPDATE SET employee_id = EXCLUDED.employee_id,
                                line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
                                material_provided = EXCLUDED.material_provided,
+                               is_linked = true,
                                assigned_at = NOW()`,
                 [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null, isNaN(matQty) ? null : matQty]
             );
@@ -3461,6 +3462,17 @@ router.patch('/workstation-assignments/material', async (req, res) => {
         if (result.rowCount === 0) {
             return res.status(404).json({ success: false, error: 'No assignment found for this workstation' });
         }
+        // Refresh group WIP — find which group this workstation belongs to
+        const wsGrpResult = await pool.query(
+            `SELECT COALESCE(group_name, workstation_code) AS group_identifier
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3
+             LIMIT 1`,
+            [line_id, date, workstation_code]
+        );
+        if (wsGrpResult.rows[0]?.group_identifier) {
+            await refreshGroupWip(line_id, date, wsGrpResult.rows[0].group_identifier);
+        }
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date: date });
         res.json({ success: true, data: { line_id, workstation_code, material_provided: qty, work_date: date } });
     } catch (err) {
@@ -3497,6 +3509,7 @@ router.delete('/workstation-assignments/:id', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
 
 // ============================================================================
 // LINE WORKSTATION PLAN (Line Balancing — per line, per date)
@@ -3543,10 +3556,12 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
         );
         const newWsId = newWs.rows[0].id;
         await db.query(
-            `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation)
-             SELECT $1, product_process_id, sequence_in_workstation
-             FROM line_plan_workstation_processes WHERE workstation_id=$2
-             ORDER BY sequence_in_workstation`,
+            `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation, osm_checked)
+             SELECT $1, lpwp.product_process_id, lpwp.sequence_in_workstation, COALESCE(pp.osm_checked, false)
+             FROM line_plan_workstation_processes lpwp
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             WHERE lpwp.workstation_id = $2
+             ORDER BY lpwp.sequence_in_workstation`,
             [newWsId, ws.id]
         );
         // Copy employee assignment with the new workstation ID so the display JOIN works
@@ -3641,6 +3656,7 @@ router.post('/lines/:lineId/workstation-plan/generate', async (req, res) => {
         // Get product processes ordered by sequence
         const procResult = await pool.query(
             `SELECT pp.id, pp.sequence_number, pp.operation_sah, pp.operation_id,
+                    pp.osm_checked,
                     o.operation_code, o.operation_name
              FROM product_processes pp
              JOIN operations o ON pp.operation_id = o.id
@@ -3676,9 +3692,9 @@ router.post('/lines/:lineId/workstation-plan/generate', async (req, res) => {
             const wsRow = wsResult.rows[0];
             for (let i = 0; i < ws.processes.length; i++) {
                 await pool.query(
-                    `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation)
-                     VALUES ($1, $2, $3)`,
-                    [wsRow.id, ws.processes[i].id, i + 1]
+                    `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation, osm_checked)
+                     VALUES ($1, $2, $3, $4)`,
+                    [wsRow.id, ws.processes[i].id, i + 1, ws.processes[i].osm_checked || false]
                 );
             }
             inserted.push({
@@ -3792,6 +3808,29 @@ router.put('/workstation-plan/processes/:lpwpId/osm', async (req, res) => {
     }
 });
 
+// PATCH /supervisor/changeover/co-assign — supervisor sets co_employee_id for a workstation
+router.patch('/supervisor/changeover/co-assign', async (req, res) => {
+    const { line_id, work_date, workstation_code, employee_id } = req.body;
+    if (!line_id || !work_date || !workstation_code) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date, workstation_code required' });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE line_plan_workstations SET co_employee_id = $1, updated_at = NOW()
+             WHERE line_id = $2 AND work_date = $3 AND workstation_code = $4
+             RETURNING id`,
+            [employee_id || null, line_id, work_date, workstation_code]
+        );
+        if (!result.rows.length) {
+            return res.status(404).json({ success: false, error: 'Workstation plan row not found' });
+        }
+        realtime.broadcast('data_change', { type: 'co_employee_update', workstation_code, line_id, work_date });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // PUT /workstation-plan/workstations/:wsId/co-employee — IE pre-assigns changeover employee for a workstation
 router.put('/workstation-plan/workstations/:wsId/co-employee', async (req, res) => {
     const { wsId } = req.params;
@@ -3827,12 +3866,12 @@ router.put('/workstation-plan/workstations/:wsId/processes', async (req, res) =>
         // Re-insert in given order
         let totalSam = 0;
         for (let i = 0; i < process_ids.length; i++) {
-            const pidResult = await pool.query('SELECT operation_sah FROM product_processes WHERE id = $1', [process_ids[i]]);
+            const pidResult = await pool.query('SELECT operation_sah, osm_checked FROM product_processes WHERE id = $1', [process_ids[i]]);
             if (pidResult.rows[0]) totalSam += parseFloat(pidResult.rows[0].operation_sah || 0) * 3600;
             await pool.query(
-                `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation)
-                 VALUES ($1, $2, $3)`,
-                [wsId, process_ids[i], i + 1]
+                `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation, osm_checked)
+                 VALUES ($1, $2, $3, $4)`,
+                [wsId, process_ids[i], i + 1, pidResult.rows[0] ? (pidResult.rows[0].osm_checked || false) : false]
             );
         }
 
@@ -4062,11 +4101,23 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
             [date]
         );
 
+        // When viewing a changeover product, remap co_employee_id → employee_id so the
+        // IE panel picker shows and saves the changeover-specific employee assignment.
+        const isChangeoverView = overrideProductId && overrideProductId !== (planResult.rows[0]?.product_id ?? null);
+        const processes = isChangeoverView
+            ? processResult.rows.map(row => ({
+                ...row,
+                employee_id: row.co_employee_id ?? null,
+                emp_code:    row.co_emp_code ?? null,
+                emp_name:    row.co_emp_name ?? null,
+            }))
+            : processResult.rows;
+
         res.json({
             success: true,
             data: {
                 line: lineInfo,
-                processes: processResult.rows,
+                processes,
                 employees: empResult.rows,
                 all_assignments: allAssignmentsResult.rows,
                 products: productsResult.rows,
@@ -4100,9 +4151,12 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
             `SELECT target_units, product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
             [lineId, work_date]
         );
-        // Fall back to values passed from the UI if no saved plan exists yet
-        const target_units = planResult.rows[0]?.target_units ?? (bodyTarget ? parseInt(bodyTarget, 10) : 0);
-        const product_id = planResult.rows[0]?.product_id ?? (bodyProductId ? parseInt(bodyProductId, 10) : null);
+        // Prefer explicit body values (handles changeover product saves); fall back to DB primary values
+        const product_id = bodyProductId ? parseInt(bodyProductId, 10) : (planResult.rows[0]?.product_id ?? null);
+        const target_units = bodyTarget ? parseInt(bodyTarget, 10) : (planResult.rows[0]?.target_units ?? 0);
+        // Detect if this is a changeover plan save (product differs from primary plan product)
+        const primaryProductId = planResult.rows[0]?.product_id ?? null;
+        const isChangeoverSave = product_id && primaryProductId && product_id !== primaryProductId;
         if (!product_id) {
             return res.status(400).json({ success: false, error: 'No product selected for this line and date' });
         }
@@ -4177,6 +4231,13 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
             if (!ws.group_name && row.group_name) ws.group_name = (row.group_name || '').trim() || null;
         });
 
+        // Wipe all regular-shift employee assignments for this line+date so the supervisor
+        // starts fresh mapping every time the IE saves a new plan.
+        await pool.query(
+            `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND work_date = $2 AND is_overtime = false`,
+            [lineId, work_date]
+        );
+
         // Delete existing plan for this line+date+product only
         await pool.query(`DELETE FROM line_plan_workstations WHERE line_id = $1 AND work_date = $2 AND product_id = $3`, [lineId, work_date, product_id]);
 
@@ -4208,16 +4269,26 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
                 );
             }
             if (ws.employee_id) {
-                await pool.query(
-                    `INSERT INTO employee_workstation_assignments
-                     (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime)
-                     VALUES ($1, $2, $3, $4, $5, false)
-                     ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
-                     DO UPDATE SET employee_id = EXCLUDED.employee_id,
-                                   line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
-                                   assigned_at = NOW()`,
-                    [lineId, work_date, ws.workstation_code, ws.employee_id, wsId]
-                );
+                if (isChangeoverSave) {
+                    // Changeover plan: store IE-suggested employee on the workstation row (co_employee_id)
+                    // rather than EWA, so it doesn't overwrite the primary plan's live employee assignments.
+                    await pool.query(
+                        `UPDATE line_plan_workstations SET co_employee_id = $1 WHERE id = $2`,
+                        [ws.employee_id, wsId]
+                    );
+                } else {
+                    // Primary plan: write to employee_workstation_assignments (the live assignment table)
+                    await pool.query(
+                        `INSERT INTO employee_workstation_assignments
+                         (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime)
+                         VALUES ($1, $2, $3, $4, $5, false)
+                         ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+                         DO UPDATE SET employee_id = EXCLUDED.employee_id,
+                                       line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                                       assigned_at = NOW()`,
+                        [lineId, work_date, ws.workstation_code, ws.employee_id, wsId]
+                    );
+                }
             }
         }
 
@@ -4452,6 +4523,7 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
         // Get product processes (for matching by operation name)
         const ppResult = await pool.query(
             `SELECT pp.id, pp.sequence_number, pp.operation_sah, pp.cycle_time_seconds,
+                    pp.osm_checked,
                     o.operation_name, o.id as operation_id
              FROM product_processes pp
              JOIN operations o ON pp.operation_id = o.id
@@ -4544,8 +4616,8 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
 
             for (let i = 0; i < validRows.length; i++) {
                 await client.query(
-                    'INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation) VALUES ($1, $2, $3)',
-                    [wsRow.id, validRows[i].pp.id, i + 1]
+                    'INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation, osm_checked) VALUES ($1, $2, $3, $4)',
+                    [wsRow.id, validRows[i].pp.id, i + 1, validRows[i].pp.osm_checked || false]
                 );
             }
 
@@ -4593,29 +4665,31 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
 // ============================================================================
 
 // GET /lines/plan-upload-template — download the Line Plan Excel template
+// Columns: A=SEQ, B=GROUP, C=OSM, D=WORKSTATION, E=OPERATION CODE, F=OPERATION NAME, G=SAH, H=EMPLOYEE CODE
 router.get('/lines/plan-upload-template', async (req, res) => {
     try {
         const workbook = new ExcelJS.Workbook();
         const ws = workbook.addWorksheet('Line Plan');
         ws.columns = [
-            { width: 8  }, // A: Seq
-            { width: 22 }, // B: Group / header value
-            { width: 16 }, // C: Workstation
-            { width: 16 }, // D: Operation Code
-            { width: 40 }, // E: Operation Name
-            { width: 12 }, // F: SAH
-            { width: 20 }, // G: Employee Code
+            { width: 8  }, // A: SEQ
+            { width: 14 }, // B: GROUP / header value
+            { width: 10 }, // C: OSM
+            { width: 16 }, // D: WORKSTATION
+            { width: 16 }, // E: OPERATION CODE
+            { width: 40 }, // F: OPERATION NAME
+            { width: 12 }, // G: SAH
+            { width: 20 }, // H: EMPLOYEE CODE
         ];
 
-        const boldFont  = { bold: true, size: 11 };
+        const boldFont   = { bold: true, size: 11 };
         const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
         const labelFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
         const greenFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D6F42' } };
         const borderAll  = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
         const today = new Date().toISOString().slice(0, 10);
 
-        // Row 1: Title
-        ws.mergeCells('A1:G1');
+        // Row 1: Title (spans A–H)
+        ws.mergeCells('A1:H1');
         const titleCell = ws.getCell('A1');
         titleCell.value = 'LINE PLAN UPLOAD';
         titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
@@ -4626,9 +4700,9 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         // Row 2: blank spacer
         ws.getRow(2).height = 6;
 
-        // Rows 3-10: Header fields (label in A, value in B, note in C-G)
+        // Rows 3-10: Header fields (label in A, value in B, note merged C–H)
         const headerRows = [
-            { row: 3,  label: 'LINE CODE',       value: 'RUMIYA_LINE',     note: 'Production line code. Auto-created if not in system.' },
+            { row: 3,  label: 'LINE CODE',       value: 'RUMIYA',          note: 'Production line code. Auto-created if not in system.' },
             { row: 4,  label: 'HALL NAME',        value: 'Hall B',          note: 'Hall/area name (used as line name if auto-creating the line).' },
             { row: 5,  label: 'DATE',             value: today,             note: 'Work date — YYYY-MM-DD format (e.g. 2026-02-19).' },
             { row: 6,  label: 'PRODUCT CODE',     value: '4321',            note: 'Style/product code. Auto-created if new.' },
@@ -4646,7 +4720,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             vc.value = value; vc.font = { size: 11 }; vc.border = borderAll;
             vc.alignment = { horizontal: 'left', vertical: 'middle' };
 
-            ws.mergeCells(row, 3, row, 7);
+            ws.mergeCells(row, 3, row, 8);
             const nc = ws.getCell(row, 3);
             nc.value = note;
             nc.font = { size: 10, italic: true, color: { argb: 'FF6B7280' } };
@@ -4656,8 +4730,8 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         // Row 11: spacer
         ws.getRow(11).height = 8;
 
-        // Row 12: Table header
-        const tableHeaders = ['SEQ', 'GROUP', 'WORKSTATION', 'OPERATION CODE', 'OPERATION NAME', 'SAH', 'EMPLOYEE CODE'];
+        // Row 12: Table header — A=SEQ B=GROUP C=OSM D=WORKSTATION E=OPERATION CODE F=OPERATION NAME G=SAH H=EMPLOYEE CODE
+        const tableHeaders = ['SEQ', 'GROUP', 'OSM', 'WORKSTATION', 'OPERATION CODE', 'OPERATION NAME', 'SAH', 'EMPLOYEE CODE'];
         const hRow = ws.getRow(12);
         hRow.height = 22;
         tableHeaders.forEach((h, i) => {
@@ -4669,19 +4743,20 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             cell.alignment = { horizontal: 'center', vertical: 'middle' };
         });
 
-        // Rows 13+: Example data (based on the BILLFOLD WALLET line from the screenshot)
+        // Rows 13+: Example data — [SEQ, GROUP, OSM, WORKSTATION, OP CODE, OP NAME, SAH, EMP CODE]
+        // OSM column: number = OSM checkpoint at that process; blank = not an OSM check
         const exampleData = [
-            [1,  'G1', 'WS01', 'OP-0001', 'TOP PASTING',              0.0033, 'LPD00059'],
-            [2,  'G1', 'WS01', 'OP-0002', 'KIMLON PASTING',           0.0033, ''],
-            [3,  'G1', 'WS01', 'OP-0003', 'ATTACHING TOP & KIMLON',   0.0083, ''],
-            [4,  'G1', 'WS01', 'OP-0004', 'GUSSET STITCHING -2NOS',   0.0083, ''],
-            [5,  'G1', 'WS02', 'OP-0005', 'GUSSET LAMPING -2NOS',     0.0056, 'LPD00601'],
-            [6,  'G1', 'WS02', 'OP-0006', 'GUSSET SHAPING',           0.0044, ''],
-            [7,  'G2', 'WS03', 'OP-0007', 'PATTI PROMOTOR',           0.0056, 'LPD00120'],
-            [8,  'G2', 'WS03', 'OP-0008', 'PATTI PRIMER 1',           0.0028, ''],
-            [9,  'G2', 'WS04', 'OP-0009', 'PATTI DYE',                0.0056, 'LPD00088'],
-            [10, 'G3', 'WS05', 'OP-0010', 'PATTI PRIMER 2',           0.0028, 'LPD00210'],
-            [11, 'G3', 'WS06', 'OP-0011', 'CLEANING',                 0.0042, 'LPD00310'],
+            [1,  'G1', '',  'WS01', 'OP-0001', 'TOP PASTING',              0.0033, ''],
+            [2,  'G1', 1,   'WS01', 'OP-0002', 'KIMLON PASTING',           0.0033, ''],
+            [3,  'G1', '',  'WS01', 'OP-0003', 'ATTACHING TOP & KIMLON',   0.0083, ''],
+            [4,  'G1', '',  'WS01', 'OP-0004', 'GUSSET STITCHING -2NOS',   0.0083, ''],
+            [5,  'G1', 2,   'WS02', 'OP-0005', 'GUSSET LAMPING -2NOS',     0.0056, ''],
+            [6,  'G1', '',  'WS02', 'OP-0006', 'GUSSET SHAPING',           0.0044, ''],
+            [7,  'G2', '',  'WS03', 'OP-0007', 'PATTI PROMOTOR',           0.0056, ''],
+            [8,  'G2', 3,   'WS03', 'OP-0008', 'PATTI PRIMER 1',           0.0028, ''],
+            [9,  'G2', '',  'WS04', 'OP-0009', 'PATTI DYE',                0.0056, ''],
+            [10, 'G3', 4,   'WS05', 'OP-0010', 'PATTI PRIMER 2',           0.0028, ''],
+            [11, 'G3', '',  'WS06', 'OP-0011', 'CLEANING',                 0.0042, ''],
         ];
         exampleData.forEach((rowData, idx) => {
             const rowNum = 13 + idx;
@@ -4691,8 +4766,9 @@ router.get('/lines/plan-upload-template', async (req, res) => {
                 cell.value = val;
                 cell.border = borderAll;
                 cell.fill = headerFill;
-                cell.alignment = { horizontal: colIdx === 4 ? 'left' : 'center', vertical: 'middle' };
-                if (colIdx === 5 && typeof val === 'number') cell.numFmt = '0.0000';
+                // col 5 = OPERATION NAME (0-indexed) → left-align
+                cell.alignment = { horizontal: colIdx === 5 ? 'left' : 'center', vertical: 'middle' };
+                if (colIdx === 6 && typeof val === 'number') cell.numFmt = '0.0000';
             });
             row.height = 18;
         });
@@ -4722,6 +4798,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             'DATA TABLE (Row 12 onwards):',
             '  SEQ             Process sequence number (1, 2, 3...). Auto-numbered if blank.',
             '  GROUP           Optional group label (e.g. G1, G2).',
+            '  OSM             OSM checkpoint number for this process. Leave blank if not an OSM check.',
             '  WORKSTATION     Workstation code (e.g. WS01). All rows with the same code share',
             '                  one employee assignment and are grouped together.',
             '  OPERATION CODE  System code (e.g. OP-0001). Leave blank to auto-generate.',
@@ -4798,18 +4875,24 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         if (!productName)                      throw new Error('Product Name is required (row 7)');
         if (!targetUnits || targetUnits <= 0)  throw new Error('Target Units must be > 0 (row 8)');
 
-        // Find or create line
-        const lineResult = await client.query(
-            `INSERT INTO production_lines (line_code, line_name, hall_location, is_active)
-             VALUES ($1, $2, $3, true)
-             ON CONFLICT (line_code) DO UPDATE
-               SET line_name     = CASE WHEN production_lines.line_name     = '' THEN EXCLUDED.line_name     ELSE production_lines.line_name     END,
-                   hall_location = CASE WHEN production_lines.hall_location IS NULL THEN EXCLUDED.hall_location ELSE production_lines.hall_location END
-             RETURNING id, (xmax = 0) AS was_inserted`,
-            [lineCode, hallName || lineCode, hallName || null]
+        // Find or create line — if it already exists, use it as-is (no updates to name/hall)
+        let lineId, lineCreated;
+        const existingLine = await client.query(
+            `SELECT id FROM production_lines WHERE line_code = $1 LIMIT 1`, [lineCode]
         );
-        const lineId      = lineResult.rows[0].id;
-        const lineCreated = lineResult.rows[0].was_inserted;
+        if (existingLine.rows[0]) {
+            lineId      = existingLine.rows[0].id;
+            lineCreated = false;
+        } else {
+            if (!hallName) throw new Error(`Line "${lineCode}" not found. Provide HALL NAME to auto-create it.`);
+            const ins = await client.query(
+                `INSERT INTO production_lines (line_code, line_name, hall_location, is_active)
+                 VALUES ($1, $2, $3, true) RETURNING id`,
+                [lineCode, hallName, hallName]
+            );
+            lineId      = ins.rows[0].id;
+            lineCreated = true;
+        }
 
         // Find or create primary product
         const prodResult = await client.query(
@@ -4851,23 +4934,26 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         const taktTimeSecs = targetUnits > 0 ? workingSecs / targetUnits : 0;
 
         // Parse data rows (start at row 13; stop at first fully empty row)
+        // Columns: A=SEQ, B=GROUP, C=OSM, D=WORKSTATION, E=OPERATION CODE, F=OPERATION NAME, G=SAH, H=EMPLOYEE CODE
         const dataRows = [];
         let autoSeq = 1;
         for (let rowNum = 13; rowNum <= 2000; rowNum++) {
-            const wsCode = getCellStr(rowNum, 3);
-            const opCode = getCellStr(rowNum, 4);
-            const opName = getCellStr(rowNum, 5);
+            const wsCode = getCellStr(rowNum, 4);   // D: WORKSTATION
+            const opCode = getCellStr(rowNum, 5);   // E: OPERATION CODE
+            const opName = getCellStr(rowNum, 6);   // F: OPERATION NAME
             if (!wsCode && !opCode && !opName) break;
-            const sah    = getCellNum(rowNum, 6);
+            const osmVal = getCellStr(rowNum, 3);   // C: OSM (number or blank)
+            const sah    = getCellNum(rowNum, 7);   // G: SAH
             const seqVal = Math.round(getCellNum(rowNum, 1)) || autoSeq;
             dataRows.push({
-                seq:     seqVal,
-                group:   getCellStr(rowNum, 2),
-                wsCode:  wsCode.toUpperCase(),
-                opCode:  opCode.toUpperCase(),
+                seq:        seqVal,
+                group:      getCellStr(rowNum, 2),   // B: GROUP
+                osm:        osmVal !== '' ? osmVal : null,
+                wsCode:     wsCode.toUpperCase(),
+                opCode:     opCode.toUpperCase(),
                 opName,
                 sah,
-                empCode: getCellStr(rowNum, 7)
+                empCode:    getCellStr(rowNum, 8)   // H: EMPLOYEE CODE
             });
             autoSeq++;
         }
@@ -4885,7 +4971,9 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
         }
 
-        // Upsert operations (shared across products) + product_processes (product-specific SAH)
+        // Upsert operations + product_processes.
+        // sequence_number is NOT updated here to avoid uq_product_sequence conflicts mid-loop;
+        // a single batch UPDATE is done after the loop (Postgres checks UNIQUE at statement end).
         for (const row of dataRows) {
             // If operation code is missing, find by name or auto-generate
             if (!row.opCode) {
@@ -4903,7 +4991,6 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
 
             if (!row.opId) {
-                // Upsert operation by code (shared)
                 const opResult = await client.query(
                     `INSERT INTO operations (operation_code, operation_name, is_active)
                      VALUES ($1, $2, true)
@@ -4915,28 +5002,45 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 row.opId = opResult.rows[0].id;
             }
 
-            // Upsert product_process — (product_id, operation_id) is the natural key
+            // OSM checked: true if the Excel OSM column has a value for this row
+            row.osmChecked = row.osm !== null && row.osm !== '';
+
+            // Upsert product_process — natural key is (product_id, operation_id)
             const ppCheck = await client.query(
                 `SELECT id FROM product_processes WHERE product_id = $1 AND operation_id = $2 LIMIT 1`,
                 [productId, row.opId]
             );
             if (ppCheck.rows[0]) {
+                // Update SAH + OSM only; sequence handled in batch below
                 await client.query(
                     `UPDATE product_processes
-                     SET sequence_number = $1, operation_sah = $2, cycle_time_seconds = $3
+                     SET operation_sah = $1, cycle_time_seconds = $2, osm_checked = $3
                      WHERE id = $4`,
-                    [row.seq, row.sah, Math.round(row.sah * 3600), ppCheck.rows[0].id]
+                    [row.sah, Math.round(row.sah * 3600), row.osmChecked, ppCheck.rows[0].id]
                 );
                 row.ppId = ppCheck.rows[0].id;
             } else {
                 const ppInsert = await client.query(
                     `INSERT INTO product_processes
-                       (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active)
-                     VALUES ($1, $2, $3, $4, $5, 1, true) RETURNING id`,
-                    [productId, row.opId, row.seq, row.sah, Math.round(row.sah * 3600)]
+                       (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
+                     VALUES ($1, $2, $3, $4, $5, 1, true, $6) RETURNING id`,
+                    [productId, row.opId, row.seq, row.sah, Math.round(row.sah * 3600), row.osmChecked]
                 );
                 row.ppId = ppInsert.rows[0].id;
             }
+        }
+
+        // Batch-update sequence_numbers in a single statement to avoid uq_product_sequence conflicts.
+        // PostgreSQL defers UNIQUE constraint checks to the end of the statement for multi-row updates,
+        // so swapped sequences (e.g. 1→2 and 2→1) won't cause a violation.
+        if (dataRows.length) {
+            const seqValues = dataRows.map(r => `(${r.ppId}, ${r.seq})`).join(', ');
+            await client.query(
+                `UPDATE product_processes AS pp
+                 SET sequence_number = v.seq
+                 FROM (VALUES ${seqValues}) AS v(id, seq)
+                 WHERE pp.id = v.id`
+            );
         }
 
         // Upsert daily plan
@@ -4993,9 +5097,9 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             for (let i = 0; i < processes.length; i++) {
                 await client.query(
                     `INSERT INTO line_plan_workstation_processes
-                       (workstation_id, product_process_id, sequence_in_workstation)
-                     VALUES ($1, $2, $3)`,
-                    [wsId, processes[i].ppId, i + 1]
+                       (workstation_id, product_process_id, sequence_in_workstation, osm_checked)
+                     VALUES ($1, $2, $3, $4)`,
+                    [wsId, processes[i].ppId, i + 1, processes[i].osmChecked || false]
                 );
             }
 
@@ -5322,6 +5426,58 @@ const refreshProcessWip = async (lineId, processId, workDate) => {
     );
 };
 
+// Recalculate and upsert group_wip for one group.
+// groupIdentifier = group_name for grouped workstations, workstation_code for ungrouped.
+const refreshGroupWip = async (lineId, workDate, groupIdentifier) => {
+    // Find the first workstation in this group (lowest workstation_number)
+    const firstWsResult = await pool.query(
+        `SELECT workstation_code FROM line_plan_workstations
+         WHERE line_id = $1 AND work_date = $2
+           AND (group_name = $3 OR (group_name IS NULL AND workstation_code = $3))
+         ORDER BY workstation_number ASC LIMIT 1`,
+        [lineId, workDate, groupIdentifier]
+    );
+    const firstWsCode = firstWsResult.rows[0]?.workstation_code;
+    if (!firstWsCode) return;
+
+    // materials_in = feed input entered at the first workstation
+    const matResult = await pool.query(
+        `SELECT COALESCE(material_provided, 0) AS mat
+         FROM employee_workstation_assignments
+         WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
+        [lineId, workDate, firstWsCode]
+    );
+    const materialsIn = parseInt(matResult.rows[0]?.mat || 0, 10);
+
+    // output_qty = sum of hourly output across all workstations in the group.
+    // Group by (workstation_plan_id, hour_slot) to avoid double-counting process fan-out rows.
+    const outResult = await pool.query(
+        `SELECT COALESCE(SUM(qty), 0) AS total_output
+         FROM (
+             SELECT lphp.workstation_plan_id, lphp.hour_slot, MAX(lphp.quantity) AS qty
+             FROM line_plan_workstations lpw
+             JOIN line_process_hourly_progress lphp ON lphp.workstation_plan_id = lpw.id
+             WHERE lpw.line_id = $1 AND lpw.work_date = $2
+               AND (lpw.group_name = $3 OR (lpw.group_name IS NULL AND lpw.workstation_code = $3))
+             GROUP BY lphp.workstation_plan_id, lphp.hour_slot
+         ) ws_hr`,
+        [lineId, workDate, groupIdentifier]
+    );
+    const outputQty = parseInt(outResult.rows[0]?.total_output || 0, 10);
+    const wipQty = Math.max(0, materialsIn - outputQty);
+
+    await pool.query(
+        `INSERT INTO group_wip (line_id, work_date, group_name, materials_in, output_qty, wip_quantity)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (line_id, work_date, group_name)
+         DO UPDATE SET materials_in  = EXCLUDED.materials_in,
+                       output_qty    = EXCLUDED.output_qty,
+                       wip_quantity  = EXCLUDED.wip_quantity,
+                       updated_at    = NOW()`,
+        [lineId, workDate, groupIdentifier, materialsIn, outputQty, wipQty]
+    );
+};
+
 router.get('/supervisor/lines', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -5508,6 +5664,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     ewa.employee_id as assigned_employee_id,
                     e.emp_code as assigned_emp_code,
                     e.emp_name as assigned_emp_name,
+                    ewa.is_linked as assigned_is_linked,
                     ewa.material_provided,
                     lpwp.sequence_in_workstation,
                     wd.id AS departure_id,
@@ -5601,6 +5758,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         workstation_number: row.workstation_number,
                         workstation_code: row.workstation_code,
                         group_name: row.group_name || null,
+                        has_co_plan: coWsMap.has(row.workstation_code),
                         co_suggested_emp_id: incomingCoData?.co_emp_id ?? null,
                         co_suggested_emp_code: incomingCoData?.co_emp_code ?? null,
                         co_suggested_emp_name: incomingCoData?.co_emp_name ?? null,
@@ -5613,6 +5771,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         assigned_employee_id: isCoActive ? (firstCoRow?.assigned_employee_id ?? row.assigned_employee_id) : row.assigned_employee_id,
                         assigned_emp_code: isCoActive ? (firstCoRow?.assigned_emp_code ?? row.assigned_emp_code) : row.assigned_emp_code,
                         assigned_emp_name: isCoActive ? (firstCoRow?.assigned_emp_name ?? row.assigned_emp_name) : row.assigned_emp_name,
+                        assigned_is_linked: isCoActive ? (firstCoRow?.assigned_is_linked ?? row.assigned_is_linked) : row.assigned_is_linked,
                         material_provided: (isCoActive ? (firstCoRow?.material_provided ?? row.material_provided) : row.material_provided) ?? null,
                         product_id: isCoActive ? incomingId : primaryId,
                         departure_id: row.departure_id || null,
@@ -5665,7 +5824,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
 
             const workstations = Array.from(wsMap.values());
 
-            // Compute is_group_first and group_material_provided for group-level material tracking
+            // Compute is_group_first for group-level material tracking
             // Workstations are already ordered by workstation_number, so first occurrence = group leader
             const groupLeaderMap = new Map(); // group_name -> leader ws object
             for (const ws of workstations) {
@@ -5681,6 +5840,21 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     ws.is_group_first = (groupLeaderMap.get(g) === ws);
                     ws.group_material_provided = ws.is_group_first ? null : (groupLeaderMap.get(g)?.material_provided ?? null);
                 }
+            }
+
+            // Attach group WIP data to each workstation
+            const groupWipResult = await pool.query(
+                `SELECT group_name, materials_in, output_qty, wip_quantity
+                 FROM group_wip WHERE line_id = $1 AND work_date = $2`,
+                [lineId, date]
+            );
+            const groupWipMap = new Map(groupWipResult.rows.map(r => [r.group_name, r]));
+            for (const ws of workstations) {
+                const key = ws.group_name || ws.workstation_code;
+                const gw = groupWipMap.get(key);
+                ws.group_wip_quantity  = gw ? gw.wip_quantity  : null;
+                ws.group_materials_in  = gw ? gw.materials_in  : null;
+                ws.group_output_qty    = gw ? gw.output_qty    : null;
             }
 
             // Flat process list for backward compat
@@ -6817,6 +6991,20 @@ router.get('/line-shifts', async (req, res) => {
     }
 });
 
+router.post('/supervisor/mapping/unlink-all', async (req, res) => {
+    const { lineId, date } = req.body;
+    if (!lineId || !date) return res.status(400).json({ success: false, error: 'lineId and date required' });
+    try {
+        await pool.query(
+            `UPDATE employee_workstation_assignments SET is_linked = false WHERE line_id = $1 AND work_date = $2 AND is_overtime = false`,
+            [lineId, date]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 router.post('/supervisor/progress', async (req, res) => {
     const { line_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks, shortfall_reason } = req.body;
     // Support both: workstation_plan_id (new model) or process_id (legacy)
@@ -6888,6 +7076,15 @@ router.post('/supervisor/progress', async (req, res) => {
                      DO UPDATE SET remarks = EXCLUDED.remarks, updated_at = NOW()`,
                     [line_id, work_date, hourValue, remarks || null]
                 );
+            }
+            // Refresh group WIP for the group this workstation belongs to
+            const wsGrpRes = await pool.query(
+                `SELECT COALESCE(group_name, workstation_code) AS group_identifier
+                 FROM line_plan_workstations WHERE id = $1`,
+                [workstation_plan_id]
+            );
+            if (wsGrpRes.rows[0]?.group_identifier) {
+                await refreshGroupWip(line_id, work_date, wsGrpRes.rows[0].group_identifier);
             }
             realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, workstation_plan_id, work_date, hour_slot });
             return res.json({ success: true, data: { workstation_plan_id, process_ids: savedProcessIds, quantity: completed } });
@@ -7032,6 +7229,18 @@ router.post('/supervisor/progress', async (req, res) => {
                     }
                 }
             }
+        }
+        // Refresh group WIP for the group this process belongs to
+        const legacyGrpRes = await pool.query(
+            `SELECT COALESCE(lpw.group_name, lpw.workstation_code) AS group_identifier
+             FROM line_plan_workstations lpw
+             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+             WHERE lpwp.product_process_id = $1 AND lpw.line_id = $2 AND lpw.work_date = $3
+             LIMIT 1`,
+            [process_id, line_id, work_date]
+        );
+        if (legacyGrpRes.rows[0]?.group_identifier) {
+            await refreshGroupWip(line_id, work_date, legacyGrpRes.rows[0].group_identifier);
         }
         realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, process_id, work_date, hour_slot });
         res.json({ success: true, data: result.rows[0] });

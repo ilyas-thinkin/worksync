@@ -295,6 +295,7 @@ body::before {
    ================================ */
 .main-content {
     flex: 1;
+    min-width: 0;
     padding: var(--space-lg);
     padding-bottom: calc(var(--space-lg) + env(safe-area-inset-bottom, 0px));
 }

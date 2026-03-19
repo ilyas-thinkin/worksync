@@ -246,7 +246,7 @@ async function loadMorningProcedure() {
         content.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Morning Procedure</h1>
+                    <h1 class="page-title">Mapping</h1>
                     <p class="page-subtitle">Assign workers to workstations</p>
                 </div>
                 <span class="status-badge">${today}</span>
@@ -333,38 +333,43 @@ async function onMorningLineChange() {
     }
 }
 
+
 function renderMorningAssignments(hasPlan) {
     const container = document.getElementById('morning-assignments');
 
     if (hasPlan && morningState.workstations?.length > 0) {
         const workstations = morningState.workstations;
 
-        // All linked = every workstation has an employee assigned
-        const allLinked = workstations.every(ws => !!ws.assigned_emp_name);
+        // All linked = every workstation has an employee confirmed (linked)
+        const allLinked = workstations.every(ws => !!ws.assigned_emp_name && ws.assigned_is_linked !== false);
 
         const cards = workstations.map(ws => {
-            const isMapped   = !!ws.assigned_emp_name;
+            const hasEmployee = !!ws.assigned_emp_name;
+            const isLinked   = hasEmployee && ws.assigned_is_linked !== false;
+            const isMapped   = isLinked; // legacy alias — "mapped" = linked
             const processList = (ws.processes || []).map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
             const workloadPct = parseFloat(ws.workload_pct||0).toFixed(0);
 
-            const assignedHtml = isMapped
-                ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
+            const assignedHtml = hasEmployee
+                ? `<span style="color:${isLinked ? '#1d4ed8' : '#6b7280'};font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
                 : '<span style="color:#9ca3af;font-style:italic;">Not mapped</span>';
 
-            const statusBadge = isMapped
+            const statusBadge = isLinked
                 ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
-                : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
+                : hasEmployee
+                    ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#fee2e2;color:#dc2626;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9711; Unlinked</span>`
+                    : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
 
             const groupBadge = ws.group_name
                 ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#ede9fe;color:#5b21b6;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:700;">&#128209; ${ws.group_name}</span>`
                 : '';
 
-            const footerContent = isMapped
+            const footerContent = isLinked
                 ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
                 : `<button class="btn btn-primary ws-card-action"
                         onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${(ws.assigned_emp_name || '').replace(/'/g, "\\'")}')">
-                        &#128247; Scan &amp; Link
+                        &#128247; ${hasEmployee ? 'Re-link' : 'Scan &amp; Link'}
                    </button>`;
 
             return `
@@ -397,10 +402,13 @@ function renderMorningAssignments(hasPlan) {
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Workstation Assignments</h3>
-                    <span style="font-size:0.85em; color:#6b7280;">
-                        ${workstations.length} workstations &nbsp;|&nbsp;
-                        ${allLinked ? '<span style="color:#16a34a;">&#10003; All linked</span>' : '<span style="color:#dc2626;">&#9888; Some not linked</span>'}
-                    </span>
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <span style="font-size:0.85em; color:#6b7280;">
+                            ${workstations.length} workstations &nbsp;|&nbsp;
+                            ${allLinked ? '<span style="color:#16a34a;">&#10003; All linked</span>' : '<span style="color:#dc2626;">&#9888; Some not linked</span>'}
+                        </span>
+                        <button class="btn btn-secondary btn-sm" onclick="unlinkAllMapping()">Unlink All</button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div class="ws-cards-grid">${cards}</div>
@@ -706,6 +714,36 @@ function cancelMorningScan() {
     morningState.scanMode = 'link';
 }
 
+async function unlinkAllMapping() {
+    if (!morningState.lineId) return;
+    if (!confirm('Unlink all employee assignments for this line today?')) return;
+    try {
+        const today = new Date().toISOString().slice(0, 10);
+        const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-all`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lineId: morningState.lineId, date: today })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Unlink failed', 'error'); return; }
+        showToast('All assignments unlinked', 'success');
+        // Reload workstation state
+        const procRes = await fetch(`${API_BASE}/supervisor/processes/${morningState.lineId}`);
+        const procResult = await procRes.json();
+        if (procResult.has_plan && procResult.workstation_plan?.length > 0) {
+            morningState.workstations = procResult.workstation_plan;
+            morningState.processes = procResult.data || [];
+            renderMorningAssignments(true);
+        } else {
+            morningState.workstations = null;
+            morningState.processes = procResult.data || [];
+            renderMorningAssignments(false);
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 
 // ==========================================
 // FEED INPUT
@@ -788,6 +826,15 @@ function renderFeedInput() {
         const materialBadge = ws.material_provided != null
             ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; ${ws.material_provided} pcs</span>`
             : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not entered</span>`;
+
+        const hasWip = ws.group_wip_quantity != null;
+        const wipColor = hasWip
+            ? (ws.group_wip_quantity > 0 ? '#d97706' : '#16a34a')
+            : '#9ca3af';
+        const wipBadge = hasWip
+            ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#fff7ed;color:${wipColor};padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">WIP ${ws.group_wip_quantity}</span>`
+            : '';
+
         const assignedHtml = isAssigned
             ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
             : `<span style="color:#dc2626;font-style:italic;">No employee assigned</span>`;
@@ -801,13 +848,25 @@ function renderFeedInput() {
                     &#10003; Save
                 </button>
                </div>`
-            : `<p style="color:#9ca3af;font-size:12px;font-style:italic;margin:4px 0 0;">Assign an employee via Morning Procedure first.</p>`;
+            : `<p style="color:#9ca3af;font-size:12px;font-style:italic;margin:4px 0 0;">Assign an employee via Mapping first.</p>`;
+
+        const wipRow = hasWip ? `
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Group WIP</span>
+                        <span style="font-size:13px;">
+                            <span style="color:#374151;">In: <strong>${ws.group_materials_in ?? 0}</strong></span>
+                            &nbsp;·&nbsp;
+                            <span style="color:#374151;">Out: <strong>${ws.group_output_qty ?? 0}</strong></span>
+                            &nbsp;·&nbsp;
+                            <span style="color:${wipColor};font-weight:700;">WIP: ${ws.group_wip_quantity}</span>
+                        </span>
+                    </div>` : '';
 
         return `
             <div class="ws-card ${ws.material_provided == null ? 'ws-card--alert' : ''}" id="feed-card-${ws.workstation_code}">
                 <div class="ws-card-header">
                     <span class="ws-card-code">${ws.workstation_code}</span>
-                    <div class="ws-card-badges">${groupBadge}${materialBadge}</div>
+                    <div class="ws-card-badges">${groupBadge}${materialBadge}${wipBadge}</div>
                 </div>
                 <div class="ws-card-body">
                     <div class="ws-card-row">
@@ -822,6 +881,7 @@ function renderFeedInput() {
                         <span class="ws-card-label">Material</span>
                         <div>${inputSection}</div>
                     </div>
+                    ${wipRow}
                 </div>
             </div>`;
     }).join('');
@@ -1396,6 +1456,8 @@ function promptWsChangeover(btn) {
     const footer = card.querySelector('.ws-card-footer');
     if (!footer) return;
 
+    coPromptState.origFooterHtml = footer.innerHTML;
+
     // IE suggestion block (shown when IE pre-assigned a CO employee)
     const ieSuggestionHtml = coEmpId ? `
         <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
@@ -1560,13 +1622,13 @@ async function confirmWsCo(employeeId, force) {
 
 function cancelCoPrompt() {
     stopCamera();
-    const { wsId, wsCode, date, origEmpId, origEmpCode, origEmpName, coSuggestedEmpId, coSuggestedEmpCode, coSuggestedEmpName } = coPromptState;
+    const { wsId, origFooterHtml } = coPromptState;
     if (wsId) {
         const card = document.getElementById(`hourly-ws-card-${wsId}`);
         const footer = card ? card.querySelector('.ws-card-footer') : null;
-        if (footer) footer.innerHTML = _coBtnHtml(wsCode, wsId, date, origEmpId, origEmpCode, origEmpName, coSuggestedEmpId, coSuggestedEmpCode, coSuggestedEmpName);
+        if (footer && origFooterHtml != null) footer.innerHTML = origFooterHtml;
     }
-    Object.assign(coPromptState, { wsCode: null, wsId: null, date: null, origEmpId: null, origEmpCode: null, origEmpName: null, coSuggestedEmpId: null, coSuggestedEmpCode: null, coSuggestedEmpName: null, scannedEmployee: null });
+    Object.assign(coPromptState, { wsCode: null, wsId: null, date: null, origEmpId: null, origEmpCode: null, origEmpName: null, coSuggestedEmpId: null, coSuggestedEmpCode: null, coSuggestedEmpName: null, scannedEmployee: null, origFooterHtml: null });
 }
 
 function renderHourlySummary() {
@@ -1579,10 +1641,27 @@ function renderHourlySummary() {
     let changeoverBanner = '';
     if (hourlyState.incomingProductId) {
         if (hourlyState.changeoverActive) {
+            // CO is running — show CO output vs CO target (mirrors the pre-CO primary progress bar)
+            const coOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations);
+            const coTarget = hourlyState.incomingTarget || 0;
+            const coPct = coTarget > 0 ? Math.min(Math.round(coOutput / coTarget * 100), 999) : 0;
+            const coTargetMet = coPct >= 100;
+            const coPctColor = coTargetMet ? '#16a34a' : coPct >= 80 ? '#d97706' : '#6b7280';
+            const coBarWidth = Math.min(coPct, 100);
             changeoverBanner = `
-                <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                    <span style="background:#7c3aed;color:#fff;padding:3px 12px;border-radius:10px;font-weight:700;font-size:13px;">&#8652; CHANGEOVER ACTIVE</span>
-                    <span style="color:#6d28d9;font-size:13px;font-weight:600;">${hourlyState.incomingProductName || 'Changeover product'}</span>
+                <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+                        <span style="background:#7c3aed;color:#fff;padding:3px 12px;border-radius:10px;font-weight:700;font-size:13px;">&#8652; CHANGEOVER ACTIVE</span>
+                        <span style="color:#6d28d9;font-size:13px;font-weight:600;">${hourlyState.incomingProductName || 'Changeover product'}</span>
+                        <span style="margin-left:auto;font-size:13px;color:#374151;">
+                            Output: <strong>${coOutput}</strong> / <strong>${coTarget}</strong>
+                            &nbsp;<span style="color:${coPctColor};font-weight:700;">${coPct}%</span>
+                            ${coTargetMet ? '&nbsp;<span style="color:#16a34a;font-weight:700;">&#10003; Target Met</span>' : ''}
+                        </span>
+                    </div>
+                    <div style="background:#ede9fe;border-radius:4px;height:6px;overflow:hidden;">
+                        <div style="background:${coTargetMet ? '#16a34a' : '#7c3aed'};height:100%;width:${coBarWidth}%;transition:width 0.4s;"></div>
+                    </div>
                 </div>`;
         } else {
             const totalOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations);
@@ -1680,11 +1759,11 @@ function renderHourlySummary() {
                 : wsStatus === 'vacant'
                     ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant">Enter Output</button>`
                     : noEmployee
-                        ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in morning procedure">&#128683; Not Assigned</button>`
+                        ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Mapping">&#128683; Not Assigned</button>`
                         : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
             let coBtn = '';
-            if (hasChangeover) {
+            if (hasChangeover && ws.has_co_plan) {
                 if (isWsChangeover) {
                     coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" onclick="openWsChangeoverEmployeeChange(${JSON.stringify(ws.workstation_code)}, ${ws.id || ws.primary_ws_id || 'null'})">Change Employee</button>`;
                 } else {
@@ -1743,15 +1822,21 @@ function renderHourlySummary() {
                 </div>`;
         }).join('');
 
-        const perHourDisplay = Math.round(perHourTarget * 10) / 10;
+        const perHourDisplay = hourlyState.changeoverActive
+            ? Math.round((hourlyState.perHourIncomingTarget || 0) * 10) / 10
+            : Math.round(perHourTarget * 10) / 10;
+        const dailyTargetDisplay = hourlyState.changeoverActive
+            ? hourlyState.incomingTarget || '–'
+            : hourlyState.primaryTarget || hourlyState.targetQty || '–';
+        const targetLabel = hourlyState.changeoverActive ? 'CO Target' : 'Daily';
         container.innerHTML = changeoverBanner + `
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Workstation Output Summary</h3>
                     <span style="font-size:0.85em; color:#6b7280;">
                         /hr: <strong>${perHourDisplay || '–'}</strong> &nbsp;|&nbsp;
-                        Daily: <strong>${hourlyState.primaryTarget || hourlyState.targetQty || '–'}</strong>
-                        ${hourlyState.incomingTarget ? ` &nbsp;|&nbsp; CO: <strong>${hourlyState.incomingTarget}</strong>` : ''}
+                        ${targetLabel}: <strong>${dailyTargetDisplay}</strong>
+                        ${!hourlyState.changeoverActive && hourlyState.incomingTarget ? ` &nbsp;|&nbsp; CO: <strong>${hourlyState.incomingTarget}</strong>` : ''}
                     </span>
                 </div>
                 <div class="card-body">
@@ -1799,7 +1884,7 @@ function renderHourlySummary() {
 
         const procNoEmployee = !p.assigned_emp_name;
         const procEnterBtn = procNoEmployee
-            ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in morning procedure">&#128683; Not Assigned</button>`
+            ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Mapping">&#128683; Not Assigned</button>`
             : `<button class="btn btn-primary ws-card-action" onclick="openHourlyEntry(${p.id})">Enter Output</button>`;
 
         return `
