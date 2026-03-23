@@ -333,7 +333,7 @@ router.get('/daily-plans', async (req, res) => {
              ORDER BY pl.line_name`
         );
         const productsResult = await pool.query(
-            `SELECT id, product_code, product_name FROM products WHERE is_active = true ORDER BY product_code`
+            `SELECT id, product_code, product_name, target_qty, plan_month FROM products WHERE is_active = true ORDER BY product_code`
         );
         res.json({
             success: true,
@@ -3159,7 +3159,7 @@ router.get('/products/:id', async (req, res) => {
 });
 
 router.post('/products', validateBody(schemas.product.partial()), async (req, res) => {
-    const { product_code, product_name, product_description, category, buyer_name, target_qty, line_ids } = req.body;
+    const { product_code, product_name, product_description, category, buyer_name, target_qty, plan_month, line_ids } = req.body;
     const normalizedLineIds = Array.isArray(line_ids)
         ? line_ids.map((id) => parseInt(id, 10)).filter(Boolean)
         : [];
@@ -3167,9 +3167,9 @@ router.post('/products', validateBody(schemas.product.partial()), async (req, re
     try {
         await client.query('BEGIN');
         const result = await client.query(
-            `INSERT INTO products (product_code, product_name, product_description, category, buyer_name, target_qty, is_active)
-             VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING *`,
-            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0]
+            `INSERT INTO products (product_code, product_name, product_description, category, buyer_name, target_qty, plan_month, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`,
+            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, plan_month || null]
         );
         const productId = result.rows[0].id;
 
@@ -3193,7 +3193,7 @@ router.post('/products', validateBody(schemas.product.partial()), async (req, re
 
 router.put('/products/:id', async (req, res) => {
     const { id } = req.params;
-    const { product_code, product_name, product_description, category, buyer_name, target_qty, line_ids, is_active } = req.body;
+    const { product_code, product_name, product_description, category, buyer_name, target_qty, plan_month, line_ids, is_active } = req.body;
     const hasLineIds = Object.prototype.hasOwnProperty.call(req.body || {}, 'line_ids');
     const normalizedLineIds = Array.isArray(line_ids)
         ? line_ids.map((lineId) => parseInt(lineId, 10)).filter(Boolean)
@@ -3203,9 +3203,9 @@ router.put('/products/:id', async (req, res) => {
         await client.query('BEGIN');
         const result = await client.query(
             `UPDATE products
-             SET product_code = $1, product_name = $2, product_description = $3, category = $4, buyer_name = $5, target_qty = $6, is_active = $7, updated_at = NOW()
-             WHERE id = $8 RETURNING *`,
-            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, is_active, id]
+             SET product_code = $1, product_name = $2, product_description = $3, category = $4, buyer_name = $5, target_qty = $6, plan_month = $7, is_active = $8, updated_at = NOW()
+             WHERE id = $9 RETURNING *`,
+            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, plan_month || null, is_active, id]
         );
 
         if (hasLineIds) {

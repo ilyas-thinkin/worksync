@@ -1906,7 +1906,8 @@ async function loadProducts() {
                                 <tr>
                                     <th>Buyer / Product Name</th>
                                     <th>Style No</th>
-                                    <th>Target</th>
+                                    <th>Plan Month</th>
+                                    <th>Order Qty / Produced</th>
                                     <th>Assigned Line</th>
                                     <th>Today (Primary)</th>
                                     <th>Today (Incoming)</th>
@@ -1919,7 +1920,7 @@ async function loadProducts() {
                             <tbody>
                                 ${products.length === 0 ? `
                                     <tr>
-                                        <td colspan="10" class="text-center" style="padding: 40px;">
+                                        <td colspan="11" class="text-center" style="padding: 40px;">
                                             No styles found. Click "Add Style" to create one.
                                         </td>
                                     </tr>
@@ -1930,17 +1931,30 @@ async function loadProducts() {
                                             <div style="font-size:0.8em;color:var(--text-muted);margin-top:2px;">${prod.product_name}</div>
                                         </td>
                                         <td><strong>${prod.product_code}</strong></td>
+                                        <td style="text-align:center;">
+                                            ${prod.plan_month ? (() => {
+                                                const [y, m] = prod.plan_month.split('-');
+                                                const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                                                return `<span style="font-weight:600;color:#1e40af;">${months[parseInt(m)]} ${y}</span>`;
+                                            })() : '<span style="color:#9ca3af;">—</span>'}
+                                        </td>
                                         <td>
                                             ${(() => {
                                                 const oq = prod.target_qty || 0;
                                                 const cum = prod.cumulative_output || 0;
-                                                const pct = oq > 0 ? Math.min(Math.round(cum / oq * 100), 100) : 0;
+                                                const pct = oq > 0 ? Math.round(cum / oq * 100) : 0;
                                                 const complete = oq > 0 && cum >= oq;
+                                                const over = oq > 0 && cum > oq;
+                                                const barPct = oq > 0 ? Math.min(pct, 100) : 0;
                                                 return `<div style="font-size:12px;font-weight:600;">${cum.toLocaleString()} / ${oq.toLocaleString()}</div>
                                                 <div style="background:#e5e7eb;border-radius:4px;height:6px;margin:3px 0;width:100px;">
-                                                    <div style="background:${complete ? '#16a34a' : '#3b82f6'};width:${pct}%;height:100%;border-radius:4px;"></div>
+                                                    <div style="background:${over ? '#f59e0b' : complete ? '#16a34a' : '#3b82f6'};width:${barPct}%;height:100%;border-radius:4px;"></div>
                                                 </div>
-                                                ${complete ? '<span style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;">✓ COMPLETE</span>' : `<span style="font-size:10px;color:#6b7280;">${pct}%</span>`}`;
+                                                ${over
+                                                    ? `<span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;">⚠ +${(cum - oq).toLocaleString()} OVER</span>`
+                                                    : complete
+                                                        ? '<span style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;">✓ COMPLETE</span>'
+                                                        : `<span style="font-size:10px;color:#6b7280;">${pct}%</span>`}`;
                                             })()}
                                         </td>
                                         <td>${prod.line_names || '-'}</td>
@@ -2063,8 +2077,12 @@ function showProductModal(prod = null) {
                         <input type="text" class="form-control" name="product_name" value="${prod?.product_name || ''}" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Order Quantity</label>
+                        <label class="form-label">Order Quantity (Total units to produce)</label>
                         <input type="number" class="form-control" name="target_qty" value="${prod?.target_qty || 0}" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Plan Month (Month this style is planned for production)</label>
+                        <input type="month" class="form-control" name="plan_month" value="${prod?.plan_month || ''}">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Line Assignment</label>
@@ -3275,9 +3293,9 @@ async function loadDailyPlanData() {
                         <th>Line</th>
                         <th>Line Leader</th>
                         <th>Style (Primary)</th>
-                        <th>Target</th>
+                        <th>Line Target</th>
                         <th>Incoming Style</th>
-                        <th>Incoming Target</th>
+                        <th>Incoming Line Target</th>
                         <th>Changeover Progress</th>
                         <th>Status</th>
                         <th>Action</th>
@@ -3295,16 +3313,29 @@ async function loadDailyPlanData() {
                         const planExists = Boolean(plan?.id);
                         const hasChangeover = !!plan?.incoming_product_id;
                         const otEnabled = plan?.ot_enabled || false;
-                        const primaryComplete = plan && plan.target_qty > 0 && (plan.product_cumulative || 0) >= plan.target_qty;
-                        const incomingComplete = plan && plan.incoming_target_qty > 0 && (plan.incoming_cumulative || 0) >= plan.incoming_target_qty;
+                        const primaryCum   = plan?.product_cumulative || 0;
+                        const primaryOQ    = plan?.target_qty || 0;
+                        const primaryComplete = primaryOQ > 0 && primaryCum >= primaryOQ;
+                        const primaryOver     = primaryOQ > 0 && primaryCum > primaryOQ;
+                        const incomingCum  = plan?.incoming_cumulative || 0;
+                        const incomingOQ   = plan?.incoming_target_qty || 0;
+                        const incomingComplete = incomingOQ > 0 && incomingCum >= incomingOQ;
+                        const incomingOver     = incomingOQ > 0 && incomingCum > incomingOQ;
+                        // plan_month from products list
+                        const selProd = products.find(p => p.id === Number(selectedProduct));
+                        const planMonthLabel = selProd?.plan_month ? (() => {
+                            const [y, m] = selProd.plan_month.split('-');
+                            const mns = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                            return `<span style="font-size:10px;color:#1e40af;font-weight:600;background:#eff6ff;padding:1px 5px;border-radius:3px;">${mns[parseInt(m)]} ${y}</span>`;
+                        })() : '';
                         return `
-                            <tr style="${primaryComplete ? 'background:#f0fdf4;' : ''}">
+                            <tr style="${primaryOver ? 'background:#fffbeb;' : primaryComplete ? 'background:#f0fdf4;' : ''}">
                                 <td>
                                     <strong>${line.line_code}</strong>
                                     <div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div>
                                     ${hasChangeover ? '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">CHANGEOVER</span>' : ''}
-                                    ${primaryComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ ORDER COMPLETE</span>' : ''}
-                                    ${incomingComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ INCOMING COMPLETE</span>' : ''}
+                                    ${primaryOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ OVER-PRODUCED +${(primaryCum - primaryOQ).toLocaleString()}</span>` : primaryComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ ORDER COMPLETE</span>' : ''}
+                                    ${incomingOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ INCOMING OVER +${(incomingCum - incomingOQ).toLocaleString()}</span>` : incomingComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ INCOMING COMPLETE</span>' : ''}
                                 </td>
                                 <td>
                                     ${line.line_leader ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;">${line.line_leader}</span>` : '<span style="color:#9ca3af;font-size:12px;">—</span>'}
@@ -3318,6 +3349,7 @@ async function loadDailyPlanData() {
                                             </option>
                                         `).join('')}
                                     </select>
+                                    ${planMonthLabel ? `<div style="margin-top:4px;">${planMonthLabel}</div>` : ''}
                                 </td>
                                 <td>
                                     <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${selectedTarget}" style="width:90px" ${locked ? 'disabled' : ''}>
@@ -6872,8 +6904,14 @@ function _buildOsmTable(data) {
         </tr>`;
     }).join('');
 
-    const anyComplete = osm_points.some(pt => total_target > 0 && (total_target - (pt.cumulative_output || 0)) <= 0);
-    const completionBanner = anyComplete
+    const maxCumulative = total_target > 0 ? Math.max(...osm_points.map(pt => pt.cumulative_output || 0)) : 0;
+    const orderOver     = total_target > 0 && maxCumulative > total_target;
+    const orderComplete = total_target > 0 && maxCumulative >= total_target;
+    const completionBanner = orderOver
+        ? `<div style="background:#f59e0b;color:#fff;padding:10px 16px;font-weight:700;font-size:13px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+               <span style="font-size:18px;">⚠</span> OVER-PRODUCED — ${maxCumulative.toLocaleString()} units produced vs order quantity of ${total_target.toLocaleString()} (+${(maxCumulative - total_target).toLocaleString()} extra).
+           </div>`
+        : orderComplete
         ? `<div style="background:#16a34a;color:#fff;padding:10px 16px;font-weight:700;font-size:13px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
                <span style="font-size:18px;">✓</span> ORDER QUANTITY REACHED — This style has met its full order quantity of ${total_target.toLocaleString()} units.
            </div>` : '';
@@ -7359,11 +7397,24 @@ async function loadWorkerIndividualEff() {
                 <button id="wie-btn-output"     onclick="setWieMetric('output')"     style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Output</button>
                 <button id="wie-btn-efficiency" onclick="setWieMetric('efficiency')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Efficiency</button>
             </div>
-            <div style="display:flex;align-items:center;gap:6px;">
-                <label style="font-size:13px;font-weight:600;color:#374151;">Employee</label>
-                <select id="wie-emp-filter" class="form-control" style="min-width:200px;max-width:280px;" onchange="_wieRenderFiltered()">
-                    <option value="">All Employees</option>
-                </select>
+            <div style="position:relative;" id="wie-emp-picker">
+                <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Employee</label>
+                <button type="button" id="wie-emp-btn" onclick="toggleWieEmpDropdown()"
+                    style="min-width:220px;max-width:320px;padding:7px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;font-size:13px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <span id="wie-emp-label">All Employees</span>
+                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div id="wie-emp-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:999;background:#fff;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);min-width:280px;max-width:360px;overflow:hidden;">
+                    <div style="padding:8px;">
+                        <input type="text" id="wie-emp-search" placeholder="Search employees..." oninput="filterWieEmpList()"
+                            style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <div style="padding:4px 8px 4px;border-bottom:1px solid #f3f4f6;display:flex;gap:10px;">
+                        <button type="button" onclick="selectAllWieEmp()" style="font-size:11px;color:#3b82f6;background:none;border:none;cursor:pointer;padding:2px 0;font-weight:600;">Select All</button>
+                        <button type="button" onclick="clearAllWieEmp()" style="font-size:11px;color:#6b7280;background:none;border:none;cursor:pointer;padding:2px 0;">Clear</button>
+                    </div>
+                    <div id="wie-emp-list" style="max-height:220px;overflow-y:auto;padding:4px 0;"></div>
+                </div>
             </div>
         </div>
         <div id="wie-content" style="overflow-x:auto;">
@@ -7385,14 +7436,93 @@ function setWieMetric(metric) {
     _wieRenderFiltered();
 }
 
+let _wieSelectedEmps = new Set(); // empty = all
+
+function toggleWieEmpDropdown() {
+    const dd = document.getElementById('wie-emp-dropdown');
+    if (!dd) return;
+    const isOpen = dd.style.display !== 'none';
+    dd.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) document.getElementById('wie-emp-search')?.focus();
+}
+
+function filterWieEmpList() {
+    const q = (document.getElementById('wie-emp-search')?.value || '').toLowerCase();
+    document.querySelectorAll('#wie-emp-list .wie-emp-item').forEach(item => {
+        item.style.display = item.dataset.label.toLowerCase().includes(q) ? '' : 'none';
+    });
+}
+
+function _wieUpdateEmpLabel() {
+    const label = document.getElementById('wie-emp-label');
+    if (!label) return;
+    if (_wieSelectedEmps.size === 0) { label.textContent = 'All Employees'; return; }
+    if (_wieSelectedEmps.size === 1) {
+        const id = [..._wieSelectedEmps][0];
+        const item = document.querySelector(`#wie-emp-list .wie-emp-item[data-id="${id}"]`);
+        label.textContent = item ? item.dataset.label : `${_wieSelectedEmps.size} selected`;
+        return;
+    }
+    label.textContent = `${_wieSelectedEmps.size} employees selected`;
+}
+
+function toggleWieEmp(id) {
+    if (_wieSelectedEmps.has(id)) _wieSelectedEmps.delete(id);
+    else _wieSelectedEmps.add(id);
+    _wieUpdateEmpLabel();
+    _wieRenderFiltered();
+}
+
+function selectAllWieEmp() {
+    document.querySelectorAll('#wie-emp-list .wie-emp-item input[type=checkbox]').forEach(cb => {
+        cb.checked = true;
+        _wieSelectedEmps.add(cb.dataset.id);
+    });
+    _wieUpdateEmpLabel();
+    _wieRenderFiltered();
+}
+
+function clearAllWieEmp() {
+    _wieSelectedEmps.clear();
+    document.querySelectorAll('#wie-emp-list .wie-emp-item input[type=checkbox]').forEach(cb => cb.checked = false);
+    _wieUpdateEmpLabel();
+    _wieRenderFiltered();
+}
+
+function _wiePopulateEmpList(rows) {
+    const empMap = new Map();
+    rows.forEach(r => { if (r.employee_id) empMap.set(String(r.employee_id), { code: r.emp_code, name: r.emp_name }); });
+    const sorted = [...empMap.entries()].sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
+    const list = document.getElementById('wie-emp-list');
+    if (!list) return;
+    list.innerHTML = sorted.map(([id, e]) => {
+        const label = `${e.name} (${e.code})`;
+        return `<label class="wie-emp-item" data-id="${id}" data-label="${label}"
+            style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;user-select:none;"
+            onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">
+            <input type="checkbox" data-id="${id}" ${_wieSelectedEmps.has(id) ? 'checked' : ''}
+                onchange="toggleWieEmp('${id}')" style="width:15px;height:15px;accent-color:#1e40af;cursor:pointer;">
+            <span>${label}</span>
+        </label>`;
+    }).join('');
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', e => {
+    const picker = document.getElementById('wie-emp-picker');
+    if (picker && !picker.contains(e.target)) {
+        const dd = document.getElementById('wie-emp-dropdown');
+        if (dd) dd.style.display = 'none';
+    }
+});
+
 function _wieRenderFiltered() {
     const container = document.getElementById('wie-content');
     if (!container || !_wieData) return;
-    const empId = document.getElementById('wie-emp-filter')?.value || '';
     let rows = _wieData.rows;
-    if (empId) rows = rows.filter(r => String(r.employee_id) === empId);
+    if (_wieSelectedEmps.size > 0) rows = rows.filter(r => _wieSelectedEmps.has(String(r.employee_id)));
     if (!rows.length) {
-        container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employee.</div></div>';
+        container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employees.</div></div>';
         return;
     }
     container.innerHTML = _buildWorkerIndividualEffTable({ ..._wieData, rows }, _wieMetric);
@@ -7416,15 +7546,9 @@ async function refreshWorkerIndividualEff() {
             return;
         }
         _wieData = resp.data;
-        // Populate employee filter
-        const empSel = document.getElementById('wie-emp-filter');
-        if (empSel) {
-            const empMap = new Map();
-            resp.data.rows.forEach(r => { if (r.employee_id) empMap.set(r.employee_id, { code: r.emp_code, name: r.emp_name }); });
-            const sorted = [...empMap.entries()].sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
-            empSel.innerHTML = '<option value="">All Employees</option>' +
-                sorted.map(([id, e]) => `<option value="${id}">${e.name} (${e.code})</option>`).join('');
-        }
+        _wieSelectedEmps.clear();
+        _wiePopulateEmpList(resp.data.rows);
+        _wieUpdateEmpLabel();
         _wieRenderFiltered();
     } catch (err) {
         container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
