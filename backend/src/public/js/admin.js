@@ -7321,15 +7321,20 @@ function downloadEfficiencyExcel() {
 // ============================================================================
 // WORKER INDIVIDUAL EFFICIENCY REPORT
 // ============================================================================
+let _wieData = null;
+let _wieMetric = 'all'; // 'all' | 'efficiency' | 'target' | 'output'
+
 async function loadWorkerIndividualEff() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
     const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
+    _wieData = null;
+    _wieMetric = 'all';
     content.innerHTML = `
         <div class="page-header">
             <div>
-                <h1 class="page-title">Worker Individual Efficiency</h1>
-                <p class="page-subtitle">All employees across all active lines</p>
+                <h1 class="page-title">Worker Efficiency</h1>
+                <p class="page-subtitle">Target · Output · Efficiency across all active lines</p>
             </div>
             <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
                 <div class="ie-date">
@@ -7340,18 +7345,57 @@ async function loadWorkerIndividualEff() {
                     <label for="wie-to">To</label>
                     <input type="date" id="wie-to" value="${today}">
                 </div>
-                <button class="btn btn-secondary" onclick="refreshWorkerIndividualEff()">Refresh</button>
+                <button class="btn btn-primary" onclick="refreshWorkerIndividualEff()">Load</button>
                 <button class="btn btn-secondary" onclick="printWorkerIndividualEff()">&#9113; Print</button>
                 <button class="btn btn-secondary" onclick="downloadWorkerIndividualEffExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
             </div>
         </div>
+        <!-- Filters row -->
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;">
+            <div style="display:flex;gap:4px;background:#f3f4f6;border-radius:8px;padding:3px;">
+                <button id="wie-btn-all"        onclick="setWieMetric('all')"        style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#1e40af;color:#fff;">All</button>
+                <button id="wie-btn-target"     onclick="setWieMetric('target')"     style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Target</button>
+                <button id="wie-btn-wip"        onclick="setWieMetric('wip')"        style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">WIP</button>
+                <button id="wie-btn-output"     onclick="setWieMetric('output')"     style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Output</button>
+                <button id="wie-btn-efficiency" onclick="setWieMetric('efficiency')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Efficiency</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+                <label style="font-size:13px;font-weight:600;color:#374151;">Employee</label>
+                <select id="wie-emp-filter" class="form-control" style="min-width:200px;max-width:280px;" onchange="_wieRenderFiltered()">
+                    <option value="">All Employees</option>
+                </select>
+            </div>
+        </div>
         <div id="wie-content" style="overflow-x:auto;">
-            <div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>
+            <div style="text-align:center;padding:60px;color:#9ca3af;">Select a date range and click <strong>Load</strong>.</div>
         </div>
     `;
-    document.getElementById('wie-from').addEventListener('change', refreshWorkerIndividualEff);
-    document.getElementById('wie-to').addEventListener('change', refreshWorkerIndividualEff);
-    refreshWorkerIndividualEff();
+    document.getElementById('wie-from').addEventListener('change', () => {});
+    document.getElementById('wie-to').addEventListener('change', () => {});
+}
+
+function setWieMetric(metric) {
+    _wieMetric = metric;
+    ['all','target','wip','output','efficiency'].forEach(m => {
+        const btn = document.getElementById(`wie-btn-${m}`);
+        if (!btn) return;
+        btn.style.background = m === metric ? '#1e40af' : 'transparent';
+        btn.style.color      = m === metric ? '#fff'    : '#374151';
+    });
+    _wieRenderFiltered();
+}
+
+function _wieRenderFiltered() {
+    const container = document.getElementById('wie-content');
+    if (!container || !_wieData) return;
+    const empId = document.getElementById('wie-emp-filter')?.value || '';
+    let rows = _wieData.rows;
+    if (empId) rows = rows.filter(r => String(r.employee_id) === empId);
+    if (!rows.length) {
+        container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employee.</div></div>';
+        return;
+    }
+    container.innerHTML = _buildWorkerIndividualEffTable({ ..._wieData, rows }, _wieMetric);
 }
 
 async function refreshWorkerIndividualEff() {
@@ -7371,108 +7415,139 @@ async function refreshWorkerIndividualEff() {
             container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data found for the selected range.</div></div>`;
             return;
         }
-        container.innerHTML = _buildWorkerIndividualEffTable(resp.data);
+        _wieData = resp.data;
+        // Populate employee filter
+        const empSel = document.getElementById('wie-emp-filter');
+        if (empSel) {
+            const empMap = new Map();
+            resp.data.rows.forEach(r => { if (r.employee_id) empMap.set(r.employee_id, { code: r.emp_code, name: r.emp_name }); });
+            const sorted = [...empMap.entries()].sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
+            empSel.innerHTML = '<option value="">All Employees</option>' +
+                sorted.map(([id, e]) => `<option value="${id}">${e.name} (${e.code})</option>`).join('');
+        }
+        _wieRenderFiltered();
     } catch (err) {
         container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
     }
 }
 
-function _buildWorkerIndividualEffTable(data) {
+function _buildWorkerIndividualEffTable(data, metric = 'all') {
     const { dates, rows } = data;
-    const thS  = 'background:#1e3a5f;color:#fff;padding:5px 4px;text-align:center;white-space:nowrap;font-size:10px;border:1px solid #0f2744;';
-    const thSS = thS + 'font-size:9px;';
-    const tdS  = 'padding:3px 4px;border:1px solid #6b7280;font-size:11px;';
+    const thS  = 'background:#1e3a5f;color:#fff;padding:6px 5px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;font-weight:700;';
+    const thSS = 'background:#1e3a5f;color:#fff;padding:4px 4px;text-align:center;white-space:nowrap;font-size:10px;border:1px solid #0f2744;';
+    const tdS  = 'padding:4px 5px;border:1px solid #9ca3af;font-size:11px;';
     const tcS  = tdS + 'text-align:center;';
 
+    const showTarget = metric === 'all' || metric === 'target';
+    const showWip    = metric === 'all' || metric === 'wip';
+    const showOutput = metric === 'all' || metric === 'output';
+    const showEff    = metric === 'all' || metric === 'efficiency';
+
+    const dateCols = (showTarget?1:0) + (showWip?1:0) + (showOutput?1:0) + (showEff?1:0);
+    const fixedCols = 3; // S.No | WORKER NAME | ID NO
+    const overallCols = (showOutput?1:0) + (showEff?1:0);
+
+    const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const fmtDate = d => {
-        const [y, m, day] = d.split('-');
-        return `${day}/${m}`;
+        const [, m, day] = d.split('-');
+        return `${parseInt(day)}-${months[parseInt(m)]}`;
     };
 
-    // Date header colspan=3 each
-    const dateHeaders = dates.map(d =>
-        `<th colspan="3" style="${thS}">${fmtDate(d)}</th>`
-    ).join('');
-    const subHeaders = dates.map(() =>
-        `<th style="${thSS}">WIP</th><th style="${thSS}">OUTPUT</th><th style="${thSS}">EFF%</th>`
-    ).join('');
-
     const tagStyle = {
-        'DEP': 'background:#fee2e2;color:#991b1b;',
-        'PRE': 'background:#eff6ff;color:#1d4ed8;',
+        'DEP':  'background:#fee2e2;color:#991b1b;',
+        'PRE':  'background:#eff6ff;color:#1d4ed8;',
         'POST': 'background:#f0fdf4;color:#166534;',
         'COMB': 'background:#faf5ff;color:#6b21a8;'
     };
-
     const effColor = eff => {
-        if (eff === null || eff === undefined) return '#6b7280';
+        if (eff == null) return '#6b7280';
         return eff >= 75 ? '#16a34a' : eff >= 50 ? '#d97706' : '#dc2626';
     };
+
+    // Header row 1: DATE label | per-date group headers | OVERALL
+    const dateGroupHeaders = dates.map(d =>
+        `<th colspan="${dateCols}" style="${thS}">${fmtDate(d)}</th>`
+    ).join('');
+
+    // Header row 2: fixed cols | per-date sub-cols | overall sub-cols
+    const subHeaders = dates.map(() => [
+        showTarget ? `<th style="${thSS}">TARGET</th>` : '',
+        showWip    ? `<th style="${thSS}">WIP</th>`    : '',
+        showOutput ? `<th style="${thSS}">OUTPUT</th>` : '',
+        showEff    ? `<th style="${thSS}">EFF%</th>`   : '',
+    ].join('')).join('');
 
     const dataRows = rows.map((row, idx) => {
         const dateCells = dates.map(d => {
             const cell = row.dates[d];
-            if (!cell) return `<td style="${tcS}">-</td><td style="${tcS}">-</td><td style="${tcS}">-</td>`;
-
-            const tagKey = cell.tag ? cell.tag.split(' ')[0] : null;
+            const tagKey = cell?.tag ? cell.tag.split(' ')[0] : null;
             const tS = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
-            const tagBadge = cell.tag
-                ? `<br><span style="font-size:9px;font-weight:700;">${cell.tag}</span>`
-                : '';
+            const tagBadge = cell?.tag ? `<br><span style="font-size:8px;font-weight:700;">${cell.tag}</span>` : '';
+            const effTxt = cell?.eff != null ? cell.eff.toFixed(1) + '%' : '-';
+            const effC   = effColor(cell?.eff);
+            const dash   = `<td style="${tcS}color:#9ca3af;">-</td>`;
 
-            const effTxt = cell.eff !== null && cell.eff !== undefined ? cell.eff.toFixed(1) + '%' : '-';
-            const effC   = effColor(cell.eff);
+            if (!cell) return [
+                showTarget ? dash : '',
+                showWip    ? dash : '',
+                showOutput ? dash : '',
+                showEff    ? dash : '',
+            ].join('');
 
-            return `<td style="${tcS}${tS}">${cell.wip ?? '-'}${tagBadge}</td>` +
-                   `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` +
-                   `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}</td>`;
+            const wip      = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
+            const wipColor = wip > 0 ? '#dc2626' : '#16a34a';
+
+            return [
+                showTarget ? `<td style="${tcS}${tS}">${cell.wip ?? '-'}${tagBadge}</td>` : '',
+                showWip    ? `<td style="${tcS}${tS}font-weight:600;color:${wipColor};">${wip}</td>` : '',
+                showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` : '',
+                showEff    ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}</td>` : '',
+            ].join('');
         }).join('');
 
-        const totalEffTxt = row.overall_eff !== null && row.overall_eff !== undefined ? row.overall_eff.toFixed(1) + '%' : '-';
+        const totalEffTxt = row.overall_eff != null ? row.overall_eff.toFixed(1) + '%' : '-';
         const totalEffC   = effColor(row.overall_eff);
 
         return `<tr>
             <td style="${tcS}font-weight:600;">${idx + 1}</td>
-            <td style="${tdS}">${row.emp_name || '-'}</td>
-            <td style="${tdS}text-align:center;">${row.emp_code || '-'}</td>
+            <td style="${tdS}font-weight:600;">${row.emp_name || '-'}</td>
+            <td style="${tcS}">${row.emp_code || '-'}</td>
             ${dateCells}
-            <td style="${tcS}font-weight:700;">${row.total_output}</td>
-            <td style="${tcS}font-weight:700;color:${totalEffC};">${totalEffTxt}</td>
+            ${showOutput ? `<td style="${tcS}font-weight:700;">${row.total_output}</td>` : ''}
+            ${showEff    ? `<td style="${tcS}font-weight:700;color:${totalEffC};">${totalEffTxt}</td>` : ''}
         </tr>`;
     }).join('');
 
-    const html = `
+    return `
     <div id="wie-print-area">
-        <div style="text-align:center;margin-bottom:8px;">
-            <div style="font-size:15px;font-weight:700;">Worker Individual Efficiency — All Lines</div>
-            <div style="font-size:12px;color:#6b7280;">Period: ${dates[0]} to ${dates[dates.length - 1]}</div>
-        </div>
-        <div style="font-size:10px;margin-bottom:6px;display:flex;gap:12px;flex-wrap:wrap;">
-            <span><span style="background:#fee2e2;color:#991b1b;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">DEP HH:MM</span> Departed mid-day (partial hours)</span>
+        <div style="text-align:center;font-size:17px;font-weight:700;margin-bottom:10px;letter-spacing:0.5px;">WORKERS INDIVIDUAL EFFICIENCY</div>
+        <div style="font-size:10px;margin-bottom:8px;display:flex;gap:14px;flex-wrap:wrap;">
+            <span><span style="background:#fee2e2;color:#991b1b;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">DEP HH:MM</span> Departed mid-day</span>
             <span><span style="background:#eff6ff;color:#1d4ed8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">PRE</span> Before reassignment</span>
-            <span><span style="background:#f0fdf4;color:#166534;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">POST</span> After reassignment to vacant WS</span>
-            <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation (double SAH)</span>
+            <span><span style="background:#f0fdf4;color:#166534;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">POST</span> After reassignment</span>
+            <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation</span>
         </div>
         <div style="overflow-x:auto;">
         <table style="border-collapse:collapse;width:max-content;min-width:100%;">
             <thead>
                 <tr>
-                    <th rowspan="2" style="${thS}">S.No</th>
-                    <th rowspan="2" style="${thS}">WORKER NAME</th>
-                    <th rowspan="2" style="${thS}">ID NO</th>
-                    ${dateHeaders}
-                    <th rowspan="2" style="${thS}">TOTAL<br>OUTPUT</th>
-                    <th rowspan="2" style="${thS}">OVERALL<br>EFF%</th>
+                    <th colspan="${fixedCols}" style="${thS}">DATE</th>
+                    ${dateGroupHeaders}
+                    ${overallCols > 0 ? `<th colspan="${overallCols}" style="${thS}">OVERALL</th>` : ''}
                 </tr>
-                <tr>${subHeaders}</tr>
+                <tr>
+                    <th style="${thSS}">S.No</th>
+                    <th style="${thSS}">WORKER NAME</th>
+                    <th style="${thSS}">ID NO</th>
+                    ${subHeaders}
+                    ${showOutput ? `<th style="${thSS}">TOTAL<br>OUTPUT</th>` : ''}
+                    ${showEff    ? `<th style="${thSS}">EFF%</th>`            : ''}
+                </tr>
             </thead>
-            <tbody>
-                ${dataRows}
-            </tbody>
+            <tbody>${dataRows}</tbody>
         </table>
         </div>
     </div>`;
-    return html;
 }
 
 function printWorkerIndividualEff() {
