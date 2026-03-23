@@ -1426,6 +1426,24 @@ function updateEmployeeDropdownLabel(processId) {
 }
 
 
+function positionEmployeeDropdown(dropdown) {
+    const toggle = dropdown.querySelector('.dropdown-toggle');
+    const panel  = dropdown.querySelector('.dropdown-panel');
+    if (!toggle || !panel) return;
+    const rect = toggle.getBoundingClientRect();
+    const panelW = 280;
+    // Prefer right-aligned; flip left if panel would go off-screen
+    let left = rect.right - panelW;
+    if (left < 4) left = rect.left;
+    if (left + panelW > window.innerWidth - 4) left = window.innerWidth - panelW - 4;
+    // Prefer below; flip above if not enough room
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const top = spaceBelow > 260 ? rect.bottom + 4 : rect.top - 264;
+    panel.style.top  = top  + 'px';
+    panel.style.left = left + 'px';
+    panel.style.width = panelW + 'px';
+}
+
 function toggleEmployeeDropdown(processId) {
     // Close all other dropdowns
     document.querySelectorAll('.employee-dropdown').forEach(dd => {
@@ -1440,12 +1458,10 @@ function toggleEmployeeDropdown(processId) {
 
     dropdown.classList.toggle('open');
 
-    // Focus search input when opening
     if (dropdown.classList.contains('open')) {
+        positionEmployeeDropdown(dropdown);
         const search = dropdown.querySelector('.dropdown-search');
-        if (search) {
-            setTimeout(() => search.focus(), 100);
-        }
+        if (search) setTimeout(() => search.focus(), 100);
     }
 }
 
@@ -1465,6 +1481,13 @@ document.addEventListener('click', (event) => {
     if (dropdown) return;
     document.querySelectorAll('.employee-dropdown.open').forEach(dd => dd.classList.remove('open'));
 });
+
+// Reposition open dropdown on scroll or resize
+function _repositionOpenDropdowns() {
+    document.querySelectorAll('.employee-dropdown.open').forEach(positionEmployeeDropdown);
+}
+window.addEventListener('scroll', _repositionOpenDropdowns, { passive: true, capture: true });
+window.addEventListener('resize', _repositionOpenDropdowns, { passive: true });
 
 // ============================================================================
 // EMPLOYEES

@@ -538,11 +538,50 @@ const ShopFloorUX = {
     }
 };
 
+// ── Table scroll fade + sticky first column ───────────────────────
+function initTableScrollFade() {
+    document.querySelectorAll('.table-container').forEach(container => {
+        const check = () => {
+            const hasOverflow = container.scrollWidth > container.clientWidth + 4;
+            const atEnd = container.scrollLeft + container.clientWidth >= container.scrollWidth - 4;
+            container.classList.toggle('scrollable', hasOverflow && !atEnd);
+
+            // Enable sticky first column only when table actually overflows
+            container.classList.toggle('has-sticky-col', hasOverflow);
+            // Shadow appears once the user has scrolled right
+            container.classList.toggle('is-scrolled', container.scrollLeft > 4);
+        };
+        check();
+        container.addEventListener('scroll', check, { passive: true });
+        new ResizeObserver(check).observe(container);
+    });
+}
+
+// ── Bottom nav active sync ─────────────────────────────────────────
+function initBottomNavSync() {
+    const bottomNav = document.getElementById('bottom-nav');
+    if (!bottomNav) return;
+    document.addEventListener('click', e => {
+        const link = e.target.closest('[data-section]');
+        if (!link) return;
+        const section = link.dataset.section;
+        bottomNav.querySelectorAll('.bottom-nav-item').forEach(item => {
+            item.classList.toggle('active', item.dataset.section === section);
+        });
+    });
+}
+
 // Auto-initialize when DOM is ready
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => ShopFloorUX.init());
+    document.addEventListener('DOMContentLoaded', () => {
+        ShopFloorUX.init();
+        initTableScrollFade();
+        initBottomNavSync();
+    });
 } else {
     ShopFloorUX.init();
+    initTableScrollFade();
+    initBottomNavSync();
 }
 
 // Listen for online/offline events

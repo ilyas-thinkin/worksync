@@ -21,11 +21,11 @@
 }
 
 /* ================================
-   Supervisor Panel Grid
+   Supervisor Panel Grid — fluid
    ================================ */
 .supervisor-panel {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
     gap: var(--space-md);
 }
 
@@ -125,11 +125,12 @@
 .scan-callout {
     padding: var(--space-md);
     border-radius: var(--radius);
-    background: #eef2ff;
-    color: #3730a3;
+    background: #FEF3C7;
+    color: #78350F;
     font-weight: 600;
     font-size: 13px;
     text-align: center;
+    border-left: 3px solid #D97706;
 }
 
 .scan-box.disabled {
@@ -189,8 +190,9 @@
     border-radius: var(--radius-full);
     font-size: 12px;
     font-weight: 600;
-    background: #ecfeff;
-    color: #0e7490;
+    background: rgba(217, 119, 6, 0.12);
+    color: #92400E;
+    border: 1px solid rgba(180, 83, 9, 0.15);
 }
 
 /* ================================
@@ -214,11 +216,11 @@
 }
 
 /* ================================
-   Progress Scan Grid
+   Progress Scan Grid — fluid
    ================================ */
 .progress-scan-grid {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
     gap: var(--space-lg);
 }
 
@@ -228,11 +230,11 @@
 }
 
 /* ================================
-   Metrics Grid
+   Metrics Grid — fluid
    ================================ */
 .metrics-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr));
     gap: var(--space-md);
 }
 
@@ -469,7 +471,7 @@
 
 .summary-grid {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
     gap: var(--space-md);
     margin-bottom: var(--space-lg);
 }
@@ -533,11 +535,11 @@
 }
 
 /* ================================
-   Material Summary Grid
+   Material Summary Grid — fluid
    ================================ */
 .material-summary-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
     gap: var(--space-sm);
 }
 
@@ -558,7 +560,7 @@
 }
 
 .material-summary-item .value {
-    font-size: 18px;
+    font-size: var(--text-xl);
     font-weight: 700;
     color: var(--text);
     font-family: var(--font-display);
@@ -608,13 +610,9 @@
 }
 
 /* ================================
-   TABLET BREAKPOINT (min-width: 640px)
+   TABLET BREAKPOINT (min-width: 600px)
    ================================ */
-@media (min-width: 640px) {
-    .supervisor-panel {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
+@media (min-width: 600px) {
     .scan-action-buttons {
         grid-template-columns: repeat(2, 1fr);
     }
@@ -624,9 +622,7 @@
         justify-content: flex-end;
     }
 
-    .scan-actions-row .btn {
-        width: auto;
-    }
+    .scan-actions-row .btn { width: auto; }
 
     .camera-header {
         flex-direction: row;
@@ -634,22 +630,12 @@
         align-items: center;
     }
 
-    .camera-actions .btn {
-        flex: none;
-    }
+    .camera-actions .btn { flex: none; }
 
     .progress-row {
-        grid-template-columns: 1fr 120px 120px;
+        grid-template-columns: 1fr clamp(100px, 10vw, 130px) clamp(100px, 10vw, 130px);
         gap: var(--space-md);
         align-items: center;
-    }
-
-    .progress-scan-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
-    .metrics-grid {
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     }
 
     .metrics-action {
@@ -657,9 +643,7 @@
         justify-content: flex-end;
     }
 
-    .metrics-action .btn {
-        width: auto;
-    }
+    .metrics-action .btn { width: auto; }
 
     .progress-scan-shell {
         grid-template-columns: 1.2fr 1fr;
@@ -670,43 +654,23 @@
         justify-content: flex-end;
     }
 
-    .progress-modal-footer .btn {
-        width: auto;
-    }
+    .progress-modal-footer .btn { width: auto; }
 
     .progress-log-row {
-        grid-template-columns: 80px 1fr 80px;
+        grid-template-columns: clamp(60px, 7vw, 90px) 1fr clamp(60px, 7vw, 90px);
         gap: var(--space-md);
     }
 
     .material-form-grid {
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
         align-items: end;
     }
 
-    .material-form-action {
-        justify-content: flex-end;
-    }
+    .material-form-action { justify-content: flex-end; }
+    .material-form-action .btn { width: auto; }
 
-    .material-form-action .btn {
-        width: auto;
-    }
-
-    .summary-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
-    .material-summary-grid {
-        grid-template-columns: repeat(3, 1fr);
-    }
-
-    .hourly-bar-container {
-        min-width: 44px;
-    }
-
-    .hourly-chart {
-        height: 180px;
-    }
+    .hourly-bar-container { min-width: clamp(36px, 3.5vw, 52px); }
+    .hourly-chart { height: clamp(160px, 16vw, 220px); }
 }
 
 /* ================================
@@ -730,13 +694,13 @@
     }
 
     .supervisor-panel {
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
         gap: var(--space-lg);
     }
 
     #camera-preview,
     #progress-camera-preview {
-        height: 240px;
+        height: clamp(200px, 18vw, 280px);
     }
 
     .progress-modal-backdrop {
@@ -745,45 +709,34 @@
     }
 
     .progress-modal {
-        width: min(92vw, 800px);
+        width: clamp(480px, 60vw, 860px);
         max-height: 85vh;
+        max-height: 85dvh;
         border-radius: var(--radius-xl);
     }
 
     .hourly-chart {
         justify-content: center;
         overflow-x: visible;
+        height: clamp(160px, 15vw, 220px);
     }
 
     .hourly-bar-container {
         flex: 1;
-        max-width: 60px;
+        max-width: clamp(44px, 4vw, 68px);
     }
 
     .hourly-bar {
-        max-width: 50px;
+        max-width: clamp(38px, 3.5vw, 56px);
     }
 }
 
 /* ================================
-   LARGE DESKTOP (min-width: 1280px)
-   ================================ */
-@media (min-width: 1280px) {
-    .supervisor-panel {
-        grid-template-columns: repeat(3, 1fr);
-    }
-
-    .progress-modal {
-        width: min(92vw, 900px);
-    }
-}
-
-/* ================================
-   Workstation Card Grid
+   Workstation Card Grid — fluid
    ================================ */
 .ws-cards-grid {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
     gap: var(--space-md);
 }
 
@@ -821,15 +774,15 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 14px;
-    background: #f8fafc;
+    background: rgba(251, 245, 234, 0.7);
     border-bottom: 1px solid var(--border);
     gap: 8px;
 }
 
-.ws-card--alert .ws-card-header { background: #fee2e2; }
-.ws-card--changeover .ws-card-header { background: #ede9fe; }
-.ws-card--warning .ws-card-header { background: #fef9c3; }
-.ws-card--vacant .ws-card-header { background: #fee2e2; }
+.ws-card--alert .ws-card-header { background: #FEE2E2; }
+.ws-card--changeover .ws-card-header { background: rgba(217, 119, 6, 0.1); }
+.ws-card--warning .ws-card-header { background: #FEF9C3; }
+.ws-card--vacant .ws-card-header { background: #FEE2E2; }
 
 .ws-card-code {
     font-size: 16px;
@@ -896,7 +849,7 @@
 }
 
 .ws-kpi-val {
-    font-size: 22px;
+    font-size: var(--text-xl);
     font-weight: 700;
     color: var(--text);
     font-family: var(--font-display);
@@ -923,7 +876,7 @@
    ================================ */
 .hourly-tabs {
     display: flex;
-    border-bottom: 2px solid #e5e7eb;
+    border-bottom: 2px solid var(--border);
 }
 
 .hourly-tab-btn {
@@ -931,23 +884,23 @@
     min-height: 44px;
     padding: 10px 16px;
     border: none;
-    border-radius: 6px 6px 0 0;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
     cursor: pointer;
     font-weight: 600;
-    font-size: 14px;
-    background: #f3f4f6;
-    color: #374151;
+    font-size: var(--text-base);
+    background: rgba(251, 245, 234, 0.5);
+    color: var(--text-muted);
     transition: background 0.15s, color 0.15s;
 }
 
 .hourly-tab-btn.active-regular {
-    background: #3b82f6;
-    color: #fff;
+    background: linear-gradient(135deg, #B45309, #92400E);
+    color: #FEF3C7;
 }
 
 .hourly-tab-btn.active-ot {
-    background: #7c3aed;
-    color: #fff;
+    background: linear-gradient(135deg, #7C3AED, #5B21B6);
+    color: #EDE9FE;
 }
 
 /* ================================
@@ -1030,13 +983,9 @@
 }
 
 /* ================================
-   TABLET — Card grid 2 cols
+   TABLET — Hourly controls layout
    ================================ */
 @media (min-width: 640px) {
-    .ws-cards-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
     .hourly-controls {
         flex-direction: row;
         flex-wrap: wrap;
@@ -1083,17 +1032,4 @@
     }
 }
 
-/* ================================
-   DESKTOP — Card grid 3 cols
-   ================================ */
-@media (min-width: 1024px) {
-    .ws-cards-grid {
-        grid-template-columns: repeat(3, 1fr);
-    }
-}
-
-@media (min-width: 1280px) {
-    .ws-cards-grid {
-        grid-template-columns: repeat(4, 1fr);
-    }
-}
+/* ws-cards-grid is fluid via auto-fit — no override needed */

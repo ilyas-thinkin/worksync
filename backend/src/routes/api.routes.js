@@ -4787,17 +4787,18 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         // Row 2: blank spacer
         ws.getRow(2).height = 6;
 
-        // Rows 3-10: Header fields (label in A, value in B, note merged C–H)
+        // Rows 3-12: Header fields (label in A, value in B, note merged C–J)
         const headerRows = [
             { row: 3,  label: 'LINE CODE',       value: 'RUMIYA',          note: 'Production line code. Auto-created if not in system.' },
             { row: 4,  label: 'HALL NAME',        value: 'Hall B',          note: 'Hall/area name (used as line name if auto-creating the line).' },
             { row: 5,  label: 'DATE',             value: today,             note: 'Work date — YYYY-MM-DD format (e.g. 2026-02-19).' },
             { row: 6,  label: 'PRODUCT CODE',     value: '4321',            note: 'Style/product code. Auto-created if new.' },
             { row: 7,  label: 'PRODUCT NAME',     value: 'BILLFOLD WALLET', note: 'Full product name.' },
-            { row: 8,  label: 'TARGET UNITS',     value: 500,               note: 'Daily target for this line. Required.' },
-            { row: 9,  label: 'CO PRODUCT CODE',  value: '',                note: 'Optional — changeover product code.' },
-            { row: 10, label: 'CO TARGET',        value: '',                note: 'Optional — changeover target units.' },
-            { row: 11, label: 'LINE LEADER',       value: 'Rumiya',          note: 'Name of the line leader for this line. One leader per line.' },
+            { row: 8,  label: 'BUYER NAME',       value: '',                note: 'Buyer / brand name for this product. Optional.' },
+            { row: 9,  label: 'TARGET UNITS',     value: 500,               note: 'Daily target for this line. Required.' },
+            { row: 10, label: 'CO PRODUCT CODE',  value: '',                note: 'Optional — changeover product code.' },
+            { row: 11, label: 'CO TARGET',        value: '',                note: 'Optional — changeover target units.' },
+            { row: 12, label: 'LINE LEADER',       value: 'Rumiya',          note: 'Name of the line leader for this line. One leader per line.' },
         ];
         const leaderValueFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }; // light green
         headerRows.forEach(({ row, label, value, note }) => {
@@ -4820,12 +4821,12 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             nc.alignment = { horizontal: 'left', vertical: 'middle' };
         });
 
-        // Row 12: spacer
-        ws.getRow(12).height = 8;
+        // Row 13: spacer
+        ws.getRow(13).height = 8;
 
-        // Row 13: Table header — A=GROUP B=OSM C=WORKSTATION D=OPERATION CODE E=OPERATION NAME F=PROCESS TIME G=CYCLE TIME H=SAH I=EMPLOYEE CODE J=EMPLOYEE NAME
+        // Row 14: Table header — A=GROUP B=OSM C=WORKSTATION D=OPERATION CODE E=OPERATION NAME F=PROCESS TIME G=CYCLE TIME H=SAH I=EMPLOYEE CODE J=EMPLOYEE NAME
         const tableHeaders = ['GROUP', 'OSM', 'WORKSTATION', 'OPERATION CODE', 'OPERATION NAME', 'PROCESS TIME (s)', 'CYCLE TIME (s)', 'SAH', 'EMPLOYEE CODE *', 'EMPLOYEE NAME'];
-        const hRow = ws.getRow(13);
+        const hRow = ws.getRow(14);
         hRow.height = 22;
         tableHeaders.forEach((h, i) => {
             const cell = hRow.getCell(i + 1);
@@ -4856,9 +4857,9 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             ['G3', '',  'WS06', 'OP-0011', 15,  ''],
         ];
 
-        // Pre-populate ALL data rows 14–500 with formulas and styling.
-        // Example rows (14–24) get their input values overlaid after this loop.
-        for (let rowNum = 14; rowNum <= 500; rowNum++) {
+        // Pre-populate ALL data rows 15–500 with formulas and styling.
+        // Example rows (15–25) get their input values overlaid after this loop.
+        for (let rowNum = 15; rowNum <= 500; rowNum++) {
             const row = ws.getRow(rowNum);
             row.height = 18;
 
@@ -4896,7 +4897,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
 
             // G: CYCLE TIME (s) — formula: sum of all process times in same workstation
             const ctCell = row.getCell(7);
-            ctCell.value = { formula: `=SUMIF($C$14:$C$500,C${rowNum},$F$14:$F$500)` };
+            ctCell.value = { formula: `=SUMIF($C$15:$C$500,C${rowNum},$F$15:$F$500)` };
             ctCell.border = borderAll; ctCell.fill = displayFill;
             ctCell.numFmt = '0.00';
             ctCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -4920,9 +4921,9 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             empNameCell.alignment = { horizontal: 'left', vertical: 'middle' };
         }
 
-        // Overlay example data values on rows 14–24
+        // Overlay example data values on rows 15–25
         exampleData.forEach(([group, osm, wsCode, opCode, pt, empCode], idx) => {
-            const rowNum = 14 + idx;
+            const rowNum = 15 + idx;
             const row = ws.getRow(rowNum);
             row.getCell(1).value = group;   // A: GROUP
             row.getCell(2).value = osm;     // B: OSM
@@ -4944,17 +4945,18 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             '  • Builds the workstation plan (groups processes into workstations)',
             '  • Assigns employees to workstations',
             '',
-            'HEADER SECTION (Rows 3–10):',
+            'HEADER SECTION (Rows 3–12):',
             '  LINE CODE       Production line code. Auto-created if not in system.',
             '  HALL NAME       Used as the line name if the line is being auto-created.',
             '  DATE            Work date in YYYY-MM-DD format.',
             '  PRODUCT CODE    Style/product code. Auto-created if new.',
             '  PRODUCT NAME    Product display name.',
+            '  BUYER NAME      Buyer / brand name for this product. Optional.',
             '  TARGET UNITS    Daily target for this line. Required.',
             '  CO PRODUCT CODE Optional. Changeover product code (if applicable).',
             '  CO TARGET       Optional. Target units for the changeover product.',
             '',
-            'DATA TABLE (Row 12 onwards):',
+            'DATA TABLE (Row 15 onwards):',
             '  SEQ             Process sequence number (1, 2, 3...). Auto-numbered if blank.',
             '  GROUP           Optional group label (e.g. G1, G2).',
             '  OSM             OSM checkpoint number for this process. Leave blank if not an OSM check.',
@@ -5000,10 +5002,10 @@ router.get('/lines/plan-upload-template', async (req, res) => {
 
         const opCount  = Math.max(operations.length, 1);
         const empCount = Math.max(employees.length, 1);
-        const dataEnd  = 500; // data validation covers rows 14–500
+        const dataEnd  = 500; // data validation covers rows 15–500
 
         // Data validation: Operation Code (col D) — dropdown from Lists!A; selecting code auto-fills name in col E
-        ws.dataValidations.add(`D14:D${dataEnd}`, {
+        ws.dataValidations.add(`D15:D${dataEnd}`, {
             type: 'list',
             allowBlank: true,
             showErrorMessage: false,
@@ -5015,7 +5017,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
 
         // Data validation: Employee Name (col J) — dropdown from Lists!D (full names, sorted A-Z)
         // Selecting a name auto-fills the employee code in col I via INDEX/MATCH formula.
-        ws.dataValidations.add(`J14:J${dataEnd}`, {
+        ws.dataValidations.add(`J15:J${dataEnd}`, {
             type: 'list',
             allowBlank: true,
             showErrorMessage: false,
@@ -5024,6 +5026,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', 'attachment; filename="line_plan_template.xlsx"');
+        res.setHeader('Cache-Control', 'no-store');
         await workbook.xlsx.write(res);
         res.end();
     } catch (err) {
@@ -5066,16 +5069,17 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         const workDate      = getCellStr(5, 2) || new Date().toISOString().slice(0, 10);
         const productCode   = getCellStr(6, 2);
         const productName   = getCellStr(7, 2);
-        const targetUnits   = Math.round(getCellNum(8, 2));
-        const coProductCode = getCellStr(9, 2);
-        const coTarget      = Math.round(getCellNum(10, 2)) || 0;
-        const lineLeader = getCellStr(11, 2) || null;
+        const buyerName     = getCellStr(8, 2) || null;
+        const targetUnits   = Math.round(getCellNum(9, 2));
+        const coProductCode = getCellStr(10, 2);
+        const coTarget      = Math.round(getCellNum(11, 2)) || 0;
+        const lineLeader    = getCellStr(12, 2) || null;
 
         if (!lineCode)                         throw new Error('Line Code is required (row 3)');
         if (!workDate || !/^\d{4}-\d{2}-\d{2}$/.test(workDate)) throw new Error('Date must be in YYYY-MM-DD format (row 5)');
         if (!productCode)                      throw new Error('Product Code is required (row 6)');
         if (!productName)                      throw new Error('Product Name is required (row 7)');
-        if (!targetUnits || targetUnits <= 0)  throw new Error('Target Units must be > 0 (row 8)');
+        if (!targetUnits || targetUnits <= 0)  throw new Error('Target Units must be > 0 (row 9)');
 
         // Find or create line — if it already exists, use it as-is (no updates to name/hall)
         let lineId, lineCreated;
@@ -5105,12 +5109,13 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
         // Find or create primary product
         const prodResult = await client.query(
-            `INSERT INTO products (product_code, product_name, is_active)
-             VALUES ($1, $2, true)
+            `INSERT INTO products (product_code, product_name, buyer_name, is_active)
+             VALUES ($1, $2, $3, true)
              ON CONFLICT (product_code) DO UPDATE
-               SET product_name = EXCLUDED.product_name
+               SET product_name = EXCLUDED.product_name,
+                   buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name)
              RETURNING id`,
-            [productCode, productName]
+            [productCode, productName, buyerName]
         );
         const productId = prodResult.rows[0].id;
 
@@ -5142,11 +5147,11 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         }
         const taktTimeSecs = targetUnits > 0 ? workingSecs / targetUnits : 0;
 
-        // Parse data rows (start at row 14; stop at first fully empty row)
+        // Parse data rows (start at row 15; stop at first fully empty row)
         // Columns: A=GROUP, B=OSM, C=WORKSTATION, D=OPERATION CODE, E=OPERATION NAME, F=PROCESS TIME(input), G=CYCLE TIME(formula), H=SAH(formula), I=EMPLOYEE CODE
         const dataRows = [];
         let autoSeq = 1;
-        for (let rowNum = 14; rowNum <= 2000; rowNum++) {
+        for (let rowNum = 15; rowNum <= 2000; rowNum++) {
             const wsCode = getCellStr(rowNum, 3);   // C: WORKSTATION
             const opCode = getCellStr(rowNum, 4);   // D: OPERATION CODE
             // Col E (Operation Name) is a formula — may return "" even on blank rows, so don't rely on it alone
@@ -5167,7 +5172,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             });
             autoSeq++;
         }
-        if (!dataRows.length) throw new Error('No process rows found. Data should start at row 13.');
+        if (!dataRows.length) throw new Error('No process rows found. Data should start at row 15.');
 
         // Pre-fetch next auto-op number for rows with missing operation code
         let nextOpNum = 1;

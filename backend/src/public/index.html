@@ -6,57 +6,113 @@
     <title>WorkSync Access</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/admin.css">
     <link rel="stylesheet" href="css/offline.css">
     <style>
+        body {
+            background:
+                radial-gradient(ellipse at 20% 20%, rgba(180, 83, 9, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(217, 119, 6, 0.06) 0%, transparent 50%),
+                #FBF5EA;
+        }
         .login-wrapper {
             min-height: 100vh;
+            min-height: 100dvh;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 24px;
         }
         .login-panel {
-            width: min(960px, 100%);
-            background: #fff;
-            border-radius: 16px;
-            box-shadow: var(--shadow-lg);
-            padding: 32px;
+            width: min(1000px, 100%);
+            background: rgba(255, 250, 242, 0.97);
+            border: 1px solid rgba(180, 120, 50, 0.18);
+            border-radius: 20px;
+            box-shadow: 0 28px 56px rgba(120, 60, 10, 0.14), 0 2px 8px rgba(120, 60, 10, 0.07);
+            padding: 40px;
+            backdrop-filter: blur(8px);
+        }
+        .login-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .login-brand-icon {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #B45309, #92400E);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(146, 64, 14, 0.3);
         }
         .login-title {
+            font-family: 'Playfair Display', Georgia, serif;
             font-size: 28px;
             font-weight: 700;
-            margin-bottom: 6px;
+            color: #292116;
+            margin-bottom: 0;
         }
         .login-subtitle {
-            color: var(--secondary);
-            margin-bottom: 24px;
+            color: #78716C;
+            margin-bottom: 28px;
+            font-size: 14px;
+        }
+        .login-divider {
+            height: 1px;
+            background: rgba(180, 120, 50, 0.18);
+            margin-bottom: 28px;
         }
         .login-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
             gap: 16px;
         }
         .login-card {
-            border: 1px solid var(--border);
+            border: 1px solid rgba(180, 120, 50, 0.2);
             border-radius: 14px;
-            padding: 16px;
+            padding: 20px;
             display: grid;
-            gap: 12px;
+            gap: 10px;
+            background: rgba(255, 250, 242, 0.7);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+            cursor: pointer;
         }
+        .login-card:hover {
+            border-color: #B45309;
+            box-shadow: 0 8px 24px rgba(120, 60, 10, 0.12);
+            transform: translateY(-2px);
+        }
+        .login-card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card-icon.admin   { background: linear-gradient(135deg, #B45309, #92400E); }
+        .login-card-icon.ie      { background: linear-gradient(135deg, #1D4ED8, #1E40AF); }
+        .login-card-icon.sup     { background: linear-gradient(135deg, #7C3AED, #5B21B6); }
+        .login-card-icon.mgmt    { background: linear-gradient(135deg, #15803D, #166534); }
         .login-card h3 {
-            font-size: 16px;
+            font-family: 'Playfair Display', Georgia, serif;
+            font-size: 17px;
             font-weight: 700;
+            color: #292116;
         }
         .login-card p {
-            font-size: 13px;
-            color: var(--secondary);
+            font-size: 12.5px;
+            color: #78716C;
+            line-height: 1.5;
         }
         .login-modal-backdrop {
             position: fixed;
             inset: 0;
-            background: rgba(15, 23, 42, 0.35);
+            background: rgba(28, 15, 7, 0.5);
             opacity: 0;
             pointer-events: none;
             transition: opacity 0.2s ease;
@@ -64,19 +120,21 @@
             align-items: center;
             justify-content: center;
             z-index: 1200;
+            backdrop-filter: blur(2px);
         }
         .login-modal-backdrop.active {
             opacity: 1;
             pointer-events: auto;
         }
         .login-modal {
-            width: min(360px, 92vw);
-            background: #fff;
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: var(--shadow-lg);
+            width: min(380px, 92vw);
+            background: rgba(255, 250, 242, 0.98);
+            border: 1px solid rgba(180, 120, 50, 0.2);
+            border-radius: 18px;
+            padding: 24px;
+            box-shadow: 0 28px 56px rgba(28, 15, 7, 0.25);
             display: grid;
-            gap: 12px;
+            gap: 14px;
         }
         .login-modal-header {
             display: flex;
@@ -84,16 +142,23 @@
             align-items: center;
         }
         .login-modal-header h3 {
-            font-size: 18px;
+            font-family: 'Playfair Display', Georgia, serif;
+            font-size: 19px;
+            font-weight: 700;
+            color: #292116;
         }
         .login-error {
             font-size: 13px;
-            color: var(--danger);
+            color: #B91C1C;
             display: none;
+            padding: 8px 12px;
+            background: #FEE2E2;
+            border-radius: 8px;
+            border-left: 3px solid #B91C1C;
         }
         @media (max-width: 600px) {
             .login-panel {
-                padding: 20px;
+                padding: 24px 20px;
             }
         }
     </style>
@@ -101,28 +166,56 @@
 <body>
     <div class="login-wrapper">
         <div class="login-panel">
-            <div class="login-title">WorkSync Access</div>
-            <div class="login-subtitle">Choose your role to sign in</div>
+            <div class="login-brand">
+                <div class="login-brand-icon">
+                    <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="#FEF3C7" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                    </svg>
+                </div>
+                <div class="login-title">WorkSync</div>
+            </div>
+            <div class="login-subtitle">Leather Factory Management — Choose your role to sign in</div>
+            <div class="login-divider"></div>
             <div class="login-grid">
-                <div class="login-card">
+                <div class="login-card" onclick="openLogin('admin')">
+                    <div class="login-card-icon admin">
+                        <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#FEF3C7" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                        </svg>
+                    </div>
                     <h3>Admin</h3>
                     <p>System authority and structural control.</p>
-                    <button class="btn btn-primary" onclick="openLogin('admin')">Admin Login</button>
+                    <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openLogin('admin')">Sign In</button>
                 </div>
-                <div class="login-card">
+                <div class="login-card" onclick="openLogin('ie')">
+                    <div class="login-card-icon ie">
+                        <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#DBEAFE" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                        </svg>
+                    </div>
                     <h3>IE</h3>
                     <p>Process owner for standards and planning.</p>
-                    <button class="btn btn-primary" onclick="openLogin('ie')">IE Login</button>
+                    <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openLogin('ie')">Sign In</button>
                 </div>
-                <div class="login-card">
+                <div class="login-card" onclick="openLogin('supervisor')">
+                    <div class="login-card-icon sup">
+                        <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#EDE9FE" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                    </div>
                     <h3>Supervisor</h3>
                     <p>Execution controller on the production line.</p>
-                    <button class="btn btn-primary" onclick="openLogin('supervisor')">Supervisor Login</button>
+                    <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openLogin('supervisor')">Sign In</button>
                 </div>
-                <div class="login-card">
+                <div class="login-card" onclick="openLogin('management')">
+                    <div class="login-card-icon mgmt">
+                        <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#D1FAE5" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
+                        </svg>
+                    </div>
                     <h3>Management</h3>
                     <p>Overview and reporting access.</p>
-                    <button class="btn btn-primary" onclick="openLogin('management')">Management Login</button>
+                    <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openLogin('management')">Sign In</button>
                 </div>
             </div>
         </div>
