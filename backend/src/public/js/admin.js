@@ -392,9 +392,11 @@ async function loadLines() {
                                         <td>
                                             <div class="action-btns">
                                                 <button class="btn btn-secondary btn-sm" onclick='showLineModal(${JSON.stringify(line)})'>Edit</button>
-                                                <button class="btn btn-secondary btn-sm" onclick="viewLineDetails(${line.id})">Details</button>
                                                 <button class="btn btn-primary btn-sm" onclick="viewWorkstationQRs(${line.id}, '${line.line_code}')">WS QR Codes</button>
-                                                <button class="btn btn-danger btn-sm" onclick="hardDeleteLine(${line.id})">Delete</button>
+                                                ${isIeMode
+                                                    ? `<button class="btn btn-danger btn-sm" onclick="deactivateLine(${line.id})">Delete</button>`
+                                                    : `<button class="btn btn-danger btn-sm" onclick="hardDeleteLine(${line.id})">Delete</button>`
+                                                }
                                             </div>
                                         </td>
                                     </tr>
@@ -715,6 +717,22 @@ async function hardDeleteLine(id) {
         const result = await response.json();
         if (result.success) {
             showToast('Line deleted', 'success');
+            loadLines();
+        } else {
+            showToast(result.error, 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function deactivateLine(id) {
+    if (!confirm('This will deactivate the line and remove it from active use. Continue?')) return;
+    try {
+        const response = await fetch(`${API_BASE}/lines/${id}`, { method: 'DELETE' });
+        const result = await response.json();
+        if (result.success) {
+            showToast('Line deactivated', 'success');
             loadLines();
         } else {
             showToast(result.error, 'error');
@@ -1886,9 +1904,8 @@ async function loadProducts() {
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Buyer</th>
+                                    <th>Buyer / Product Name</th>
                                     <th>Style No</th>
-                                    <th>Description</th>
                                     <th>Target</th>
                                     <th>Assigned Line</th>
                                     <th>Today (Primary)</th>
@@ -1902,16 +1919,30 @@ async function loadProducts() {
                             <tbody>
                                 ${products.length === 0 ? `
                                     <tr>
-                                        <td colspan="11" class="text-center" style="padding: 40px;">
+                                        <td colspan="10" class="text-center" style="padding: 40px;">
                                             No styles found. Click "Add Style" to create one.
                                         </td>
                                     </tr>
                                 ` : products.map(prod => `
                                     <tr>
-                                        <td>${prod.buyer_name || '-'}</td>
+                                        <td>
+                                            <div>${prod.buyer_name || '-'}</div>
+                                            <div style="font-size:0.8em;color:var(--text-muted);margin-top:2px;">${prod.product_name}</div>
+                                        </td>
                                         <td><strong>${prod.product_code}</strong></td>
-                                        <td>${prod.product_name}</td>
-                                        <td>${prod.target_qty || 0}</td>
+                                        <td>
+                                            ${(() => {
+                                                const oq = prod.target_qty || 0;
+                                                const cum = prod.cumulative_output || 0;
+                                                const pct = oq > 0 ? Math.min(Math.round(cum / oq * 100), 100) : 0;
+                                                const complete = oq > 0 && cum >= oq;
+                                                return `<div style="font-size:12px;font-weight:600;">${cum.toLocaleString()} / ${oq.toLocaleString()}</div>
+                                                <div style="background:#e5e7eb;border-radius:4px;height:6px;margin:3px 0;width:100px;">
+                                                    <div style="background:${complete ? '#16a34a' : '#3b82f6'};width:${pct}%;height:100%;border-radius:4px;"></div>
+                                                </div>
+                                                ${complete ? '<span style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;">✓ COMPLETE</span>' : `<span style="font-size:10px;color:#6b7280;">${pct}%</span>`}`;
+                                            })()}
+                                        </td>
                                         <td>${prod.line_names || '-'}</td>
                                         <td>${prod.today_primary_lines || '-'}</td>
                                         <td>${prod.today_incoming_lines || '-'}</td>
@@ -2032,7 +2063,7 @@ function showProductModal(prod = null) {
                         <input type="text" class="form-control" name="product_name" value="${prod?.product_name || ''}" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Target Qty</label>
+                        <label class="form-label">Order Quantity</label>
                         <input type="number" class="form-control" name="target_qty" value="${prod?.target_qty || 0}" min="0">
                     </div>
                     <div class="form-group">
@@ -3147,10 +3178,10 @@ function openPlanUploadModal() {
             <p style="font-size:13px;color:#6b7280;margin:0 0 16px;">
                 Fill in the template and upload to auto-create the product, processes, workstation plan, and employee assignments in one step.
             </p>
-            <a href="/api/lines/plan-upload-template" download
-               style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;margin-bottom:20px;">
+            <button onclick="window.location.href='/api/lines/plan-upload-template'"
+               style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:20px;">
                 &#8595; Download Template
-            </a>
+            </button>
             <div style="margin-bottom:16px;">
                 <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Select Excel File (.xlsx)</label>
                 <input type="file" id="plan-upload-file" accept=".xlsx,.xls"
@@ -3236,11 +3267,13 @@ async function loadDailyPlanData() {
         window.dailyPlanProducts = products;
         window.changeoverEnabled = changeover_enabled !== false;
         const planMap = new Map(plans.map(plan => [String(plan.line_id), plan]));
+        window._dailyPlanMap = planMap;
         container.innerHTML = `
             <table>
                 <thead>
                     <tr>
                         <th>Line</th>
+                        <th>Line Leader</th>
                         <th>Style (Primary)</th>
                         <th>Target</th>
                         <th>Incoming Style</th>
@@ -3262,12 +3295,19 @@ async function loadDailyPlanData() {
                         const planExists = Boolean(plan?.id);
                         const hasChangeover = !!plan?.incoming_product_id;
                         const otEnabled = plan?.ot_enabled || false;
+                        const primaryComplete = plan && plan.target_qty > 0 && (plan.product_cumulative || 0) >= plan.target_qty;
+                        const incomingComplete = plan && plan.incoming_target_qty > 0 && (plan.incoming_cumulative || 0) >= plan.incoming_target_qty;
                         return `
-                            <tr>
+                            <tr style="${primaryComplete ? 'background:#f0fdf4;' : ''}">
                                 <td>
                                     <strong>${line.line_code}</strong>
                                     <div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div>
                                     ${hasChangeover ? '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">CHANGEOVER</span>' : ''}
+                                    ${primaryComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ ORDER COMPLETE</span>' : ''}
+                                    ${incomingComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ INCOMING COMPLETE</span>' : ''}
+                                </td>
+                                <td>
+                                    ${line.line_leader ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;">${line.line_leader}</span>` : '<span style="color:#9ca3af;font-size:12px;">—</span>'}
                                 </td>
                                 <td>
                                     <select class="form-control" id="plan-product-${line.id}" ${locked ? 'disabled' : ''}>
@@ -3398,7 +3438,18 @@ async function openLineDetailsPage(lineId, date, productId, target) {
         // Update header with line name from API
         const titleEl = overlay.querySelector('#ld-overlay-title');
         if (titleEl && result.data.line) {
-            titleEl.textContent = (result.data.line.line_code || '') + (result.data.line.line_name ? ' \u2014 ' + result.data.line.line_name : '');
+            const { line_code, line_name, line_leader } = result.data.line;
+            titleEl.textContent = (line_code || '') + (line_name ? ' \u2014 ' + line_name : '');
+            // Show line leader badge next to title if available
+            const existing = overlay.querySelector('#ld-leader-badge');
+            if (existing) existing.remove();
+            if (line_leader) {
+                const badge = document.createElement('span');
+                badge.id = 'ld-leader-badge';
+                badge.textContent = '\uD83D\uDC64 ' + line_leader;
+                badge.style.cssText = 'font-size:12px;font-weight:600;color:#1d6f42;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:2px 10px;margin-left:10px;white-space:nowrap;';
+                titleEl.insertAdjacentElement('afterend', badge);
+            }
         }
         // Fetch the most recent previous WS plan date for "Copy from [date]" button
         const resolvedProductId = result.data.product?.id;
@@ -4599,9 +4650,9 @@ async function saveLineDetails(lineId) {
 async function saveDailyPlan(lineId) {
     const date = document.getElementById('plan-date').value;
     const productId = document.getElementById(`plan-product-${lineId}`).value;
-    const targetUnits = document.getElementById(`plan-target-${lineId}`).value;
-    const incomingProductId = document.getElementById(`plan-incoming-${lineId}`).value;
-    const incomingTargetUnits = document.getElementById(`plan-incoming-target-${lineId}`).value;
+    const targetUnits = parseInt(document.getElementById(`plan-target-${lineId}`).value || '0', 10);
+    const incomingProductId = document.getElementById(`plan-incoming-${lineId}`).value || null;
+    const incomingTargetUnits = parseInt(document.getElementById(`plan-incoming-target-${lineId}`).value || '0', 10);
     if (!productId) {
         showToast('Select a product for the line', 'error');
         return;
@@ -4610,29 +4661,50 @@ async function saveDailyPlan(lineId) {
         showToast('Incoming product must be different from primary product', 'error');
         return;
     }
+    const changeoverEnabled = window.changeoverEnabled !== false;
+    const existing = window._dailyPlanMap?.get(String(lineId));
+
     try {
-        const changeoverEnabled = window.changeoverEnabled !== false;
-        const response = await fetch('/api/daily-plans', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                line_id: lineId,
-                product_id: productId,
-                work_date: date,
-                target_units: targetUnits,
-                incoming_product_id: changeoverEnabled ? (incomingProductId || null) : null,
-                incoming_target_units: changeoverEnabled ? (incomingTargetUnits || 0) : 0
-            })
-        });
-        const result = await response.json();
-        if (!result.success) {
-            showToast(result.error, 'error');
-            return;
-        }
-        if (result.copied_from) {
-            showToast(`Daily plan saved — workstation layout copied from ${result.copied_from}`, 'success');
+        if (!existing) {
+            // No plan yet — create via POST
+            const response = await fetch('/api/daily-plans', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    line_id: lineId,
+                    product_id: productId,
+                    work_date: date,
+                    target_units: targetUnits,
+                    incoming_product_id: changeoverEnabled ? incomingProductId : null,
+                    incoming_target_units: changeoverEnabled ? incomingTargetUnits : 0
+                })
+            });
+            const result = await response.json();
+            if (!result.success) { showToast(result.error, 'error'); return; }
+            showToast(result.copied_from ? `Plan saved — layout copied from ${result.copied_from}` : 'Daily plan saved', 'success');
         } else {
-            showToast('Daily plan saved', 'success');
+            // Plan exists — only PATCH changed fields
+            const changed = {};
+            if (String(productId) !== String(existing.product_id)) changed.product_id = productId;
+            if (targetUnits !== parseInt(existing.target_units || 0, 10)) changed.target_units = targetUnits;
+            if (changeoverEnabled) {
+                const newInc = incomingProductId || null;
+                const oldInc = existing.incoming_product_id ? String(existing.incoming_product_id) : null;
+                if (String(newInc) !== String(oldInc)) changed.incoming_product_id = newInc;
+                if (incomingTargetUnits !== parseInt(existing.incoming_target_units || 0, 10)) changed.incoming_target_units = incomingTargetUnits;
+            }
+            if (!Object.keys(changed).length) {
+                showToast('No changes detected', 'info');
+                return;
+            }
+            const response = await fetch('/api/daily-plans', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ line_id: lineId, work_date: date, ...changed })
+            });
+            const result = await response.json();
+            if (!result.success) { showToast(result.error, 'error'); return; }
+            showToast(`Updated: ${Object.keys(changed).join(', ').replace(/_/g, ' ')}`, 'success');
         }
         loadDailyPlanData();
     } catch (err) {
@@ -4741,11 +4813,16 @@ function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
     const productLabel = plan ? `${plan.product_code || ''} ${plan.product_name || ''}`.trim() : '';
     const targetLabel  = plan ? `${plan.target_units || 0} units` : '';
 
+    const leaderBadge = line.line_leader
+        ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:2px 10px;">${line.line_leader}</span>`
+        : '';
+
     if (!hasPlan) {
         return `
         <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;opacity:0.55;display:flex;align-items:center;gap:12px;">
             <span style="font-weight:700;font-size:14px;color:#374151;">${line.line_code}</span>
             <span style="font-size:13px;color:#9ca3af;">${line.line_name}</span>
+            ${leaderBadge}
             <span style="margin-left:auto;font-size:12px;color:#9ca3af;">No plan set for this date</span>
         </div>`;
     }
@@ -4755,6 +4832,7 @@ function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
         <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;display:flex;align-items:center;gap:12px;">
             <span style="font-weight:700;font-size:14px;color:#1e293b;">${line.line_code}</span>
             <span style="font-size:13px;color:#374151;">${line.line_name}</span>
+            ${leaderBadge}
             ${productLabel ? `<span style="font-size:12px;color:#6b7280;background:#f3f4f6;border-radius:10px;padding:2px 10px;">${productLabel} · ${targetLabel}</span>` : ''}
             <button onclick="toggleOTPlan(${line.id},true,'${date}')"
                 style="margin-left:auto;padding:6px 16px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
@@ -4770,6 +4848,7 @@ function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
         <div style="background:#f5f3ff;padding:12px 18px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #ddd6fe;">
             <span style="font-weight:700;font-size:14px;color:#1e293b;">${line.line_code}</span>
             <span style="font-size:13px;color:#374151;">${line.line_name}</span>
+            ${leaderBadge}
             ${productLabel ? `<span style="font-size:12px;color:#6b7280;background:#ede9fe;border-radius:10px;padding:2px 10px;">${productLabel}</span>` : ''}
             <span style="background:#7c3aed;color:#fff;border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700;margin-left:4px;">● OT ON</span>
             <button onclick="toggleOTPlan(${line.id},false,'${date}')"
@@ -6766,6 +6845,7 @@ function _buildOsmTable(data) {
         const balToProd = totalTargetSoFar - todayOutput;
         // ORDER BAL PROD = remaining order quantity yet to be produced
         const orderBalProd = (total_target || 0) - (pt.cumulative_output || 0);
+        const orderComplete = total_target > 0 && orderBalProd <= 0;
         // REMAINING DAYS = order bal prod / daily target
         const remainingDays = (target_units > 0 && orderBalProd > 0)
             ? Math.ceil(orderBalProd / target_units) : 0;
@@ -6774,7 +6854,8 @@ function _buildOsmTable(data) {
             Object.values(pt.hourly).map(d => d.shortfall_reason).filter(Boolean)
         )].join('; ');
 
-        return `<tr>
+        const rowBg = orderComplete ? 'background:#f0fdf4;' : '';
+        return `<tr style="${rowBg}">
             <td style="${tcS}font-weight:700;color:#7c3aed;">${pt.osm_label}</td>
             <td style="${tcS}font-weight:600;">${pt.cumulative_output || 0}</td>
             <td style="${tcS}font-weight:600;">${pt.workstation_code}</td>
@@ -6785,17 +6866,24 @@ function _buildOsmTable(data) {
             <td style="${tcS}font-weight:700;color:#dc2626;">${backlog < 0 ? backlog : ''}</td>
             <td style="${tcS}font-weight:700;color:#16a34a;">${extra > 0 ? '+'+extra : ''}</td>
             <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
-            <td style="${tcS}font-weight:700;color:${orderBalProd > 0 ? '#dc2626' : '#16a34a'};">${orderBalProd}</td>
-            <td style="${tcS}font-weight:700;color:${remainingDays > 0 ? '#b45309' : '#16a34a'};">${remainingDays}</td>
+            <td style="${tcS}font-weight:700;color:${orderComplete ? '#16a34a' : '#dc2626'};">${orderComplete ? '✓ COMPLETE' : orderBalProd}</td>
+            <td style="${tcS}font-weight:700;color:${remainingDays > 0 ? '#b45309' : '#16a34a'};">${orderComplete ? '—' : remainingDays}</td>
             <td style="${tdS}font-size:11px;">${reasons}</td>
         </tr>`;
     }).join('');
+
+    const anyComplete = osm_points.some(pt => total_target > 0 && (total_target - (pt.cumulative_output || 0)) <= 0);
+    const completionBanner = anyComplete
+        ? `<div style="background:#16a34a;color:#fff;padding:10px 16px;font-weight:700;font-size:13px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+               <span style="font-size:18px;">✓</span> ORDER QUANTITY REACHED — This style has met its full order quantity of ${total_target.toLocaleString()} units.
+           </div>` : '';
 
     return `<div class="card" id="osm-print-area"
         data-buyer="${(buyer_name||'').replace(/"/g,'&quot;')}"
         data-style="${(product_code||'').replace(/"/g,'&quot;')}"
         data-from="${to_date}"
         data-to="${to_date}">
+        ${completionBanner}
         <div class="card-header">
             <div>
                 <h3 class="card-title">STAGEWISE HOURLY OSM REPORT — DAILY</h3>

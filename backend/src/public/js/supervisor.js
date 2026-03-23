@@ -835,11 +835,18 @@ function renderFeedInput() {
             ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#fff7ed;color:${wipColor};padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">WIP ${ws.group_wip_quantity}</span>`
             : '';
 
+        const isLinked = isAssigned && !!ws.assigned_is_linked;
         const assignedHtml = isAssigned
-            ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>`
+            ? `<span style="color:#1d4ed8;font-weight:600;">${ws.assigned_emp_code} — ${ws.assigned_emp_name}</span>
+               ${isLinked
+                   ? '<span style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;margin-left:4px;">&#10003; Mapped</span>'
+                   : '<span style="background:#fef9c3;color:#92400e;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;margin-left:4px;">Not Mapped</span>'}`
             : `<span style="color:#dc2626;font-style:italic;">No employee assigned</span>`;
-        const inputSection = isAssigned
-            ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+        const inputSection = !isAssigned
+            ? `<p style="color:#dc2626;font-size:12px;font-weight:600;margin:4px 0 0;">&#128100; Assign Employee — go to Morning section to assign an employee to this workstation.</p>`
+            : !isLinked
+            ? `<p style="color:#d97706;font-size:12px;font-weight:600;margin:4px 0 0;">&#128279; Map Employee — supervisor must link ${ws.assigned_emp_name} to this workstation in the Mapping section.</p>`
+            : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
                 <input type="number" id="feed-qty-${ws.workstation_code}" min="0"
                     value="${ws.material_provided ?? 0}"
                     class="form-control" style="width:100px;text-align:center;">
@@ -847,8 +854,7 @@ function renderFeedInput() {
                 <button class="btn btn-primary" onclick="saveFeedInput('${ws.workstation_code}')">
                     &#10003; Save
                 </button>
-               </div>`
-            : `<p style="color:#9ca3af;font-size:12px;font-style:italic;margin:4px 0 0;">Assign an employee via Mapping first.</p>`;
+               </div>`;
 
         const wipRow = hasWip ? `
                     <div class="ws-card-row">
@@ -940,14 +946,48 @@ const hourlyState = {
 };
 
 const SHORTFALL_REASONS = [
-    'WORKSTATION COMBINED',
     'WORKMANSHIP PROBLEM',
     'MC BREAKDOWN',
     'FEEDING NOT RECEIVED',
     'INEFFICIENT',
     'TECHNICAL ISSUES',
-    'COMMERCIAL PACKAGE ISSUES'
+    'COMMERCIAL PACKAGE ISSUES',
+    'HR MEETING',
+    'QUALITY MEETING',
+    'PRODUCTION MEETING'
 ];
+
+function buildReasonSelectHTML(existingReason, isCombined) {
+    // If existingReason is not in our known list and not WORKSTATION COMBINED, it was an "Other" free-text entry
+    const knownReasons = isCombined ? ['WORKSTATION COMBINED', ...SHORTFALL_REASONS] : SHORTFALL_REASONS;
+    const isOtherText = existingReason && !knownReasons.includes(existingReason);
+    const selectVal = isOtherText ? '__OTHER__' : (existingReason || '');
+    const otherText = isOtherText ? existingReason : '';
+    return `
+        <select class="form-control reason-select" id="hourly-reason" onchange="onReasonChange()">
+            <option value="">-- Select Reason --</option>
+            ${knownReasons.map(r => `<option value="${r}" ${selectVal === r ? 'selected' : ''}>${r}</option>`).join('')}
+            <option value="__OTHER__" ${selectVal === '__OTHER__' ? 'selected' : ''}>Other</option>
+        </select>
+        <input type="text" class="form-control" id="hourly-reason-other"
+               placeholder="Enter reason..."
+               style="margin-top:6px;display:${selectVal === '__OTHER__' ? 'block' : 'none'};"
+               value="${otherText.replace(/"/g, '&quot;')}">`;
+}
+
+function onReasonChange() {
+    const sel = document.getElementById('hourly-reason');
+    const inp = document.getElementById('hourly-reason-other');
+    if (inp) inp.style.display = sel?.value === '__OTHER__' ? 'block' : 'none';
+    const warn = document.getElementById('hourly-reason-warning');
+    if (warn) warn.style.display = 'none';
+}
+
+function getFinalReason() {
+    const sel = document.getElementById('hourly-reason')?.value || '';
+    if (sel === '__OTHER__') return document.getElementById('hourly-reason-other')?.value?.trim() || '';
+    return sel;
+}
 
 // Returns list of workstation codes (or process names) that have output below
 // target for the given hour but NO shortfall reason recorded.
@@ -1232,7 +1272,9 @@ async function onHourlyLineChange() {
         hourlyState.workingHours = result.working_hours || 8;
         hourlyState.inTime = result.in_time || '08:00';
         hourlyState.outTime = result.out_time || '17:00';
-        hourlyState.targetQty = hourlyState.activeTarget || (hourlyState.processes.length > 0 ? (hourlyState.processes[0].target_qty || 0) : 0);
+        // targetQty = line target (target_units from daily plan) — used for all formula calculations.
+        // Never fall back to product's order quantity (target_qty); that is only for balance-to-produce.
+        hourlyState.targetQty = hourlyState.activeTarget || 0;
         hourlyState.hourlyTarget = result.per_hour_target ? Math.round(result.per_hour_target) : (hourlyState.targetQty > 0 ? Math.round(hourlyState.targetQty / (result.working_hours || 8)) : 0);
         await refreshHourlySummary();
     } catch (err) {
@@ -1728,9 +1770,10 @@ function renderHourlySummary() {
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
             const needsReason = output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
 
-            // Block hourly input if no daily plan or no employee assigned
+            // Block hourly input if no daily plan, no employee assigned, or employee not mapped
             const noDailyPlan = !hourlyState.hasDailyPlan;
             const noEmployee  = !ws.assigned_emp_name && wsStatus !== 'covered';
+            const notMapped   = !noEmployee && wsStatus !== 'covered' && wsStatus !== 'vacant' && !ws.assigned_is_linked;
 
             // Status badge for card header
             let statusBadge = '';
@@ -1738,6 +1781,8 @@ function renderHourlySummary() {
                 statusBadge = `<span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">No Plan</span>`;
             } else if (noEmployee && wsStatus !== 'vacant') {
                 statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Not Assigned</span>`;
+            } else if (notMapped) {
+                statusBadge = `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Not Mapped</span>`;
             } else if (isWsChangeover) {
                 const coTime = ws.ws_changeover_started_at ? new Date(ws.ws_changeover_started_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
                 statusBadge = `<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#8652; CO${coTime ? ' '+coTime : ''}</span>`;
@@ -1753,14 +1798,16 @@ function renderHourlySummary() {
 
             const outputColor = output > 0 ? (output >= wsHourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
 
-            // Footer buttons — block if no daily plan, no employee assigned, or vacant
+            // Footer buttons — block if no daily plan, no employee, not mapped, or vacant
             const enterOutputBtn = noDailyPlan
                 ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="No production day plan set for this line">&#128683; No Plan</button>`
                 : wsStatus === 'vacant'
                     ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant">Enter Output</button>`
                     : noEmployee
-                        ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Mapping">&#128683; Not Assigned</button>`
-                        : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
+                        ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Morning section">&#128683; Not Assigned</button>`
+                        : notMapped
+                            ? `<button class="btn ws-card-action" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:not-allowed;" disabled title="Employee assigned but not mapped — supervisor must link in Mapping section">&#128279; Map Employee</button>`
+                            : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
             let coBtn = '';
             if (hasChangeover && ws.has_co_plan) {
@@ -1786,6 +1833,7 @@ function renderHourlySummary() {
 
             let cardClass = '';
             if (wsStatus === 'vacant' || needsReason || noEmployee) cardClass = 'ws-card--alert';
+            else if (notMapped) cardClass = 'ws-card--warning';
             else if (isWsChangeover) cardClass = 'ws-card--changeover';
 
             return `
@@ -2034,12 +2082,9 @@ function openHourlyEntry(processId) {
 
             <div id="hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
                 <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
-                <select class="form-control reason-select" id="hourly-reason">
-                    <option value="">-- Select Reason --</option>
-                    ${SHORTFALL_REASONS.map(r => `<option value="${r}" ${existingReason === r ? 'selected' : ''}>${r}</option>`).join('')}
-                </select>
+                ${buildReasonSelectHTML(existingReason, false)}
                 <div id="hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
-                    &#9888; Please Update Reason
+                    &#9888; Please select a shortfall reason
                 </div>
             </div>
 
@@ -2108,15 +2153,12 @@ function openWorkstationHourlyEntry(workstationPlanId) {
             <input type="number" class="form-control output-qty-input" id="hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="0" style="margin-bottom:10px;">
 
             ${isCombined ? `<div style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#5b21b6;">
-                &#9888; Combined — reason pre-set to WORKSTATION COMBINED.
+                &#9888; This workstation is combined — WORKSTATION COMBINED is available as a reason.
             </div>` : ''}
 
             <div id="hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
                 <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
-                <select class="form-control reason-select" id="hourly-reason">
-                    <option value="">-- Select Reason --</option>
-                    ${SHORTFALL_REASONS.map(r => `<option value="${r}" ${existingReason === r ? 'selected' : ''}>${r}</option>`).join('')}
-                </select>
+                ${buildReasonSelectHTML(existingReason, isCombined)}
                 <div id="hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
                     &#9888; Please select a shortfall reason
                 </div>
@@ -2137,10 +2179,6 @@ function openWorkstationHourlyEntry(workstationPlanId) {
         const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
         document.getElementById('hourly-reason-section').style.display = showReason ? 'block' : 'none';
         document.getElementById('hourly-reason-warning').style.display = 'none';
-        if (showReason && isCombined) {
-            const sel = document.getElementById('hourly-reason');
-            if (sel && !sel.value) sel.value = 'WORKSTATION COMBINED';
-        }
     });
     document.getElementById('hourly-save-btn')?.addEventListener('click', saveWorkstationHourlyOutput);
 }
@@ -2154,15 +2192,21 @@ async function saveWorkstationHourlyOutput() {
     const hour = document.getElementById('hourly-hour')?.value;
     const output = parseInt(document.getElementById('hourly-output-qty')?.value || 0, 10);
     const hourlyTarget = hourlyState.hourlyTarget;
-    const reason = document.getElementById('hourly-reason')?.value || '';
+    const reason = getFinalReason();
     const warningEl = document.getElementById('hourly-reason-warning');
 
     if (!lineId || !date || !hour) { showToast('Line, date and hour are required', 'error'); return; }
     if (output < 0) { showToast('Output must be 0 or more', 'error'); return; }
 
-    if (hourlyTarget > 0 && output > 0 && output < hourlyTarget && !reason) {
+    const isShortfall = hourlyTarget > 0 && output > 0 && output < hourlyTarget;
+    if (isShortfall && !reason) {
         if (warningEl) warningEl.style.display = 'block';
         showToast('Please select a shortfall reason', 'error');
+        return;
+    }
+    if (isShortfall && document.getElementById('hourly-reason')?.value === '__OTHER__' && !reason) {
+        if (warningEl) warningEl.style.display = 'block';
+        showToast('Please enter a reason in the text field', 'error');
         return;
     }
 
@@ -2179,7 +2223,7 @@ async function saveWorkstationHourlyOutput() {
                 forwarded_quantity: output,
                 remaining_quantity: 0,
                 qa_rejection: 0,
-                shortfall_reason: (hourlyTarget > 0 && output > 0 && output < hourlyTarget) ? reason : null
+                shortfall_reason: isShortfall ? reason : null
             })
         });
         const result = await response.json();
@@ -2203,8 +2247,7 @@ async function saveHourlyOutput() {
     const hour = document.getElementById('hourly-hour')?.value;
     const output = parseInt(document.getElementById('hourly-output-qty')?.value || 0, 10);
     const hourlyTarget = hourlyState.hourlyTarget;
-    const reasonSelect = document.getElementById('hourly-reason');
-    const reason = reasonSelect?.value || '';
+    const reason = getFinalReason();
     const warningEl = document.getElementById('hourly-reason-warning');
 
     if (!lineId || !date || !hour) {
@@ -2216,13 +2259,11 @@ async function saveHourlyOutput() {
         return;
     }
 
-    // Check if reason is required (output below target)
-    if (hourlyTarget > 0 && output > 0 && output < hourlyTarget) {
-        if (!reason) {
-            if (warningEl) warningEl.style.display = 'block';
-            showToast('Please Update Reason', 'error');
-            return;
-        }
+    const isShortfall = hourlyTarget > 0 && output > 0 && output < hourlyTarget;
+    if (isShortfall && !reason) {
+        if (warningEl) warningEl.style.display = 'block';
+        showToast('Please select a shortfall reason', 'error');
+        return;
     }
 
     try {
@@ -2239,7 +2280,7 @@ async function saveHourlyOutput() {
                 remaining_quantity: 0,
                 qa_rejection: 0,
                 remarks: '',
-                shortfall_reason: (hourlyTarget > 0 && output > 0 && output < hourlyTarget) ? reason : null
+                shortfall_reason: isShortfall ? reason : null
             })
         });
         const result = await response.json();

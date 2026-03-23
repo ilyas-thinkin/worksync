@@ -806,6 +806,11 @@
     background: #f5f3ff;
 }
 
+.ws-card--warning {
+    border-color: #fde68a;
+    background: #fffbeb;
+}
+
 .ws-card--vacant {
     border-color: #fca5a5;
     background: #fff5f5;
@@ -823,6 +828,7 @@
 
 .ws-card--alert .ws-card-header { background: #fee2e2; }
 .ws-card--changeover .ws-card-header { background: #ede9fe; }
+.ws-card--warning .ws-card-header { background: #fef9c3; }
 .ws-card--vacant .ws-card-header { background: #fee2e2; }
 
 .ws-card-code {

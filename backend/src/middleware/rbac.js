@@ -21,9 +21,9 @@ const PERMISSIONS = {
 
     // Production lines
     'lines:read': ['admin', 'ie', 'supervisor', 'management'],
-    'lines:create': ['admin'],
-    'lines:update': ['admin'],
-    'lines:delete': ['admin'],
+    'lines:create': ['admin', 'ie'],
+    'lines:update': ['admin', 'ie'],
+    'lines:delete': ['admin', 'ie'],
 
     // Employees
     'employees:read': ['admin', 'ie', 'supervisor', 'management'],

@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const https = require('https');
 const fs = require('fs');
 const crypto = require('crypto');
+const cron = require('node-cron');
 const realtime = require('./realtime');
 
 const app = express();
@@ -259,6 +260,27 @@ const keyPath = process.env.HTTPS_KEY_PATH || path.join(__dirname, '..', '..', '
 // Only start HTTPS on the first cluster instance to avoid EADDRINUSE
 let httpsServer = null;
 const instanceId = parseInt(process.env.NODE_APP_INSTANCE || '0', 10);
+
+// 8 AM reset — runs only on PM2 instance 0 to avoid duplicate executions.
+// At 08:00 every day, set is_linked = false for ALL assignments (regular + OT)
+// so supervisors must re-map employees fresh at the start of each shift.
+if (instanceId === 0) {
+  const pool = require('./config/db.config');
+  cron.schedule('0 8 * * *', async () => {
+    try {
+      const result = await pool.query(
+        `UPDATE employee_workstation_assignments
+         SET is_linked = false
+         WHERE is_linked = true`
+      );
+      console.log(`[8AM Reset] Unlinked ${result.rowCount} employee-workstation mappings.`);
+      realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'morning_reset' });
+    } catch (err) {
+      console.error('[8AM Reset] Failed to unlink mappings:', err.message);
+    }
+  }, { timezone: 'Asia/Kolkata' });
+  console.log('⏰ 8AM mapping reset scheduled (instance 0).');
+}
 if (instanceId === 0 && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
   const options = {
     cert: fs.readFileSync(certPath),

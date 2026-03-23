@@ -299,8 +299,17 @@ router.get('/daily-plans', async (req, res) => {
                     lp.overtime_minutes, lp.overtime_target, lp.ot_enabled,
                     lp.changeover_started_at,
                     pl.line_code, pl.line_name,
-                    p.product_code, p.product_name,
-                    ip.product_code as incoming_product_code, ip.product_name as incoming_product_name
+                    p.product_code, p.product_name, p.target_qty,
+                    ip.product_code as incoming_product_code, ip.product_name as incoming_product_name,
+                    ip.target_qty as incoming_target_qty,
+                    (SELECT COALESCE(SUM(slot.max_qty), 0)
+                     FROM (SELECT id FROM product_processes WHERE product_id = p.id AND is_active = true ORDER BY sequence_number ASC LIMIT 1) fp
+                     CROSS JOIN LATERAL (SELECT MAX(quantity) AS max_qty FROM line_process_hourly_progress WHERE process_id = fp.id GROUP BY work_date, hour_slot) slot
+                    ) AS product_cumulative,
+                    (SELECT COALESCE(SUM(slot.max_qty), 0)
+                     FROM (SELECT id FROM product_processes WHERE product_id = ip.id AND is_active = true ORDER BY sequence_number ASC LIMIT 1) fp
+                     CROSS JOIN LATERAL (SELECT MAX(quantity) AS max_qty FROM line_process_hourly_progress WHERE process_id = fp.id GROUP BY work_date, hour_slot) slot
+                    ) AS incoming_cumulative
              FROM line_daily_plans lp
              JOIN production_lines pl ON lp.line_id = pl.id
              JOIN products p ON lp.product_id = p.id
@@ -313,6 +322,7 @@ router.get('/daily-plans', async (req, res) => {
             `SELECT pl.id,
                     pl.line_code,
                     pl.line_name,
+                    pl.line_leader,
                     pl.current_product_id,
                     pl.target_units,
                     p.product_code as current_product_code,
@@ -433,6 +443,63 @@ router.post('/daily-plans', async (req, res) => {
 
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
         res.json({ success: true, data: result.rows[0], copied_from });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PATCH /daily-plans — partial update: only updates the fields provided in the body.
+// Use this when the plan already exists and only specific fields changed.
+router.patch('/daily-plans', async (req, res) => {
+    const { line_id, work_date, ...fields } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    try {
+        const lockCheck = await pool.query(
+            `SELECT is_locked FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        if (lockCheck.rows[0]?.is_locked) {
+            return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
+
+        const allowed = ['target_units', 'incoming_target_units', 'product_id', 'incoming_product_id', 'changeover_sequence'];
+        const setClauses = [];
+        const values = [line_id, work_date];
+        for (const key of allowed) {
+            if (key in fields) {
+                values.push(fields[key] ?? null);
+                setClauses.push(`${key} = $${values.length}`);
+            }
+        }
+        if (!setClauses.length) {
+            return res.status(400).json({ success: false, error: 'No valid fields to update' });
+        }
+        setClauses.push('updated_at = NOW()');
+
+        const result = await pool.query(
+            `UPDATE line_daily_plans SET ${setClauses.join(', ')} WHERE line_id = $1 AND work_date = $2 RETURNING *`,
+            values
+        );
+        if (!result.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Daily plan not found — save the full plan first' });
+        }
+
+        // If target_units changed and this is today, sync production_lines.target_units
+        if ('target_units' in fields && work_date === new Date().toISOString().slice(0, 10)) {
+            await pool.query(
+                `UPDATE production_lines SET target_units = $1, updated_at = NOW() WHERE id = $2`,
+                [fields.target_units ?? 0, line_id]
+            );
+            realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
+        }
+
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+        res.json({ success: true, data: result.rows[0] });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -2585,7 +2652,11 @@ router.get('/products', async (req, res) => {
                    today_incoming.line_names as today_incoming_lines,
                    today_incoming.line_ids as today_incoming_line_ids,
                    (SELECT COUNT(*) FROM product_processes pp WHERE pp.product_id = p.id AND pp.is_active = true) as operations_count,
-                   (SELECT COALESCE(SUM(pp.operation_sah), 0) FROM product_processes pp WHERE pp.product_id = p.id AND pp.is_active = true) as total_sah
+                   (SELECT COALESCE(SUM(pp.operation_sah), 0) FROM product_processes pp WHERE pp.product_id = p.id AND pp.is_active = true) as total_sah,
+                   (SELECT COALESCE(SUM(slot.max_qty), 0)
+                    FROM (SELECT id FROM product_processes WHERE product_id = p.id AND is_active = true ORDER BY sequence_number ASC LIMIT 1) fp
+                    CROSS JOIN LATERAL (SELECT MAX(quantity) AS max_qty FROM line_process_hourly_progress WHERE process_id = fp.id GROUP BY work_date, hour_slot) slot
+                   ) AS cumulative_output
             FROM products p
             LEFT JOIN LATERAL (
                 SELECT
@@ -2638,8 +2709,16 @@ router.get('/products/export/:id', async (req, res) => {
         `, [id]);
         const processes = processRes.rows;
 
-        const target = parseInt(product.target_qty || 0);
-        const taktTime = target > 0 ? Math.round(28800 / target) : 0;
+        // Use the line target (target_units from daily plan) for takt time — not the order quantity.
+        // Fall back to the most recent plan for this product if no plan exists for today.
+        const planRes = await pool.query(
+            `SELECT target_units FROM line_daily_plans
+             WHERE product_id = $1 AND target_units > 0
+             ORDER BY work_date DESC LIMIT 1`,
+            [id]
+        );
+        const lineTarget = parseInt(planRes.rows[0]?.target_units || 0);
+        const taktTime = lineTarget > 0 ? Math.round(28800 / lineTarget) : 0;
 
         const workbook = new ExcelJS.Workbook();
         const ws = workbook.addWorksheet('Product Process Setup');
@@ -3418,15 +3497,13 @@ router.post('/workstation-assignments', async (req, res) => {
     try {
         if (employee_id) {
             await pool.query(
-                `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided, is_linked)
-                 VALUES ($1, $2, $3, $4, $5, $6, true)
+                `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, is_linked)
+                 VALUES ($1, $2, $3, $4, $5, false)
                  ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
                  DO UPDATE SET employee_id = EXCLUDED.employee_id,
                                line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
-                               material_provided = EXCLUDED.material_provided,
-                               is_linked = true,
                                assigned_at = NOW()`,
-                [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null, isNaN(matQty) ? null : matQty]
+                [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null]
             );
         } else {
             await pool.query(
@@ -3460,7 +3537,7 @@ router.patch('/workstation-assignments/material', async (req, res) => {
             [qty, line_id, date, workstation_code]
         );
         if (result.rowCount === 0) {
-            return res.status(404).json({ success: false, error: 'No assignment found for this workstation' });
+            return res.status(404).json({ success: false, error: 'No employee assigned to this workstation. Assign an employee in the Morning section first.' });
         }
         // Refresh group WIP — find which group this workstation belongs to
         const wsGrpResult = await pool.query(
@@ -4008,7 +4085,7 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
         }
 
         const lineInfoResult = await pool.query(
-            'SELECT line_code, line_name FROM production_lines WHERE id = $1', [lineId]
+            'SELECT line_code, line_name, line_leader FROM production_lines WHERE id = $1', [lineId]
         );
         const lineInfo = lineInfoResult.rows[0] || {};
 
@@ -4668,17 +4745,27 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
 // Columns: A=SEQ, B=GROUP, C=OSM, D=WORKSTATION, E=OPERATION CODE, F=OPERATION NAME, G=SAH, H=EMPLOYEE CODE
 router.get('/lines/plan-upload-template', async (req, res) => {
     try {
+        // Fetch operations and employees for dropdown lists
+        const [opsResult, empsResult] = await Promise.all([
+            pool.query(`SELECT operation_code, operation_name FROM operations WHERE is_active = true ORDER BY operation_code`),
+            pool.query(`SELECT emp_code, emp_name FROM employees WHERE is_active = true ORDER BY emp_name`)
+        ]);
+        const operations = opsResult.rows;   // [{operation_code, operation_name}]
+        const employees  = empsResult.rows;  // [{emp_code, emp_name}]
+
         const workbook = new ExcelJS.Workbook();
         const ws = workbook.addWorksheet('Line Plan');
         ws.columns = [
-            { width: 8  }, // A: SEQ
-            { width: 14 }, // B: GROUP / header value
-            { width: 10 }, // C: OSM
-            { width: 16 }, // D: WORKSTATION
-            { width: 16 }, // E: OPERATION CODE
-            { width: 40 }, // F: OPERATION NAME
-            { width: 12 }, // G: SAH
-            { width: 20 }, // H: EMPLOYEE CODE
+            { width: 14 }, // A: GROUP
+            { width: 10 }, // B: OSM
+            { width: 16 }, // C: WORKSTATION
+            { width: 16 }, // D: OPERATION CODE  — user input (dropdown)
+            { width: 40 }, // E: OPERATION NAME  — formula (auto-fills from D)
+            { width: 16 }, // F: PROCESS TIME (s) — user input
+            { width: 16 }, // G: CYCLE TIME (s)   — formula
+            { width: 12 }, // H: SAH              — formula
+            { width: 20 }, // I: EMPLOYEE CODE    — user input (dropdown)
+            { width: 24 }, // J: EMPLOYEE NAME    — formula (auto-fills from I)
         ];
 
         const boldFont   = { bold: true, size: 11 };
@@ -4688,8 +4775,8 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         const borderAll  = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
         const today = new Date().toISOString().slice(0, 10);
 
-        // Row 1: Title (spans A–H)
-        ws.mergeCells('A1:H1');
+        // Row 1: Title (spans A–J)
+        ws.mergeCells('A1:J1');
         const titleCell = ws.getCell('A1');
         titleCell.value = 'LINE PLAN UPLOAD';
         titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
@@ -4710,29 +4797,35 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             { row: 8,  label: 'TARGET UNITS',     value: 500,               note: 'Daily target for this line. Required.' },
             { row: 9,  label: 'CO PRODUCT CODE',  value: '',                note: 'Optional — changeover product code.' },
             { row: 10, label: 'CO TARGET',        value: '',                note: 'Optional — changeover target units.' },
+            { row: 11, label: 'LINE LEADER',       value: 'Rumiya',          note: 'Name of the line leader for this line. One leader per line.' },
         ];
+        const leaderValueFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }; // light green
         headerRows.forEach(({ row, label, value, note }) => {
+            const isLeader = label === 'LINE LEADER';
             const lc = ws.getCell(row, 1);
             lc.value = label; lc.font = boldFont; lc.fill = labelFill;
             lc.border = borderAll; lc.alignment = { horizontal: 'left', vertical: 'middle' };
 
             const vc = ws.getCell(row, 2);
-            vc.value = value; vc.font = { size: 11 }; vc.border = borderAll;
+            vc.value = value;
+            vc.font = isLeader ? { bold: true, size: 11, color: { argb: 'FF1D6F42' } } : { size: 11 };
+            vc.fill = isLeader ? leaderValueFill : { type: 'pattern', pattern: 'none' };
+            vc.border = borderAll;
             vc.alignment = { horizontal: 'left', vertical: 'middle' };
 
-            ws.mergeCells(row, 3, row, 8);
+            ws.mergeCells(row, 3, row, 10);
             const nc = ws.getCell(row, 3);
             nc.value = note;
             nc.font = { size: 10, italic: true, color: { argb: 'FF6B7280' } };
             nc.alignment = { horizontal: 'left', vertical: 'middle' };
         });
 
-        // Row 11: spacer
-        ws.getRow(11).height = 8;
+        // Row 12: spacer
+        ws.getRow(12).height = 8;
 
-        // Row 12: Table header — A=SEQ B=GROUP C=OSM D=WORKSTATION E=OPERATION CODE F=OPERATION NAME G=SAH H=EMPLOYEE CODE
-        const tableHeaders = ['SEQ', 'GROUP', 'OSM', 'WORKSTATION', 'OPERATION CODE', 'OPERATION NAME', 'SAH', 'EMPLOYEE CODE'];
-        const hRow = ws.getRow(12);
+        // Row 13: Table header — A=GROUP B=OSM C=WORKSTATION D=OPERATION CODE E=OPERATION NAME F=PROCESS TIME G=CYCLE TIME H=SAH I=EMPLOYEE CODE J=EMPLOYEE NAME
+        const tableHeaders = ['GROUP', 'OSM', 'WORKSTATION', 'OPERATION CODE', 'OPERATION NAME', 'PROCESS TIME (s)', 'CYCLE TIME (s)', 'SAH', 'EMPLOYEE CODE *', 'EMPLOYEE NAME'];
+        const hRow = ws.getRow(13);
         hRow.height = 22;
         tableHeaders.forEach((h, i) => {
             const cell = hRow.getCell(i + 1);
@@ -4743,34 +4836,100 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             cell.alignment = { horizontal: 'center', vertical: 'middle' };
         });
 
-        // Rows 13+: Example data — [SEQ, GROUP, OSM, WORKSTATION, OP CODE, OP NAME, SAH, EMP CODE]
-        // OSM column: number = OSM checkpoint at that process; blank = not an OSM check
+        // Column fills
+        const inputFill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } }; // white = user input
+        const displayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBEBEB' } }; // gray = formula/display only
+
+        // Example data: [GROUP, OSM, WS, OP_CODE, PROCESS_TIME_S, EMP_CODE]
+        // (Op Name and Emp Name are formula-derived — not in this array)
         const exampleData = [
-            [1,  'G1', '',  'WS01', 'OP-0001', 'TOP PASTING',              0.0033, ''],
-            [2,  'G1', 1,   'WS01', 'OP-0002', 'KIMLON PASTING',           0.0033, ''],
-            [3,  'G1', '',  'WS01', 'OP-0003', 'ATTACHING TOP & KIMLON',   0.0083, ''],
-            [4,  'G1', '',  'WS01', 'OP-0004', 'GUSSET STITCHING -2NOS',   0.0083, ''],
-            [5,  'G1', 2,   'WS02', 'OP-0005', 'GUSSET LAMPING -2NOS',     0.0056, ''],
-            [6,  'G1', '',  'WS02', 'OP-0006', 'GUSSET SHAPING',           0.0044, ''],
-            [7,  'G2', '',  'WS03', 'OP-0007', 'PATTI PROMOTOR',           0.0056, ''],
-            [8,  'G2', 3,   'WS03', 'OP-0008', 'PATTI PRIMER 1',           0.0028, ''],
-            [9,  'G2', '',  'WS04', 'OP-0009', 'PATTI DYE',                0.0056, ''],
-            [10, 'G3', 4,   'WS05', 'OP-0010', 'PATTI PRIMER 2',           0.0028, ''],
-            [11, 'G3', '',  'WS06', 'OP-0011', 'CLEANING',                 0.0042, ''],
+            ['G1', '',  'WS01', 'OP-0001', 12,  ''],
+            ['G1', 1,   'WS01', 'OP-0002', 12,  ''],
+            ['G1', '',  'WS01', 'OP-0003', 30,  ''],
+            ['G1', '',  'WS01', 'OP-0004', 30,  ''],
+            ['G1', 2,   'WS02', 'OP-0005', 20,  ''],
+            ['G1', '',  'WS02', 'OP-0006', 16,  ''],
+            ['G2', '',  'WS03', 'OP-0007', 20,  ''],
+            ['G2', 3,   'WS03', 'OP-0008', 10,  ''],
+            ['G2', '',  'WS04', 'OP-0009', 20,  ''],
+            ['G3', 4,   'WS05', 'OP-0010', 10,  ''],
+            ['G3', '',  'WS06', 'OP-0011', 15,  ''],
         ];
-        exampleData.forEach((rowData, idx) => {
-            const rowNum = 13 + idx;
+
+        // Pre-populate ALL data rows 14–500 with formulas and styling.
+        // Example rows (14–24) get their input values overlaid after this loop.
+        for (let rowNum = 14; rowNum <= 500; rowNum++) {
             const row = ws.getRow(rowNum);
-            rowData.forEach((val, colIdx) => {
-                const cell = row.getCell(colIdx + 1);
-                cell.value = val;
-                cell.border = borderAll;
-                cell.fill = headerFill;
-                // col 5 = OPERATION NAME (0-indexed) → left-align
-                cell.alignment = { horizontal: colIdx === 5 ? 'left' : 'center', vertical: 'middle' };
-                if (colIdx === 6 && typeof val === 'number') cell.numFmt = '0.0000';
-            });
             row.height = 18;
+
+            // A: GROUP — user input
+            const gCell = row.getCell(1);
+            gCell.border = borderAll; gCell.fill = inputFill;
+            gCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // B: OSM — user input
+            const osmCell = row.getCell(2);
+            osmCell.border = borderAll; osmCell.fill = inputFill;
+            osmCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // C: WORKSTATION — user input
+            const wsCell = row.getCell(3);
+            wsCell.border = borderAll; wsCell.fill = inputFill;
+            wsCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // D: OPERATION CODE — user input (dropdown)
+            const codeCell = row.getCell(4);
+            codeCell.border = borderAll; codeCell.fill = inputFill;
+            codeCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // E: OPERATION NAME — formula from D (changes when code changes)
+            const nameCell = row.getCell(5);
+            nameCell.value = { formula: `=IFERROR(VLOOKUP(D${rowNum},Lists!$A:$B,2,0),"")` };
+            nameCell.border = borderAll; nameCell.fill = displayFill;
+            nameCell.alignment = { horizontal: 'left', vertical: 'middle' };
+
+            // F: PROCESS TIME (s) — user input
+            const ptCell = row.getCell(6);
+            ptCell.border = borderAll; ptCell.fill = inputFill;
+            ptCell.numFmt = '0.00';
+            ptCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // G: CYCLE TIME (s) — formula: sum of all process times in same workstation
+            const ctCell = row.getCell(7);
+            ctCell.value = { formula: `=SUMIF($C$14:$C$500,C${rowNum},$F$14:$F$500)` };
+            ctCell.border = borderAll; ctCell.fill = displayFill;
+            ctCell.numFmt = '0.00';
+            ctCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // H: SAH — formula: process time / 3600
+            const sahCell = row.getCell(8);
+            sahCell.value = { formula: `=F${rowNum}/3600` };
+            sahCell.border = borderAll; sahCell.fill = displayFill;
+            sahCell.numFmt = '0.0000';
+            sahCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // I: EMPLOYEE CODE — formula from J (auto-fills when name is selected)
+            const empCodeCell = row.getCell(9);
+            empCodeCell.value = { formula: `=IFERROR(INDEX(Lists!$C:$C,MATCH(J${rowNum},Lists!$D:$D,0)),"")` };
+            empCodeCell.border = borderAll; empCodeCell.fill = displayFill;
+            empCodeCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            // J: EMPLOYEE NAME — user input (dropdown); selecting name auto-fills code in col I
+            const empNameCell = row.getCell(10);
+            empNameCell.border = borderAll; empNameCell.fill = inputFill;
+            empNameCell.alignment = { horizontal: 'left', vertical: 'middle' };
+        }
+
+        // Overlay example data values on rows 14–24
+        exampleData.forEach(([group, osm, wsCode, opCode, pt, empCode], idx) => {
+            const rowNum = 14 + idx;
+            const row = ws.getRow(rowNum);
+            row.getCell(1).value = group;   // A: GROUP
+            row.getCell(2).value = osm;     // B: OSM
+            row.getCell(3).value = wsCode;  // C: WORKSTATION
+            row.getCell(4).value = opCode;  // D: OPERATION CODE (E auto-fills via formula)
+            row.getCell(6).value = pt;      // F: PROCESS TIME
+            // I: EMPLOYEE CODE — formula-driven; J is the user input column
         });
 
         // Instructions sheet
@@ -4821,6 +4980,48 @@ router.get('/lines/plan-upload-template', async (req, res) => {
                 : { bold: line.endsWith(':'), size: 11 });
         });
 
+        // Hidden "Lists" sheet — powers the dropdown data validation on the main sheet
+        const lists = workbook.addWorksheet('Lists');
+        lists.state = 'veryHidden';
+
+        // Column A: Operation Code | Column B: Operation Name | Column C: Employee Code | Column D: Employee Name
+        lists.getCell(1, 1).value = 'OPERATION CODE';
+        lists.getCell(1, 2).value = 'OPERATION NAME';
+        lists.getCell(1, 3).value = 'EMPLOYEE CODE';
+        lists.getCell(1, 4).value = 'EMPLOYEE NAME'; // sorted A-Z; col J dropdown source
+        operations.forEach((op, i) => {
+            lists.getCell(i + 2, 1).value = op.operation_code;
+            lists.getCell(i + 2, 2).value = op.operation_name;
+        });
+        employees.forEach((emp, i) => {
+            lists.getCell(i + 2, 3).value = emp.emp_code;
+            lists.getCell(i + 2, 4).value = emp.emp_name;
+        });
+
+        const opCount  = Math.max(operations.length, 1);
+        const empCount = Math.max(employees.length, 1);
+        const dataEnd  = 500; // data validation covers rows 14–500
+
+        // Data validation: Operation Code (col D) — dropdown from Lists!A; selecting code auto-fills name in col E
+        ws.dataValidations.add(`D14:D${dataEnd}`, {
+            type: 'list',
+            allowBlank: true,
+            showErrorMessage: false,
+            formulae: [`Lists!$A$2:$A$${opCount + 1}`]
+        });
+        // Col E (Operation Name) has no dropdown — it is formula-driven from col D.
+
+        // Col I (Employee Code) has no dropdown — it is formula-driven from col J.
+
+        // Data validation: Employee Name (col J) — dropdown from Lists!D (full names, sorted A-Z)
+        // Selecting a name auto-fills the employee code in col I via INDEX/MATCH formula.
+        ws.dataValidations.add(`J14:J${dataEnd}`, {
+            type: 'list',
+            allowBlank: true,
+            showErrorMessage: false,
+            formulae: [`Lists!$D$2:$D$${empCount + 1}`]
+        });
+
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', 'attachment; filename="line_plan_template.xlsx"');
         await workbook.xlsx.write(res);
@@ -4868,6 +5069,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         const targetUnits   = Math.round(getCellNum(8, 2));
         const coProductCode = getCellStr(9, 2);
         const coTarget      = Math.round(getCellNum(10, 2)) || 0;
+        const lineLeader = getCellStr(11, 2) || null;
 
         if (!lineCode)                         throw new Error('Line Code is required (row 3)');
         if (!workDate || !/^\d{4}-\d{2}-\d{2}$/.test(workDate)) throw new Error('Date must be in YYYY-MM-DD format (row 5)');
@@ -4883,12 +5085,19 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         if (existingLine.rows[0]) {
             lineId      = existingLine.rows[0].id;
             lineCreated = false;
+            // Update line_leader if provided
+            if (lineLeader) {
+                await client.query(
+                    `UPDATE production_lines SET line_leader = $1 WHERE id = $2`,
+                    [lineLeader, lineId]
+                );
+            }
         } else {
             if (!hallName) throw new Error(`Line "${lineCode}" not found. Provide HALL NAME to auto-create it.`);
             const ins = await client.query(
-                `INSERT INTO production_lines (line_code, line_name, hall_location, is_active)
-                 VALUES ($1, $2, $3, true) RETURNING id`,
-                [lineCode, hallName, hallName]
+                `INSERT INTO production_lines (line_code, line_name, hall_location, line_leader, is_active)
+                 VALUES ($1, $2, $3, $4, true) RETURNING id`,
+                [lineCode, hallName, hallName, lineLeader]
             );
             lineId      = ins.rows[0].id;
             lineCreated = true;
@@ -4933,27 +5142,28 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         }
         const taktTimeSecs = targetUnits > 0 ? workingSecs / targetUnits : 0;
 
-        // Parse data rows (start at row 13; stop at first fully empty row)
-        // Columns: A=SEQ, B=GROUP, C=OSM, D=WORKSTATION, E=OPERATION CODE, F=OPERATION NAME, G=SAH, H=EMPLOYEE CODE
+        // Parse data rows (start at row 14; stop at first fully empty row)
+        // Columns: A=GROUP, B=OSM, C=WORKSTATION, D=OPERATION CODE, E=OPERATION NAME, F=PROCESS TIME(input), G=CYCLE TIME(formula), H=SAH(formula), I=EMPLOYEE CODE
         const dataRows = [];
         let autoSeq = 1;
-        for (let rowNum = 13; rowNum <= 2000; rowNum++) {
-            const wsCode = getCellStr(rowNum, 4);   // D: WORKSTATION
-            const opCode = getCellStr(rowNum, 5);   // E: OPERATION CODE
-            const opName = getCellStr(rowNum, 6);   // F: OPERATION NAME
-            if (!wsCode && !opCode && !opName) break;
-            const osmVal = getCellStr(rowNum, 3);   // C: OSM (number or blank)
-            const sah    = getCellNum(rowNum, 7);   // G: SAH
-            const seqVal = Math.round(getCellNum(rowNum, 1)) || autoSeq;
+        for (let rowNum = 14; rowNum <= 2000; rowNum++) {
+            const wsCode = getCellStr(rowNum, 3);   // C: WORKSTATION
+            const opCode = getCellStr(rowNum, 4);   // D: OPERATION CODE
+            // Col E (Operation Name) is a formula — may return "" even on blank rows, so don't rely on it alone
+            if (!wsCode && !opCode) break;
+            const opName = getCellStr(rowNum, 5);   // E: OPERATION NAME (formula result)
+            const osmVal = getCellStr(rowNum, 2);   // B: OSM (number or blank)
+            const sah    = getCellNum(rowNum, 8);   // H: SAH (formula result = process_time/3600)
+            if (!sah || sah <= 0) continue;         // skip rows with no process time entered
             dataRows.push({
-                seq:        seqVal,
-                group:      getCellStr(rowNum, 2),   // B: GROUP
+                seq:        autoSeq,
+                group:      getCellStr(rowNum, 1),   // A: GROUP
                 osm:        osmVal !== '' ? osmVal : null,
                 wsCode:     wsCode.toUpperCase(),
                 opCode:     opCode.toUpperCase(),
                 opName,
                 sah,
-                empCode:    getCellStr(rowNum, 8)   // H: EMPLOYEE CODE
+                empCode:    getCellStr(rowNum, 9)   // I: EMPLOYEE CODE (cols F & G are formula-only)
             });
             autoSeq++;
         }
@@ -4971,9 +5181,24 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
         }
 
+        // Deactivate all existing product_processes for this product — only those in the Excel
+        // will be reactivated during the loop below. This ensures the active process list
+        // matches exactly what is in the uploaded file.
+        await client.query(
+            `UPDATE product_processes SET is_active = false WHERE product_id = $1`,
+            [productId]
+        );
+
+        // Shift all existing product_processes for this product to sequence_number + 1000000.
+        // This is reversible: rows not touched by the batch UPDATE below will be restored to
+        // their original sequences (sequence_number - 1000000) after the loop.
+        await client.query(
+            `UPDATE product_processes SET sequence_number = sequence_number + 1000000 WHERE product_id = $1`,
+            [productId]
+        );
+
         // Upsert operations + product_processes.
-        // sequence_number is NOT updated here to avoid uq_product_sequence conflicts mid-loop;
-        // a single batch UPDATE is done after the loop (Postgres checks UNIQUE at statement end).
+        // All existing sequences are now at 1M+ so new INSERTs and the final batch UPDATE are conflict-free.
         for (const row of dataRows) {
             // If operation code is missing, find by name or auto-generate
             if (!row.opCode) {
@@ -5014,7 +5239,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 // Update SAH + OSM only; sequence handled in batch below
                 await client.query(
                     `UPDATE product_processes
-                     SET operation_sah = $1, cycle_time_seconds = $2, osm_checked = $3
+                     SET operation_sah = $1, cycle_time_seconds = $2, osm_checked = $3, is_active = true
                      WHERE id = $4`,
                     [row.sah, Math.round(row.sah * 3600), row.osmChecked, ppCheck.rows[0].id]
                 );
@@ -5030,9 +5255,8 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
         }
 
-        // Batch-update sequence_numbers in a single statement to avoid uq_product_sequence conflicts.
-        // PostgreSQL defers UNIQUE constraint checks to the end of the statement for multi-row updates,
-        // so swapped sequences (e.g. 1→2 and 2→1) won't cause a violation.
+        // Batch-update all sequence_numbers to their final values.
+        // Existing rows are at old_seq + 1000000; new inserts are at row.seq (small integers, no conflict).
         if (dataRows.length) {
             const seqValues = dataRows.map(r => `(${r.ppId}, ${r.seq})`).join(', ');
             await client.query(
@@ -5042,6 +5266,15 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                  WHERE pp.id = v.id`
             );
         }
+
+        // Restore any product_processes that were shifted but not part of this upload
+        // (i.e., old operations no longer in the plan). They're still at old_seq + 1000000;
+        // subtract 1000000 to return them to their original sequence numbers.
+        await client.query(
+            `UPDATE product_processes SET sequence_number = sequence_number - 1000000
+             WHERE product_id = $1 AND sequence_number > 999999`,
+            [productId]
+        );
 
         // Upsert daily plan
         await client.query(
@@ -5078,19 +5311,21 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         let wsNumber = 1;
         let employeesAssigned = 0;
         for (const [wsCode, processes] of wsGroupsMap) {
-            const actualSam  = processes.reduce((s, p) => s + (p.sah * 3600), 0);
+            const actualSam   = processes.reduce((s, p) => s + (p.sah * 3600), 0);
             const workloadPct = taktTimeSecs > 0 ? (actualSam / taktTimeSecs) * 100 : 0;
+            const groupName   = processes.find(p => p.group)?.group || null;
 
             const wsInsert = await client.query(
                 `INSERT INTO line_plan_workstations
                    (line_id, work_date, product_id, workstation_number, workstation_code,
-                    takt_time_seconds, actual_sam_seconds, workload_pct)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    takt_time_seconds, actual_sam_seconds, workload_pct, group_name)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                  RETURNING id`,
                 [lineId, workDate, productId, wsNumber, wsCode,
                  Math.round(taktTimeSecs * 100) / 100,
                  Math.round(actualSam * 100) / 100,
-                 Math.round(workloadPct * 100) / 100]
+                 Math.round(workloadPct * 100) / 100,
+                 groupName]
             );
             const wsId = wsInsert.rows[0].id;
 
@@ -5104,6 +5339,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
 
             // Assign employee (first non-empty emp_code in the workstation)
+            // Skip if the employee is already assigned to a different line/workstation on this date
             const withEmp = processes.find(p => p.empCode);
             if (withEmp) {
                 const empRow = await client.query(
@@ -5111,17 +5347,28 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                     [withEmp.empCode]
                 );
                 if (empRow.rows[0]) {
-                    await client.query(
-                        `INSERT INTO employee_workstation_assignments
-                           (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime)
-                         VALUES ($1, $2, $3, $4, $5, false)
-                         ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
-                         DO UPDATE SET employee_id             = EXCLUDED.employee_id,
-                                       line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
-                                       assigned_at             = NOW()`,
-                        [lineId, workDate, wsCode, empRow.rows[0].id, wsId]
+                    const empId = empRow.rows[0].id;
+                    const conflict = await client.query(
+                        `SELECT 1 FROM employee_workstation_assignments
+                         WHERE employee_id = $1 AND work_date = $2 AND is_overtime = false
+                           AND NOT (line_id = $3 AND workstation_code = $4)
+                         LIMIT 1`,
+                        [empId, workDate, lineId, wsCode]
                     );
-                    employeesAssigned++;
+                    if (!conflict.rows[0]) {
+                        await client.query(
+                            `INSERT INTO employee_workstation_assignments
+                               (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime, is_linked)
+                             VALUES ($1, $2, $3, $4, $5, false, false)
+                             ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+                             DO UPDATE SET employee_id              = EXCLUDED.employee_id,
+                                           line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                                           is_linked                = false,
+                                           assigned_at              = NOW()`,
+                            [lineId, workDate, wsCode, empId, wsId]
+                        );
+                        employeesAssigned++;
+                    }
                 }
             }
             wsNumber++;
@@ -8351,21 +8598,21 @@ router.get('/osm-report', async (req, res) => {
             ORDER BY lph.process_id, lph.hour_slot
         `, [processIds, line_id, toDate]);
 
-        // Cumulative output: sum across all hours across all dates from fromDate to toDate
+        // Cumulative output: sum of all output produced up to (and including) toDate.
+        // MAX per (process, date, hour_slot) handles any duplicate entries, then SUM all slots.
         const cumulativeResult = await pool.query(`
-            SELECT lph.process_id,
-                   SUM(per_hour.qty) AS cumulative_output
+            SELECT process_id,
+                   COALESCE(SUM(max_qty), 0) AS cumulative_output
             FROM (
-                SELECT process_id, work_date, hour_slot, MAX(quantity) AS qty
+                SELECT process_id, work_date, hour_slot, MAX(quantity) AS max_qty
                 FROM line_process_hourly_progress
                 WHERE process_id = ANY($1::int[])
                   AND line_id = $2
-                  AND work_date BETWEEN $3 AND $4
+                  AND work_date <= $3
                 GROUP BY process_id, work_date, hour_slot
-            ) per_hour
-            JOIN line_process_hourly_progress lph ON lph.process_id = per_hour.process_id
-            GROUP BY lph.process_id
-        `, [processIds, line_id, fromDate, toDate]);
+            ) per_slot
+            GROUP BY process_id
+        `, [processIds, line_id, toDate]);
 
         // Build maps
         const hourlyMap = {};
