@@ -1927,7 +1927,8 @@ async function loadProducts() {
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Buyer / Product Name</th>
+                                    <th>Buyer</th>
+                                    <th>Description</th>
                                     <th>Style No</th>
                                     <th>Plan Month</th>
                                     <th>Order Qty / Produced</th>
@@ -1943,17 +1944,18 @@ async function loadProducts() {
                             <tbody>
                                 ${products.length === 0 ? `
                                     <tr>
-                                        <td colspan="11" class="text-center" style="padding: 40px;">
+                                        <td colspan="12" class="text-center" style="padding: 40px;">
                                             No styles found. Click "Add Style" to create one.
                                         </td>
                                     </tr>
                                 ` : products.map(prod => `
-                                    <tr>
-                                        <td>
+                                    <tr style="cursor:pointer;" onclick="viewProductProcess(${prod.id})">
+                                        <td onclick="event.stopPropagation()">
                                             <div>${prod.buyer_name || '-'}</div>
-                                            <div style="font-size:0.8em;color:var(--text-muted);margin-top:2px;">${prod.product_name}</div>
+                                            <div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">${prod.category || ''}</div>
                                         </td>
-                                        <td><strong>${prod.product_code}</strong></td>
+                                        <td>${prod.product_description || prod.product_name}</td>
+                                        <td onclick="event.stopPropagation()"><strong>${prod.product_code}</strong></td>
                                         <td style="text-align:center;">
                                             ${prod.plan_month ? (() => {
                                                 const [y, m] = prod.plan_month.split('-');
@@ -1993,9 +1995,8 @@ async function loadProducts() {
                                                 ? '<span class="badge" style="margin-left:6px;background:#fef3c7;color:#92400e;">Changeover Today</span>'
                                                 : ''}
                                         </td>
-                                        <td>
+                                        <td onclick="event.stopPropagation()">
                                             <div class="action-btns">
-                                                <button class="btn btn-secondary btn-sm" onclick="viewProductProcess(${prod.id})">Process Flow</button>
                                                 <button class="btn btn-secondary btn-sm" onclick='showProductModal(${JSON.stringify(prod)})'>Edit</button>
                                                 <button class="btn btn-secondary btn-sm" onclick="exportProductExcel(${prod.id})">Export</button>
                                                 <button class="btn btn-danger btn-sm" onclick="deleteProduct(${prod.id})">Delete</button>
@@ -3352,7 +3353,7 @@ async function loadDailyPlanData() {
                             return `<span style="font-size:10px;color:#1e40af;font-weight:600;background:#eff6ff;padding:1px 5px;border-radius:3px;">${mns[parseInt(m)]} ${y}</span>`;
                         })() : '';
                         return `
-                            <tr style="${primaryOver ? 'background:#fffbeb;' : primaryComplete ? 'background:#f0fdf4;' : ''}">
+                            <tr style="cursor:pointer;${primaryOver ? 'background:#fffbeb;' : primaryComplete ? 'background:#f0fdf4;' : ''}" onclick="toggleLineDetails(${line.id})">
                                 <td>
                                     <strong>${line.line_code}</strong>
                                     <div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div>
@@ -3363,7 +3364,7 @@ async function loadDailyPlanData() {
                                 <td>
                                     ${line.line_leader ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;">${line.line_leader}</span>` : '<span style="color:#9ca3af;font-size:12px;">—</span>'}
                                 </td>
-                                <td>
+                                <td onclick="event.stopPropagation()">
                                     <select class="form-control" id="plan-product-${line.id}" ${locked ? 'disabled' : ''}>
                                         <option value="">Select Style</option>
                                         ${products.map(product => `
@@ -3374,10 +3375,10 @@ async function loadDailyPlanData() {
                                     </select>
                                     ${planMonthLabel ? `<div style="margin-top:4px;">${planMonthLabel}</div>` : ''}
                                 </td>
-                                <td>
+                                <td onclick="event.stopPropagation()">
                                     <input type="number" class="form-control" id="plan-target-${line.id}" min="0" value="${selectedTarget}" style="width:90px" ${locked ? 'disabled' : ''}>
                                 </td>
-                                <td>
+                                <td onclick="event.stopPropagation()">
                                     <select class="form-control" id="plan-incoming-${line.id}" ${locked || changeover_enabled === false ? 'disabled' : ''}>
                                         <option value="">None (no changeover)</option>
                                         ${products.map(product => `
@@ -3387,7 +3388,7 @@ async function loadDailyPlanData() {
                                         `).join('')}
                                     </select>
                                 </td>
-                                <td>
+                                <td onclick="event.stopPropagation()">
                                     <input type="number" class="form-control" id="plan-incoming-target-${line.id}" min="0" value="${selectedIncomingTarget}" style="width:90px" ${locked || changeover_enabled === false ? 'disabled' : ''}>
                                 </td>
                                 <td>
@@ -3402,10 +3403,9 @@ async function loadDailyPlanData() {
                                         ${locked ? 'Locked' : 'Open'}
                                     </span>
                                 </td>
-                                <td>
+                                <td onclick="event.stopPropagation()">
                                     <div class="action-btns">
                                         <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Save</button>
-                                        <button class="btn btn-primary btn-sm" onclick="toggleLineDetails(${line.id})" ${!selectedProduct ? 'disabled' : ''} title="View and assign processes to workstations">Details</button>
                                         <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!planExists || locked ? 'disabled' : ''}>Lock</button>
                                         <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!planExists || !locked ? 'disabled' : ''}>Unlock</button>
                                     </div>
