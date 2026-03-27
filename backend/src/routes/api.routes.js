@@ -3040,6 +3040,11 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
                 'UPDATE product_processes SET is_active = false, updated_at = NOW() WHERE product_id = $1',
                 [productId]
             );
+            // Shift existing sequences out of the way so new INSERTs don't collide
+            await client.query(
+                'UPDATE product_processes SET sequence_number = sequence_number + 1000000 WHERE product_id = $1',
+                [productId]
+            );
         } else {
             productAction = 'created';
             const insertResult = await client.query(
@@ -3103,6 +3108,12 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
             );
             autoSeq++;
         }
+
+        // Restore old deactivated rows that were shifted to 1M+ but not re-inserted
+        await client.query(
+            'UPDATE product_processes SET sequence_number = sequence_number - 1000000 WHERE product_id = $1 AND sequence_number > 999999',
+            [productId]
+        );
 
         await client.query('COMMIT');
 
@@ -3353,11 +3364,22 @@ router.post('/product-processes', async (req, res) => {
         }
         const samSeconds = cycle_time_seconds || (operation_sah ? Math.round(parseFloat(operation_sah) * 3600) : 0);
         const samHours = operation_sah || (cycle_time_seconds ? cycle_time_seconds / 3600 : 0);
+        // Resolve a conflict-safe sequence: use provided value if the slot is free, otherwise MAX+1
+        const seqRes = await pool.query(
+            `SELECT CASE
+               WHEN $2::int IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM product_processes WHERE product_id = $1 AND sequence_number = $2::int
+               ) THEN $2::int
+               ELSE (SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM product_processes WHERE product_id = $1)
+             END AS safe_seq`,
+            [product_id, sequence_number || null]
+        );
+        const safeSeq = seqRes.rows[0].safe_seq;
         const result = await pool.query(
             `INSERT INTO product_processes
              (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active)
              VALUES ($1, $2, $3, $4, $5, 1, true) RETURNING *`,
-            [product_id, operation_id, sequence_number, samHours, samSeconds]
+            [product_id, operation_id, safeSeq, samHours, samSeconds]
         );
         realtime.broadcast('data_change', { entity: 'product_processes', action: 'create', product_id });
         res.json({ success: true, data: result.rows[0] });
@@ -4691,10 +4713,16 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
             );
             const wsRow = wsResult.rows[0];
 
+            const seenPpIdsWs = new Set();
+            let seqIdx = 1;
             for (let i = 0; i < validRows.length; i++) {
+                if (seenPpIdsWs.has(validRows[i].pp.id)) continue;
+                seenPpIdsWs.add(validRows[i].pp.id);
                 await client.query(
-                    'INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation, osm_checked) VALUES ($1, $2, $3, $4)',
-                    [wsRow.id, validRows[i].pp.id, i + 1, validRows[i].pp.osm_checked || false]
+                    `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation, osm_checked)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT ON CONSTRAINT line_plan_workstation_process_workstation_id_product_proces_key DO NOTHING`,
+                    [wsRow.id, validRows[i].pp.id, seqIdx++, validRows[i].pp.osm_checked || false]
                 );
             }
 
@@ -4742,7 +4770,7 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
 // ============================================================================
 
 // GET /lines/plan-upload-template — download the Line Plan Excel template
-// Columns: A=SEQ, B=GROUP, C=OSM, D=WORKSTATION, E=OPERATION CODE, F=OPERATION NAME, G=SAH, H=EMPLOYEE CODE
+// Columns: A=GROUP, B=OSM, C=WORKSTATION, D=OP CODE▼, E=OP NAME▼, F=PROCESS TIME, G=CYCLE TIME, H=SAH, I=EMP CODE▼, J=EMP NAME▼
 router.get('/lines/plan-upload-template', async (req, res) => {
     try {
         // Fetch operations and employees for dropdown lists
@@ -4750,278 +4778,227 @@ router.get('/lines/plan-upload-template', async (req, res) => {
             pool.query(`SELECT operation_code, operation_name FROM operations WHERE is_active = true ORDER BY operation_code`),
             pool.query(`SELECT emp_code, emp_name FROM employees WHERE is_active = true ORDER BY emp_name`)
         ]);
-        const operations = opsResult.rows;   // [{operation_code, operation_name}]
-        const employees  = empsResult.rows;  // [{emp_code, emp_name}]
+        const operations = opsResult.rows;
+        const employees  = empsResult.rows;
 
         const workbook = new ExcelJS.Workbook();
         const ws = workbook.addWorksheet('Line Plan');
         ws.columns = [
-            { width: 14 }, // A: GROUP
-            { width: 10 }, // B: OSM
-            { width: 16 }, // C: WORKSTATION
-            { width: 16 }, // D: OPERATION CODE  — user input (dropdown)
-            { width: 40 }, // E: OPERATION NAME  — formula (auto-fills from D)
-            { width: 16 }, // F: PROCESS TIME (s) — user input
-            { width: 16 }, // G: CYCLE TIME (s)   — formula
-            { width: 12 }, // H: SAH              — formula
-            { width: 20 }, // I: EMPLOYEE CODE    — user input (dropdown)
-            { width: 24 }, // J: EMPLOYEE NAME    — formula (auto-fills from I)
+            { width: 14 }, // A: GROUP              — dropdown G1-G50
+            { width: 10 }, // B: OSM                — user input
+            { width: 16 }, // C: WORKSTATION        — dropdown WS01-WS100
+            { width: 18 }, // D: OP CODE ▼          — dropdown op codes; auto-fills E on upload
+            { width: 36 }, // E: OP NAME ▼          — dropdown op names; auto-fills D on upload
+            { width: 16 }, // F: PROCESS TIME (s)   — user input
+            { width: 16 }, // G: CYCLE TIME (s)     — SUMIF formula (auto)
+            { width: 12 }, // H: SAH                — F/3600 formula (auto)
+            { width: 18 }, // I: EMP CODE ▼         — row 16 input; rows 17+ backward WS formula
+            { width: 28 }, // J: EMP NAME ▼         — row 16 input; rows 17+ backward WS formula
         ];
 
+        // ── Styles ──────────────────────────────────────────────────────────────
         const boldFont   = { bold: true, size: 11 };
-        const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
         const labelFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
-        const greenFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D6F42' } };
-        const borderAll  = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+        const greenHdr   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D6F42' } }; // col header auto/calc
+        const blueHdr    = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } }; // col header user input
+        const inputFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } }; // white  = user input
+        const autoFill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBEBEB' } }; // gray   = formula/auto
+        const linkFill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } }; // green  = WS-linked auto
+        const borderAll  = { top:{style:'thin'}, bottom:{style:'thin'}, left:{style:'thin'}, right:{style:'thin'} };
         const today = new Date().toISOString().slice(0, 10);
 
-        // Row 1: Title (spans A–J)
+        // ── Row 1: Title ─────────────────────────────────────────────────────────
         ws.mergeCells('A1:J1');
         const titleCell = ws.getCell('A1');
         titleCell.value = 'LINE PLAN UPLOAD';
-        titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+        titleCell.font  = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
         titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-        titleCell.fill = greenFill;
+        titleCell.fill  = greenHdr;
         ws.getRow(1).height = 30;
 
-        // Row 2: blank spacer
-        ws.getRow(2).height = 6;
+        ws.getRow(2).height = 6; // spacer
 
-        // Rows 3-12: Header fields (label in A, value in B, note merged C–J)
-        const headerRows = [
-            { row: 3,  label: 'LINE CODE',       value: 'RUMIYA',          note: 'Production line code. Auto-created if not in system.' },
-            { row: 4,  label: 'HALL NAME',        value: 'Hall B',          note: 'Hall/area name (used as line name if auto-creating the line).' },
-            { row: 5,  label: 'DATE',             value: today,             note: 'Work date — YYYY-MM-DD format (e.g. 2026-02-19).' },
-            { row: 6,  label: 'PRODUCT CODE',     value: '4321',            note: 'Style/product code. Auto-created if new.' },
-            { row: 7,  label: 'PRODUCT NAME',     value: 'BILLFOLD WALLET', note: 'Full product name.' },
-            { row: 8,  label: 'BUYER NAME',       value: '',                note: 'Buyer / brand name for this product. Optional.' },
-            { row: 9,  label: 'TARGET UNITS',     value: 500,               note: 'Daily target for this line. Required.' },
-            { row: 10, label: 'CO PRODUCT CODE',  value: '',                note: 'Optional — changeover product code.' },
-            { row: 11, label: 'CO TARGET',        value: '',                note: 'Optional — changeover target units.' },
-            { row: 12, label: 'LINE LEADER',       value: 'Rumiya',          note: 'Name of the line leader for this line. One leader per line.' },
+        // ── Rows 3-13: File header fields (label | value | note) ────────────────
+        const hdrRows = [
+            { row:3,  label:'LINE CODE',       value:'RUMIYA',          note:'Production line code. Auto-created if not in system.' },
+            { row:4,  label:'HALL NAME',        value:'Hall B',          note:'Hall/area name (used as line name if auto-creating the line).' },
+            { row:5,  label:'DATE',             value:today,             note:'Work date — YYYY-MM-DD format.' },
+            { row:6,  label:'PRODUCT CODE',     value:'4321',            note:'Style/product code. Auto-created if new.' },
+            { row:7,  label:'PRODUCT NAME',     value:'BILLFOLD WALLET', note:'Full product name.' },
+            { row:8,  label:'BUYER NAME',       value:'',                note:'Buyer / brand name. Optional.' },
+            { row:9,  label:'PLAN MONTH',       value:'',                note:'Plan month (e.g. 2026-04). Optional.' },
+            { row:10, label:'TARGET UNITS',     value:500,               note:'Daily target for this line. Required.' },
+            { row:11, label:'CO PRODUCT CODE',  value:'',                note:'Optional — changeover product code.' },
+            { row:12, label:'CO TARGET',        value:'',                note:'Optional — changeover target units.' },
+            { row:13, label:'LINE LEADER',      value:'Rumiya',          note:'Line leader name.' },
         ];
-        const leaderValueFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }; // light green
-        headerRows.forEach(({ row, label, value, note }) => {
+        const leaderFill = { type:'pattern', pattern:'solid', fgColor:{argb:'FFD1FAE5'} };
+        hdrRows.forEach(({ row, label, value, note }) => {
             const isLeader = label === 'LINE LEADER';
             const lc = ws.getCell(row, 1);
             lc.value = label; lc.font = boldFont; lc.fill = labelFill;
-            lc.border = borderAll; lc.alignment = { horizontal: 'left', vertical: 'middle' };
-
+            lc.border = borderAll; lc.alignment = { horizontal:'left', vertical:'middle' };
             const vc = ws.getCell(row, 2);
             vc.value = value;
-            vc.font = isLeader ? { bold: true, size: 11, color: { argb: 'FF1D6F42' } } : { size: 11 };
-            vc.fill = isLeader ? leaderValueFill : { type: 'pattern', pattern: 'none' };
-            vc.border = borderAll;
-            vc.alignment = { horizontal: 'left', vertical: 'middle' };
-
+            vc.font = isLeader ? { bold:true, size:11, color:{argb:'FF1D6F42'} } : { size:11 };
+            vc.fill = isLeader ? leaderFill : { type:'pattern', pattern:'none' };
+            vc.border = borderAll; vc.alignment = { horizontal:'left', vertical:'middle' };
             ws.mergeCells(row, 3, row, 10);
             const nc = ws.getCell(row, 3);
             nc.value = note;
-            nc.font = { size: 10, italic: true, color: { argb: 'FF6B7280' } };
-            nc.alignment = { horizontal: 'left', vertical: 'middle' };
+            nc.font = { size:10, italic:true, color:{argb:'FF6B7280'} };
+            nc.alignment = { horizontal:'left', vertical:'middle' };
         });
 
-        // Row 13: spacer
-        ws.getRow(13).height = 8;
+        ws.getRow(14).height = 8; // spacer
 
-        // Row 14: Table header — A=GROUP B=OSM C=WORKSTATION D=OPERATION CODE E=OPERATION NAME F=PROCESS TIME G=CYCLE TIME H=SAH I=EMPLOYEE CODE J=EMPLOYEE NAME
-        const tableHeaders = ['GROUP', 'OSM', 'WORKSTATION', 'OPERATION CODE', 'OPERATION NAME', 'PROCESS TIME (s)', 'CYCLE TIME (s)', 'SAH', 'EMPLOYEE CODE *', 'EMPLOYEE NAME'];
-        const hRow = ws.getRow(14);
+        // ── Row 15: Table column headers ─────────────────────────────────────────
+        // Blue  = user inputs (A, B, C, E, F, J)
+        // Green = auto-calc  (D, G, H, I)
+        const colHeaders = [
+            { h:'GROUP',              blue:true  }, // A
+            { h:'OSM',                blue:true  }, // B
+            { h:'WORKSTATION ▼',      blue:true  }, // C
+            { h:'OP CODE (auto)',      blue:false }, // D — formula from E
+            { h:'SELECT OPERATION ▼', blue:true  }, // E — combined "CODE | NAME" dropdown
+            { h:'PROCESS TIME (s)',    blue:true  }, // F
+            { h:'CYCLE TIME (s)',      blue:false }, // G
+            { h:'SAH',                blue:false }, // H
+            { h:'EMP CODE (auto)',     blue:false }, // I — formula from J
+            { h:'SELECT EMPLOYEE ▼',  blue:true  }, // J — combined dropdown; WS-linked
+        ];
+        const hRow = ws.getRow(15);
         hRow.height = 22;
-        tableHeaders.forEach((h, i) => {
+        colHeaders.forEach(({ h, blue }, i) => {
             const cell = hRow.getCell(i + 1);
             cell.value = h;
-            cell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
-            cell.fill = greenFill;
+            cell.font  = { bold:true, size:11, color:{argb:'FFFFFFFF'} };
+            cell.fill  = blue ? blueHdr : greenHdr;
             cell.border = borderAll;
-            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            cell.alignment = { horizontal:'center', vertical:'middle' };
         });
 
-        // Column fills
-        const inputFill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } }; // white = user input
-        const displayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBEBEB' } }; // gray = formula/display only
+        // ── Config sheet (hidden) — all dropdown source data ─────────────────────
+        const opCount  = Math.max(operations.length, 1);
+        const empCount = Math.max(employees.length, 1);
 
-        // Example data: [GROUP, OSM, WS, OP_CODE, PROCESS_TIME_S, EMP_CODE]
-        // (Op Name and Emp Name are formula-derived — not in this array)
+        const cfg = workbook.addWorksheet('Config');
+        cfg.state = 'hidden';
+        for (let w = 1; w <= 100; w++) cfg.getCell(w, 1).value = `WS${String(w).padStart(2, '0')}`;  // A: WS01-WS100
+        for (let g = 1; g <= 50;  g++) cfg.getCell(g, 2).value = `G${g}`;                             // B: G1-G50
+        operations.forEach((op, i) => { cfg.getCell(i+1, 3).value = op.operation_code; });            // C: op codes
+        operations.forEach((op, i) => { cfg.getCell(i+1, 4).value = op.operation_name; });            // D: op names
+        operations.forEach((op, i) => { cfg.getCell(i+1, 5).value = `${op.operation_code} | ${op.operation_name}`; }); // E: combined op
+        employees.forEach((emp, i)  => { cfg.getCell(i+1, 6).value = emp.emp_code; });                // F: emp codes
+        employees.forEach((emp, i)  => { cfg.getCell(i+1, 7).value = emp.emp_name; });                // G: emp names
+        employees.forEach((emp, i)  => { cfg.getCell(i+1, 8).value = `${emp.emp_code} | ${emp.emp_name}`; }); // H: combined emp
+
+        // ── Example data [group, osm, ws, combinedOp, processTimeSec] ────────────
         const exampleData = [
-            ['G1', '',  'WS01', 'OP-0001', 12,  ''],
-            ['G1', 1,   'WS01', 'OP-0002', 12,  ''],
-            ['G1', '',  'WS01', 'OP-0003', 30,  ''],
-            ['G1', '',  'WS01', 'OP-0004', 30,  ''],
-            ['G1', 2,   'WS02', 'OP-0005', 20,  ''],
-            ['G1', '',  'WS02', 'OP-0006', 16,  ''],
-            ['G2', '',  'WS03', 'OP-0007', 20,  ''],
-            ['G2', 3,   'WS03', 'OP-0008', 10,  ''],
-            ['G2', '',  'WS04', 'OP-0009', 20,  ''],
-            ['G3', 4,   'WS05', 'OP-0010', 10,  ''],
-            ['G3', '',  'WS06', 'OP-0011', 15,  ''],
+            ['G1', '',  'WS01', 'Mark Front',    12],
+            ['G1', 1,   'WS01', 'Mark Back',     12],
+            ['G1', '',  'WS01', 'Sew Front',     30],
+            ['G1', '',  'WS01', 'Sew Back',      30],
+            ['G1', 2,   'WS02', 'Attach Label',  20],
+            ['G1', '',  'WS02', 'Trim Thread',   16],
+            ['G2', '',  'WS03', 'Iron Front',    20],
+            ['G2', 3,   'WS03', 'Iron Back',     10],
+            ['G2', '',  'WS04', 'Quality Check', 20],
+            ['G3', 4,   'WS05', 'Pack',          10],
+            ['G3', '',  'WS06', 'Seal',          15],
         ];
 
-        // Pre-populate ALL data rows 15–500 with formulas and styling.
-        // Example rows (15–25) get their input values overlaid after this loop.
-        for (let rowNum = 15; rowNum <= 500; rowNum++) {
+        // ── Data rows 16-501 ─────────────────────────────────────────────────────
+        for (let rowNum = 16; rowNum <= 501; rowNum++) {
             const row = ws.getRow(rowNum);
             row.height = 18;
 
-            // A: GROUP — user input
-            const gCell = row.getCell(1);
-            gCell.border = borderAll; gCell.fill = inputFill;
-            gCell.alignment = { horizontal: 'center', vertical: 'middle' };
+            const set = (col, fill, numFmt, alignH) => {
+                const c = row.getCell(col);
+                c.border = borderAll; c.fill = fill;
+                c.alignment = { horizontal: alignH || 'center', vertical: 'middle' };
+                if (numFmt) c.numFmt = numFmt;
+                return c;
+            };
 
-            // B: OSM — user input
-            const osmCell = row.getCell(2);
-            osmCell.border = borderAll; osmCell.fill = inputFill;
-            osmCell.alignment = { horizontal: 'center', vertical: 'middle' };
+            set(1, inputFill);               // A: GROUP
+            set(2, inputFill);               // B: OSM
+            set(3, inputFill);               // C: WORKSTATION
 
-            // C: WORKSTATION — user input
-            const wsCell = row.getCell(3);
-            wsCell.border = borderAll; wsCell.fill = inputFill;
-            wsCell.alignment = { horizontal: 'center', vertical: 'middle' };
+            // D: OP CODE — auto-extracts from E.
+            //   If E = "OP-001 | Mark Front" (combined) → extracts "OP-001"
+            //   If E = "OP-001"              (code only) → returns "OP-001"
+            //   If E = "Mark Front"          (name only) → INDEX/MATCH lookup in Config
+            const dCell = set(4, autoFill);
+            dCell.value = { formula:
+                `=IF(E${rowNum}="","",IF(ISNUMBER(FIND("|",E${rowNum})),` +
+                  `TRIM(LEFT(E${rowNum},FIND("|",E${rowNum})-1)),` +
+                  `IF(ISNUMBER(MATCH(E${rowNum},Config!$C$1:$C$${opCount},0)),E${rowNum},` +
+                    `IFERROR(INDEX(Config!$C$1:$C$${opCount},MATCH(E${rowNum},Config!$D$1:$D$${opCount},0)),"")` +
+                  `)))` };
 
-            // D: OPERATION CODE — user input (dropdown)
-            const codeCell = row.getCell(4);
-            codeCell.border = borderAll; codeCell.fill = inputFill;
-            codeCell.alignment = { horizontal: 'center', vertical: 'middle' };
+            set(5, inputFill, null, 'left'); // E: SELECT OPERATION — combined dropdown input
+            set(6, inputFill, '0.00');       // F: PROCESS TIME (s)
 
-            // E: OPERATION NAME — formula from D (changes when code changes)
-            const nameCell = row.getCell(5);
-            nameCell.value = { formula: `=IFERROR(VLOOKUP(D${rowNum},Lists!$A:$B,2,0),"")` };
-            nameCell.border = borderAll; nameCell.fill = displayFill;
-            nameCell.alignment = { horizontal: 'left', vertical: 'middle' };
+            // G: CYCLE TIME = SUMIF by WS
+            const ctCell = set(7, autoFill, '0.00');
+            ctCell.value = { formula: `=SUMIF($C$16:$C$501,C${rowNum},$F$16:$F$501)` };
 
-            // F: PROCESS TIME (s) — user input
-            const ptCell = row.getCell(6);
-            ptCell.border = borderAll; ptCell.fill = inputFill;
-            ptCell.numFmt = '0.00';
-            ptCell.alignment = { horizontal: 'center', vertical: 'middle' };
-
-            // G: CYCLE TIME (s) — formula: sum of all process times in same workstation
-            const ctCell = row.getCell(7);
-            ctCell.value = { formula: `=SUMIF($C$15:$C$500,C${rowNum},$F$15:$F$500)` };
-            ctCell.border = borderAll; ctCell.fill = displayFill;
-            ctCell.numFmt = '0.00';
-            ctCell.alignment = { horizontal: 'center', vertical: 'middle' };
-
-            // H: SAH — formula: process time / 3600
-            const sahCell = row.getCell(8);
+            // H: SAH = F / 3600
+            const sahCell = set(8, autoFill, '0.0000');
             sahCell.value = { formula: `=F${rowNum}/3600` };
-            sahCell.border = borderAll; sahCell.fill = displayFill;
-            sahCell.numFmt = '0.0000';
-            sahCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
-            // I: EMPLOYEE CODE — formula from J (auto-fills when name is selected)
-            const empCodeCell = row.getCell(9);
-            empCodeCell.value = { formula: `=IFERROR(INDEX(Lists!$C:$C,MATCH(J${rowNum},Lists!$D:$D,0)),"")` };
-            empCodeCell.border = borderAll; empCodeCell.fill = displayFill;
-            empCodeCell.alignment = { horizontal: 'center', vertical: 'middle' };
+            // I: EMP CODE — auto-extracts from J.
+            //   If J = "EMP-001 | John Smith" → extracts "EMP-001"
+            //   If J = "EMP-001"              → returns "EMP-001"
+            //   If J = "John Smith"           → INDEX/MATCH lookup in Config
+            const iCell = set(9, autoFill);
+            iCell.value = { formula:
+                `=IF(J${rowNum}="","",IF(ISNUMBER(FIND("|",J${rowNum})),` +
+                  `TRIM(LEFT(J${rowNum},FIND("|",J${rowNum})-1)),` +
+                  `IF(ISNUMBER(MATCH(J${rowNum},Config!$F$1:$F$${empCount},0)),J${rowNum},` +
+                    `IFERROR(INDEX(Config!$F$1:$F$${empCount},MATCH(J${rowNum},Config!$G$1:$G$${empCount},0)),"")` +
+                  `)))` };
 
-            // J: EMPLOYEE NAME — user input (dropdown); selecting name auto-fills code in col I
-            const empNameCell = row.getCell(10);
-            empNameCell.border = borderAll; empNameCell.fill = inputFill;
-            empNameCell.alignment = { horizontal: 'left', vertical: 'middle' };
+            // J: SELECT EMPLOYEE — combined dropdown.
+            //   Row 16: white user input.
+            //   Rows 17+: light-green backward formula — copies J from the nearest row above
+            //             with the same WS code (col C). Returns "" if this WS not seen yet
+            //             (user types/selects to fill the first occurrence of each WS; all
+            //             subsequent rows of the same WS auto-fill instantly).
+            const jCell = row.getCell(10);
+            jCell.border = borderAll;
+            jCell.alignment = { horizontal:'left', vertical:'middle' };
+            if (rowNum === 16) {
+                jCell.fill = inputFill;
+            } else {
+                jCell.fill = linkFill;
+                jCell.value = { formula: `=IFERROR(INDEX($J$16:J${rowNum-1},MATCH(C${rowNum},$C$16:C${rowNum-1},0)),"")`, result:'' };
+            }
         }
 
-        // Overlay example data values on rows 15–25
-        exampleData.forEach(([group, osm, wsCode, opCode, pt, empCode], idx) => {
-            const rowNum = 15 + idx;
+        // ── Overlay example values onto rows 16-26 ───────────────────────────────
+        exampleData.forEach(([group, osm, wsCode, opInput, pt], idx) => {
+            const rowNum = 16 + idx;
             const row = ws.getRow(rowNum);
-            row.getCell(1).value = group;   // A: GROUP
-            row.getCell(2).value = osm;     // B: OSM
-            row.getCell(3).value = wsCode;  // C: WORKSTATION
-            row.getCell(4).value = opCode;  // D: OPERATION CODE (E auto-fills via formula)
-            row.getCell(6).value = pt;      // F: PROCESS TIME
-            // I: EMPLOYEE CODE — formula-driven; J is the user input column
+            row.getCell(1).value = group;    // A
+            row.getCell(2).value = osm;      // B
+            row.getCell(3).value = wsCode;   // C
+            // D: auto-formula — no manual value needed
+            row.getCell(5).value = opInput;  // E: op name (D auto-extracts code via formula)
+            row.getCell(6).value = pt;       // F: process time
+            // I: auto-formula from J. J row 16 = user input; rows 17+ = backward WS formula.
         });
 
-        // Instructions sheet
-        const instr = workbook.addWorksheet('Instructions');
-        instr.columns = [{ width: 90 }];
+        // ── Data validations ──────────────────────────────────────────────────────
+        const dataEnd = 501;
         [
-            'LINE PLAN UPLOAD — HOW TO USE',
-            '',
-            'This template uploads a complete line plan in one step:',
-            '  • Creates or updates the product and its processes',
-            '  • Sets up the daily plan (line + date + target)',
-            '  • Builds the workstation plan (groups processes into workstations)',
-            '  • Assigns employees to workstations',
-            '',
-            'HEADER SECTION (Rows 3–12):',
-            '  LINE CODE       Production line code. Auto-created if not in system.',
-            '  HALL NAME       Used as the line name if the line is being auto-created.',
-            '  DATE            Work date in YYYY-MM-DD format.',
-            '  PRODUCT CODE    Style/product code. Auto-created if new.',
-            '  PRODUCT NAME    Product display name.',
-            '  BUYER NAME      Buyer / brand name for this product. Optional.',
-            '  TARGET UNITS    Daily target for this line. Required.',
-            '  CO PRODUCT CODE Optional. Changeover product code (if applicable).',
-            '  CO TARGET       Optional. Target units for the changeover product.',
-            '',
-            'DATA TABLE (Row 15 onwards):',
-            '  SEQ             Process sequence number (1, 2, 3...). Auto-numbered if blank.',
-            '  GROUP           Optional group label (e.g. G1, G2).',
-            '  OSM             OSM checkpoint number for this process. Leave blank if not an OSM check.',
-            '  WORKSTATION     Workstation code (e.g. WS01). All rows with the same code share',
-            '                  one employee assignment and are grouped together.',
-            '  OPERATION CODE  System code (e.g. OP-0001). Leave blank to auto-generate.',
-            '                  Operations are shared across products.',
-            '  OPERATION NAME  Name of the process/operation. Required.',
-            '  SAH             Standard Allowed Hours (decimal). E.g. 0.0033 = ~11.9 seconds.',
-            '  EMPLOYEE CODE   Optional. Assign one employee per workstation (first filled wins).',
-            '',
-            'NOTES:',
-            '  Process Time (s) = SAH × 3600',
-            '  Takt Time is computed from Target Units and the configured working hours.',
-            '  Workload % = (sum of process SAH×3600 in workstation) / Takt Time × 100',
-            '  Uploading replaces the existing workstation plan for that line + date + product.',
-            '  Employee codes must match exactly what is in the system.',
-        ].forEach((line, i) => {
-            const cell = instr.getCell(i + 1, 1);
-            cell.value = line;
-            cell.font = i === 0 ? { bold: true, size: 13 }
-                : (line.startsWith('  ') ? { size: 11, color: { argb: 'FF374151' } }
-                : { bold: line.endsWith(':'), size: 11 });
-        });
-
-        // Hidden "Lists" sheet — powers the dropdown data validation on the main sheet
-        const lists = workbook.addWorksheet('Lists');
-        lists.state = 'veryHidden';
-
-        // Column A: Operation Code | Column B: Operation Name | Column C: Employee Code | Column D: Employee Name
-        lists.getCell(1, 1).value = 'OPERATION CODE';
-        lists.getCell(1, 2).value = 'OPERATION NAME';
-        lists.getCell(1, 3).value = 'EMPLOYEE CODE';
-        lists.getCell(1, 4).value = 'EMPLOYEE NAME'; // sorted A-Z; col J dropdown source
-        operations.forEach((op, i) => {
-            lists.getCell(i + 2, 1).value = op.operation_code;
-            lists.getCell(i + 2, 2).value = op.operation_name;
-        });
-        employees.forEach((emp, i) => {
-            lists.getCell(i + 2, 3).value = emp.emp_code;
-            lists.getCell(i + 2, 4).value = emp.emp_name;
-        });
-
-        const opCount  = Math.max(operations.length, 1);
-        const empCount = Math.max(employees.length, 1);
-        const dataEnd  = 500; // data validation covers rows 15–500
-
-        // Data validation: Operation Code (col D) — dropdown from Lists!A; selecting code auto-fills name in col E
-        ws.dataValidations.add(`D15:D${dataEnd}`, {
-            type: 'list',
-            allowBlank: true,
-            showErrorMessage: false,
-            formulae: [`Lists!$A$2:$A$${opCount + 1}`]
-        });
-        // Col E (Operation Name) has no dropdown — it is formula-driven from col D.
-
-        // Col I (Employee Code) has no dropdown — it is formula-driven from col J.
-
-        // Data validation: Employee Name (col J) — dropdown from Lists!D (full names, sorted A-Z)
-        // Selecting a name auto-fills the employee code in col I via INDEX/MATCH formula.
-        ws.dataValidations.add(`J15:J${dataEnd}`, {
-            type: 'list',
-            allowBlank: true,
-            showErrorMessage: false,
-            formulae: [`Lists!$D$2:$D$${empCount + 1}`]
+            { range: `A16:A${dataEnd}`, src: `Config!$B$1:$B$50`         }, // GROUP  G1-G50
+            { range: `C16:C${dataEnd}`, src: `Config!$A$1:$A$100`        }, // WS     WS01-WS100
+            { range: `E16:E${dataEnd}`, src: `Config!$E$1:$E$${opCount}` }, // SELECT OPERATION (combined)
+            { range: `J16:J${dataEnd}`, src: `Config!$H$1:$H$${empCount}`}, // SELECT EMPLOYEE  (combined)
+        ].forEach(({ range, src }) => {
+            ws.dataValidations.add(range, { type:'list', allowBlank:true, showErrorMessage:false, formulae:[src] });
         });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -5070,10 +5047,11 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         const productCode   = getCellStr(6, 2);
         const productName   = getCellStr(7, 2);
         const buyerName     = getCellStr(8, 2) || null;
-        const targetUnits   = Math.round(getCellNum(9, 2));
-        const coProductCode = getCellStr(10, 2);
-        const coTarget      = Math.round(getCellNum(11, 2)) || 0;
-        const lineLeader    = getCellStr(12, 2) || null;
+        const planMonth     = getCellStr(9, 2) || null;
+        const targetUnits   = Math.round(getCellNum(10, 2));
+        const coProductCode = getCellStr(11, 2);
+        const coTarget      = Math.round(getCellNum(12, 2)) || 0;
+        const lineLeader    = getCellStr(13, 2) || null;
 
         if (!lineCode)                         throw new Error('Line Code is required (row 3)');
         if (!workDate || !/^\d{4}-\d{2}-\d{2}$/.test(workDate)) throw new Error('Date must be in YYYY-MM-DD format (row 5)');
@@ -5109,13 +5087,14 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
         // Find or create primary product
         const prodResult = await client.query(
-            `INSERT INTO products (product_code, product_name, buyer_name, is_active)
-             VALUES ($1, $2, $3, true)
+            `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
+             VALUES ($1, $2, $3, $4, true)
              ON CONFLICT (product_code) DO UPDATE
                SET product_name = EXCLUDED.product_name,
-                   buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name)
+                   buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
+                   plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month)
              RETURNING id`,
-            [productCode, productName, buyerName]
+            [productCode, productName, buyerName, planMonth]
         );
         const productId = prodResult.rows[0].id;
 
@@ -5147,32 +5126,59 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         }
         const taktTimeSecs = targetUnits > 0 ? workingSecs / targetUnits : 0;
 
-        // Parse data rows (start at row 15; stop at first fully empty row)
-        // Columns: A=GROUP, B=OSM, C=WORKSTATION, D=OPERATION CODE, E=OPERATION NAME, F=PROCESS TIME(input), G=CYCLE TIME(formula), H=SAH(formula), I=EMPLOYEE CODE
+        // Parse data rows (start at row 16; stop at first fully empty row)
+        // Columns: A=GROUP, B=OSM, C=WORKSTATION, D=OP CODE(formula), E=OPERATION NAME(user input), F=PROCESS TIME, G=CYCLE TIME(formula), H=SAH(formula), I=EMP CODE(formula), J=EMPLOYEE(formula via WS table)
         const dataRows = [];
         let autoSeq = 1;
-        for (let rowNum = 15; rowNum <= 2000; rowNum++) {
+        for (let rowNum = 16; rowNum <= 2001; rowNum++) {
             const wsCode = getCellStr(rowNum, 3);   // C: WORKSTATION
-            const opCode = getCellStr(rowNum, 4);   // D: OPERATION CODE
-            // Col E (Operation Name) is a formula — may return "" even on blank rows, so don't rely on it alone
-            if (!wsCode && !opCode) break;
-            const opName = getCellStr(rowNum, 5);   // E: OPERATION NAME (formula result)
-            const osmVal = getCellStr(rowNum, 2);   // B: OSM (number or blank)
+            let   opName = getCellStr(rowNum, 5);   // E: SELECT OPERATION (combined "CODE | NAME" or plain)
+            const opCode = getCellStr(rowNum, 4);   // D: OP CODE (formula result — auto-extracted from E)
+            // Stop when both WS and Operation Name are blank (primary user-entered cols)
+            if (!wsCode && !opName) break;
+            // Strip "CODE | " prefix if user selected from combined dropdown
+            const opPipe = opName.indexOf(' | ');
+            if (opPipe !== -1) opName = opName.slice(opPipe + 3).trim();
+            const osmVal = getCellStr(rowNum, 2);   // B: OSM
             const sah    = getCellNum(rowNum, 8);   // H: SAH (formula result = process_time/3600)
             if (!sah || sah <= 0) continue;         // skip rows with no process time entered
+            let empName = getCellStr(rowNum, 10);   // J: SELECT EMPLOYEE (combined "CODE | NAME" or plain)
+            const empPipe = empName.indexOf(' | ');
+            if (empPipe !== -1) empName = empName.slice(empPipe + 3).trim();
             dataRows.push({
                 seq:        autoSeq,
                 group:      getCellStr(rowNum, 1),   // A: GROUP
                 osm:        osmVal !== '' ? osmVal : null,
                 wsCode:     wsCode.toUpperCase(),
-                opCode:     opCode.toUpperCase(),
+                opCode:     opCode ? opCode.toUpperCase() : '',
                 opName,
                 sah,
-                empCode:    getCellStr(rowNum, 9)   // I: EMPLOYEE CODE (cols F & G are formula-only)
+                empCode:    getCellStr(rowNum, 9),  // I: EMP CODE (formula result — auto-extracted from J)
+                empName
             });
             autoSeq++;
         }
         if (!dataRows.length) throw new Error('No process rows found. Data should start at row 15.');
+
+        // Name-based employee fallback: for rows where formula in col I didn't resolve,
+        // look up the employee by the name entered in col J.
+        const unmatchedNames = [...new Set(dataRows.filter(r => !r.empCode && r.empName).map(r => r.empName))];
+        if (unmatchedNames.length) {
+            const empByName = await client.query(
+                `SELECT emp_code, emp_name FROM employees
+                 WHERE UPPER(TRIM(emp_name)) = ANY(
+                     SELECT UPPER(TRIM(unnest($1::text[])))
+                 ) AND is_active = true`,
+                [unmatchedNames]
+            );
+            const nameCodeMap = {};
+            empByName.rows.forEach(e => { nameCodeMap[e.emp_name.toUpperCase().trim()] = e.emp_code; });
+            dataRows.forEach(r => {
+                if (!r.empCode && r.empName) {
+                    r.empCode = nameCodeMap[r.empName.toUpperCase().trim()] || '';
+                }
+            });
+        }
 
         // Pre-fetch next auto-op number for rows with missing operation code
         let nextOpNum = 1;
@@ -5262,8 +5268,15 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
         // Batch-update all sequence_numbers to their final values.
         // Existing rows are at old_seq + 1000000; new inserts are at row.seq (small integers, no conflict).
+        // Deduplicate by ppId (same operation in multiple workstations shares one product_process row).
         if (dataRows.length) {
-            const seqValues = dataRows.map(r => `(${r.ppId}, ${r.seq})`).join(', ');
+            const seenPpIds = new Set();
+            const uniqueSeqRows = dataRows.filter(r => {
+                if (seenPpIds.has(r.ppId)) return false;
+                seenPpIds.add(r.ppId);
+                return true;
+            });
+            const seqValues = uniqueSeqRows.map(r => `(${r.ppId}, ${r.seq})`).join(', ');
             await client.query(
                 `UPDATE product_processes AS pp
                  SET sequence_number = v.seq
@@ -5334,12 +5347,20 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             );
             const wsId = wsInsert.rows[0].id;
 
-            for (let i = 0; i < processes.length; i++) {
+            // Deduplicate by ppId within this workstation (same op name → same ppId when code is blank)
+            const seenPpIds = new Set();
+            const uniqueProcesses = processes.filter(p => {
+                if (seenPpIds.has(p.ppId)) return false;
+                seenPpIds.add(p.ppId);
+                return true;
+            });
+            for (let i = 0; i < uniqueProcesses.length; i++) {
                 await client.query(
                     `INSERT INTO line_plan_workstation_processes
                        (workstation_id, product_process_id, sequence_in_workstation, osm_checked)
-                     VALUES ($1, $2, $3, $4)`,
-                    [wsId, processes[i].ppId, i + 1, processes[i].osmChecked || false]
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT ON CONSTRAINT line_plan_workstation_process_workstation_id_product_proces_key DO NOTHING`,
+                    [wsId, uniqueProcesses[i].ppId, i + 1, uniqueProcesses[i].osmChecked || false]
                 );
             }
 
@@ -5408,6 +5429,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
+        console.error('[plan-upload-excel] ERROR:', err.message);
         res.status(500).json({ success: false, error: err.message });
     } finally {
         client.release();
