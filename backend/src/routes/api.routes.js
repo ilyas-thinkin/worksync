@@ -3040,11 +3040,7 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
                 'UPDATE product_processes SET is_active = false, updated_at = NOW() WHERE product_id = $1',
                 [productId]
             );
-            // Shift existing sequences out of the way so new INSERTs don't collide
-            await client.query(
-                'UPDATE product_processes SET sequence_number = sequence_number + 1000000 WHERE product_id = $1',
-                [productId]
-            );
+            // No sequence shifting needed — uq_product_sequence is a partial index (WHERE is_active = true)
         } else {
             productAction = 'created';
             const insertResult = await client.query(
@@ -3103,15 +3099,16 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
                 `INSERT INTO product_processes
                  (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds,
                   manpower_required, is_active, created_by)
-                 VALUES ($1, $2, $3, $4, $5, 1, true, $6)`,
+                 VALUES ($1, $2, $3, $4, $5, 1, false, $6)`,
                 [productId, operationId, sequenceNumber, operationSah, Math.round(row.sam_seconds), req.user?.id || null]
             );
             autoSeq++;
         }
 
-        // Restore old deactivated rows that were shifted to 1M+ but not re-inserted
+        // Activate all newly inserted rows in one shot (sequences are final, no mid-update conflicts)
         await client.query(
-            'UPDATE product_processes SET sequence_number = sequence_number - 1000000 WHERE product_id = $1 AND sequence_number > 999999',
+            `UPDATE product_processes SET is_active = true
+             WHERE product_id = $1 AND is_active = false`,
             [productId]
         );
 
@@ -5192,24 +5189,15 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
         }
 
-        // Deactivate all existing product_processes for this product — only those in the Excel
-        // will be reactivated during the loop below. This ensures the active process list
-        // matches exactly what is in the uploaded file.
+        // Deactivate all existing product_processes for this product.
+        // uq_product_sequence is a PARTIAL unique index (WHERE is_active = true), so deactivated
+        // rows do not participate in uniqueness checks — no sequence shifting needed.
         await client.query(
             `UPDATE product_processes SET is_active = false WHERE product_id = $1`,
             [productId]
         );
 
-        // Shift all existing product_processes for this product to sequence_number + 1000000.
-        // This is reversible: rows not touched by the batch UPDATE below will be restored to
-        // their original sequences (sequence_number - 1000000) after the loop.
-        await client.query(
-            `UPDATE product_processes SET sequence_number = sequence_number + 1000000 WHERE product_id = $1`,
-            [productId]
-        );
-
         // Upsert operations + product_processes.
-        // All existing sequences are now at 1M+ so new INSERTs and the final batch UPDATE are conflict-free.
         for (const row of dataRows) {
             // If operation code is missing, find by name or auto-generate
             if (!row.opCode) {
@@ -5241,16 +5229,18 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             // OSM checked: true if the Excel OSM column has a value for this row
             row.osmChecked = row.osm !== null && row.osm !== '';
 
-            // Upsert product_process — natural key is (product_id, operation_id)
+            // Upsert product_process — natural key is (product_id, operation_id).
+            // Keep is_active = FALSE here; all rows are activated in a single step after
+            // sequences are assigned. This avoids partial-index conflicts when two rows
+            // temporarily hold each other's old sequence numbers mid-update.
             const ppCheck = await client.query(
                 `SELECT id FROM product_processes WHERE product_id = $1 AND operation_id = $2 LIMIT 1`,
                 [productId, row.opId]
             );
             if (ppCheck.rows[0]) {
-                // Update SAH + OSM only; sequence handled in batch below
                 await client.query(
                     `UPDATE product_processes
-                     SET operation_sah = $1, cycle_time_seconds = $2, osm_checked = $3, is_active = true
+                     SET operation_sah = $1, cycle_time_seconds = $2, osm_checked = $3
                      WHERE id = $4`,
                     [row.sah, Math.round(row.sah * 3600), row.osmChecked, ppCheck.rows[0].id]
                 );
@@ -5259,16 +5249,15 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 const ppInsert = await client.query(
                     `INSERT INTO product_processes
                        (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
-                     VALUES ($1, $2, $3, $4, $5, 1, true, $6) RETURNING id`,
+                     VALUES ($1, $2, $3, $4, $5, 1, false, $6) RETURNING id`,
                     [productId, row.opId, row.seq, row.sah, Math.round(row.sah * 3600), row.osmChecked]
                 );
                 row.ppId = ppInsert.rows[0].id;
             }
         }
 
-        // Batch-update all sequence_numbers to their final values.
-        // Existing rows are at old_seq + 1000000; new inserts are at row.seq (small integers, no conflict).
-        // Deduplicate by ppId (same operation in multiple workstations shares one product_process row).
+        // Batch-update sequences (all rows are still inactive → partial index not enforced → no conflicts).
+        // Deduplicate by ppId — same operation in multiple workstations shares one product_process row.
         if (dataRows.length) {
             const seenPpIds = new Set();
             const uniqueSeqRows = dataRows.filter(r => {
@@ -5283,16 +5272,14 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                  FROM (VALUES ${seqValues}) AS v(id, seq)
                  WHERE pp.id = v.id`
             );
-        }
 
-        // Restore any product_processes that were shifted but not part of this upload
-        // (i.e., old operations no longer in the plan). They're still at old_seq + 1000000;
-        // subtract 1000000 to return them to their original sequence numbers.
-        await client.query(
-            `UPDATE product_processes SET sequence_number = sequence_number - 1000000
-             WHERE product_id = $1 AND sequence_number > 999999`,
-            [productId]
-        );
+            // Activate all rows in this upload in one shot — sequences are final, no conflicts.
+            const activePpIds = uniqueSeqRows.map(r => r.ppId);
+            await client.query(
+                `UPDATE product_processes SET is_active = true WHERE id = ANY($1)`,
+                [activePpIds]
+            );
+        }
 
         // Upsert daily plan
         await client.query(

@@ -50,9 +50,13 @@ const parseCookies = (cookieHeader = '') => {
   }, {});
 };
 
+const TOKEN_MAX_AGE_SEC = 12 * 60 * 60; // 12 hours — one full shift + buffer
+
 const signToken = (payload) => {
+  const now = Math.floor(Date.now() / 1000);
+  const fullPayload = { ...payload, iat: now, exp: now + TOKEN_MAX_AGE_SEC };
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const body = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
   const data = `${header}.${body}`;
   const signature = crypto.createHmac('sha256', AUTH_SECRET).update(data).digest('base64url');
   return `${data}.${signature}`;
@@ -67,7 +71,10 @@ const verifyToken = (token) => {
   const expected = crypto.createHmac('sha256', AUTH_SECRET).update(data).digest('base64url');
   if (expected !== signature) return null;
   try {
-    return JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    // Reject expired tokens
+    if (payload.exp && Math.floor(Date.now() / 1000) > payload.exp) return null;
+    return payload;
   } catch (err) {
     return null;
   }
@@ -83,13 +90,11 @@ const buildAuthCookie = (token, req, { clear = false } = {}) => {
     `${AUTH_COOKIE}=${token}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax'
+    'SameSite=Lax',
+    clear ? 'Max-Age=0' : `Max-Age=${TOKEN_MAX_AGE_SEC}`  // persist for full shift
   ];
   if (isHttpsRequest(req)) {
     parts.push('Secure');
-  }
-  if (clear) {
-    parts.push('Max-Age=0');
   }
   return parts.join('; ');
 };
@@ -252,6 +257,10 @@ const httpServer = app.listen(PORT, HOST, () => {
   console.log(`📊 Admin Panel: http://localhost:${PORT}`);
   setupSystemdNotify();
 });
+// Keep connections alive for 65s (longer than any SSE keep-alive interval of 25s)
+// and allow up to 120s for slow uploads/reports
+httpServer.keepAliveTimeout = 65000;
+httpServer.headersTimeout   = 120000;
 
 const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
 const certPath = process.env.HTTPS_CERT_PATH || path.join(__dirname, '..', '..', 'certs', 'worksync.crt');
@@ -287,6 +296,8 @@ if (instanceId === 0 && fs.existsSync(certPath) && fs.existsSync(keyPath)) {
     key: fs.readFileSync(keyPath)
   };
   httpsServer = https.createServer(options, app);
+  httpsServer.keepAliveTimeout = 65000;
+  httpsServer.headersTimeout   = 120000;
   httpsServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.warn(`HTTPS port ${HTTPS_PORT} in use, HTTPS disabled for this instance.`);
