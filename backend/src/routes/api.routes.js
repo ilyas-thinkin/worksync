@@ -2167,6 +2167,9 @@ router.put('/lines/:id', async (req, res) => {
 
 router.delete('/lines/:id', async (req, res) => {
     const { id } = req.params;
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Admin or IE access required' });
+    }
     try {
         await pool.query(`UPDATE production_lines SET is_active = false WHERE id = $1`, [id]);
         realtime.broadcast('data_change', { entity: 'lines', action: 'delete', id });
@@ -2178,8 +2181,8 @@ router.delete('/lines/:id', async (req, res) => {
 
 router.delete('/lines/:id/hard-delete', async (req, res) => {
     const { id } = req.params;
-    if (req.user?.role !== 'admin') {
-        return res.status(403).json({ success: false, error: 'Admin access required' });
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Admin or IE access required' });
     }
     try {
         // Fetch line_code before deletion (for QR folder cleanup)
@@ -2218,6 +2221,102 @@ router.delete('/lines/:id/hard-delete', async (req, res) => {
         res.json({ success: true, message: 'Line deleted successfully' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.delete('/daily-plans', async (req, res) => {
+    const line_id = req.body?.line_id || req.query?.line_id;
+    const work_date = req.body?.work_date || req.query?.work_date;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Admin or IE access required' });
+    }
+    const client = await pool.connect();
+    try {
+        const planResult = await client.query(
+            `SELECT * FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        const plan = planResult.rows[0];
+        if (!plan) {
+            return res.status(404).json({ success: false, error: 'Daily plan not found' });
+        }
+        if (plan.is_locked) {
+            return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
+
+        const deps = await client.query(
+            `SELECT
+                (SELECT COUNT(*) FROM line_process_hourly_progress WHERE line_id = $1 AND work_date = $2) AS hourly_progress,
+                (SELECT COUNT(*) FROM material_transactions WHERE line_id = $1 AND work_date = $2) AS materials,
+                (SELECT COUNT(*) FROM process_material_wip WHERE line_id = $1 AND work_date = $2) AS process_wip,
+                (SELECT COUNT(*) FROM group_wip WHERE line_id = $1 AND work_date = $2) AS group_wip,
+                (SELECT COUNT(*) FROM line_daily_metrics WHERE line_id = $1 AND work_date = $2) AS metrics,
+                (SELECT COUNT(*) FROM line_shift_closures WHERE line_id = $1 AND work_date = $2) AS shift_closures,
+                (SELECT COUNT(*) FROM worker_departures WHERE line_id = $1 AND work_date = $2) AS worker_departures,
+                (SELECT COUNT(*) FROM worker_adjustments WHERE line_id = $1 AND work_date = $2) AS worker_adjustments,
+                (SELECT COUNT(*)
+                   FROM line_ot_progress lop
+                   JOIN line_ot_workstations low ON low.id = lop.ot_workstation_id
+                   JOIN line_ot_plans lot ON lot.id = low.ot_plan_id
+                  WHERE lot.line_id = $1 AND lot.work_date = $2) AS ot_progress`,
+            [line_id, work_date]
+        );
+        const depRow = deps.rows[0] || {};
+        const hasData = Object.values(depRow).some(v => parseInt(v || 0, 10) > 0);
+        if (hasData) {
+            return res.status(400).json({
+                success: false,
+                error: 'Daily plan has related production data and cannot be deleted.',
+                details: depRow
+            });
+        }
+
+        await client.query('BEGIN');
+        await client.query(
+            `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        await client.query(
+            `DELETE FROM line_ot_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        await client.query(
+            `DELETE FROM line_plan_workstations
+             WHERE line_id = $1
+               AND work_date = $2
+               AND product_id = ANY($3::int[])`,
+            [line_id, work_date, [plan.product_id, plan.incoming_product_id].filter(Boolean)]
+        );
+        await client.query(
+            `DELETE FROM line_daily_plans WHERE id = $1`,
+            [plan.id]
+        );
+        if (work_date === new Date().toISOString().slice(0, 10)) {
+            await client.query(
+                `UPDATE production_lines
+                 SET current_product_id = NULL,
+                     target_units = 0,
+                     updated_at = NOW()
+                 WHERE id = $1`,
+                [line_id]
+            );
+        }
+        await client.query('COMMIT');
+
+        await logAudit('line_daily_plans', plan.id, 'delete', null, plan, req);
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'delete', line_id, work_date });
+        if (work_date === new Date().toISOString().slice(0, 10)) {
+            realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
+        }
+        res.json({ success: true, message: 'Daily plan deleted successfully' });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -4277,31 +4376,6 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
         const samMap = new Map(samResult.rows.map(r => [parseInt(r.id), parseFloat(r.operation_sah || 0)]));
         const seqMap = new Map(samResult.rows.map(r => [parseInt(r.id), { seq: r.sequence_number, code: r.operation_code }]));
 
-        // Validate workstation sequence: WS numeric codes must be monotonically non-decreasing
-        // as process sequence_number increases. This ensures the line layout is in order.
-        {
-            const ordered = rows
-                .map(r => ({ pid: parseInt(r.process_id, 10), ws: (r.workstation_code || '').trim() }))
-                .filter(r => r.ws)
-                .sort((a, b) => (seqMap.get(a.pid)?.seq || 0) - (seqMap.get(b.pid)?.seq || 0));
-            let maxWsNum = 0;
-            let maxWsCode = '';
-            for (const r of ordered) {
-                const wsNum = parseInt(r.ws.replace(/\D/g, '') || '0', 10);
-                if (wsNum < maxWsNum) {
-                    const info = seqMap.get(r.pid) || {};
-                    return res.status(400).json({
-                        success: false,
-                        error: `Workstation Assignment Conflict: Process (Seq ${info.seq} — ${info.code || 'Process #' + r.pid}) ` +
-                               `cannot be assigned to Workstation "${r.ws}" as it breaks the sequential order. ` +
-                               `A preceding process is already assigned to Workstation "${maxWsCode}", which is further along the line. ` +
-                               `Workstation assignments must follow the process sequence — please revise the layout to maintain sequential flow.`
-                    });
-                }
-                if (wsNum > maxWsNum) { maxWsNum = wsNum; maxWsCode = r.ws; }
-            }
-        }
-
         // Build osm_checked map: process_id → boolean
         const osmCheckedMap = new Map();
         rows.forEach(row => {
@@ -4782,7 +4856,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         const ws = workbook.addWorksheet('Line Plan');
         ws.columns = [
             { width: 14 }, // A: GROUP              — dropdown G1-G50
-            { width: 10 }, // B: OSM                — user input
+            { width: 10 }, // B: OSM                — checkbox-like user input
             { width: 16 }, // C: WORKSTATION        — dropdown WS01-WS100
             { width: 18 }, // D: OP CODE ▼          — dropdown op codes; auto-fills E on upload
             { width: 36 }, // E: OP NAME ▼          — dropdown op names; auto-fills D on upload
@@ -4854,7 +4928,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         // Green = auto-calc  (D, G, H, I)
         const colHeaders = [
             { h:'GROUP',              blue:true  }, // A
-            { h:'OSM',                blue:true  }, // B
+            { h:'OSM ☑',              blue:true  }, // B
             { h:'WORKSTATION ▼',      blue:true  }, // C
             { h:'OP CODE (auto)',      blue:false }, // D — formula from E
             { h:'SELECT OPERATION ▼', blue:true  }, // E — combined "CODE | NAME" dropdown
@@ -4889,20 +4963,22 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         employees.forEach((emp, i)  => { cfg.getCell(i+1, 6).value = emp.emp_code; });                // F: emp codes
         employees.forEach((emp, i)  => { cfg.getCell(i+1, 7).value = emp.emp_name; });                // G: emp names
         employees.forEach((emp, i)  => { cfg.getCell(i+1, 8).value = `${emp.emp_code} | ${emp.emp_name}`; }); // H: combined emp
+        cfg.getCell(1, 9).value = '☐';
+        cfg.getCell(2, 9).value = '☑';
 
         // ── Example data [group, osm, ws, combinedOp, processTimeSec] ────────────
         const exampleData = [
-            ['G1', '',  'WS01', 'Mark Front',    12],
-            ['G1', 1,   'WS01', 'Mark Back',     12],
-            ['G1', '',  'WS01', 'Sew Front',     30],
-            ['G1', '',  'WS01', 'Sew Back',      30],
-            ['G1', 2,   'WS02', 'Attach Label',  20],
-            ['G1', '',  'WS02', 'Trim Thread',   16],
-            ['G2', '',  'WS03', 'Iron Front',    20],
-            ['G2', 3,   'WS03', 'Iron Back',     10],
-            ['G2', '',  'WS04', 'Quality Check', 20],
-            ['G3', 4,   'WS05', 'Pack',          10],
-            ['G3', '',  'WS06', 'Seal',          15],
+            ['G1', '☐', 'WS01', 'Mark Front',    12],
+            ['G1', '☑', 'WS01', 'Mark Back',     12],
+            ['G1', '☐', 'WS01', 'Sew Front',     30],
+            ['G1', '☐', 'WS01', 'Sew Back',      30],
+            ['G1', '☑', 'WS02', 'Attach Label',  20],
+            ['G1', '☐', 'WS02', 'Trim Thread',   16],
+            ['G2', '☐', 'WS03', 'Iron Front',    20],
+            ['G2', '☑', 'WS03', 'Iron Back',     10],
+            ['G2', '☐', 'WS04', 'Quality Check', 20],
+            ['G3', '☑', 'WS05', 'Pack',          10],
+            ['G3', '☐', 'WS06', 'Seal',          15],
         ];
 
         // ── Data rows 16-501 ─────────────────────────────────────────────────────
@@ -4991,6 +5067,7 @@ router.get('/lines/plan-upload-template', async (req, res) => {
         const dataEnd = 501;
         [
             { range: `A16:A${dataEnd}`, src: `Config!$B$1:$B$50`         }, // GROUP  G1-G50
+            { range: `B16:B${dataEnd}`, src: `Config!$I$1:$I$2`          }, // OSM    checkbox-like
             { range: `C16:C${dataEnd}`, src: `Config!$A$1:$A$100`        }, // WS     WS01-WS100
             { range: `E16:E${dataEnd}`, src: `Config!$E$1:$E$${opCount}` }, // SELECT OPERATION (combined)
             { range: `J16:J${dataEnd}`, src: `Config!$H$1:$H$${empCount}`}, // SELECT EMPLOYEE  (combined)
@@ -5013,8 +5090,6 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
     if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
     const client = await pool.connect();
     try {
-        await client.query('BEGIN');
-
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
         const sheet = workbook.getWorksheet('Line Plan') || workbook.worksheets[0];
@@ -5036,6 +5111,18 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             if (typeof raw === 'object' && raw.result !== undefined) return parseFloat(raw.result) || 0;
             return parseFloat(String(raw).replace(/,/g, '')) || 0;
         };
+        const normalizeCode = (value) => String(value || '').trim().toUpperCase();
+        const normalizeName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toUpperCase();
+        const isOsmCheckedValue = (value) => {
+            const normalized = String(value || '').trim().toLowerCase();
+            return ['1', 'true', 'yes', 'y', 'checked', 'check', 'tick', '☑', '✓'].includes(normalized);
+        };
+        const missingEmployeeKey = (empCode, empName) => {
+            const code = normalizeCode(empCode);
+            const name = normalizeName(empName);
+            return code ? `CODE:${code}` : `NAME:${name}`;
+        };
+        const duplicateAssignmentKey = (wsCode) => `WS:${String(wsCode || '').trim().toUpperCase()}`;
 
         // Parse header (value in col B = column index 2)
         const lineCode      = getCellStr(3, 2);
@@ -5055,6 +5142,8 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         if (!productCode)                      throw new Error('Product Code is required (row 6)');
         if (!productName)                      throw new Error('Product Name is required (row 7)');
         if (!targetUnits || targetUnits <= 0)  throw new Error('Target Units must be > 0 (row 9)');
+
+        await client.query('BEGIN');
 
         // Find or create line — if it already exists, use it as-is (no updates to name/hall)
         let lineId, lineCreated;
@@ -5151,29 +5240,238 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 opName,
                 sah,
                 empCode:    getCellStr(rowNum, 9),  // I: EMP CODE (formula result — auto-extracted from J)
-                empName
+                empName,
+                employeeLookupKey: null
             });
             autoSeq++;
         }
         if (!dataRows.length) throw new Error('No process rows found. Data should start at row 15.');
 
-        // Name-based employee fallback: for rows where formula in col I didn't resolve,
-        // look up the employee by the name entered in col J.
-        const unmatchedNames = [...new Set(dataRows.filter(r => !r.empCode && r.empName).map(r => r.empName))];
-        if (unmatchedNames.length) {
-            const empByName = await client.query(
-                `SELECT emp_code, emp_name FROM employees
-                 WHERE UPPER(TRIM(emp_name)) = ANY(
-                     SELECT UPPER(TRIM(unnest($1::text[])))
-                 ) AND is_active = true`,
-                [unmatchedNames]
+        const providedMissingEmployees = (() => {
+            const raw = req.body?.missing_employees;
+            if (!raw) return [];
+            try {
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (err) {
+                throw new Error('Invalid missing_employees payload');
+            }
+        })();
+        const providedDuplicateAssignments = (() => {
+            const raw = req.body?.duplicate_assignments;
+            if (!raw) return [];
+            try {
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (err) {
+                throw new Error('Invalid duplicate_assignments payload');
+            }
+        })();
+        const skipMissingEmployees = ['1', 'true', 'yes'].includes(String(req.body?.skip_missing_employees || '').toLowerCase());
+
+        if (providedDuplicateAssignments.length) {
+            const duplicateOverrideMap = new Map();
+            for (const entry of providedDuplicateAssignments) {
+                const key = String(entry?.key || '').trim();
+                if (!key) continue;
+                duplicateOverrideMap.set(key, {
+                    emp_code: String(entry?.emp_code || '').trim(),
+                    emp_name: String(entry?.emp_name || '').trim()
+                });
+            }
+            for (const row of dataRows) {
+                const override = duplicateOverrideMap.get(duplicateAssignmentKey(row.wsCode));
+                if (!override) continue;
+                row.empCode = override.emp_code;
+                row.empName = override.emp_name;
+            }
+        }
+
+        const empCodesRequested = [...new Set(dataRows.map(r => normalizeCode(r.empCode)).filter(Boolean))];
+        const empNamesRequested = [...new Set(dataRows.map(r => normalizeName(r.empName)).filter(Boolean))];
+        const employeeCodeMap = new Map();
+        const employeeNameMap = new Map();
+
+        if (empCodesRequested.length) {
+            const empByCode = await client.query(
+                `SELECT id, emp_code, emp_name
+                 FROM employees
+                 WHERE UPPER(TRIM(emp_code)) = ANY($1::text[])
+                   AND is_active = true`,
+                [empCodesRequested]
             );
-            const nameCodeMap = {};
-            empByName.rows.forEach(e => { nameCodeMap[e.emp_name.toUpperCase().trim()] = e.emp_code; });
-            dataRows.forEach(r => {
-                if (!r.empCode && r.empName) {
-                    r.empCode = nameCodeMap[r.empName.toUpperCase().trim()] || '';
+            empByCode.rows.forEach(row => {
+                employeeCodeMap.set(normalizeCode(row.emp_code), row);
+                employeeNameMap.set(normalizeName(row.emp_name), row);
+            });
+        }
+        if (empNamesRequested.length) {
+            const empByName = await client.query(
+                `SELECT id, emp_code, emp_name
+                 FROM employees
+                 WHERE UPPER(TRIM(emp_name)) = ANY($1::text[])
+                   AND is_active = true`,
+                [empNamesRequested]
+            );
+            empByName.rows.forEach(row => {
+                employeeNameMap.set(normalizeName(row.emp_name), row);
+                employeeCodeMap.set(normalizeCode(row.emp_code), row);
+            });
+        }
+
+        const missingEmployeesMap = new Map();
+        for (const row of dataRows) {
+            const codeKey = normalizeCode(row.empCode);
+            const nameKey = normalizeName(row.empName);
+            if (!codeKey && !nameKey) continue;
+
+            let matchedEmployee = null;
+            if (codeKey && employeeCodeMap.has(codeKey)) {
+                matchedEmployee = employeeCodeMap.get(codeKey);
+            } else if (nameKey && employeeNameMap.has(nameKey)) {
+                matchedEmployee = employeeNameMap.get(nameKey);
+            }
+
+            if (matchedEmployee) {
+                row.empCode = matchedEmployee.emp_code;
+                row.empName = matchedEmployee.emp_name;
+                continue;
+            }
+
+            row.employeeLookupKey = missingEmployeeKey(row.empCode, row.empName);
+            if (!missingEmployeesMap.has(row.employeeLookupKey)) {
+                missingEmployeesMap.set(row.employeeLookupKey, {
+                    key: row.employeeLookupKey,
+                    emp_code: row.empCode || '',
+                    emp_name: row.empName || '',
+                    workstation_codes: []
+                });
+            }
+            const missingEntry = missingEmployeesMap.get(row.employeeLookupKey);
+            if (!missingEntry.workstation_codes.includes(row.wsCode)) {
+                missingEntry.workstation_codes.push(row.wsCode);
+            }
+        }
+
+        if (missingEmployeesMap.size) {
+            const providedMap = new Map();
+            for (const entry of providedMissingEmployees) {
+                const originalKey = String(entry?.key || '').trim();
+                const empCode = String(entry?.emp_code || '').trim();
+                const empName = String(entry?.emp_name || '').trim();
+                if (!originalKey || !empCode || !empName) {
+                    throw new Error('Each missing employee entry must include key, emp_code, and emp_name');
                 }
+                providedMap.set(originalKey, { emp_code: empCode, emp_name: empName });
+            }
+
+            const unresolvedMissing = [];
+            for (const missingEntry of missingEmployeesMap.values()) {
+                if (skipMissingEmployees) continue;
+                if (!providedMap.has(missingEntry.key)) {
+                    unresolvedMissing.push(missingEntry);
+                }
+            }
+
+            if (unresolvedMissing.length) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({
+                    success: false,
+                    code: 'MISSING_EMPLOYEES',
+                    message: 'Some employees from the Excel file were not found.',
+                    error: 'Some employees from the Excel file were not found.',
+                    missing_employees: unresolvedMissing
+                });
+            }
+
+            if (!skipMissingEmployees) {
+                const seenNewCodes = new Set();
+                for (const missingEntry of missingEmployeesMap.values()) {
+                    const provided = providedMap.get(missingEntry.key);
+                    if (!provided) continue;
+                    const normalizedProvidedCode = normalizeCode(provided.emp_code);
+                    if (seenNewCodes.has(normalizedProvidedCode)) {
+                        throw new Error(`Duplicate employee code in missing employee form: ${provided.emp_code}`);
+                    }
+                    seenNewCodes.add(normalizedProvidedCode);
+                }
+
+                for (const missingEntry of missingEmployeesMap.values()) {
+                    const provided = providedMap.get(missingEntry.key);
+                    if (!provided) continue;
+                    const insertedEmployee = await client.query(
+                        `INSERT INTO employees (emp_code, emp_name, designation, default_line_id, manpower_factor, is_active)
+                         VALUES ($1, $2, $3, $4, $5, true)
+                         ON CONFLICT (emp_code) DO UPDATE
+                           SET emp_name = EXCLUDED.emp_name,
+                               is_active = true,
+                               updated_at = NOW()
+                         RETURNING id, emp_code, emp_name`,
+                        [provided.emp_code.trim(), provided.emp_name.trim(), 'Operator', null, 1]
+                    );
+                    const employeeRow = insertedEmployee.rows[0];
+                    employeeCodeMap.set(normalizeCode(employeeRow.emp_code), employeeRow);
+                    employeeNameMap.set(normalizeName(employeeRow.emp_name), employeeRow);
+                }
+
+                for (const row of dataRows) {
+                    if (!row.employeeLookupKey) continue;
+                    const provided = providedMap.get(row.employeeLookupKey);
+                    if (!provided) continue;
+                    row.empCode = provided.emp_code.trim();
+                    row.empName = provided.emp_name.trim();
+                }
+            } else {
+                for (const row of dataRows) {
+                    if (!row.employeeLookupKey) continue;
+                    row.empCode = '';
+                    row.empName = '';
+                }
+            }
+        }
+
+        const employeeToWsMap = new Map();
+        for (const row of dataRows) {
+            const empCodeKey = normalizeCode(row.empCode);
+            if (!empCodeKey) continue;
+            if (!employeeToWsMap.has(empCodeKey)) {
+                employeeToWsMap.set(empCodeKey, {
+                    emp_code: row.empCode,
+                    emp_name: row.empName || '',
+                    workstations: [],
+                    rows: []
+                });
+            }
+            const info = employeeToWsMap.get(empCodeKey);
+            if (!info.workstations.includes(row.wsCode)) {
+                info.workstations.push(row.wsCode);
+            }
+            info.rows.push(row);
+            if (!info.emp_name && row.empName) info.emp_name = row.empName;
+        }
+
+        const duplicateAssignments = [];
+        for (const info of employeeToWsMap.values()) {
+            if (info.workstations.length <= 1) continue;
+            for (const wsCode of info.workstations) {
+                duplicateAssignments.push({
+                    key: duplicateAssignmentKey(wsCode),
+                    workstation_code: wsCode,
+                    emp_code: info.emp_code,
+                    emp_name: info.emp_name || '',
+                    conflict_workstations: info.workstations
+                });
+            }
+        }
+
+        if (duplicateAssignments.length) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                success: false,
+                code: 'DUPLICATE_EMPLOYEE_ASSIGNMENTS',
+                message: 'Same employee is assigned to multiple workstations.',
+                error: 'Same employee is assigned to multiple workstations.',
+                duplicate_assignments: duplicateAssignments
             });
         }
 
@@ -5226,46 +5524,22 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 row.opId = opResult.rows[0].id;
             }
 
-            // OSM checked: true if the Excel OSM column has a value for this row
-            row.osmChecked = row.osm !== null && row.osm !== '';
+            // OSM checked: true only when the upload marks the box as checked.
+            row.osmChecked = isOsmCheckedValue(row.osm);
 
-            // Upsert product_process — natural key is (product_id, operation_id).
-            // Keep is_active = FALSE here; all rows are activated in a single step after
-            // sequences are assigned. This avoids partial-index conflicts when two rows
-            // temporarily hold each other's old sequence numbers mid-update.
-            const ppCheck = await client.query(
-                `SELECT id FROM product_processes WHERE product_id = $1 AND operation_id = $2 LIMIT 1`,
-                [productId, row.opId]
+            // Insert one product_process row per Excel row so repeated operations are preserved.
+            const ppInsert = await client.query(
+                `INSERT INTO product_processes
+                   (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
+                 VALUES ($1, $2, $3, $4, $5, 1, false, $6) RETURNING id`,
+                [productId, row.opId, row.seq, row.sah, Math.round(row.sah * 3600), row.osmChecked]
             );
-            if (ppCheck.rows[0]) {
-                await client.query(
-                    `UPDATE product_processes
-                     SET operation_sah = $1, cycle_time_seconds = $2, osm_checked = $3
-                     WHERE id = $4`,
-                    [row.sah, Math.round(row.sah * 3600), row.osmChecked, ppCheck.rows[0].id]
-                );
-                row.ppId = ppCheck.rows[0].id;
-            } else {
-                const ppInsert = await client.query(
-                    `INSERT INTO product_processes
-                       (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
-                     VALUES ($1, $2, $3, $4, $5, 1, false, $6) RETURNING id`,
-                    [productId, row.opId, row.seq, row.sah, Math.round(row.sah * 3600), row.osmChecked]
-                );
-                row.ppId = ppInsert.rows[0].id;
-            }
+            row.ppId = ppInsert.rows[0].id;
         }
 
         // Batch-update sequences (all rows are still inactive → partial index not enforced → no conflicts).
-        // Deduplicate by ppId — same operation in multiple workstations shares one product_process row.
         if (dataRows.length) {
-            const seenPpIds = new Set();
-            const uniqueSeqRows = dataRows.filter(r => {
-                if (seenPpIds.has(r.ppId)) return false;
-                seenPpIds.add(r.ppId);
-                return true;
-            });
-            const seqValues = uniqueSeqRows.map(r => `(${r.ppId}, ${r.seq})`).join(', ');
+            const seqValues = dataRows.map(r => `(${r.ppId}, ${r.seq})`).join(', ');
             await client.query(
                 `UPDATE product_processes AS pp
                  SET sequence_number = v.seq
@@ -5274,7 +5548,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             );
 
             // Activate all rows in this upload in one shot — sequences are final, no conflicts.
-            const activePpIds = uniqueSeqRows.map(r => r.ppId);
+            const activePpIds = dataRows.map(r => r.ppId);
             await client.query(
                 `UPDATE product_processes SET is_active = true WHERE id = ANY($1)`,
                 [activePpIds]
@@ -5334,20 +5608,12 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             );
             const wsId = wsInsert.rows[0].id;
 
-            // Deduplicate by ppId within this workstation (same op name → same ppId when code is blank)
-            const seenPpIds = new Set();
-            const uniqueProcesses = processes.filter(p => {
-                if (seenPpIds.has(p.ppId)) return false;
-                seenPpIds.add(p.ppId);
-                return true;
-            });
-            for (let i = 0; i < uniqueProcesses.length; i++) {
+            for (let i = 0; i < processes.length; i++) {
                 await client.query(
                     `INSERT INTO line_plan_workstation_processes
                        (workstation_id, product_process_id, sequence_in_workstation, osm_checked)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT ON CONSTRAINT line_plan_workstation_process_workstation_id_product_proces_key DO NOTHING`,
-                    [wsId, uniqueProcesses[i].ppId, i + 1, uniqueProcesses[i].osmChecked || false]
+                     VALUES ($1, $2, $3, $4)`,
+                    [wsId, processes[i].ppId, i + 1, processes[i].osmChecked || false]
                 );
             }
 
@@ -8999,6 +9265,10 @@ router.get('/worker-individual-efficiency', async (req, res) => {
         const linesResult = await pool.query(
             `SELECT id, line_code, line_name FROM production_lines WHERE is_active = true ORDER BY line_code`);
         const lines = linesResult.rows;
+        const employeesResult = await pool.query(
+            `SELECT id, emp_code, emp_name FROM employees WHERE is_active = true ORDER BY emp_code, emp_name`
+        );
+        const activeEmployees = employeesResult.rows;
 
         const inTime  = await getSettingValue('default_in_time',  '08:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
@@ -9203,20 +9473,49 @@ router.get('/worker-individual-efficiency', async (req, res) => {
             }
         }
 
-        // Sort: line_code → workstation_number → emp_name
+        const existingEmployeeIds = new Set(
+            Object.values(rowMap)
+                .map(row => parseInt(row.employee_id, 10))
+                .filter(Number.isFinite)
+        );
+        for (const emp of activeEmployees) {
+            const empId = parseInt(emp.id, 10);
+            if (existingEmployeeIds.has(empId)) continue;
+            rowMap[`emp|${empId}`] = {
+                line_id: null,
+                line_code: '',
+                line_name: '',
+                workstation_code: '',
+                workstation_number: Number.MAX_SAFE_INTEGER,
+                group_name: '',
+                actual_sam_seconds: 0,
+                employee_id: empId,
+                emp_code: emp.emp_code,
+                emp_name: emp.emp_name,
+                dates: {}
+            };
+        }
+
+        // Sort: emp_code → emp_name → line_code → workstation_number
         const rows = Object.values(rowMap).sort((a, b) => {
+            const ec = (a.emp_code || '').localeCompare(b.emp_code || '');
+            if (ec !== 0) return ec;
+            const en = (a.emp_name || '').localeCompare(b.emp_name || '');
+            if (en !== 0) return en;
             const lc = (a.line_code || '').localeCompare(b.line_code || '');
             if (lc !== 0) return lc;
             if (a.workstation_number !== b.workstation_number) return a.workstation_number - b.workstation_number;
-            return (a.emp_name || '').localeCompare(b.emp_name || '');
+            return (a.workstation_code || '').localeCompare(b.workstation_code || '');
         });
 
         rows.forEach(row => {
             let totalOutput = 0, totalSAHEarned = 0, totalHoursWorked = 0;
             const samH = row.actual_sam_seconds / 3600;
             for (const d of dates) {
+                if (!row.dates[d]) {
+                    row.dates[d] = { wip: 0, output: 0, eff: 0, tag: null, hours_worked: 0 };
+                }
                 const cell = row.dates[d];
-                if (!cell) continue;
                 totalOutput      += cell.output || 0;
                 if (cell.tag === 'COMB' && cell.eff !== null) {
                     totalSAHEarned += cell.eff * (cell.hours_worked || 0) / 100;
@@ -9227,7 +9526,7 @@ router.get('/worker-individual-efficiency', async (req, res) => {
             }
             row.total_output = totalOutput;
             row.overall_eff  = totalHoursWorked > 0
-                ? Math.round(totalSAHEarned / totalHoursWorked * 10000) / 100 : null;
+                ? Math.round(totalSAHEarned / totalHoursWorked * 10000) / 100 : 0;
         });
 
         res.json({ success: true, data: { dates, rows, shift_hours: shiftHours } });

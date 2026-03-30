@@ -393,10 +393,8 @@ async function loadLines() {
                                             <div class="action-btns">
                                                 <button class="btn btn-secondary btn-sm" onclick='showLineModal(${JSON.stringify(line)})'>Edit</button>
                                                 <button class="btn btn-primary btn-sm" onclick="viewWorkstationQRs(${line.id}, '${line.line_code}')">WS QR Codes</button>
-                                                ${isIeMode
-                                                    ? `<button class="btn btn-danger btn-sm" onclick="deactivateLine(${line.id})">Delete</button>`
-                                                    : `<button class="btn btn-danger btn-sm" onclick="hardDeleteLine(${line.id})">Delete</button>`
-                                                }
+                                                <button class="btn btn-secondary btn-sm" onclick="deactivateLine(${line.id})">Deactivate</button>
+                                                <button class="btn btn-danger btn-sm" onclick="hardDeleteLine(${line.id})">Delete</button>
                                             </div>
                                         </td>
                                     </tr>
@@ -717,22 +715,6 @@ async function hardDeleteLine(id) {
         const result = await response.json();
         if (result.success) {
             showToast('Line deleted', 'success');
-            loadLines();
-        } else {
-            showToast(result.error, 'error');
-        }
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-}
-
-async function deactivateLine(id) {
-    if (!confirm('This will deactivate the line and remove it from active use. Continue?')) return;
-    try {
-        const response = await fetch(`${API_BASE}/lines/${id}`, { method: 'DELETE' });
-        const result = await response.json();
-        if (result.success) {
-            showToast('Line deactivated', 'success');
             loadLines();
         } else {
             showToast(result.error, 'error');
@@ -3243,7 +3225,7 @@ function openPlanUploadModal() {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 }
 
-async function submitPlanUpload() {
+async function submitPlanUpload(options = {}) {
     const fileInput = document.getElementById('plan-upload-file');
     const resultDiv = document.getElementById('plan-upload-result');
     const btn = document.getElementById('plan-upload-btn');
@@ -3259,13 +3241,45 @@ async function submitPlanUpload() {
 
     const fd = new FormData();
     fd.append('file', fileInput.files[0]);
+    if (Array.isArray(options.missingEmployees) && options.missingEmployees.length) {
+        fd.append('missing_employees', JSON.stringify(options.missingEmployees));
+    }
+    if (Array.isArray(options.duplicateAssignments) && options.duplicateAssignments.length) {
+        fd.append('duplicate_assignments', JSON.stringify(options.duplicateAssignments));
+    }
+    if (options.skipMissingEmployees) {
+        fd.append('skip_missing_employees', 'true');
+    }
 
     try {
         const r = await fetch('/api/lines/plan-upload-excel', { method: 'POST', body: fd });
         const data = await r.json();
 
+        if (!r.ok && data.code === 'MISSING_EMPLOYEES' && Array.isArray(data.missing_employees)) {
+            resultDiv.innerHTML = `
+                <div style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:6px;padding:10px 12px;font-size:13px;">
+                    Missing employees found in upload. Complete the details in the next window or skip assignment for them.
+                </div>`;
+            btn.disabled = false;
+            btn.textContent = 'Upload';
+            openMissingEmployeesModal(data.missing_employees);
+            return;
+        }
+
+        if (!r.ok && data.code === 'DUPLICATE_EMPLOYEE_ASSIGNMENTS' && Array.isArray(data.duplicate_assignments)) {
+            resultDiv.innerHTML = `
+                <div style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:6px;padding:10px 12px;font-size:13px;">
+                    Same employee is assigned to multiple workstations in this upload. Correct the workstation assignments in the next window.
+                </div>`;
+            btn.disabled = false;
+            btn.textContent = 'Upload';
+            await openDuplicateAssignmentsModal(data.duplicate_assignments);
+            return;
+        }
+
         if (!data.success) {
-            resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${data.error}</div>`;
+            const errorText = data.error || data.message || `Upload failed (HTTP ${r.status})`;
+            resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${errorText}</div>`;
             btn.disabled = false;
             btn.textContent = 'Upload';
             return;
@@ -3281,8 +3295,19 @@ async function submitPlanUpload() {
                 Processes: <strong>${s.processes}</strong> &nbsp;|&nbsp;
                 Employees assigned: <strong>${s.employees_assigned}</strong>
             </div>`;
-        btn.disabled = false;
-        btn.textContent = 'Upload';
+        btn.style.display = 'none';
+
+        let closeBtn = document.getElementById('plan-upload-close-success-btn');
+        if (!closeBtn) {
+            closeBtn = document.createElement('button');
+            closeBtn.id = 'plan-upload-close-success-btn';
+            closeBtn.textContent = 'Close';
+            closeBtn.className = 'btn btn-primary';
+            closeBtn.style.cssText = 'padding:8px 18px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;';
+            closeBtn.onclick = () => document.getElementById('plan-upload-modal')?.remove();
+            btn.parentElement?.appendChild(closeBtn);
+        }
+        closeBtn.style.display = '';
 
         const planDateEl = document.getElementById('plan-date');
         if (planDateEl && planDateEl.value === s.date) loadDailyPlanData();
@@ -3292,6 +3317,253 @@ async function submitPlanUpload() {
         btn.disabled = false;
         btn.textContent = 'Upload';
     }
+}
+
+function openMissingEmployeesModal(missingEmployees) {
+    const existing = document.getElementById('missing-employees-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'missing-employees-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9100;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    const rowsHtml = missingEmployees.map((emp, idx) => {
+        const wsText = Array.isArray(emp.workstation_codes) && emp.workstation_codes.length
+            ? emp.workstation_codes.join(', ')
+            : '-';
+        const safeCode = String(emp.emp_code || '').replace(/"/g, '&quot;');
+        const safeName = String(emp.emp_name || '').replace(/"/g, '&quot;');
+        const safeKey = String(emp.key || '').replace(/"/g, '&quot;');
+        return `
+            <tr>
+                <td style="padding:8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">${wsText}</td>
+                <td style="padding:8px;border-bottom:1px solid #e5e7eb;">
+                    <input data-missing-key="${safeKey}" data-field="emp_code" value="${safeCode}"
+                        style="width:100%;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+                </td>
+                <td style="padding:8px;border-bottom:1px solid #e5e7eb;">
+                    <input data-missing-key="${safeKey}" data-field="emp_name" value="${safeName}"
+                        style="width:100%;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+                </td>
+            </tr>`;
+    }).join('');
+
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;max-width:880px;width:min(96vw,880px);max-height:88vh;overflow:auto;box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+            <div style="padding:22px 24px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                <div>
+                    <h3 style="margin:0;font-size:18px;font-weight:700;color:#111827;">Employees Not Found</h3>
+                    <p style="margin:6px 0 0;font-size:13px;color:#6b7280;">Fill employee ID and employee name for all missing entries, then continue the upload.</p>
+                </div>
+                <button onclick="document.getElementById('missing-employees-modal').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#6b7280;line-height:1;">&times;</button>
+            </div>
+            <div style="padding:0 24px 8px;">
+                <div id="missing-employees-error" style="display:none;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:12px;"></div>
+                <table style="width:100%;border-collapse:collapse;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left;padding:8px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">Workstations</th>
+                            <th style="text-align:left;padding:8px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">Employee ID</th>
+                            <th style="text-align:left;padding:8px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">Employee Name</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+            </div>
+            <div style="padding:16px 24px 24px;display:flex;justify-content:flex-end;gap:10px;">
+                <button onclick="document.getElementById('missing-employees-modal').remove()" style="padding:8px 18px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                <button onclick="skipMissingEmployeesAndContinue()" style="padding:8px 18px;background:#fff;color:#92400e;border:1px solid #fdba74;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Leave Unassigned</button>
+                <button onclick="saveMissingEmployeesAndContinue()" style="padding:8px 18px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Add Employees And Continue</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+    });
+}
+
+async function saveMissingEmployeesAndContinue() {
+    const modal = document.getElementById('missing-employees-modal');
+    if (!modal) return;
+
+    const grouped = new Map();
+    modal.querySelectorAll('input[data-missing-key]').forEach((input) => {
+        const key = input.dataset.missingKey;
+        const field = input.dataset.field;
+        if (!grouped.has(key)) grouped.set(key, { key, emp_code: '', emp_name: '' });
+        grouped.get(key)[field] = (input.value || '').trim();
+    });
+
+    const rows = Array.from(grouped.values());
+    const errorBox = document.getElementById('missing-employees-error');
+    const invalid = rows.find((row) => !row.emp_code || !row.emp_name);
+    if (invalid) {
+        errorBox.textContent = 'Employee ID and employee name are required for every missing employee.';
+        errorBox.style.display = 'block';
+        return;
+    }
+
+    modal.remove();
+    await submitPlanUpload({ missingEmployees: rows });
+}
+
+async function skipMissingEmployeesAndContinue() {
+    const modal = document.getElementById('missing-employees-modal');
+    if (modal) modal.remove();
+    await submitPlanUpload({ skipMissingEmployees: true });
+}
+
+async function getUploadAvailableEmployees() {
+    if (Array.isArray(window._uploadAvailableEmployees) && window._uploadAvailableEmployees.length) {
+        return window._uploadAvailableEmployees;
+    }
+    const response = await fetch(`${API_BASE}/employees`, { credentials: 'include' });
+    const result = await response.json();
+    const employees = Array.isArray(result?.data) ? result.data.filter(emp => emp.is_active !== false) : [];
+    window._uploadAvailableEmployees = employees;
+    return employees;
+}
+
+async function openDuplicateAssignmentsModal(duplicateAssignments) {
+    const existing = document.getElementById('duplicate-assignments-modal');
+    if (existing) existing.remove();
+
+    const availableEmployees = await getUploadAvailableEmployees();
+    const seen = new Set();
+    const rows = duplicateAssignments.filter((row) => {
+        const key = `${row.key || ''}|${row.workstation_code || ''}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+
+    const modal = document.createElement('div');
+    modal.id = 'duplicate-assignments-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9100;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    const rowsHtml = rows.map((row) => {
+        const safeKey = String(row.key || '').replace(/"/g, '&quot;');
+        const safeWs = String(row.workstation_code || '').replace(/"/g, '&quot;');
+        const safeCode = String(row.emp_code || '').replace(/"/g, '&quot;');
+        const safeName = String(row.emp_name || '').replace(/"/g, '&quot;');
+        const conflictText = Array.isArray(row.conflict_workstations) ? row.conflict_workstations.join(', ') : '';
+        const optionsHtml = [
+            `<option value="">Leave Unassigned</option>`,
+            ...availableEmployees.map((emp) => {
+                const empCode = String(emp.emp_code || '').replace(/"/g, '&quot;');
+                const empName = String(emp.emp_name || '').replace(/"/g, '&quot;');
+                const selected = String(row.emp_code || '').trim() === String(emp.emp_code || '').trim() ? 'selected' : '';
+                return `<option value="${empCode}" data-emp-name="${empName}" ${selected}>${empCode} - ${empName}</option>`;
+            })
+        ].join('');
+        return `
+            <tr>
+                <td style="padding:8px;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:600;color:#111827;">${safeWs}</td>
+                <td style="padding:8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#92400e;">${conflictText}</td>
+                <td style="padding:8px;border-bottom:1px solid #e5e7eb;">
+                    <select data-dup-key="${safeKey}" data-field="employee_select"
+                        onchange="onDuplicateEmployeeSelectChange(this)"
+                        style="width:100%;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;margin-bottom:8px;">
+                        ${optionsHtml}
+                    </select>
+                    <div style="font-size:11px;color:#6b7280;margin-bottom:6px;">Available employees</div>
+                    <input data-dup-key="${safeKey}" data-field="emp_code" value="${safeCode}"
+                        placeholder="Employee ID"
+                        style="width:100%;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+                </td>
+                <td style="padding:8px;border-bottom:1px solid #e5e7eb;">
+                    <input data-dup-key="${safeKey}" data-field="emp_name" value="${safeName}"
+                        placeholder="Employee Name"
+                        style="width:100%;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+                </td>
+            </tr>`;
+    }).join('');
+
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;max-width:980px;width:min(96vw,980px);max-height:88vh;overflow:auto;box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+            <div style="padding:22px 24px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                <div>
+                    <h3 style="margin:0;font-size:18px;font-weight:700;color:#111827;">Same Employee In Multiple Workstations</h3>
+                    <p style="margin:6px 0 0;font-size:13px;color:#6b7280;">Change the employee for the listed workstations. The conflict column shows which workstations currently share the same employee.</p>
+                </div>
+                <button onclick="document.getElementById('duplicate-assignments-modal').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#6b7280;line-height:1;">&times;</button>
+            </div>
+            <div style="padding:0 24px 8px;">
+                <div id="duplicate-assignments-error" style="display:none;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;margin-bottom:12px;"></div>
+                <table style="width:100%;border-collapse:collapse;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left;padding:8px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">Workstation</th>
+                            <th style="text-align:left;padding:8px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">Conflicting Workstations</th>
+                            <th style="text-align:left;padding:8px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">Employee Option / ID</th>
+                            <th style="text-align:left;padding:8px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">Employee Name</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+            </div>
+            <div style="padding:16px 24px 24px;display:flex;justify-content:flex-end;gap:10px;">
+                <button onclick="document.getElementById('duplicate-assignments-modal').remove()" style="padding:8px 18px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                <button onclick="skipDuplicateAssignmentsAndContinue()" style="padding:8px 18px;background:#fff;color:#92400e;border:1px solid #fdba74;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Continue Unassigned</button>
+                <button onclick="saveDuplicateAssignmentsAndContinue()" style="padding:8px 18px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Update And Continue</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+    });
+}
+
+function onDuplicateEmployeeSelectChange(selectEl) {
+    const key = selectEl.dataset.dupKey;
+    if (!key) return;
+    const selectedOption = selectEl.options[selectEl.selectedIndex];
+    const empCode = (selectEl.value || '').trim();
+    const empName = (selectedOption?.dataset?.empName || '').trim();
+    const codeInput = document.querySelector(`#duplicate-assignments-modal input[data-dup-key="${CSS.escape(key)}"][data-field="emp_code"]`);
+    const nameInput = document.querySelector(`#duplicate-assignments-modal input[data-dup-key="${CSS.escape(key)}"][data-field="emp_name"]`);
+    if (codeInput) codeInput.value = empCode;
+    if (nameInput) nameInput.value = empName;
+}
+
+async function saveDuplicateAssignmentsAndContinue() {
+    const modal = document.getElementById('duplicate-assignments-modal');
+    if (!modal) return;
+
+    const grouped = new Map();
+    modal.querySelectorAll('input[data-dup-key]').forEach((input) => {
+        const key = input.dataset.dupKey;
+        const field = input.dataset.field;
+        if (!grouped.has(key)) grouped.set(key, { key, emp_code: '', emp_name: '' });
+        grouped.get(key)[field] = (input.value || '').trim();
+    });
+
+    const rows = Array.from(grouped.values());
+    const errorBox = document.getElementById('duplicate-assignments-error');
+    const partial = rows.find((row) => (!!row.emp_code && !row.emp_name) || (!row.emp_code && !!row.emp_name));
+    if (partial) {
+        errorBox.textContent = 'For each workstation, either provide both employee ID and employee name, or leave both blank.';
+        errorBox.style.display = 'block';
+        return;
+    }
+
+    modal.remove();
+    await submitPlanUpload({ duplicateAssignments: rows });
+}
+
+async function skipDuplicateAssignmentsAndContinue() {
+    const modal = document.getElementById('duplicate-assignments-modal');
+    if (!modal) return;
+    const keys = [...new Set(
+        Array.from(modal.querySelectorAll('input[data-dup-key]')).map((input) => input.dataset.dupKey).filter(Boolean)
+    )];
+    const rows = keys.map((key) => ({ key, emp_code: '', emp_name: '' }));
+    modal.remove();
+    await submitPlanUpload({ duplicateAssignments: rows });
 }
 
 async function loadDailyPlanData() {
@@ -3408,6 +3680,7 @@ async function loadDailyPlanData() {
                                         <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Save</button>
                                         <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!planExists || locked ? 'disabled' : ''}>Lock</button>
                                         <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!planExists || !locked ? 'disabled' : ''}>Unlock</button>
+                                        <button class="btn btn-danger btn-sm" onclick="deleteDailyPlan(${line.id})" ${!planExists ? 'disabled' : ''}>Delete</button>
                                     </div>
                                 </td>
                             </tr>
@@ -4401,21 +4674,6 @@ function validateAndApplyWs(input, lineId) {
         return { ...p, workstation_code: currentWs };
     });
 
-    const error = _validateWsSequence(proposed);
-    if (error) {
-        // Revert the input — do NOT redraw the table
-        input.value = prevWs;
-        input.style.borderColor = '#ef4444';
-        input.style.background = '#fee2e2';
-        // Flash border red then restore after a moment
-        setTimeout(() => {
-            input.style.borderColor = '';
-            input.style.background = '';
-        }, 2500);
-        _showWsSeqError(error);
-        return;
-    }
-
     // Valid change — accept it and redraw
     recolorDetailRows(lineId);
 }
@@ -4495,29 +4753,12 @@ function recolorDetailRows(lineId) {
 }
 
 function _highlightWsSequenceErrors(tbody, processes) {
-    // Build a set of process IDs that are out of sequence
-    const badPids = new Set();
-    let maxWsNum = 0;
-    for (const p of processes) {
-        const ws = (p.workstation_code || '').trim();
-        if (!ws) continue;
-        const wsNum = parseInt(ws.replace(/\D/g, '') || '0', 10);
-        if (wsNum < maxWsNum) badPids.add(p.id);
-        else maxWsNum = Math.max(maxWsNum, wsNum);
-    }
     tbody.querySelectorAll('tr[data-process-id]').forEach(row => {
-        const pid = parseInt(row.dataset.processId, 10);
         const wsInput = row.querySelector('.ld-ws');
         if (!wsInput) return;
-        if (badPids.has(pid)) {
-            wsInput.style.borderColor = '#ef4444';
-            wsInput.style.background = '#fee2e2';
-            wsInput.title = 'Workstation is out of sequence — must be ≥ the workstation of the preceding process.';
-        } else {
-            wsInput.style.borderColor = '';
-            wsInput.style.background = '';
-            wsInput.title = '';
-        }
+        wsInput.style.borderColor = '';
+        wsInput.style.background = '';
+        wsInput.title = '';
     });
 }
 
@@ -4543,26 +4784,6 @@ function _showWsSeqError(message) {
 // Returns null if ok, or an error message string describing the first violation.
 // processes must be sorted by sequence_number ascending (as returned by the API).
 function _validateWsSequence(processes) {
-    let maxWsNum = 0;
-    let maxWsCode = '';
-    for (const p of processes) {
-        const ws = (p.workstation_code || '').trim();
-        if (!ws) continue; // unassigned — skip
-        const wsNum = parseInt(ws.replace(/\D/g, '') || '0', 10);
-        if (wsNum < maxWsNum) {
-            return (
-                `Workstation Assignment Conflict: Process (Seq ${p.sequence_number} — ` +
-                `${p.operation_name || p.operation_code || 'Process #' + p.id}) cannot be assigned to ` +
-                `Workstation "${ws}" because a preceding process is already assigned to Workstation "${maxWsCode}", ` +
-                `which is further along the line. Workstation assignments must follow the process sequence order. ` +
-                `Please revise the layout to maintain sequential flow.`
-            );
-        }
-        if (wsNum > maxWsNum) {
-            maxWsNum = wsNum;
-            maxWsCode = ws;
-        }
-    }
     return null;
 }
 
@@ -4801,6 +5022,33 @@ async function unlockDailyPlan(lineId) {
             return;
         }
         showToast('Plan unlocked', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function deleteDailyPlan(lineId) {
+    const date = document.getElementById('plan-date').value;
+    if (!confirm(`This will permanently delete the daily plan for ${date}. Continue?`)) return;
+    try {
+        const params = new URLSearchParams({ line_id: String(lineId), work_date: date });
+        const response = await fetch(`/api/daily-plans?${params.toString()}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        const raw = await response.text();
+        let result = null;
+        try {
+            result = raw ? JSON.parse(raw) : null;
+        } catch (parseErr) {
+            throw new Error(`Delete request returned an unexpected response (HTTP ${response.status})`);
+        }
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Daily plan deleted', 'success');
         loadDailyPlanData();
     } catch (err) {
         showToast(err.message, 'error');
@@ -7630,15 +7878,16 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             const tagKey = cell?.tag ? cell.tag.split(' ')[0] : null;
             const tS = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
             const tagBadge = cell?.tag ? `<br><span style="font-size:8px;font-weight:700;">${cell.tag}</span>` : '';
-            const effTxt = cell?.eff != null ? cell.eff.toFixed(1) + '%' : '-';
-            const effC   = effColor(cell?.eff);
-            const dash   = `<td style="${tcS}color:#9ca3af;">-</td>`;
+            const effVal = Number.isFinite(Number(cell?.eff)) ? Number(cell.eff) : 0;
+            const effTxt = effVal.toFixed(1) + '%';
+            const effC   = effColor(effVal);
+            const zeroCell = `<td style="${tcS}">0</td>`;
 
             if (!cell) return [
-                showTarget ? dash : '',
-                showWip    ? dash : '',
-                showOutput ? dash : '',
-                showEff    ? dash : '',
+                showTarget ? zeroCell : '',
+                showWip    ? zeroCell : '',
+                showOutput ? zeroCell : '',
+                showEff    ? `<td style="${tcS}font-weight:600;color:${effColor(0)};">0.0%</td>` : '',
             ].join('');
 
             const wip      = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
@@ -7652,8 +7901,9 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             ].join('');
         }).join('');
 
-        const totalEffTxt = row.overall_eff != null ? row.overall_eff.toFixed(1) + '%' : '-';
-        const totalEffC   = effColor(row.overall_eff);
+        const totalEffVal = Number.isFinite(Number(row.overall_eff)) ? Number(row.overall_eff) : 0;
+        const totalEffTxt = totalEffVal.toFixed(1) + '%';
+        const totalEffC   = effColor(totalEffVal);
 
         return `<tr>
             <td style="${tcS}font-weight:600;">${idx + 1}</td>

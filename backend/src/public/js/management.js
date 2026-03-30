@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (section === 'osm') loadMgmtOsmReport();
             else if (section === 'efficiency') loadMgmtEfficiencyReport();
             else if (section === 'worker-individual-eff') loadMgmtWorkerIndividualEff();
+            else if (section === 'graphs') loadMgmtWorkerEfficiencyGraphs();
             else loadManagementDashboard();
         });
     });
@@ -1039,15 +1040,26 @@ function downloadMgmtEfficiencyExcel() {
 // ============================================================================
 // WORKER INDIVIDUAL EFFICIENCY REPORT (Management)
 // ============================================================================
+let _mgmtWieData = null;
+let _mgmtWieMetric = 'all';
+let _mgmtWieSelectedEmps = new Set();
+let _mgmtGraphData = null;
+let _mgmtGraphSelectedEmps = new Set();
+let _mgmtGraphEffBand = 'all';
+let _mgmtGraphSearch = '';
+
 async function loadMgmtWorkerIndividualEff() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
     const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
+    _mgmtWieData = null;
+    _mgmtWieMetric = 'all';
+    _mgmtWieSelectedEmps.clear();
     content.innerHTML = `
         <div class="page-header">
             <div>
-                <h1 class="page-title">Worker Individual Efficiency</h1>
-                <p class="page-subtitle">All employees across all active lines</p>
+                <h1 class="page-title">Worker Efficiency</h1>
+                <p class="page-subtitle">Target · Output · Efficiency across all active lines</p>
             </div>
             <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
                 <div class="ie-date">
@@ -1058,23 +1070,575 @@ async function loadMgmtWorkerIndividualEff() {
                     <label for="mgmt-wie-to">To</label>
                     <input type="date" id="mgmt-wie-to" value="${today}">
                 </div>
-                <button class="btn btn-secondary" onclick="refreshMgmtWorkerIndividualEff()">Refresh</button>
+                <button class="btn btn-primary" onclick="refreshMgmtWorkerIndividualEff()">Load</button>
                 <button class="btn btn-secondary" onclick="printMgmtWorkerIndividualEff()">&#9113; Print</button>
                 <button class="btn btn-secondary" onclick="downloadMgmtWorkerIndividualEffExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
             </div>
         </div>
-        <div id="mgmt-wie-content">
-            <div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;">
+            <div style="display:flex;gap:4px;background:#f3f4f6;border-radius:8px;padding:3px;">
+                <button id="mgmt-wie-btn-all" onclick="setMgmtWieMetric('all')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#1e40af;color:#fff;">All</button>
+                <button id="mgmt-wie-btn-target" onclick="setMgmtWieMetric('target')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Target</button>
+                <button id="mgmt-wie-btn-wip" onclick="setMgmtWieMetric('wip')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">WIP</button>
+                <button id="mgmt-wie-btn-output" onclick="setMgmtWieMetric('output')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Output</button>
+                <button id="mgmt-wie-btn-efficiency" onclick="setMgmtWieMetric('efficiency')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Efficiency</button>
+            </div>
+            <div style="position:relative;" id="mgmt-wie-emp-picker">
+                <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Employee</label>
+                <button type="button" id="mgmt-wie-emp-btn" onclick="toggleMgmtWieEmpDropdown()"
+                    style="min-width:220px;max-width:320px;padding:7px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;font-size:13px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <span id="mgmt-wie-emp-label">All Employees</span>
+                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div id="mgmt-wie-emp-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:999;background:#fff;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);min-width:280px;max-width:360px;overflow:hidden;">
+                    <div style="padding:8px;">
+                        <input type="text" id="mgmt-wie-emp-search" placeholder="Search employees..." oninput="filterMgmtWieEmpList()"
+                            style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <div style="padding:4px 8px 4px;border-bottom:1px solid #f3f4f6;display:flex;gap:10px;">
+                        <button type="button" onclick="selectAllMgmtWieEmp()" style="font-size:11px;color:#3b82f6;background:none;border:none;cursor:pointer;padding:2px 0;font-weight:600;">Select All</button>
+                        <button type="button" onclick="clearAllMgmtWieEmp()" style="font-size:11px;color:#6b7280;background:none;border:none;cursor:pointer;padding:2px 0;">Clear</button>
+                    </div>
+                    <div id="mgmt-wie-emp-list" style="max-height:220px;overflow-y:auto;padding:4px 0;"></div>
+                </div>
+            </div>
+        </div>
+        <div id="mgmt-wie-content" style="overflow-x:auto;">
+            <div style="text-align:center;padding:60px;color:#9ca3af;">Select a date range and click <strong>Load</strong>.</div>
         </div>
     `;
-    document.getElementById('mgmt-wie-from').addEventListener('change', refreshMgmtWorkerIndividualEff);
-    document.getElementById('mgmt-wie-to').addEventListener('change', refreshMgmtWorkerIndividualEff);
-    refreshMgmtWorkerIndividualEff();
+}
+
+function setMgmtWieMetric(metric) {
+    _mgmtWieMetric = metric;
+    ['all', 'target', 'wip', 'output', 'efficiency'].forEach(m => {
+        const btn = document.getElementById(`mgmt-wie-btn-${m}`);
+        if (!btn) return;
+        btn.style.background = m === metric ? '#1e40af' : 'transparent';
+        btn.style.color = m === metric ? '#fff' : '#374151';
+    });
+    renderMgmtWieFiltered();
+}
+
+function toggleMgmtWieEmpDropdown() {
+    const dd = document.getElementById('mgmt-wie-emp-dropdown');
+    if (!dd) return;
+    const isOpen = dd.style.display !== 'none';
+    dd.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) document.getElementById('mgmt-wie-emp-search')?.focus();
+}
+
+function filterMgmtWieEmpList() {
+    const q = (document.getElementById('mgmt-wie-emp-search')?.value || '').toLowerCase();
+    document.querySelectorAll('#mgmt-wie-emp-list .mgmt-wie-emp-item').forEach(item => {
+        item.style.display = item.dataset.label.toLowerCase().includes(q) ? '' : 'none';
+    });
+}
+
+function updateMgmtWieEmpLabel() {
+    const label = document.getElementById('mgmt-wie-emp-label');
+    if (!label) return;
+    if (_mgmtWieSelectedEmps.size === 0) {
+        label.textContent = 'All Employees';
+        return;
+    }
+    if (_mgmtWieSelectedEmps.size === 1) {
+        const id = [..._mgmtWieSelectedEmps][0];
+        const item = document.querySelector(`#mgmt-wie-emp-list .mgmt-wie-emp-item[data-id="${id}"]`);
+        label.textContent = item ? item.dataset.label : '1 employee selected';
+        return;
+    }
+    label.textContent = `${_mgmtWieSelectedEmps.size} employees selected`;
+}
+
+function toggleMgmtWieEmp(id) {
+    if (_mgmtWieSelectedEmps.has(id)) _mgmtWieSelectedEmps.delete(id);
+    else _mgmtWieSelectedEmps.add(id);
+    updateMgmtWieEmpLabel();
+    renderMgmtWieFiltered();
+}
+
+function selectAllMgmtWieEmp() {
+    document.querySelectorAll('#mgmt-wie-emp-list .mgmt-wie-emp-item input[type=checkbox]').forEach(cb => {
+        cb.checked = true;
+        _mgmtWieSelectedEmps.add(cb.dataset.id);
+    });
+    updateMgmtWieEmpLabel();
+    renderMgmtWieFiltered();
+}
+
+function clearAllMgmtWieEmp() {
+    _mgmtWieSelectedEmps.clear();
+    document.querySelectorAll('#mgmt-wie-emp-list .mgmt-wie-emp-item input[type=checkbox]').forEach(cb => { cb.checked = false; });
+    updateMgmtWieEmpLabel();
+    renderMgmtWieFiltered();
+}
+
+function populateMgmtWieEmpList(rows) {
+    const empMap = new Map();
+    rows.forEach(row => {
+        if (row.employee_id) empMap.set(String(row.employee_id), { code: row.emp_code, name: row.emp_name });
+    });
+    const sorted = [...empMap.entries()].sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
+    const list = document.getElementById('mgmt-wie-emp-list');
+    if (!list) return;
+    list.innerHTML = sorted.map(([id, emp]) => {
+        const label = `${emp.name} (${emp.code})`;
+        return `<label class="mgmt-wie-emp-item" data-id="${id}" data-label="${label}"
+            style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;user-select:none;"
+            onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">
+            <input type="checkbox" data-id="${id}" ${_mgmtWieSelectedEmps.has(id) ? 'checked' : ''}
+                onchange="toggleMgmtWieEmp('${id}')" style="width:15px;height:15px;accent-color:#1e40af;cursor:pointer;">
+            <span>${label}</span>
+        </label>`;
+    }).join('');
+}
+
+function renderMgmtWieFiltered() {
+    const container = document.getElementById('mgmt-wie-content');
+    if (!container || !_mgmtWieData) return;
+    let rows = _mgmtWieData.rows;
+    if (_mgmtWieSelectedEmps.size > 0) {
+        rows = rows.filter(row => _mgmtWieSelectedEmps.has(String(row.employee_id)));
+    }
+    if (!rows.length) {
+        container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employees.</div></div>';
+        return;
+    }
+    const filteredData = { ..._mgmtWieData, rows };
+    container.innerHTML = buildMgmtWorkerIndividualEffTable(filteredData, _mgmtWieMetric);
+}
+
+function buildMgmtWorkerEfficiencyGraphs(data) {
+    const { dates, rows } = data;
+
+    const dayStats = dates.map(date => {
+        const values = rows
+            .map(row => Number(row.dates?.[date]?.eff ?? 0))
+            .filter(v => Number.isFinite(v));
+        const avg = values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : 0;
+        return { date, avg };
+    });
+
+    const topRows = [...rows]
+        .sort((a, b) => Number(b.overall_eff || 0) - Number(a.overall_eff || 0))
+        .slice(0, 10)
+        .map(row => ({
+            label: `${row.emp_name || '-'} (${row.emp_code || '-'})`,
+            value: Number(row.overall_eff || 0)
+        }));
+
+    const bands = [
+        { label: '75%+', color: '#16a34a', count: 0 },
+        { label: '50-74%', color: '#d97706', count: 0 },
+        { label: '1-49%', color: '#dc2626', count: 0 },
+        { label: '0%', color: '#64748b', count: 0 }
+    ];
+    rows.forEach(row => {
+        const eff = Number(row.overall_eff || 0);
+        if (eff >= 75) bands[0].count++;
+        else if (eff >= 50) bands[1].count++;
+        else if (eff > 0) bands[2].count++;
+        else bands[3].count++;
+    });
+
+    const allEmployeeBars = rows
+        .map(row => ({
+            label: `${row.emp_name || '-'} (${row.emp_code || '-'})`,
+            value: Number(row.overall_eff || 0),
+            emp_name: row.emp_name || '',
+            emp_code: row.emp_code || '',
+            total_output: Number(row.total_output || 0)
+        }))
+        .filter(item => mgmtGraphMatchesEffBand(item.value) && mgmtGraphMatchesSearch(item))
+        .sort((a, b) => {
+            const eff = b.value - a.value;
+            if (eff !== 0) return eff;
+            return itemLabel(itemSortKey(a)).localeCompare(itemLabel(itemSortKey(b)));
+        });
+
+    return `
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-header">
+                <h3 class="card-title">Graphs</h3>
+            </div>
+            <div class="card-body">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+                    <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;background:#fff;">
+                        <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:10px;">Daily Average Efficiency</div>
+                        ${buildMgmtWieMiniBarChart(
+                            dayStats.map(d => ({ label: formatMgmtWieChartDate(d.date), value: d.avg, color: '#2563eb' })),
+                            { height: 160, emptyText: 'No dates in range.' }
+                        )}
+                    </div>
+                    <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;background:#fff;">
+                        <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:10px;">Top 10 Workers by Overall Efficiency</div>
+                        ${buildMgmtWieHorizontalBars(topRows, { emptyText: 'No worker data available.' })}
+                    </div>
+                    <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;background:#fff;">
+                        <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:10px;">Efficiency Distribution</div>
+                        ${buildMgmtWieDistribution(bands, rows.length)}
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-header">
+                <h3 class="card-title">All Employee Bars</h3>
+            </div>
+            <div class="card-body">
+                <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+                    <div style="min-width:180px;">
+                        <label style="font-size:12px;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">Efficiency Filter</label>
+                        <select id="mgmt-graph-eff-band" class="form-control" onchange="setMgmtGraphEffBand(this.value)">
+                            <option value="all" ${_mgmtGraphEffBand === 'all' ? 'selected' : ''}>All</option>
+                            <option value="ge75" ${_mgmtGraphEffBand === 'ge75' ? 'selected' : ''}>75% and above</option>
+                            <option value="50to74" ${_mgmtGraphEffBand === '50to74' ? 'selected' : ''}>50% to 74.9%</option>
+                            <option value="1to49" ${_mgmtGraphEffBand === '1to49' ? 'selected' : ''}>1% to 49.9%</option>
+                            <option value="zero" ${_mgmtGraphEffBand === 'zero' ? 'selected' : ''}>0%</option>
+                        </select>
+                    </div>
+                    <div style="flex:1;min-width:220px;">
+                        <label style="font-size:12px;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">Employee Name / Code</label>
+                        <input id="mgmt-graph-search" class="form-control" type="text" value="${escapeMgmtGraphAttr(_mgmtGraphSearch)}"
+                            placeholder="Search by employee name or code" oninput="setMgmtGraphSearch(this.value)">
+                    </div>
+                    <div style="font-size:12px;color:#64748b;padding-bottom:8px;">
+                        Showing <strong style="color:#0f172a;">${allEmployeeBars.length}</strong> of <strong style="color:#0f172a;">${rows.length}</strong> employees
+                    </div>
+                </div>
+                ${buildMgmtGraphAllEmployeeBars(allEmployeeBars)}
+            </div>
+        </div>
+    `;
+}
+
+function itemSortKey(item) {
+    return `${item.emp_name || ''} ${item.emp_code || ''}`.trim();
+}
+
+function itemLabel(value) {
+    return String(value || '').toLowerCase();
+}
+
+function escapeMgmtGraphAttr(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function formatMgmtWieChartDate(dateStr) {
+    const [, m, d] = String(dateStr || '').split('-');
+    if (!m || !d) return dateStr || '';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${parseInt(d, 10)}-${months[parseInt(m, 10) - 1] || m}`;
+}
+
+function buildMgmtWieMiniBarChart(items, { height = 160, emptyText = 'No data.' } = {}) {
+    if (!items.length) {
+        return `<div style="height:${height}px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12px;">${emptyText}</div>`;
+    }
+    const maxValue = Math.max(100, ...items.map(item => Number(item.value || 0)));
+    return `
+        <div style="height:${height}px;display:flex;align-items:flex-end;gap:8px;padding-top:8px;">
+            ${items.map(item => {
+                const value = Number(item.value || 0);
+                const pct = Math.max(0, Math.min(100, (value / maxValue) * 100));
+                return `
+                    <div style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px;">
+                        <div style="font-size:11px;font-weight:700;color:#334155;">${value.toFixed(1)}%</div>
+                        <div style="height:${height - 48}px;width:100%;display:flex;align-items:flex-end;">
+                            <div style="width:100%;height:${pct}%;background:${item.color || '#2563eb'};border-radius:8px 8px 0 0;min-height:${value > 0 ? '4px' : '0'};"></div>
+                        </div>
+                        <div style="font-size:10px;color:#64748b;text-align:center;line-height:1.2;word-break:break-word;">${item.label}</div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function buildMgmtWieHorizontalBars(items, { emptyText = 'No data.' } = {}) {
+    if (!items.length) {
+        return `<div style="height:160px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12px;">${emptyText}</div>`;
+    }
+    const maxValue = Math.max(100, ...items.map(item => Number(item.value || 0)));
+    return `
+        <div style="display:flex;flex-direction:column;gap:10px;">
+            ${items.map(item => {
+                const value = Number(item.value || 0);
+                const pct = Math.max(0, Math.min(100, (value / maxValue) * 100));
+                const color = value >= 75 ? '#16a34a' : value >= 50 ? '#d97706' : '#dc2626';
+                return `
+                    <div>
+                        <div style="display:flex;justify-content:space-between;gap:10px;font-size:11px;margin-bottom:4px;">
+                            <span style="color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.label}</span>
+                            <strong style="color:${color};flex-shrink:0;">${value.toFixed(1)}%</strong>
+                        </div>
+                        <div style="height:10px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
+                            <div style="height:100%;width:${pct}%;background:${color};border-radius:999px;"></div>
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function buildMgmtWieDistribution(bands, total) {
+    if (!total) {
+        return `<div style="height:160px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12px;">No worker data available.</div>`;
+    }
+    return `
+        <div style="display:flex;flex-direction:column;gap:14px;">
+            ${bands.map(band => {
+                const pct = total > 0 ? (band.count / total) * 100 : 0;
+                return `
+                    <div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:12px;">
+                            <span style="font-weight:600;color:#334155;">${band.label}</span>
+                            <span style="color:#64748b;">${band.count} workers</span>
+                        </div>
+                        <div style="height:12px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
+                            <div style="height:100%;width:${pct}%;background:${band.color};border-radius:999px;"></div>
+                        </div>
+                        <div style="font-size:11px;color:#64748b;margin-top:4px;">${pct.toFixed(1)}%</div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function mgmtGraphMatchesEffBand(value) {
+    if (_mgmtGraphEffBand === 'ge75') return value >= 75;
+    if (_mgmtGraphEffBand === '50to74') return value >= 50 && value < 75;
+    if (_mgmtGraphEffBand === '1to49') return value > 0 && value < 50;
+    if (_mgmtGraphEffBand === 'zero') return value <= 0;
+    return true;
+}
+
+function mgmtGraphMatchesSearch(item) {
+    const q = String(_mgmtGraphSearch || '').trim().toLowerCase();
+    if (!q) return true;
+    return `${item.emp_name} ${item.emp_code}`.toLowerCase().includes(q);
+}
+
+function setMgmtGraphEffBand(value) {
+    _mgmtGraphEffBand = value || 'all';
+    renderMgmtWorkerEfficiencyGraphs();
+}
+
+function setMgmtGraphSearch(value) {
+    _mgmtGraphSearch = value || '';
+    renderMgmtWorkerEfficiencyGraphs();
+}
+
+function buildMgmtGraphAllEmployeeBars(items) {
+    if (!items.length) {
+        return `<div style="height:180px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12px;border:1px dashed #cbd5e1;border-radius:10px;">No employees match the selected filters.</div>`;
+    }
+    const maxValue = Math.max(100, ...items.map(item => Number(item.value || 0)));
+    return `
+        <div style="max-height:560px;overflow:auto;border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#f8fafc;">
+            <div style="display:flex;flex-direction:column;gap:10px;">
+                ${items.map(item => {
+                    const value = Number(item.value || 0);
+                    const pct = Math.max(0, Math.min(100, (value / maxValue) * 100));
+                    const color = value >= 75 ? '#16a34a' : value >= 50 ? '#d97706' : value > 0 ? '#dc2626' : '#64748b';
+                    return `
+                        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;">
+                            <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:6px;">
+                                <div style="min-width:0;">
+                                    <div style="font-size:12px;font-weight:700;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.label}</div>
+                                    <div style="font-size:11px;color:#64748b;">Output: ${item.total_output}</div>
+                                </div>
+                                <div style="font-size:13px;font-weight:800;color:${color};flex-shrink:0;">${value.toFixed(1)}%</div>
+                            </div>
+                            <div style="height:12px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
+                                <div style="height:100%;width:${pct}%;background:${color};border-radius:999px;"></div>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
+}
+
+async function loadMgmtWorkerEfficiencyGraphs() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
+    _mgmtGraphData = null;
+    _mgmtGraphSelectedEmps.clear();
+    _mgmtGraphEffBand = 'all';
+    _mgmtGraphSearch = '';
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Graphs</h1>
+                <p class="page-subtitle">Worker efficiency visual summary</p>
+            </div>
+            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
+                <div class="ie-date">
+                    <label for="mgmt-graph-from">From</label>
+                    <input type="date" id="mgmt-graph-from" value="${weekAgo}">
+                </div>
+                <div class="ie-date">
+                    <label for="mgmt-graph-to">To</label>
+                    <input type="date" id="mgmt-graph-to" value="${today}">
+                </div>
+                <button class="btn btn-primary" onclick="refreshMgmtWorkerEfficiencyGraphs()">Load</button>
+            </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;">
+            <div style="position:relative;" id="mgmt-graph-emp-picker">
+                <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Employee</label>
+                <button type="button" id="mgmt-graph-emp-btn" onclick="toggleMgmtGraphEmpDropdown()"
+                    style="min-width:220px;max-width:320px;padding:7px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;font-size:13px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <span id="mgmt-graph-emp-label">All Employees</span>
+                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div id="mgmt-graph-emp-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:999;background:#fff;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);min-width:280px;max-width:360px;overflow:hidden;">
+                    <div style="padding:8px;">
+                        <input type="text" id="mgmt-graph-emp-search" placeholder="Search employees..." oninput="filterMgmtGraphEmpList()"
+                            style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <div style="padding:4px 8px 4px;border-bottom:1px solid #f3f4f6;display:flex;gap:10px;">
+                        <button type="button" onclick="selectAllMgmtGraphEmp()" style="font-size:11px;color:#3b82f6;background:none;border:none;cursor:pointer;padding:2px 0;font-weight:600;">Select All</button>
+                        <button type="button" onclick="clearAllMgmtGraphEmp()" style="font-size:11px;color:#6b7280;background:none;border:none;cursor:pointer;padding:2px 0;">Clear</button>
+                    </div>
+                    <div id="mgmt-graph-emp-list" style="max-height:220px;overflow-y:auto;padding:4px 0;"></div>
+                </div>
+            </div>
+        </div>
+        <div id="mgmt-graph-content">
+            <div style="text-align:center;padding:60px;color:#9ca3af;">Select a date range and click <strong>Load</strong>.</div>
+        </div>
+    `;
+}
+
+function toggleMgmtGraphEmpDropdown() {
+    const dd = document.getElementById('mgmt-graph-emp-dropdown');
+    if (!dd) return;
+    const isOpen = dd.style.display !== 'none';
+    dd.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) document.getElementById('mgmt-graph-emp-search')?.focus();
+}
+
+function filterMgmtGraphEmpList() {
+    const q = (document.getElementById('mgmt-graph-emp-search')?.value || '').toLowerCase();
+    document.querySelectorAll('#mgmt-graph-emp-list .mgmt-graph-emp-item').forEach(item => {
+        item.style.display = item.dataset.label.toLowerCase().includes(q) ? '' : 'none';
+    });
+}
+
+function updateMgmtGraphEmpLabel() {
+    const label = document.getElementById('mgmt-graph-emp-label');
+    if (!label) return;
+    if (_mgmtGraphSelectedEmps.size === 0) {
+        label.textContent = 'All Employees';
+        return;
+    }
+    if (_mgmtGraphSelectedEmps.size === 1) {
+        const id = [..._mgmtGraphSelectedEmps][0];
+        const item = document.querySelector(`#mgmt-graph-emp-list .mgmt-graph-emp-item[data-id="${id}"]`);
+        label.textContent = item ? item.dataset.label : '1 employee selected';
+        return;
+    }
+    label.textContent = `${_mgmtGraphSelectedEmps.size} employees selected`;
+}
+
+function toggleMgmtGraphEmp(id) {
+    if (_mgmtGraphSelectedEmps.has(id)) _mgmtGraphSelectedEmps.delete(id);
+    else _mgmtGraphSelectedEmps.add(id);
+    updateMgmtGraphEmpLabel();
+    renderMgmtWorkerEfficiencyGraphs();
+}
+
+function selectAllMgmtGraphEmp() {
+    document.querySelectorAll('#mgmt-graph-emp-list .mgmt-graph-emp-item input[type=checkbox]').forEach(cb => {
+        cb.checked = true;
+        _mgmtGraphSelectedEmps.add(cb.dataset.id);
+    });
+    updateMgmtGraphEmpLabel();
+    renderMgmtWorkerEfficiencyGraphs();
+}
+
+function clearAllMgmtGraphEmp() {
+    _mgmtGraphSelectedEmps.clear();
+    document.querySelectorAll('#mgmt-graph-emp-list .mgmt-graph-emp-item input[type=checkbox]').forEach(cb => { cb.checked = false; });
+    updateMgmtGraphEmpLabel();
+    renderMgmtWorkerEfficiencyGraphs();
+}
+
+function populateMgmtGraphEmpList(rows) {
+    const empMap = new Map();
+    rows.forEach(row => {
+        if (row.employee_id) empMap.set(String(row.employee_id), { code: row.emp_code, name: row.emp_name });
+    });
+    const sorted = [...empMap.entries()].sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
+    const list = document.getElementById('mgmt-graph-emp-list');
+    if (!list) return;
+    list.innerHTML = sorted.map(([id, emp]) => {
+        const label = `${emp.name} (${emp.code})`;
+        return `<label class="mgmt-graph-emp-item" data-id="${id}" data-label="${label}"
+            style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;user-select:none;"
+            onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">
+            <input type="checkbox" data-id="${id}" ${_mgmtGraphSelectedEmps.has(id) ? 'checked' : ''}
+                onchange="toggleMgmtGraphEmp('${id}')" style="width:15px;height:15px;accent-color:#1e40af;cursor:pointer;">
+            <span>${label}</span>
+        </label>`;
+    }).join('');
+}
+
+async function refreshMgmtWorkerEfficiencyGraphs() {
+    const from = document.getElementById('mgmt-graph-from')?.value;
+    const to = document.getElementById('mgmt-graph-to')?.value;
+    const container = document.getElementById('mgmt-graph-content');
+    if (!container) return;
+    container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+    try {
+        const r = await fetch(`${API_BASE}/worker-individual-efficiency?from_date=${from}&to_date=${to}`, { credentials: 'include' });
+        const resp = await r.json();
+        if (!resp.success) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${resp.error || 'Failed to load'}</div></div>`;
+            return;
+        }
+        if (!resp.data.rows.length) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data found for the selected range.</div></div>`;
+            return;
+        }
+        _mgmtGraphData = resp.data;
+        _mgmtGraphSelectedEmps.clear();
+        populateMgmtGraphEmpList(resp.data.rows);
+        updateMgmtGraphEmpLabel();
+        renderMgmtWorkerEfficiencyGraphs();
+    } catch (err) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
+    }
+}
+
+function renderMgmtWorkerEfficiencyGraphs() {
+    const container = document.getElementById('mgmt-graph-content');
+    if (!container || !_mgmtGraphData) return;
+    let rows = _mgmtGraphData.rows;
+    if (_mgmtGraphSelectedEmps.size > 0) {
+        rows = rows.filter(row => _mgmtGraphSelectedEmps.has(String(row.employee_id)));
+    }
+    if (!rows.length) {
+        container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employees.</div></div>';
+        return;
+    }
+    container.innerHTML = buildMgmtWorkerEfficiencyGraphs({ ..._mgmtGraphData, rows });
 }
 
 async function refreshMgmtWorkerIndividualEff() {
     const from = document.getElementById('mgmt-wie-from')?.value;
-    const to   = document.getElementById('mgmt-wie-to')?.value;
+    const to = document.getElementById('mgmt-wie-to')?.value;
     const container = document.getElementById('mgmt-wie-content');
     if (!container) return;
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
@@ -1089,79 +1653,127 @@ async function refreshMgmtWorkerIndividualEff() {
             container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data found for the selected range.</div></div>`;
             return;
         }
-        container.innerHTML = _buildMgmtWorkerIndividualEffTable(resp.data);
+        _mgmtWieData = resp.data;
+        _mgmtWieSelectedEmps.clear();
+        populateMgmtWieEmpList(resp.data.rows);
+        updateMgmtWieEmpLabel();
+        renderMgmtWieFiltered();
     } catch (err) {
         container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
     }
 }
 
-function _buildMgmtWorkerIndividualEffTable(data) {
+function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
     const { dates, rows } = data;
-    const thS  = 'background:#1e3a5f;color:#fff;padding:5px 4px;text-align:center;white-space:nowrap;font-size:10px;border:1px solid #0f2744;';
-    const thSS = thS + 'font-size:9px;';
-    const tdS  = 'padding:3px 4px;border:1px solid #6b7280;font-size:11px;';
-    const tcS  = tdS + 'text-align:center;';
+    const thS = 'background:#1e3a5f;color:#fff;padding:6px 5px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;font-weight:700;';
+    const thSS = 'background:#1e3a5f;color:#fff;padding:4px 4px;text-align:center;white-space:nowrap;font-size:10px;border:1px solid #0f2744;';
+    const tdS = 'padding:4px 5px;border:1px solid #9ca3af;font-size:11px;';
+    const tcS = tdS + 'text-align:center;';
 
-    const fmtDate = d => { const [y, m, day] = d.split('-'); return `${day}/${m}`; };
+    const showTarget = metric === 'all' || metric === 'target';
+    const showWip = metric === 'all' || metric === 'wip';
+    const showOutput = metric === 'all' || metric === 'output';
+    const showEff = metric === 'all' || metric === 'efficiency';
 
-    const dateHeaders = dates.map(d => `<th colspan="3" style="${thS}">${fmtDate(d)}</th>`).join('');
-    const subHeaders  = dates.map(() => `<th style="${thSS}">WIP</th><th style="${thSS}">OUTPUT</th><th style="${thSS}">EFF%</th>`).join('');
+    const dateCols = (showTarget ? 1 : 0) + (showWip ? 1 : 0) + (showOutput ? 1 : 0) + (showEff ? 1 : 0);
+    const fixedCols = 3;
+    const overallCols = (showOutput ? 1 : 0) + (showEff ? 1 : 0);
+
+    const months = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const fmtDate = d => {
+        const [, m, day] = d.split('-');
+        return `${parseInt(day, 10)}-${months[parseInt(m, 10)]}`;
+    };
 
     const tagStyle = {
-        'DEP': 'background:#fee2e2;color:#991b1b;',
-        'PRE': 'background:#eff6ff;color:#1d4ed8;',
-        'POST': 'background:#f0fdf4;color:#166534;',
-        'COMB': 'background:#faf5ff;color:#6b21a8;'
+        DEP: 'background:#fee2e2;color:#991b1b;',
+        PRE: 'background:#eff6ff;color:#1d4ed8;',
+        POST: 'background:#f0fdf4;color:#166534;',
+        COMB: 'background:#faf5ff;color:#6b21a8;'
     };
-    const effColor = eff => eff === null || eff === undefined ? '#6b7280' : eff >= 75 ? '#16a34a' : eff >= 50 ? '#d97706' : '#dc2626';
+    const effColor = eff => {
+        if (eff == null) return '#6b7280';
+        return eff >= 75 ? '#16a34a' : eff >= 50 ? '#d97706' : '#dc2626';
+    };
+
+    const dateGroupHeaders = dates.map(d => `<th colspan="${dateCols}" style="${thS}">${fmtDate(d)}</th>`).join('');
+    const subHeaders = dates.map(() => [
+        showTarget ? `<th style="${thSS}">TARGET</th>` : '',
+        showWip ? `<th style="${thSS}">WIP</th>` : '',
+        showOutput ? `<th style="${thSS}">OUTPUT</th>` : '',
+        showEff ? `<th style="${thSS}">EFF%</th>` : ''
+    ].join('')).join('');
 
     const dataRows = rows.map((row, idx) => {
         const dateCells = dates.map(d => {
             const cell = row.dates[d];
-            if (!cell) return `<td style="${tcS}">-</td><td style="${tcS}">-</td><td style="${tcS}">-</td>`;
-            const tagKey = cell.tag ? cell.tag.split(' ')[0] : null;
+            const tagKey = cell?.tag ? cell.tag.split(' ')[0] : null;
             const tS = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
-            const tagBadge = cell.tag ? `<br><span style="font-size:9px;font-weight:700;">${cell.tag}</span>` : '';
-            const effTxt = cell.eff !== null && cell.eff !== undefined ? cell.eff.toFixed(1) + '%' : '-';
-            return `<td style="${tcS}${tS}">${cell.wip ?? '-'}${tagBadge}</td>` +
-                   `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` +
-                   `<td style="${tcS}${tS}font-weight:600;color:${effColor(cell.eff)};">${effTxt}</td>`;
+            const tagBadge = cell?.tag ? `<br><span style="font-size:8px;font-weight:700;">${cell.tag}</span>` : '';
+            const effVal = Number.isFinite(Number(cell?.eff)) ? Number(cell.eff) : 0;
+            const effTxt = effVal.toFixed(1) + '%';
+            const effC = effColor(effVal);
+            const zeroCell = `<td style="${tcS}">0</td>`;
+
+            if (!cell) {
+                return [
+                    showTarget ? zeroCell : '',
+                    showWip ? zeroCell : '',
+                    showOutput ? zeroCell : '',
+                    showEff ? `<td style="${tcS}font-weight:600;color:${effColor(0)};">0.0%</td>` : ''
+                ].join('');
+            }
+
+            const wip = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
+            const wipColor = wip > 0 ? '#dc2626' : '#16a34a';
+
+            return [
+                showTarget ? `<td style="${tcS}${tS}">${cell.wip ?? '-'}${tagBadge}</td>` : '',
+                showWip ? `<td style="${tcS}${tS}font-weight:600;color:${wipColor};">${wip}</td>` : '',
+                showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` : '',
+                showEff ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}</td>` : ''
+            ].join('');
         }).join('');
-        const totalEffTxt = row.overall_eff !== null && row.overall_eff !== undefined ? row.overall_eff.toFixed(1) + '%' : '-';
+
+        const totalEffVal = Number.isFinite(Number(row.overall_eff)) ? Number(row.overall_eff) : 0;
+        const totalEffTxt = totalEffVal.toFixed(1) + '%';
+        const totalEffC = effColor(totalEffVal);
+
         return `<tr>
             <td style="${tcS}font-weight:600;">${idx + 1}</td>
-            <td style="${tdS}">${row.emp_name || '-'}</td>
-            <td style="${tdS}text-align:center;">${row.emp_code || '-'}</td>
+            <td style="${tdS}font-weight:600;">${row.emp_name || '-'}</td>
+            <td style="${tcS}">${row.emp_code || '-'}</td>
             ${dateCells}
-            <td style="${tcS}font-weight:700;">${row.total_output}</td>
-            <td style="${tcS}font-weight:700;color:${effColor(row.overall_eff)};">${totalEffTxt}</td>
+            ${showOutput ? `<td style="${tcS}font-weight:700;">${row.total_output}</td>` : ''}
+            ${showEff ? `<td style="${tcS}font-weight:700;color:${totalEffC};">${totalEffTxt}</td>` : ''}
         </tr>`;
     }).join('');
 
     return `
     <div id="mgmt-wie-print-area">
-        <div style="text-align:center;margin-bottom:8px;">
-            <div style="font-size:15px;font-weight:700;">Worker Individual Efficiency — All Lines</div>
-            <div style="font-size:12px;color:#6b7280;">Period: ${dates[0]} to ${dates[dates.length - 1]}</div>
-        </div>
-        <div style="font-size:10px;margin-bottom:6px;display:flex;gap:12px;flex-wrap:wrap;">
+        <div style="text-align:center;font-size:17px;font-weight:700;margin-bottom:10px;letter-spacing:0.5px;">WORKERS INDIVIDUAL EFFICIENCY</div>
+        <div style="font-size:10px;margin-bottom:8px;display:flex;gap:14px;flex-wrap:wrap;">
             <span><span style="background:#fee2e2;color:#991b1b;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">DEP HH:MM</span> Departed mid-day</span>
             <span><span style="background:#eff6ff;color:#1d4ed8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">PRE</span> Before reassignment</span>
             <span><span style="background:#f0fdf4;color:#166534;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">POST</span> After reassignment</span>
             <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation</span>
         </div>
         <div style="overflow-x:auto;">
-        <table style="border-collapse:collapse;width:100%;min-width:600px;">
+        <table style="border-collapse:collapse;width:max-content;min-width:100%;">
             <thead>
                 <tr>
-                    <th rowspan="2" style="${thS}">S.No</th>
-                    <th rowspan="2" style="${thS}">WORKER NAME</th>
-                    <th rowspan="2" style="${thS}">ID NO</th>
-                    ${dateHeaders}
-                    <th rowspan="2" style="${thS}">TOTAL<br>OUTPUT</th>
-                    <th rowspan="2" style="${thS}">OVERALL<br>EFF%</th>
+                    <th colspan="${fixedCols}" style="${thS}">DATE</th>
+                    ${dateGroupHeaders}
+                    ${overallCols > 0 ? `<th colspan="${overallCols}" style="${thS}">OVERALL</th>` : ''}
                 </tr>
-                <tr>${subHeaders}</tr>
+                <tr>
+                    <th style="${thSS}">S.No</th>
+                    <th style="${thSS}">WORKER NAME</th>
+                    <th style="${thSS}">ID NO</th>
+                    ${subHeaders}
+                    ${showOutput ? `<th style="${thSS}">TOTAL<br>OUTPUT</th>` : ''}
+                    ${showEff ? `<th style="${thSS}">EFF%</th>` : ''}
+                </tr>
             </thead>
             <tbody>${dataRows}</tbody>
         </table>
@@ -1171,7 +1783,10 @@ function _buildMgmtWorkerIndividualEffTable(data) {
 
 function printMgmtWorkerIndividualEff() {
     const area = document.getElementById('mgmt-wie-print-area');
-    if (!area) { alert('No report loaded.'); return; }
+    if (!area) {
+        alert('No report loaded.');
+        return;
+    }
     const iframe = document.createElement('iframe');
     iframe.style.display = 'none';
     iframe.onload = () => {
@@ -1204,12 +1819,13 @@ function printMgmtWorkerIndividualEff() {
 
 function downloadMgmtWorkerIndividualEffExcel() {
     const area = document.getElementById('mgmt-wie-print-area');
-    if (!area) { alert('No report loaded.'); return; }
-    const sel = document.getElementById('mgmt-wie-line');
-    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    if (!area) {
+        alert('No report loaded.');
+        return;
+    }
     const from = document.getElementById('mgmt-wie-from')?.value || '';
-    const to   = document.getElementById('mgmt-wie-to')?.value   || '';
-    const filename = `WorkerEfficiency_${lineText.replace(/[^a-zA-Z0-9]/g, '_')}_${from}_${to}.xls`;
+    const to = document.getElementById('mgmt-wie-to')?.value || '';
+    const filename = `WorkerEfficiency_AllLines_${from}_${to}.xls`;
     const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
         xmlns:x="urn:schemas-microsoft-com:office:excel"
         xmlns="http://www.w3.org/TR/REC-html40">
@@ -1225,8 +1841,23 @@ function downloadMgmtWorkerIndividualEffExcel() {
         </style>
         </head><body>${area.innerHTML}</body></html>`;
     const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = filename; a.click();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+document.addEventListener('click', e => {
+    const picker = document.getElementById('mgmt-wie-emp-picker');
+    if (picker && !picker.contains(e.target)) {
+        const dd = document.getElementById('mgmt-wie-emp-dropdown');
+        if (dd) dd.style.display = 'none';
+    }
+    const graphPicker = document.getElementById('mgmt-graph-emp-picker');
+    if (graphPicker && !graphPicker.contains(e.target)) {
+        const dd = document.getElementById('mgmt-graph-emp-dropdown');
+        if (dd) dd.style.display = 'none';
+    }
+});
