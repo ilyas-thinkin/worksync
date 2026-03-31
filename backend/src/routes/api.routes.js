@@ -6,6 +6,9 @@ const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const { validateBody, validateQuery, sanitizeInputs, schemas } = require('../middleware/validation');
 const { logAudit: enhancedLogAudit, AuditAction, getAuditSummary, searchAuditLogs } = require('../middleware/audit');
 const { withTransaction, withRetry, lockForUpdate } = require('../middleware/transaction');
@@ -387,6 +390,47 @@ router.post('/daily-plans', async (req, res) => {
             const maxSeq = await getIncomingMaxSequence(incoming_product_id);
             normalizedChangeover = Math.min(normalizedChangeover, maxSeq);
         }
+        // Cap target_units against remaining order quantity (across all lines producing this product)
+        let finalTarget = parseInt(target_units || 0);
+        let capWarning = null;
+        if (product_id && finalTarget > 0) {
+            const capRes = await pool.query(`
+                SELECT
+                    COALESCE(p.target_qty, 0) AS order_qty,
+                    COALESCE((
+                        SELECT SUM(max_qty) FROM (
+                            SELECT MAX(lph.quantity) AS max_qty
+                            FROM line_process_hourly_progress lph
+                            WHERE lph.process_id = (
+                                SELECT id FROM product_processes
+                                WHERE product_id = p.id AND is_active = true
+                                ORDER BY sequence_number ASC LIMIT 1
+                            )
+                            AND lph.work_date < $2
+                            GROUP BY lph.work_date, lph.hour_slot
+                        ) sub
+                    ), 0) AS produced_before_today,
+                    COALESCE((
+                        SELECT SUM(ldp.target_units)
+                        FROM line_daily_plans ldp
+                        WHERE ldp.product_id = p.id AND ldp.work_date = $2 AND ldp.line_id != $3
+                    ), 0) AS other_lines_today
+                FROM products p WHERE p.id = $1
+            `, [product_id, work_date, line_id]);
+            if (capRes.rows[0]) {
+                const orderQty = parseInt(capRes.rows[0].order_qty);
+                const produced = parseInt(capRes.rows[0].produced_before_today);
+                const otherLines = parseInt(capRes.rows[0].other_lines_today);
+                if (orderQty > 0) {
+                    const remaining = Math.max(0, orderQty - produced - otherLines);
+                    if (finalTarget > remaining) {
+                        finalTarget = remaining;
+                        capWarning = `Target capped at ${remaining} — Order Qty: ${orderQty}, Already produced: ${produced}, Other lines today: ${otherLines}`;
+                    }
+                }
+            }
+        }
+
         const result = await pool.query(
             `INSERT INTO line_daily_plans (line_id, product_id, work_date, target_units, incoming_product_id, incoming_target_units, changeover_sequence, created_by, updated_by)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
@@ -399,7 +443,7 @@ router.post('/daily-plans', async (req, res) => {
                            updated_by = EXCLUDED.updated_by,
                            updated_at = NOW()
              RETURNING *`,
-            [line_id, product_id, work_date, target_units || 0, incoming_product_id || null, incoming_target_units || 0, normalizedChangeover, user_id || null]
+            [line_id, product_id, work_date, finalTarget, incoming_product_id || null, incoming_target_units || 0, normalizedChangeover, user_id || null]
         );
         const prevProduct = before.rows[0]?.product_id;
         if (prevProduct && parseInt(prevProduct, 10) !== parseInt(product_id, 10)) {
@@ -421,7 +465,7 @@ router.post('/daily-plans', async (req, res) => {
                 `UPDATE production_lines
                  SET current_product_id = $1, target_units = $2, updated_at = NOW()
                  WHERE id = $3`,
-                [product_id, target_units || 0, line_id]
+                [product_id, finalTarget, line_id]
             );
             realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
         }
@@ -442,7 +486,7 @@ router.post('/daily-plans', async (req, res) => {
         }
 
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
-        res.json({ success: true, data: result.rows[0], copied_from });
+        res.json({ success: true, data: result.rows[0], copied_from, cap_warning: capWarning || null });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -465,6 +509,53 @@ router.patch('/daily-plans', async (req, res) => {
         );
         if (lockCheck.rows[0]?.is_locked) {
             return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
+
+        // Cap target_units against remaining order quantity if being updated
+        let capWarning = null;
+        if ('target_units' in fields && parseInt(fields.target_units || 0) > 0) {
+            const existing = await pool.query(
+                `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+                [line_id, work_date]
+            );
+            const productId = ('product_id' in fields ? fields.product_id : existing.rows[0]?.product_id);
+            if (productId) {
+                const capRes = await pool.query(`
+                    SELECT
+                        COALESCE(p.target_qty, 0) AS order_qty,
+                        COALESCE((
+                            SELECT SUM(max_qty) FROM (
+                                SELECT MAX(lph.quantity) AS max_qty
+                                FROM line_process_hourly_progress lph
+                                WHERE lph.process_id = (
+                                    SELECT id FROM product_processes
+                                    WHERE product_id = p.id AND is_active = true
+                                    ORDER BY sequence_number ASC LIMIT 1
+                                )
+                                AND lph.work_date < $2
+                                GROUP BY lph.work_date, lph.hour_slot
+                            ) sub
+                        ), 0) AS produced_before_today,
+                        COALESCE((
+                            SELECT SUM(ldp.target_units)
+                            FROM line_daily_plans ldp
+                            WHERE ldp.product_id = p.id AND ldp.work_date = $2 AND ldp.line_id != $3
+                        ), 0) AS other_lines_today
+                    FROM products p WHERE p.id = $1
+                `, [productId, work_date, line_id]);
+                if (capRes.rows[0]) {
+                    const orderQty = parseInt(capRes.rows[0].order_qty);
+                    const produced = parseInt(capRes.rows[0].produced_before_today);
+                    const otherLines = parseInt(capRes.rows[0].other_lines_today);
+                    if (orderQty > 0) {
+                        const remaining = Math.max(0, orderQty - produced - otherLines);
+                        if (parseInt(fields.target_units) > remaining) {
+                            fields.target_units = remaining;
+                            capWarning = `Target capped at ${remaining} — Order Qty: ${orderQty}, Already produced: ${produced}, Other lines today: ${otherLines}`;
+                        }
+                    }
+                }
+            }
         }
 
         const allowed = ['target_units', 'incoming_target_units', 'product_id', 'incoming_product_id', 'changeover_sequence'];
@@ -499,7 +590,7 @@ router.patch('/daily-plans', async (req, res) => {
         }
 
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
-        res.json({ success: true, data: result.rows[0] });
+        res.json({ success: true, data: result.rows[0], cap_warning: capWarning || null });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -2888,14 +2979,14 @@ router.get('/products', async (req, res) => {
             FROM products p
             LEFT JOIN LATERAL (
                 SELECT
-                    string_agg(pl.line_name, ', ' ORDER BY pl.line_name) as line_names,
+                    string_agg(pl.line_code, ', ' ORDER BY pl.line_code) as line_names,
                     array_agg(pl.id ORDER BY pl.id) as line_ids
                 FROM production_lines pl
                 WHERE pl.current_product_id = p.id
             ) line_info ON true
             LEFT JOIN LATERAL (
                 SELECT
-                    string_agg(pl.line_name, ', ' ORDER BY pl.line_name) as line_names,
+                    string_agg(pl.line_code, ', ' ORDER BY pl.line_code) as line_names,
                     array_agg(pl.id ORDER BY pl.id) as line_ids
                 FROM line_daily_plans ldp
                 JOIN production_lines pl ON ldp.line_id = pl.id
@@ -2903,7 +2994,7 @@ router.get('/products', async (req, res) => {
             ) today_primary ON true
             LEFT JOIN LATERAL (
                 SELECT
-                    string_agg(pl.line_name, ', ' ORDER BY pl.line_name) as line_names,
+                    string_agg(pl.line_code, ', ' ORDER BY pl.line_code) as line_names,
                     array_agg(pl.id ORDER BY pl.id) as line_ids
                 FROM line_daily_plans ldp
                 JOIN production_lines pl ON ldp.line_id = pl.id
@@ -9717,6 +9808,193 @@ router.get('/worker-individual-efficiency', async (req, res) => {
         res.json({ success: true, data: { dates, rows, shift_hours: shiftHours } });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================
+// WiFi Management (admin only)
+// ============================================================
+
+function parseNmcliWifiLine(line) {
+    const parts = [];
+    let current = '';
+    for (let i = 0; i < line.length; i++) {
+        if (line[i] === '\\' && i + 1 < line.length && line[i + 1] === ':') {
+            current += ':';
+            i++;
+        } else if (line[i] === ':') {
+            parts.push(current);
+            current = '';
+        } else {
+            current += line[i];
+        }
+    }
+    parts.push(current);
+    return parts;
+}
+
+async function getWifiNetworks() {
+    const { stdout } = await execFileAsync('nmcli', ['-t', '-f', 'SSID,BSSID,SIGNAL,SECURITY,IN-USE', 'device', 'wifi', 'list']);
+    const networks = [];
+    for (const line of stdout.trim().split('\n')) {
+        if (!line.trim()) continue;
+        const parts = parseNmcliWifiLine(line);
+        const ssid = parts[0]?.trim();
+        if (!ssid) continue;
+        networks.push({
+            ssid,
+            bssid: parts[1]?.trim() || null,
+            signal: parseInt(parts[2], 10) || 0,
+            security: parts[3]?.trim() || 'Open',
+            in_use: parts[4]?.trim() === '*'
+        });
+    }
+    return networks;
+}
+
+async function getWifiProfilesBySsid(ssid) {
+    const { stdout } = await execFileAsync('nmcli', ['-t', '-f', 'NAME,TYPE', 'connection', 'show']);
+    const profiles = [];
+    for (const line of stdout.trim().split('\n')) {
+        if (!line.trim()) continue;
+        const parts = parseNmcliWifiLine(line);
+        const name = parts[0]?.trim();
+        const type = parts[1]?.trim();
+        if (type !== '802-11-wireless' || !name) continue;
+        try {
+            const { stdout: ssidOut } = await execFileAsync('nmcli', ['-g', '802-11-wireless.ssid', 'connection', 'show', name]);
+            const profileSsid = ssidOut.trim();
+            if (profileSsid === ssid) {
+                profiles.push(name);
+            }
+        } catch (err) {
+            // Ignore profiles that cannot be inspected and continue scanning.
+        }
+    }
+    return profiles;
+}
+
+router.get('/admin/wifi/status', async (req, res) => {
+    if (req.user?.role !== 'admin') return res.status(403).json({ success: false, error: 'Admin only' });
+    try {
+        const [ipOut, wifiOut] = await Promise.all([
+            execFileAsync('hostname', ['-I']),
+            execFileAsync('nmcli', ['-t', '-f', 'ACTIVE,SSID,SIGNAL,DEVICE', 'device', 'wifi'])
+        ]);
+        const ips = ipOut.stdout.trim().split(/\s+/).filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
+        let currentSsid = null;
+        for (const line of wifiOut.stdout.trim().split('\n')) {
+            const parts = parseNmcliWifiLine(line);
+            if (parts[0] === 'yes') { currentSsid = parts[1] || null; break; }
+        }
+        res.json({ success: true, ips, current_ssid: currentSsid });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/admin/wifi/networks', async (req, res) => {
+    if (req.user?.role !== 'admin') return res.status(403).json({ success: false, error: 'Admin only' });
+    try {
+        // Trigger rescan (best-effort, don't block on it)
+        execFile('sudo', ['nmcli', 'device', 'wifi', 'rescan'], () => {});
+        await new Promise(r => setTimeout(r, 2500));
+        const rawNetworks = await getWifiNetworks();
+        const networks = [];
+        const seen = new Set();
+        for (const network of rawNetworks) {
+            const { ssid, bssid, signal, security, in_use: inUse } = network;
+            if (!ssid) continue;
+            if (seen.has(ssid)) {
+                // Keep the connected or strongest BSSID for duplicate SSIDs.
+                const existing = networks.find(n => n.ssid === ssid);
+                if (existing && (inUse || (!existing.in_use && signal > existing.signal))) {
+                    existing.in_use = inUse;
+                    existing.signal = signal;
+                    existing.security = security;
+                    existing.bssid = bssid || existing.bssid;
+                }
+                continue;
+            }
+            seen.add(ssid);
+            networks.push({ ssid, bssid, signal, security, in_use: inUse });
+        }
+        networks.sort((a, b) => (b.in_use ? 1 : 0) - (a.in_use ? 1 : 0) || b.signal - a.signal);
+        res.json({ success: true, networks });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/admin/wifi/connect', async (req, res) => {
+    if (req.user?.role !== 'admin') return res.status(403).json({ success: false, error: 'Admin only' });
+    const { ssid, password, bssid } = req.body;
+    if (!ssid || typeof ssid !== 'string' || ssid.length > 128) {
+        return res.status(400).json({ success: false, error: 'Invalid SSID' });
+    }
+    try {
+        await execFileAsync('sudo', ['nmcli', 'device', 'wifi', 'rescan']).catch(() => {});
+        await new Promise(r => setTimeout(r, 2000));
+        const networks = await getWifiNetworks();
+        const matching = networks
+            .filter(n => n.ssid === ssid)
+            .sort((a, b) => b.signal - a.signal);
+        const selected = (bssid ? matching.find(n => n.bssid === bssid) : null) || matching[0] || null;
+        const savedProfiles = await getWifiProfilesBySsid(ssid);
+        const isSecured = selected ? (selected.security && selected.security !== 'Open' && selected.security !== '--') : Boolean(password);
+        const trimmedPassword = typeof password === 'string' ? password.trim() : '';
+
+        if (isSecured && !trimmedPassword) {
+            return res.status(400).json({ success: false, error: 'Password is required for this WiFi network.' });
+        }
+
+        let runConnect;
+        if (selected) {
+            const connectArgs = ['nmcli', 'device', 'wifi', 'connect', ssid, 'ifname', 'wlan0'];
+            if (selected.bssid) {
+                connectArgs.push('bssid', selected.bssid);
+            }
+            if (trimmedPassword) {
+                connectArgs.push('password', trimmedPassword);
+            }
+            runConnect = () => execFileAsync('sudo', connectArgs, { timeout: 30000 });
+        } else if (savedProfiles.length) {
+            const profileName = savedProfiles[0];
+            runConnect = async () => {
+                if (trimmedPassword) {
+                    await execFileAsync('sudo', [
+                        'nmcli', 'connection', 'modify', profileName,
+                        '802-11-wireless-security.key-mgmt', 'wpa-psk',
+                        '802-11-wireless-security.psk', trimmedPassword
+                    ], { timeout: 30000 });
+                }
+                return execFileAsync('sudo', ['nmcli', 'connection', 'up', profileName, 'ifname', 'wlan0'], { timeout: 30000 });
+            };
+        } else {
+            return res.status(404).json({ success: false, error: `No network or saved profile found for SSID '${ssid}'.` });
+        }
+
+        try {
+            await runConnect();
+        } catch (err) {
+            const msg = (err.stderr || err.message || '').toString();
+            if (/key-mgmt: property is missing/i.test(msg)) {
+                for (const profileName of savedProfiles) {
+                    await execFileAsync('sudo', ['nmcli', 'connection', 'delete', profileName]).catch(() => {});
+                }
+                if (!selected) throw err;
+                await runConnect();
+            } else {
+                throw err;
+            }
+        }
+
+        const { stdout: ipOut } = await execFileAsync('hostname', ['-I']);
+        const ips = ipOut.trim().split(/\s+/).filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
+        res.json({ success: true, ips, ssid });
+    } catch (err) {
+        const msg = (err.stderr || err.message || 'Connection failed').toString().trim();
+        res.status(500).json({ success: false, error: msg });
     }
 });
 

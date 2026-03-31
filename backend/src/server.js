@@ -140,6 +140,10 @@ realtime.startDbListener();
 // API Routes
 const apiRoutes = require('./routes/api.routes');
 app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+app.use('/api', (req, res, next) => {
   // Allow product export/template downloads without auth
   if (req.path.startsWith('/products/export/') || req.path === '/products/upload-template') {
     return next();

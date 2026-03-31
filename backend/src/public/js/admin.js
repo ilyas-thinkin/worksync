@@ -1,6 +1,10 @@
 // WorkSync Admin Panel - JavaScript
 const API_BASE = '/api';
 
+function escHtml(str) {
+    return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 // Current active section
 let currentSection = 'dashboard';
 let currentView = { type: 'section', section: 'dashboard' };
@@ -145,6 +149,9 @@ async function loadSection(section) {
             break;
         case 'worker-individual-eff':
             await loadWorkerIndividualEff();
+            break;
+        case 'wifi':
+            await loadWifiSection();
             break;
     }
 }
@@ -2360,6 +2367,10 @@ function scheduleRealtimeRefresh(payload) {
         }
         if (currentSection === 'daily-plan' && payload.entity === 'daily_plans') {
             loadDailyPlans();
+            return;
+        }
+        if (currentSection === 'osm' && payload.entity === 'daily_plans') {
+            refreshOsmReport();
             return;
         }
         if (currentSection === 'lines' && ['lines', 'products', 'employees'].includes(entity)) {
@@ -4965,7 +4976,8 @@ async function saveDailyPlan(lineId) {
             });
             const result = await response.json();
             if (!result.success) { showToast(result.error, 'error'); return; }
-            showToast(result.copied_from ? `Plan saved — layout copied from ${result.copied_from}` : 'Daily plan saved', 'success');
+            if (result.cap_warning) showToast(`⚠ ${result.cap_warning}`, 'warning');
+            else showToast(result.copied_from ? `Plan saved — layout copied from ${result.copied_from}` : 'Daily plan saved', 'success');
         } else {
             // Plan exists — only PATCH changed fields
             const changed = {};
@@ -4988,7 +5000,8 @@ async function saveDailyPlan(lineId) {
             });
             const result = await response.json();
             if (!result.success) { showToast(result.error, 'error'); return; }
-            showToast(`Updated: ${Object.keys(changed).join(', ').replace(/_/g, ' ')}`, 'success');
+            if (result.cap_warning) showToast(`⚠ ${result.cap_warning}`, 'warning');
+            else showToast(`Updated: ${Object.keys(changed).join(', ').replace(/_/g, ' ')}`, 'success');
         }
         loadDailyPlanData();
     } catch (err) {
@@ -7064,6 +7077,11 @@ async function loadOsmReport() {
                 ).join('');
             document.getElementById('osm-line-daily').innerHTML = opts;
             document.getElementById('osm-line-range').innerHTML = opts;
+            // Restore last selected line and auto-load if available
+            if (window._lastOsmLineId) {
+                const sel = document.getElementById('osm-line-daily');
+                if (sel) { sel.value = window._lastOsmLineId; refreshOsmReport(); }
+            }
         }
     } catch (e) { /* ignore */ }
 }
@@ -7085,6 +7103,7 @@ async function refreshOsmReport() {
     const date   = document.getElementById('osm-date-daily')?.value;
     const container = document.getElementById('osm-content');
     if (!container) return;
+    if (lineId) window._lastOsmLineId = lineId;
     if (!lineId) {
         container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
         return;
@@ -8065,4 +8084,279 @@ function downloadWorkerIndividualEffExcel() {
     const a    = document.createElement('a');
     a.href = url; a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ============================================================================
+// WIFI MANAGEMENT
+// ============================================================================
+async function wifiReadJsonResponse(response, fallbackMessage) {
+    const text = await response.text();
+    if (!text) return {};
+    try {
+        return JSON.parse(text);
+    } catch (err) {
+        const trimmed = text.trim();
+        if (trimmed.startsWith('<')) {
+            if (response.status === 401 || response.redirected) {
+                throw new Error('Session expired. Reload the page and sign in again.');
+            }
+            throw new Error(`${fallbackMessage}. Server returned HTML instead of JSON.`);
+        }
+        throw new Error(trimmed.slice(0, 200) || fallbackMessage);
+    }
+}
+
+async function loadWifiSection() {
+    const content = document.getElementById('main-content');
+    content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    try {
+        const res = await fetch(`${API_BASE}/admin/wifi/status`, {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        const data = await wifiReadJsonResponse(res, 'Failed to load WiFi status');
+        if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+        const ips = (data.ips || []).join(', ') || 'Unknown';
+        const ssid = data.current_ssid || 'Not connected';
+        content.innerHTML = `
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">WiFi Management</h1>
+                    <p class="page-subtitle">Connect this device to a different WiFi network</p>
+                </div>
+            </div>
+            <div style="max-width:600px;margin:0 auto;">
+                <div class="card" style="margin-bottom:1.5rem;padding:1.25rem 1.5rem;">
+                    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.25rem;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="var(--primary)" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>
+                        </svg>
+                        <span style="font-weight:600;font-size:0.95rem;">Current Connection</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.75rem;">
+                        <div>
+                            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Network (SSID)</div>
+                            <div style="font-weight:600;margin-top:0.2rem;">${escHtml(ssid)}</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">IP Address</div>
+                            <div style="font-weight:600;margin-top:0.2rem;">${escHtml(ips)}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card" style="padding:1.25rem 1.5rem;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
+                        <span style="font-weight:600;font-size:0.95rem;">Available Networks</span>
+                        <button class="btn btn-secondary btn-sm" id="wifi-scan-btn" onclick="scanWifiNetworks()">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="margin-right:4px">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                            </svg>
+                            Scan
+                        </button>
+                    </div>
+                    <div id="wifi-networks-list">
+                        <div style="color:var(--text-muted);font-size:0.875rem;padding:1rem 0;text-align:center;">
+                            Click Scan to search for networks
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:1rem;padding:0.875rem 1rem;background:var(--bg-secondary);border-radius:8px;font-size:0.8rem;color:var(--text-muted);">
+                    <strong>Note:</strong> When connecting to a new network, this device will get a new IP address and your current connection will drop.
+                    You can always reconnect using <strong>https://worksync.local</strong>
+                </div>
+            </div>
+
+            <!-- WiFi Password Modal -->
+            <div id="wifi-connect-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+                <div style="background:var(--bg-primary);border-radius:12px;padding:1.75rem;width:100%;max-width:400px;margin:1rem;">
+                    <h3 style="margin:0 0 1.25rem;font-size:1.05rem;" id="wifi-modal-title">Connect to Network</h3>
+                    <div style="margin-bottom:1rem;">
+                        <label style="font-size:0.8rem;font-weight:600;color:var(--text-muted);display:block;margin-bottom:0.4rem;">PASSWORD</label>
+                        <input type="password" id="wifi-password-input" class="form-control"
+                            placeholder="Enter WiFi password"
+                            onkeydown="if(event.key==='Enter') doWifiConnect()"
+                            style="width:100%;" autocomplete="off"/>
+                        <div id="wifi-connect-error" style="display:none;color:var(--danger);font-size:0.8rem;margin-top:0.5rem;"></div>
+                    </div>
+                    <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                        <button class="btn btn-secondary" onclick="closeWifiModal()">Cancel</button>
+                        <button class="btn btn-primary" id="wifi-connect-btn" onclick="doWifiConnect()">Connect</button>
+                    </div>
+                </div>
+            </div>`;
+    } catch (err) {
+        content.innerHTML = `<div class="page-header"><h1 class="page-title">WiFi Management</h1></div>
+            <div class="empty-state"><p>Failed to load WiFi status: ${escHtml(err.message)}</p></div>`;
+    }
+}
+
+async function scanWifiNetworks() {
+    const btn = document.getElementById('wifi-scan-btn');
+    const list = document.getElementById('wifi-networks-list');
+    if (!btn || !list) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;margin-right:6px;display:inline-block;"></span>Scanning...';
+    list.innerHTML = '<div style="color:var(--text-muted);font-size:0.875rem;padding:1.5rem 0;text-align:center;">Scanning for networks...</div>';
+    try {
+        const res = await fetch(`${API_BASE}/admin/wifi/networks`, {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        const data = await wifiReadJsonResponse(res, 'Scan failed');
+        if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+        const networks = data.networks || [];
+        if (networks.length === 0) {
+            list.innerHTML = '<div style="color:var(--text-muted);font-size:0.875rem;padding:1rem 0;text-align:center;">No networks found</div>';
+        } else {
+            list.innerHTML = networks.map(n => {
+                const bars = n.signal >= 75 ? 4 : n.signal >= 50 ? 3 : n.signal >= 25 ? 2 : 1;
+                const locked = n.security && n.security !== 'Open';
+                const isConnected = n.in_use;
+                return `<div style="display:flex;align-items:center;gap:0.875rem;padding:0.75rem 0;border-bottom:1px solid var(--border-color);">
+                    <div style="flex-shrink:0;">
+                        ${_wifiSignalSvg(bars)}
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:0.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(n.ssid)}</div>
+                        <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">
+                            ${locked ? '<span>Secured</span>' : '<span>Open</span>'}
+                            &nbsp;·&nbsp; ${n.signal}%
+                        </div>
+                    </div>
+                    <div style="flex-shrink:0;">
+                        ${isConnected
+                            ? '<span style="font-size:0.75rem;font-weight:600;color:var(--success);padding:3px 8px;background:var(--success-bg,#dcfce7);border-radius:4px;">Connected</span>'
+                            : `<button class="btn btn-primary btn-sm" data-ssid="${encodeURIComponent(n.ssid)}" data-bssid="${encodeURIComponent(n.bssid || '')}" onclick="openWifiConnectModal(decodeURIComponent(this.dataset.ssid), ${locked}, decodeURIComponent(this.dataset.bssid || ''))">Connect</button>`}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+    } catch (err) {
+        list.innerHTML = `<div style="color:var(--danger);font-size:0.875rem;padding:1rem 0;text-align:center;">Scan failed: ${escHtml(err.message)}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="margin-right:4px"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Scan`;
+    }
+}
+
+function _wifiSignalSvg(bars) {
+    const barStyles = [
+        { h: 6,  y: 18, opacity: bars >= 1 ? 1 : 0.2 },
+        { h: 10, y: 14, opacity: bars >= 2 ? 1 : 0.2 },
+        { h: 14, y: 10, opacity: bars >= 3 ? 1 : 0.2 },
+        { h: 18, y: 6,  opacity: bars >= 4 ? 1 : 0.2 },
+    ];
+    const rectsHtml = barStyles.map((b, i) =>
+        `<rect x="${4 + i * 5}" y="${b.y}" width="3" height="${b.h}" rx="1" fill="var(--primary)" opacity="${b.opacity}"/>`
+    ).join('');
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">${rectsHtml}</svg>`;
+}
+
+let _wifiConnectSsid = null;
+let _wifiConnectBssid = null;
+function openWifiConnectModal(ssid, needsPassword, bssid = '') {
+    _wifiConnectSsid = ssid;
+    _wifiConnectBssid = bssid || null;
+    const modal = document.getElementById('wifi-connect-modal');
+    const title = document.getElementById('wifi-modal-title');
+    const input = document.getElementById('wifi-password-input');
+    const err = document.getElementById('wifi-connect-error');
+    if (!modal) return;
+    title.textContent = `Connect to "${ssid}"`;
+    if (input) { input.value = ''; input.style.display = needsPassword ? '' : 'none'; input.previousElementSibling.style.display = needsPassword ? '' : 'none'; }
+    if (err) err.style.display = 'none';
+    modal.style.display = 'flex';
+    if (needsPassword && input) setTimeout(() => input.focus(), 50);
+}
+
+function closeWifiModal() {
+    const modal = document.getElementById('wifi-connect-modal');
+    if (modal) modal.style.display = 'none';
+    _wifiConnectSsid = null;
+    _wifiConnectBssid = null;
+}
+
+async function doWifiConnect() {
+    const ssid = _wifiConnectSsid;
+    if (!ssid) return;
+    const input = document.getElementById('wifi-password-input');
+    const errEl = document.getElementById('wifi-connect-error');
+    const btn = document.getElementById('wifi-connect-btn');
+    const password = input ? input.value : '';
+    if (errEl) errEl.style.display = 'none';
+    if (btn) { btn.disabled = true; btn.textContent = 'Connecting...'; }
+
+    try {
+        const res = await fetch(`${API_BASE}/admin/wifi/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ ssid, password, bssid: _wifiConnectBssid })
+        });
+        const data = await wifiReadJsonResponse(res, 'Connection failed');
+        if (data.success) {
+            closeWifiModal();
+            const newIp = (data.ips || [])[0] || null;
+            const newUrl = newIp ? `https://${newIp}` : null;
+            const content = document.getElementById('main-content');
+            if (content) {
+                content.innerHTML = `
+                    <div style="max-width:520px;margin:4rem auto;text-align:center;padding:0 1rem;">
+                        <div style="width:64px;height:64px;border-radius:50%;background:var(--success-bg,#dcfce7);display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="none" viewBox="0 0 24 24" stroke="var(--success)" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                            </svg>
+                        </div>
+                        <h2 style="margin:0 0 0.5rem;">Connected!</h2>
+                        <p style="color:var(--text-muted);margin:0 0 1.5rem;">Successfully connected to <strong>${escHtml(ssid)}</strong></p>
+                        ${newUrl ? `
+                        <div style="background:var(--bg-secondary);border-radius:8px;padding:1rem;margin-bottom:1.25rem;">
+                            <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.4rem;">New IP Address</div>
+                            <div style="font-weight:700;font-size:1.1rem;">${escHtml((data.ips||[]).join(', '))}</div>
+                        </div>
+                        <a href="${escHtml(newUrl)}" class="btn btn-primary" style="display:inline-block;">
+                            Open at ${escHtml(newUrl)}
+                        </a>` : ''}
+                        <div style="margin-top:1rem;">
+                            <a href="https://worksync.local" class="btn btn-secondary" style="display:inline-block;">
+                                Open https://worksync.local
+                            </a>
+                        </div>
+                    </div>`;
+            }
+        } else {
+            if (errEl) {
+                errEl.textContent = data.error || 'Connection failed';
+                errEl.style.display = 'block';
+            }
+        }
+    } catch (err) {
+        closeWifiModal();
+        // Connection may have succeeded but response dropped due to IP change
+        const content = document.getElementById('main-content');
+        if (content) {
+            content.innerHTML = `
+                <div style="max-width:520px;margin:4rem auto;text-align:center;padding:0 1rem;">
+                    <div style="width:64px;height:64px;border-radius:50%;background:#fef9c3;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="none" viewBox="0 0 24 24" stroke="#ca8a04" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M12 3a9 9 0 100 18A9 9 0 0012 3z"/>
+                        </svg>
+                    </div>
+                    <h2 style="margin:0 0 0.5rem;">Network Changed</h2>
+                    <p style="color:var(--text-muted);margin:0 0 1.5rem;">
+                        The connection to <strong>${escHtml(ssid)}</strong> may have succeeded, but the network change caused this page to lose connection.
+                    </p>
+                    <a href="https://worksync.local" class="btn btn-primary" style="display:inline-block;">
+                        Reconnect at https://worksync.local
+                    </a>
+                    <p style="color:var(--text-muted);font-size:0.8rem;margin-top:1rem;">
+                        Or check your router for the device's new IP address.
+                    </p>
+                </div>`;
+        }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Connect'; }
+    }
 }
