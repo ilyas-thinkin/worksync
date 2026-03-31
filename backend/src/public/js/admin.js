@@ -3202,6 +3202,9 @@ function openPlanUploadModal() {
             <p style="font-size:13px;color:#6b7280;margin:0 0 16px;">
                 Fill in the template and upload to auto-create the product, processes, workstation plan, and employee assignments in one step.
             </p>
+            <p style="font-size:12px;color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:8px 10px;margin:0 0 16px;">
+                This upload will be applied to the date currently selected in Daily Plan.
+            </p>
             <button onclick="window.location.href='/api/lines/plan-upload-template'"
                style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:20px;">
                 &#8595; Download Template
@@ -3241,6 +3244,10 @@ async function submitPlanUpload(options = {}) {
 
     const fd = new FormData();
     fd.append('file', fileInput.files[0]);
+    const selectedDate = document.getElementById('plan-date')?.value;
+    if (selectedDate) {
+        fd.append('work_date', selectedDate);
+    }
     if (Array.isArray(options.missingEmployees) && options.missingEmployees.length) {
         fd.append('missing_employees', JSON.stringify(options.missingEmployees));
     }
@@ -3680,6 +3687,7 @@ async function loadDailyPlanData() {
                                         <button class="btn btn-secondary btn-sm" onclick="saveDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Save</button>
                                         <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!planExists || locked ? 'disabled' : ''}>Lock</button>
                                         <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!planExists || !locked ? 'disabled' : ''}>Unlock</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="copyDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Copy From</button>
                                         <button class="btn btn-danger btn-sm" onclick="deleteDailyPlan(${line.id})" ${!planExists ? 'disabled' : ''}>Delete</button>
                                     </div>
                                 </td>
@@ -5052,6 +5060,55 @@ async function deleteDailyPlan(lineId) {
         loadDailyPlanData();
     } catch (err) {
         showToast(err.message, 'error');
+    }
+}
+
+function copyDailyPlan(lineId) {
+    const targetDate = document.getElementById('plan-date').value;
+    const yesterday = new Date(new Date(targetDate).getTime() - 86400000).toISOString().slice(0, 10);
+
+    const existing = document.getElementById('copy-plan-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'copy-plan-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10001;display:flex;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:28px;width:360px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+            <h3 style="margin:0 0 6px;font-size:17px;font-weight:700;">Copy Plan to ${targetDate}</h3>
+            <p style="margin:0 0 18px;font-size:13px;color:#6b7280;">Choose a source date to copy the workstation plan and employee assignments from.</p>
+            <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px;">Copy from date</label>
+            <input type="date" id="copy-plan-source-date" value="${yesterday}"
+                style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;box-sizing:border-box;margin-bottom:18px;">
+            <div id="copy-plan-error" style="display:none;background:#fee2e2;color:#991b1b;border-radius:6px;padding:8px 12px;font-size:13px;margin-bottom:14px;"></div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;">
+                <button class="btn btn-secondary" onclick="document.getElementById('copy-plan-modal').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitCopyDailyPlan(${lineId}, '${targetDate}')">Copy Plan</button>
+            </div>
+        </div>`;
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+}
+
+async function submitCopyDailyPlan(lineId, targetDate) {
+    const sourceDate = document.getElementById('copy-plan-source-date').value;
+    const errorDiv = document.getElementById('copy-plan-error');
+    if (!sourceDate) { errorDiv.textContent = 'Please select a source date.'; errorDiv.style.display = 'block'; return; }
+    try {
+        const res = await fetch('/api/daily-plans/copy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ line_id: lineId, source_date: sourceDate, target_date: targetDate })
+        });
+        const result = await res.json();
+        if (!result.success) { errorDiv.textContent = result.error; errorDiv.style.display = 'block'; return; }
+        document.getElementById('copy-plan-modal').remove();
+        showToast(`Plan copied from ${sourceDate} to ${targetDate}`, 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        errorDiv.textContent = err.message;
+        errorDiv.style.display = 'block';
     }
 }
 

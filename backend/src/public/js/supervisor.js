@@ -223,6 +223,7 @@ async function scanLoop(videoElementId) {
 // ==========================================
 const morningState = {
     lineId: null,
+    workDate: null,
     processes: [],
     workstations: null,
     targetQty: 0,
@@ -233,6 +234,35 @@ const morningState = {
     scanMode: 'link'
 };
 
+function getSupervisorLocalDate() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+async function reloadMorningAssignments() {
+    const lineId = morningState.lineId;
+    const date = morningState.workDate || getSupervisorLocalDate();
+    if (!lineId) return;
+
+    const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${date}`, { cache: 'no-store' });
+    const result = await response.json();
+
+    if (result.has_plan && result.workstation_plan?.length > 0) {
+        morningState.workstations = result.workstation_plan;
+        morningState.processes = result.data || [];
+        morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
+        renderMorningAssignments(true);
+    } else {
+        morningState.processes = result.data || [];
+        morningState.workstations = null;
+        morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
+        renderMorningAssignments(false);
+    }
+}
+
 async function loadMorningProcedure() {
     const content = document.getElementById('supervisor-content');
     content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
@@ -241,7 +271,8 @@ async function loadMorningProcedure() {
         const response = await fetch(`${API_BASE}/supervisor/lines`);
         const result = await response.json();
         const lines = result.data || [];
-        const today = new Date().toISOString().slice(0, 10);
+        const today = getSupervisorLocalDate();
+        morningState.workDate = today;
 
         content.innerHTML = `
             <div class="page-header">
@@ -284,6 +315,7 @@ async function loadMorningProcedure() {
         document.getElementById('morning-line').addEventListener('change', onMorningLineChange);
         document.getElementById('morning-cancel-scan').addEventListener('click', cancelMorningScan);
         morningState.lineId = null;
+        morningState.workDate = today;
         morningState.processes = [];
         morningState.selectedWorkstation = null;
         morningState.scannedEmployee = null;
@@ -311,23 +343,8 @@ async function onMorningLineChange() {
     container.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
 
     try {
-        const today = new Date().toISOString().slice(0, 10);
-        const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${today}`);
-        const result = await response.json();
-
-        if (result.has_plan && result.workstation_plan?.length > 0) {
-            // Use the line plan workstations
-            morningState.workstations = result.workstation_plan;
-            morningState.processes = result.data || [];
-            morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
-            renderMorningAssignments(true);
-        } else {
-            // Fallback: group flat processes by workstation_code
-            morningState.processes = result.data || [];
-            morningState.workstations = null;
-            morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
-            renderMorningAssignments(false);
-        }
+        morningState.workDate = morningState.workDate || getSupervisorLocalDate();
+        await reloadMorningAssignments();
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -642,7 +659,7 @@ async function confirmMorningAssign() {
 
     try {
         const emp = morningState.scannedEmployee;
-        const today = new Date().toISOString().slice(0, 10);
+        const workDate = morningState.workDate || getSupervisorLocalDate();
 
         // Save employee assignment
         const res = await fetch(`${API_BASE}/workstation-assignments`, {
@@ -652,8 +669,9 @@ async function confirmMorningAssign() {
                 line_id: morningState.lineId,
                 workstation_code: morningState.selectedWorkstation,
                 employee_id: emp.id,
-                work_date: today,
-                line_plan_workstation_id: morningState.selectedWorkstationPlanId
+                work_date: workDate,
+                line_plan_workstation_id: morningState.selectedWorkstationPlanId,
+                is_linked: true
             })
         });
         const result = await res.json();
@@ -661,23 +679,41 @@ async function confirmMorningAssign() {
 
         showToast(`${emp.emp_name} linked to ${morningState.selectedWorkstation}`, 'success');
 
+        if (Array.isArray(morningState.workstations)) {
+            morningState.workstations = morningState.workstations.map(ws =>
+                ws.workstation_code === morningState.selectedWorkstation
+                    ? {
+                        ...ws,
+                        assigned_employee_id: emp.id,
+                        assigned_emp_code: emp.emp_code,
+                        assigned_emp_name: emp.emp_name,
+                        assigned_is_linked: true
+                    }
+                    : ws
+            );
+            renderMorningAssignments(true);
+        } else if (Array.isArray(morningState.processes)) {
+            morningState.processes = morningState.processes.map(p =>
+                (p.workstation_code || p.group_name || '-') === morningState.selectedWorkstation
+                    ? {
+                        ...p,
+                        assigned_employee_id: emp.id,
+                        assigned_emp_code: emp.emp_code,
+                        assigned_emp_name: emp.emp_name
+                    }
+                    : p
+            );
+            renderMorningAssignments(false);
+        }
+
         const scanPanel = document.getElementById('morning-scan-panel');
         if (scanPanel) scanPanel.style.display = 'none';
         morningState.selectedWorkstation = null;
+        morningState.selectedWorkstationPlanId = null;
         morningState.scannedEmployee = null;
+        morningState.mappedEmployee = null;
         morningState.scanMode = 'link';
-
-        const procResponse = await fetch(`${API_BASE}/supervisor/processes/${morningState.lineId}`);
-        const procResult = await procResponse.json();
-        if (procResult.has_plan && procResult.workstation_plan?.length > 0) {
-            morningState.workstations = procResult.workstation_plan;
-            morningState.processes = procResult.data || [];
-            renderMorningAssignments(true);
-        } else {
-            morningState.workstations = null;
-            morningState.processes = procResult.data || [];
-            renderMorningAssignments(false);
-        }
+        await reloadMorningAssignments();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -718,27 +754,16 @@ async function unlinkAllMapping() {
     if (!morningState.lineId) return;
     if (!confirm('Unlink all employee assignments for this line today?')) return;
     try {
-        const today = new Date().toISOString().slice(0, 10);
+        const workDate = morningState.workDate || getSupervisorLocalDate();
         const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-all`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lineId: morningState.lineId, date: today })
+            body: JSON.stringify({ lineId: morningState.lineId, date: workDate })
         });
         const result = await res.json();
         if (!result.success) { showToast(result.error || 'Unlink failed', 'error'); return; }
         showToast('All assignments unlinked', 'success');
-        // Reload workstation state
-        const procRes = await fetch(`${API_BASE}/supervisor/processes/${morningState.lineId}`);
-        const procResult = await procRes.json();
-        if (procResult.has_plan && procResult.workstation_plan?.length > 0) {
-            morningState.workstations = procResult.workstation_plan;
-            morningState.processes = procResult.data || [];
-            renderMorningAssignments(true);
-        } else {
-            morningState.workstations = null;
-            morningState.processes = procResult.data || [];
-            renderMorningAssignments(false);
-        }
+        await reloadMorningAssignments();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1807,7 +1832,9 @@ function renderHourlySummary() {
                         ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Morning section">&#128683; Not Assigned</button>`
                         : notMapped
                             ? `<button class="btn ws-card-action" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:not-allowed;" disabled title="Employee assigned but not mapped — supervisor must link in Mapping section">&#128279; Map Employee</button>`
-                            : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
+                            : output > 0
+                                ? `<button class="btn btn-secondary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">&#9998; Edit</button>`
+                                : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
             let coBtn = '';
             if (hasChangeover && ws.has_co_plan) {
@@ -1933,7 +1960,9 @@ function renderHourlySummary() {
         const procNoEmployee = !p.assigned_emp_name;
         const procEnterBtn = procNoEmployee
             ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Mapping">&#128683; Not Assigned</button>`
-            : `<button class="btn btn-primary ws-card-action" onclick="openHourlyEntry(${p.id})">Enter Output</button>`;
+            : output > 0
+                ? `<button class="btn btn-secondary ws-card-action" onclick="openHourlyEntry(${p.id})">&#9998; Edit</button>`
+                : `<button class="btn btn-primary ws-card-action" onclick="openHourlyEntry(${p.id})">Enter Output</button>`;
 
         return `
             <div class="ws-card ${needsReason || procNoEmployee ? 'ws-card--alert' : ''}" id="hourly-proc-card-${p.id}">

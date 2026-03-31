@@ -2320,6 +2320,135 @@ router.delete('/daily-plans', async (req, res) => {
     }
 });
 
+// POST /daily-plans/copy — copy a plan from source_date to target_date for a line
+router.post('/daily-plans/copy', async (req, res) => {
+    const { line_id, source_date, target_date } = req.body;
+    if (!line_id || !source_date || !target_date) {
+        return res.status(400).json({ success: false, error: 'line_id, source_date and target_date are required' });
+    }
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Admin or IE access required' });
+    }
+    if (source_date === target_date) {
+        return res.status(400).json({ success: false, error: 'Source and target dates must be different' });
+    }
+    const client = await pool.connect();
+    try {
+        // Fetch source plan
+        const srcPlan = await client.query(
+            `SELECT * FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, source_date]
+        );
+        if (!srcPlan.rows[0]) {
+            return res.status(404).json({ success: false, error: `No plan found for ${source_date}` });
+        }
+        const src = srcPlan.rows[0];
+
+        // Check target is not locked
+        const tgtLocked = await client.query(
+            `SELECT is_locked FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, target_date]
+        );
+        if (tgtLocked.rows[0]?.is_locked) {
+            return res.status(403).json({ success: false, error: `Plan for ${target_date} is locked and cannot be overwritten` });
+        }
+
+        await client.query('BEGIN');
+
+        // Upsert daily plan
+        await client.query(
+            `INSERT INTO line_daily_plans
+               (line_id, product_id, work_date, target_units, incoming_product_id, incoming_target_units, changeover_sequence)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT (line_id, work_date) DO UPDATE SET
+               product_id = EXCLUDED.product_id,
+               target_units = EXCLUDED.target_units,
+               incoming_product_id = EXCLUDED.incoming_product_id,
+               incoming_target_units = EXCLUDED.incoming_target_units,
+               changeover_sequence = EXCLUDED.changeover_sequence,
+               changeover_started_at = NULL,
+               updated_at = NOW()`,
+            [line_id, src.product_id, target_date, src.target_units,
+             src.incoming_product_id || null, src.incoming_target_units || 0, src.changeover_sequence || null]
+        );
+
+        // Clear existing workstation plan for target date
+        const oldWs = await client.query(
+            `SELECT id FROM line_plan_workstations WHERE line_id = $1 AND work_date = $2`,
+            [line_id, target_date]
+        );
+        if (oldWs.rows.length > 0) {
+            const oldIds = oldWs.rows.map(r => r.id);
+            await client.query(`DELETE FROM line_plan_workstation_processes WHERE workstation_id = ANY($1)`, [oldIds]);
+            await client.query(`DELETE FROM line_plan_workstations WHERE id = ANY($1)`, [oldIds]);
+        }
+        await client.query(
+            `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND work_date = $2 AND is_overtime = false`,
+            [line_id, target_date]
+        );
+
+        // Copy workstation plan
+        const srcWs = await client.query(
+            `SELECT * FROM line_plan_workstations WHERE line_id = $1 AND work_date = $2 ORDER BY workstation_number`,
+            [line_id, source_date]
+        );
+
+        for (const ws of srcWs.rows) {
+            const newWs = await client.query(
+                `INSERT INTO line_plan_workstations
+                   (line_id, work_date, product_id, workstation_number, workstation_code,
+                    takt_time_seconds, actual_sam_seconds, workload_pct, group_name)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+                [line_id, target_date, ws.product_id, ws.workstation_number, ws.workstation_code,
+                 ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name || null]
+            );
+            const newWsId = newWs.rows[0].id;
+
+            // Copy processes for this workstation
+            const srcProcs = await client.query(
+                `SELECT * FROM line_plan_workstation_processes WHERE workstation_id = $1 ORDER BY sequence_in_workstation`,
+                [ws.id]
+            );
+            for (const proc of srcProcs.rows) {
+                await client.query(
+                    `INSERT INTO line_plan_workstation_processes (workstation_id, product_process_id, sequence_in_workstation)
+                     VALUES ($1,$2,$3)`,
+                    [newWsId, proc.product_process_id, proc.sequence_in_workstation]
+                );
+            }
+
+            // Copy employee assignment (is_linked = false — supervisor must re-link on new day)
+            const srcEmp = await client.query(
+                `SELECT employee_id FROM employee_workstation_assignments
+                 WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
+                [line_id, source_date, ws.workstation_code]
+            );
+            if (srcEmp.rows[0]?.employee_id) {
+                await client.query(
+                    `INSERT INTO employee_workstation_assignments
+                       (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, is_linked)
+                     VALUES ($1,$2,$3,$4,$5,false)
+                     ON CONFLICT (line_id, work_date, workstation_code, is_overtime) DO UPDATE
+                       SET employee_id = EXCLUDED.employee_id,
+                           line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                           is_linked = false, assigned_at = NOW()`,
+                    [line_id, ws.workstation_code, srcEmp.rows[0].employee_id, target_date, newWsId]
+                );
+            }
+        }
+
+        await client.query('COMMIT');
+
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'copy', line_id, source_date, target_date });
+        res.json({ success: true, message: `Plan copied from ${source_date} to ${target_date}` });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
 // ============================================================================
 // LINE WORKSTATION QR CODES
 // ============================================================================
@@ -3606,22 +3735,24 @@ router.put('/process-assignments/workspace', async (req, res) => {
 // WORKSTATION ASSIGNMENTS (Workstation -> Employee) — date-aware
 // ============================================================================
 router.post('/workstation-assignments', async (req, res) => {
-    const { line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided } = req.body;
+    const { line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided, is_linked } = req.body;
     if (!line_id || !workstation_code) {
         return res.status(400).json({ success: false, error: 'line_id and workstation_code are required' });
     }
     const date = work_date || new Date().toISOString().slice(0, 10);
     const matQty = (material_provided !== undefined && material_provided !== null) ? parseInt(material_provided, 10) : null;
+    const linked = is_linked === true || is_linked === 'true';
     try {
         if (employee_id) {
             await pool.query(
                 `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, is_linked)
-                 VALUES ($1, $2, $3, $4, $5, false)
+                 VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
                  DO UPDATE SET employee_id = EXCLUDED.employee_id,
                                line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                               is_linked = EXCLUDED.is_linked,
                                assigned_at = NOW()`,
-                [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null]
+                [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null, linked]
             );
         } else {
             await pool.query(
@@ -5101,14 +5232,19 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             if (typeof v === 'object' && v !== null) {
                 if (v.richText) return v.richText.map(t => t.text).join('').trim();
                 if (v instanceof Date) return v.toISOString().slice(0, 10);
-                if (v.result !== undefined) return String(v.result).trim();
+                if (v.result !== undefined && v.result !== null) return String(v.result).trim();
+                // Formula cells without cached results should be treated as blank, not "[object Object]".
+                if (v.formula !== undefined) return '';
             }
             return String(v).trim();
         };
         const getCellNum = (r, c) => {
             const raw = sheet.getRow(r).getCell(c).value;
             if (raw === null || raw === undefined || raw === '') return 0;
-            if (typeof raw === 'object' && raw.result !== undefined) return parseFloat(raw.result) || 0;
+            if (typeof raw === 'object' && raw !== null) {
+                if (raw.result !== undefined && raw.result !== null) return parseFloat(raw.result) || 0;
+                if (raw.formula !== undefined) return 0;
+            }
             return parseFloat(String(raw).replace(/,/g, '')) || 0;
         };
         const normalizeCode = (value) => String(value || '').trim().toUpperCase();
@@ -5125,15 +5261,17 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         const duplicateAssignmentKey = (wsCode) => `WS:${String(wsCode || '').trim().toUpperCase()}`;
 
         // Parse header (value in col B = column index 2)
-        const lineCode      = getCellStr(3, 2);
+        const lineCode      = normalizeCode(getCellStr(3, 2));
         const hallName      = getCellStr(4, 2);
-        const workDate      = getCellStr(5, 2) || new Date().toISOString().slice(0, 10);
-        const productCode   = getCellStr(6, 2);
+        const excelWorkDate = getCellStr(5, 2);
+        const requestedDate = String(req.body?.work_date || '').trim();
+        const workDate      = requestedDate || excelWorkDate || new Date().toISOString().slice(0, 10);
+        const productCode   = normalizeCode(getCellStr(6, 2));
         const productName   = getCellStr(7, 2);
         const buyerName     = getCellStr(8, 2) || null;
         const planMonth     = getCellStr(9, 2) || null;
         const targetUnits   = Math.round(getCellNum(10, 2));
-        const coProductCode = getCellStr(11, 2);
+        const coProductCode = normalizeCode(getCellStr(11, 2));
         const coTarget      = Math.round(getCellNum(12, 2)) || 0;
         const lineLeader    = getCellStr(13, 2) || null;
 
@@ -5148,18 +5286,27 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         // Find or create line — if it already exists, use it as-is (no updates to name/hall)
         let lineId, lineCreated;
         const existingLine = await client.query(
-            `SELECT id FROM production_lines WHERE line_code = $1 LIMIT 1`, [lineCode]
+            `SELECT id
+             FROM production_lines
+             WHERE UPPER(TRIM(line_code)) = $1
+             ORDER BY is_active DESC, id ASC
+             LIMIT 1`,
+            [lineCode]
         );
         if (existingLine.rows[0]) {
             lineId      = existingLine.rows[0].id;
             lineCreated = false;
-            // Update line_leader if provided
-            if (lineLeader) {
-                await client.query(
-                    `UPDATE production_lines SET line_leader = $1 WHERE id = $2`,
-                    [lineLeader, lineId]
-                );
-            }
+            await client.query(
+                `UPDATE production_lines
+                 SET line_code = COALESCE(NULLIF(line_code, ''), $1),
+                     line_name = COALESCE($2, line_name),
+                     hall_location = COALESCE($3, hall_location),
+                     line_leader = COALESCE($4, line_leader),
+                     is_active = true,
+                     updated_at = NOW()
+                 WHERE id = $5`,
+                [lineCode, hallName || null, hallName || null, lineLeader || null, lineId]
+            );
         } else {
             if (!hallName) throw new Error(`Line "${lineCode}" not found. Provide HALL NAME to auto-create it.`);
             const ins = await client.query(
@@ -5241,7 +5388,8 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 sah,
                 empCode:    getCellStr(rowNum, 9),  // I: EMP CODE (formula result — auto-extracted from J)
                 empName,
-                employeeLookupKey: null
+                employeeLookupKey: null,
+                employeeId: null
             });
             autoSeq++;
         }
@@ -5333,6 +5481,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
 
             if (matchedEmployee) {
+                row.employeeId = matchedEmployee.id;
                 row.empCode = matchedEmployee.emp_code;
                 row.empName = matchedEmployee.emp_name;
                 continue;
@@ -5418,6 +5567,8 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                     if (!row.employeeLookupKey) continue;
                     const provided = providedMap.get(row.employeeLookupKey);
                     if (!provided) continue;
+                    const matchedEmployee = employeeCodeMap.get(normalizeCode(provided.emp_code.trim()));
+                    row.employeeId = matchedEmployee?.id || null;
                     row.empCode = provided.emp_code.trim();
                     row.empName = provided.emp_name.trim();
                 }
@@ -5574,6 +5725,18 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             [lineId, productId, workDate, targetUnits, coProductId, coTarget, req.user?.id || null]
         );
 
+        const todayIso = new Date().toISOString().slice(0, 10);
+        if (workDate === todayIso) {
+            await client.query(
+                `UPDATE production_lines
+                 SET current_product_id = $1,
+                     target_units = $2,
+                     updated_at = NOW()
+                 WHERE id = $3`,
+                [productId, targetUnits, lineId]
+            );
+        }
+
         // Replace workstation plan for this line + date + product
         await client.query(
             `DELETE FROM line_plan_workstations WHERE line_id = $1 AND work_date = $2 AND product_id = $3`,
@@ -5619,14 +5782,24 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
             // Assign employee (first non-empty emp_code in the workstation)
             // Skip if the employee is already assigned to a different line/workstation on this date
-            const withEmp = processes.find(p => p.empCode);
+            const withEmp = processes.find(p => p.employeeId || p.empCode || p.empName);
             if (withEmp) {
-                const empRow = await client.query(
-                    `SELECT id FROM employees WHERE UPPER(emp_code) = UPPER($1) LIMIT 1`,
-                    [withEmp.empCode]
-                );
-                if (empRow.rows[0]) {
-                    const empId = empRow.rows[0].id;
+                let empId = withEmp.employeeId || null;
+                if (!empId && withEmp.empCode) {
+                    const empRow = await client.query(
+                        `SELECT id FROM employees WHERE UPPER(TRIM(emp_code)) = UPPER(TRIM($1)) LIMIT 1`,
+                        [withEmp.empCode]
+                    );
+                    empId = empRow.rows[0]?.id || null;
+                }
+                if (!empId && withEmp.empName) {
+                    const empRow = await client.query(
+                        `SELECT id FROM employees WHERE UPPER(TRIM(emp_name)) = UPPER(TRIM($1)) LIMIT 1`,
+                        [withEmp.empName]
+                    );
+                    empId = empRow.rows[0]?.id || null;
+                }
+                if (empId) {
                     const conflict = await client.query(
                         `SELECT 1 FROM employee_workstation_assignments
                          WHERE employee_id = $1 AND work_date = $2 AND is_overtime = false
@@ -5666,6 +5839,15 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             entity: 'line_plan_upload', action: 'uploaded',
             line_id: lineId, work_date: workDate, product_id: productId
         });
+        realtime.broadcast('data_change', {
+            entity: 'daily_plans', action: 'update',
+            line_id: lineId, work_date: workDate
+        });
+        if (workDate === todayIso) {
+            realtime.broadcast('data_change', {
+                entity: 'lines', action: 'update', id: lineId
+            });
+        }
 
         res.json({
             success: true,
@@ -5977,16 +6159,19 @@ const refreshGroupWip = async (lineId, workDate, groupIdentifier) => {
     const materialsIn = parseInt(matResult.rows[0]?.mat || 0, 10);
 
     // output_qty = sum of hourly output across all workstations in the group.
-    // Group by (workstation_plan_id, hour_slot) to avoid double-counting process fan-out rows.
+    // Progress is stored per process_id, so join back through workstation-process mapping.
+    // Group by (workstation_id, hour_slot) to avoid double-counting process fan-out rows.
     const outResult = await pool.query(
         `SELECT COALESCE(SUM(qty), 0) AS total_output
          FROM (
-             SELECT lphp.workstation_plan_id, lphp.hour_slot, MAX(lphp.quantity) AS qty
+             SELECT lpw.id AS workstation_id, lphp.hour_slot, MAX(lphp.quantity) AS qty
              FROM line_plan_workstations lpw
-             JOIN line_process_hourly_progress lphp ON lphp.workstation_plan_id = lpw.id
+             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+             JOIN line_process_hourly_progress lphp ON lphp.process_id = lpwp.product_process_id
              WHERE lpw.line_id = $1 AND lpw.work_date = $2
+               AND lphp.line_id = $1 AND lphp.work_date = $2
                AND (lpw.group_name = $3 OR (lpw.group_name IS NULL AND lpw.workstation_code = $3))
-             GROUP BY lphp.workstation_plan_id, lphp.hour_slot
+             GROUP BY lpw.id, lphp.hour_slot
          ) ws_hr`,
         [lineId, workDate, groupIdentifier]
     );
