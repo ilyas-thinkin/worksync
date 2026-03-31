@@ -2536,7 +2536,7 @@ function renderOtPlanSection() {
         if (!lineCode || !wsCode) return '';
         const num = parseInt(wsCode.replace(/\D/g, '') || '0', 10);
         if (!num) return '';
-        return `qrcodes/workstations/${lineCode}/ws_${lineCode}_W${String(num).padStart(2,'0')}.png`;
+        return `qrcodes/workstations/${lineCode}/ws_${lineCode}_W${String(num).padStart(2,'0')}.svg`;
     };
     const qrThumb = (path, label) => {
         if (!path) return '<span style="color:#d1d5db;font-size:11px;">—</span>';

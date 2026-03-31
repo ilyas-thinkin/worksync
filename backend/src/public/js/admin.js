@@ -4096,7 +4096,7 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
         const num = parseInt(wsCode.replace(/\D/g, '') || '0', 10);
         if (!num) return '';
         const norm = 'W' + String(num).padStart(2, '0');
-        return `qrcodes/workstations/${lineCode}/ws_${lineCode}_${norm}.png`;
+        return `qrcodes/workstations/${lineCode}/ws_${lineCode}_${norm}.svg`;
     };
 
     // Small thumbnail HTML — click to enlarge
