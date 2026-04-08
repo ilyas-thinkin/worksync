@@ -3833,9 +3833,26 @@ router.post('/workstation-assignments', async (req, res) => {
     const date = work_date || new Date().toISOString().slice(0, 10);
     const matQty = (material_provided !== undefined && material_provided !== null) ? parseInt(material_provided, 10) : null;
     const linked = is_linked === true || is_linked === 'true';
+    const client = await pool.connect();
     try {
+        await client.query('BEGIN');
+        let displacedWorkstations = [];
+
         if (employee_id) {
-            await pool.query(
+            // A supervisor reassignment should move the employee, not clone them onto two workstations.
+            const displacedResult = await client.query(
+                `DELETE FROM employee_workstation_assignments
+                 WHERE line_id = $1
+                   AND work_date = $2
+                   AND employee_id = $3
+                   AND is_overtime = false
+                   AND workstation_code <> $4
+                 RETURNING workstation_code`,
+                [line_id, date, employee_id, workstation_code]
+            );
+            displacedWorkstations = displacedResult.rows.map(row => row.workstation_code);
+
+            await client.query(
                 `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, is_linked)
                  VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
@@ -3846,15 +3863,29 @@ router.post('/workstation-assignments', async (req, res) => {
                 [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null, linked]
             );
         } else {
-            await pool.query(
-                `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3`,
+            await client.query(
+                `DELETE FROM employee_workstation_assignments
+                 WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
                 [line_id, date, workstation_code]
             );
         }
+        await client.query('COMMIT');
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date: date });
-        res.json({ success: true, data: { line_id, workstation_code, employee_id: employee_id || null, work_date: date } });
+        res.json({
+            success: true,
+            data: {
+                line_id,
+                workstation_code,
+                employee_id: employee_id || null,
+                work_date: date,
+                displaced_workstations: displacedWorkstations
+            }
+        });
     } catch (err) {
+        await client.query('ROLLBACK');
         res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -3872,7 +3903,7 @@ router.patch('/workstation-assignments/material', async (req, res) => {
     try {
         const result = await pool.query(
             `UPDATE employee_workstation_assignments
-             SET material_provided = $1
+             SET material_provided = COALESCE(material_provided, 0) + $1
              WHERE line_id = $2 AND work_date = $3 AND workstation_code = $4 AND is_overtime = false`,
             [qty, line_id, date, workstation_code]
         );
@@ -3890,8 +3921,24 @@ router.patch('/workstation-assignments/material', async (req, res) => {
         if (wsGrpResult.rows[0]?.group_identifier) {
             await refreshGroupWip(line_id, date, wsGrpResult.rows[0].group_identifier);
         }
+        const totalResult = await pool.query(
+            `SELECT COALESCE(material_provided, 0) AS material_provided
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
+            [line_id, date, workstation_code]
+        );
+        const totalQty = parseInt(totalResult.rows[0]?.material_provided || 0, 10);
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date: date });
-        res.json({ success: true, data: { line_id, workstation_code, material_provided: qty, work_date: date } });
+        res.json({
+            success: true,
+            data: {
+                line_id,
+                workstation_code,
+                material_provided: totalQty,
+                added_quantity: qty,
+                work_date: date
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -7208,6 +7255,7 @@ router.get('/supervisor/line-status/:lineId', async (req, res) => {
             `SELECT
                 ewa.workstation_code,
                 lpw.id AS workstation_plan_id,
+                lpw.workstation_number,
                 ewa.employee_id,
                 e.emp_code,
                 e.emp_name,
@@ -7233,12 +7281,13 @@ router.get('/supervisor/line-status/:lineId', async (req, res) => {
              LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
              LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
              WHERE ewa.line_id = $1 AND ewa.work_date = $2 AND ewa.is_overtime = false
-             ORDER BY ewa.workstation_code`,
+             ORDER BY COALESCE(lpw.workstation_number, 999999), ewa.workstation_code`,
             [lineId, date]
         );
         const workstations = result.rows.map(row => ({
             workstation_code: row.workstation_code,
             workstation_plan_id: row.workstation_plan_id,
+            workstation_number: row.workstation_number || null,
             employee_id: row.employee_id,
             emp_code: row.emp_code,
             emp_name: row.emp_name,
@@ -7395,16 +7444,20 @@ router.get('/supervisor/worker-departures/:lineId', async (req, res) => {
         const result = await pool.query(
             `SELECT
                 wd.id AS departure_id, wd.workstation_code, wd.departure_time, wd.departure_reason, wd.notes,
+                lpw.workstation_number,
                 e_dep.emp_code AS dep_emp_code, e_dep.emp_name AS dep_emp_name,
                 wa.id AS adjustment_id, wa.adjustment_type, wa.reassignment_time,
                 wa.from_workstation_code AS covering_from_ws,
                 e_cov.emp_code AS covering_emp_code, e_cov.emp_name AS covering_emp_name
              FROM worker_departures wd
              JOIN employees e_dep ON e_dep.id = wd.employee_id
+             LEFT JOIN line_plan_workstations lpw
+                ON lpw.line_id = wd.line_id AND lpw.work_date = wd.work_date
+                AND lpw.workstation_code = wd.workstation_code
              LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
              LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
              WHERE wd.line_id = $1 AND wd.work_date = $2
-             ORDER BY wd.departure_time DESC`,
+             ORDER BY COALESCE(lpw.workstation_number, 999999), wd.workstation_code, wd.departure_time DESC`,
             [lineId, date]
         );
         res.json({ success: true, data: result.rows });
@@ -7807,6 +7860,22 @@ router.get('/line-shifts', async (req, res) => {
             [date]
         );
         res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.post('/supervisor/mapping/unlink-workstation', async (req, res) => {
+    const { lineId, date, workstationCode } = req.body;
+    if (!lineId || !date || !workstationCode) return res.status(400).json({ success: false, error: 'lineId, date, and workstationCode required' });
+    try {
+        await pool.query(
+            `UPDATE employee_workstation_assignments
+             SET is_linked = false
+             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
+            [lineId, date, workstationCode]
+        );
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

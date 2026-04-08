@@ -357,13 +357,11 @@ function renderMorningAssignments(hasPlan) {
     if (hasPlan && morningState.workstations?.length > 0) {
         const workstations = morningState.workstations;
 
-        // All linked = every workstation has an employee confirmed (linked)
         const allLinked = workstations.every(ws => !!ws.assigned_emp_name && ws.assigned_is_linked !== false);
 
         const cards = workstations.map(ws => {
             const hasEmployee = !!ws.assigned_emp_name;
             const isLinked   = hasEmployee && ws.assigned_is_linked !== false;
-            const isMapped   = isLinked; // legacy alias — "mapped" = linked
             const processList = (ws.processes || []).map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
             const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
             const workloadPct = parseFloat(ws.workload_pct||0).toFixed(0);
@@ -376,21 +374,14 @@ function renderMorningAssignments(hasPlan) {
                 ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
                 : hasEmployee
                     ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#fee2e2;color:#dc2626;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9711; Unlinked</span>`
-                    : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
+                    : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Mapped</span>`;
 
             const groupBadge = ws.group_name
                 ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#ede9fe;color:#5b21b6;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:700;">&#128209; ${ws.group_name}</span>`
                 : '';
 
-            const footerContent = isLinked
-                ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
-                : `<button class="btn btn-primary ws-card-action"
-                        onclick="startMorningScan('${ws.workstation_code}', ${ws.id}, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${(ws.assigned_emp_name || '').replace(/'/g, "\\'")}')">
-                        &#128247; ${hasEmployee ? 'Re-link' : 'Scan &amp; Link'}
-                   </button>`;
-
             return `
-                <div class="ws-card ${isMapped ? '' : 'ws-card--alert'}" id="ws-card-${ws.workstation_code}">
+                <div class="ws-card ${isLinked ? '' : 'ws-card--alert'}" id="ws-card-${ws.workstation_code}">
                     <div class="ws-card-header">
                         <span class="ws-card-code">${ws.workstation_code}</span>
                         <div class="ws-card-badges">
@@ -410,7 +401,7 @@ function renderMorningAssignments(hasPlan) {
                         </div>
                     </div>
                     <div class="ws-card-footer">
-                        ${footerContent}
+                        ${_renderWsCardFooter(ws.workstation_code, ws.id, ws.assigned_employee_id || null, ws.assigned_emp_code || '', ws.assigned_emp_name || '', isLinked)}
                     </div>
                 </div>`;
         }).join('');
@@ -451,7 +442,7 @@ function renderMorningAssignments(hasPlan) {
     processes.forEach(p => {
         const ws = p.workstation_code || p.group_name || '-';
         if (!wsMap.has(ws)) {
-            wsMap.set(ws, { workstation_code: ws, processes: [], assigned_emp_code: null, assigned_emp_name: null, assigned_employee_id: null, plan_id: null, material_provided: null });
+            wsMap.set(ws, { workstation_code: ws, processes: [], assigned_emp_code: null, assigned_emp_name: null, assigned_employee_id: null, plan_id: null });
         }
         wsMap.get(ws).processes.push(p);
         if (p.assigned_emp_name && !wsMap.get(ws).assigned_emp_name) {
@@ -469,14 +460,7 @@ function renderMorningAssignments(hasPlan) {
 
         const statusBadge = isMapped
             ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#16a34a;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#10003; Linked</span>`
-            : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Linked</span>`;
-
-        const footerContent = isMapped
-            ? `<span style="color:#16a34a;font-size:13px;padding:6px 0;display:block;text-align:center;font-weight:600;">&#10003; Completed</span>`
-            : `<button class="btn btn-primary ws-card-action"
-                    onclick="startMorningScan('${ws.workstation_code}', null, ${ws.assigned_employee_id || 'null'}, '${ws.assigned_emp_code || ''}', '${ws.assigned_emp_name || ''}')">
-                    &#128247; Scan &amp; Link
-               </button>`;
+            : `<span style="display:inline-flex;align-items:center;gap:4px;background:#fef3c7;color:#d97706;padding:3px 8px;border-radius:12px;font-size:12px;font-weight:700;">&#9888; Not Mapped</span>`;
 
         return `
             <div class="ws-card ${isMapped ? '' : 'ws-card--alert'}" id="ws-card-${ws.workstation_code}">
@@ -495,7 +479,7 @@ function renderMorningAssignments(hasPlan) {
                     </div>
                 </div>
                 <div class="ws-card-footer">
-                    ${footerContent}
+                    ${_renderWsCardFooter(ws.workstation_code, null, ws.assigned_employee_id || null, ws.assigned_emp_code || '', ws.assigned_emp_name || '', false)}
                 </div>
             </div>`;
     }).join('');
@@ -513,35 +497,98 @@ function renderMorningAssignments(hasPlan) {
     `;
 }
 
-// Returns the default "Scan & Link" button HTML for a workstation card footer
-function _morningDefaultScanBtn(wsCode, planId, empId, empCode, empName) {
+// Returns the 3-button footer HTML for a workstation card
+// Link: confirm pre-mapped employee without scan
+// Change Employee: QR scan to assign a different employee
+// Unlink: unlink this workstation
+function _renderWsCardFooter(wsCode, planId, empId, empCode, empName, isLinked) {
     const safeEmpName = (empName || '').replace(/'/g, "\\'");
-    return `<button class="btn btn-primary ws-card-action"
-        onclick="startMorningScan('${wsCode}', ${planId || 'null'}, ${empId || 'null'}, '${empCode || ''}', '${safeEmpName}')">
-        &#128247; Scan &amp; Link
-    </button>`;
+
+    const linkBtn = !isLinked && empId
+        ? `<button class="btn btn-primary btn-sm" style="flex:1;" onclick="linkMappedEmployee('${wsCode}', ${planId||'null'}, ${empId}, '${empCode}', '${safeEmpName}')">&#10003; Link</button>`
+        : isLinked
+            ? `<span style="color:#16a34a;font-size:12px;font-weight:600;align-self:center;">&#10003; Linked</span>`
+            : '';
+
+    const changeBtn = `<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="startChangeEmployee('${wsCode}', ${planId||'null'}, ${empId||'null'}, '${empCode||''}', '${safeEmpName}')">&#128247; ${empId ? 'Change' : 'Assign'}</button>`;
+
+    const unlinkBtn = empId
+        ? `<button class="btn btn-sm" style="flex:0 0 auto;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;" onclick="unlinkWorkstation('${wsCode}', ${planId||'null'})">&#10007;</button>`
+        : '';
+
+    return `<div style="display:flex;align-items:center;gap:6px;width:100%;">${linkBtn}${changeBtn}${unlinkBtn}</div>`;
 }
 
-// mappedEmpId/Code/Name = what IE/Admin assigned (may be null if not mapped yet)
-function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, mappedEmpCode, mappedEmpName) {
+// "Link" button handler — confirms the pre-mapped employee without needing a scan
+async function linkMappedEmployee(wsCode, planId, empId, empCode, empName) {
+    try {
+        const workDate = morningState.workDate || getSupervisorLocalDate();
+        const res = await fetch(`${API_BASE}/workstation-assignments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: morningState.lineId,
+                workstation_code: wsCode,
+                employee_id: empId,
+                work_date: workDate,
+                line_plan_workstation_id: planId,
+                is_linked: true
+            })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Link failed', 'error'); return; }
+        showToast(`${empName} linked to ${wsCode}`, 'success');
+        await reloadMorningAssignments();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// "Unlink" button handler — unlinks a single workstation
+async function unlinkWorkstation(wsCode, planId) {
+    if (!morningState.lineId) return;
+    try {
+        const workDate = morningState.workDate || getSupervisorLocalDate();
+        const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-workstation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lineId: morningState.lineId, date: workDate, workstationCode: wsCode })
+        });
+        const result = await res.json();
+        if (!result.success) { showToast(result.error || 'Unlink failed', 'error'); return; }
+        showToast(`${wsCode} unlinked`, 'success');
+        await reloadMorningAssignments();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// "Change Employee" button handler — opens inline camera to scan and reassign a different employee
+function startChangeEmployee(workstationCode, linePlanWorkstationId, currentEmpId, currentEmpCode, currentEmpName) {
     morningState.selectedWorkstation = workstationCode;
     morningState.selectedWorkstationPlanId = linePlanWorkstationId || null;
     morningState.scannedEmployee = null;
-    morningState.mappedEmployee = mappedEmpId ? { id: mappedEmpId, emp_code: mappedEmpCode, emp_name: mappedEmpName } : null;
+    morningState.mappedEmployee = currentEmpId ? { id: currentEmpId, emp_code: currentEmpCode, emp_name: currentEmpName } : null;
 
-    // Close any other open inline scan first
+    // Close any other open inline scan first (restore its footer)
     const prevScanEl = document.getElementById('morning-inline-scan');
     if (prevScanEl) {
         const prevCard = prevScanEl.closest('.ws-card');
         if (prevCard) {
+            const prevWsCode = prevCard.id.replace('ws-card-', '');
+            const prevWs = (morningState.workstations || []).find(w => w.workstation_code === prevWsCode);
             const prevFooter = prevCard.querySelector('.ws-card-footer');
-            if (prevFooter) prevFooter.innerHTML = _morningDefaultScanBtn(
-                prevCard.id.replace('ws-card-', ''),
-                prevScanEl.dataset.planId || 'null',
-                prevScanEl.dataset.empId || 'null',
-                prevScanEl.dataset.empCode || '',
-                prevScanEl.dataset.empName || ''
-            );
+            if (prevFooter && prevWs) {
+                const prevLinked = !!(prevWs.assigned_is_linked);
+                prevFooter.innerHTML = _renderWsCardFooter(
+                    prevWsCode,
+                    prevWs.id,
+                    prevWs.assigned_employee_id || null,
+                    prevWs.assigned_emp_code || '',
+                    prevWs.assigned_emp_name || '',
+                    prevLinked
+                );
+            }
         }
     }
 
@@ -550,17 +597,12 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
     const footer = card ? card.querySelector('.ws-card-footer') : null;
     if (footer) {
         footer.innerHTML = `
-            <div id="morning-inline-scan" style="width:100%;"
-                data-plan-id="${linePlanWorkstationId || ''}"
-                data-emp-id="${mappedEmpId || ''}"
-                data-emp-code="${mappedEmpCode || ''}"
-                data-emp-name="${(mappedEmpName || '').replace(/"/g, '&quot;')}">
+            <div id="morning-inline-scan" style="width:100%;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                     <span style="font-size:13px;font-weight:600;color:#374151;">
-                        &#128247; Scanning ${workstationCode}
-                        ${mappedEmpId ? `<span style="color:#9ca3af;font-weight:400;"> — mapped: ${mappedEmpCode}</span>` : ''}
+                        &#128247; Scan employee for ${workstationCode}
                     </span>
-                    <button class="btn btn-secondary btn-sm" onclick="cancelMorningScan()">Cancel</button>
+                    <button class="btn btn-secondary btn-sm" onclick="cancelChangeEmployee()">Cancel</button>
                 </div>
                 <video id="morning-camera" playsinline muted style="width:100%;border-radius:8px;background:#000;max-height:260px;display:block;"></video>
                 <div id="morning-scan-result" style="margin-top:10px;">
@@ -569,7 +611,6 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
             </div>`;
         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } else {
-        // Fallback: old fixed panel
         const scanPanel = document.getElementById('morning-scan-panel');
         if (scanPanel) { scanPanel.style.display = 'block'; scanPanel.scrollIntoView({ behavior: 'smooth' }); }
     }
@@ -587,8 +628,6 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
         if (scanResult) scanResult.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
 
         try {
-            // Resolve scanned QR to an employee (no line assignment required)
-            let scannedEmp = null;
             const res = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -596,62 +635,26 @@ function startMorningScan(workstationCode, linePlanWorkstationId, mappedEmpId, m
             });
             const resolveResult = await res.json();
 
-            if (resolveResult.success) {
-                scannedEmp = resolveResult.data.employee;
-            }
-
-            if (!scannedEmp) {
+            if (!resolveResult.success || !resolveResult.data?.employee) {
                 scanResult.innerHTML = '<p style="color:#dc2626;">Employee not found. Try again.</p>';
                 return;
             }
 
+            const scannedEmp = resolveResult.data.employee;
             morningState.scannedEmployee = scannedEmp;
-            const mapped = morningState.mappedEmployee;
 
-            if (mapped && mapped.id !== scannedEmp.id) {
-                // MISMATCH — ask supervisor
-                scanResult.innerHTML = `
-                    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:14px;margin-bottom:10px;">
-                        <p style="font-weight:700;color:#c2410c;margin:0 0 6px;">&#9888; Mismatch!</p>
-                        <p style="font-size:0.9em;margin:0 0 4px;">Workstation <strong>${workstationCode}</strong> is mapped to:</p>
-                        <p style="font-weight:700;color:#1d4ed8;margin:0 0 10px;">&#128100; ${mapped.emp_code} — ${mapped.emp_name}</p>
-                        <p style="font-size:0.9em;margin:0 0 4px;">You scanned:</p>
-                        <p style="font-weight:700;color:#16a34a;margin:0 0 14px;">&#128100; ${scannedEmp.emp_code} — ${scannedEmp.emp_name}</p>
-                        <div class="mismatch-actions">
-                            <button class="btn btn-secondary" onclick="cancelMorningScan()">
-                                Keep ${mapped.emp_code}
-                            </button>
-                            <button class="btn" style="background:#dc2626;color:#fff;border:none;"
-                                onclick="_morningShowConfirmEmployee()">
-                                Replace with ${scannedEmp.emp_code}
-                            </button>
-                        </div>
-                    </div>`;
-            } else {
-                // Match (or no prior mapping) — confirm directly
-                _morningShowConfirmEmployee();
-            }
+            scanResult.innerHTML = `
+                <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:10px;">
+                    <p style="font-weight:700;font-size:1em;color:#16a34a;margin:0;">&#128100; ${scannedEmp.emp_code} — ${scannedEmp.emp_name}</p>
+                </div>
+                <button class="btn btn-primary ws-card-action" onclick="confirmChangeEmployee()">&#128279; Confirm &amp; Assign</button>`;
         } catch (err) {
             scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
         }
     });
 }
 
-function _morningShowConfirmEmployee() {
-    const scanResult = document.getElementById('morning-scan-result');
-    const emp = morningState.scannedEmployee;
-    const matchedBefore = morningState.mappedEmployee && morningState.mappedEmployee.id === emp?.id;
-    const empLabel = matchedBefore ? '&#10003; Match confirmed' : 'Replacing with';
-    scanResult.innerHTML = `
-        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:10px;">
-            <p style="font-weight:700;font-size:1em;color:#16a34a;margin:0;">${empLabel}: ${emp?.emp_code} — ${emp?.emp_name}</p>
-        </div>
-        <button class="btn btn-primary ws-card-action" onclick="confirmMorningAssign()">
-            &#128279; Confirm Link
-        </button>`;
-}
-
-async function confirmMorningAssign() {
+async function confirmChangeEmployee() {
     if (!morningState.lineId || !morningState.selectedWorkstation || !morningState.scannedEmployee) {
         showToast('Missing data for assignment', 'error');
         return;
@@ -661,7 +664,6 @@ async function confirmMorningAssign() {
         const emp = morningState.scannedEmployee;
         const workDate = morningState.workDate || getSupervisorLocalDate();
 
-        // Save employee assignment
         const res = await fetch(`${API_BASE}/workstation-assignments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -677,34 +679,7 @@ async function confirmMorningAssign() {
         const result = await res.json();
         if (!result.success) { showToast(result.error || 'Assignment failed', 'error'); return; }
 
-        showToast(`${emp.emp_name} linked to ${morningState.selectedWorkstation}`, 'success');
-
-        if (Array.isArray(morningState.workstations)) {
-            morningState.workstations = morningState.workstations.map(ws =>
-                ws.workstation_code === morningState.selectedWorkstation
-                    ? {
-                        ...ws,
-                        assigned_employee_id: emp.id,
-                        assigned_emp_code: emp.emp_code,
-                        assigned_emp_name: emp.emp_name,
-                        assigned_is_linked: true
-                    }
-                    : ws
-            );
-            renderMorningAssignments(true);
-        } else if (Array.isArray(morningState.processes)) {
-            morningState.processes = morningState.processes.map(p =>
-                (p.workstation_code || p.group_name || '-') === morningState.selectedWorkstation
-                    ? {
-                        ...p,
-                        assigned_employee_id: emp.id,
-                        assigned_emp_code: emp.emp_code,
-                        assigned_emp_name: emp.emp_name
-                    }
-                    : p
-            );
-            renderMorningAssignments(false);
-        }
+        showToast(`${emp.emp_name} assigned to ${morningState.selectedWorkstation}`, 'success');
 
         const scanPanel = document.getElementById('morning-scan-panel');
         if (scanPanel) scanPanel.style.display = 'none';
@@ -712,34 +687,34 @@ async function confirmMorningAssign() {
         morningState.selectedWorkstationPlanId = null;
         morningState.scannedEmployee = null;
         morningState.mappedEmployee = null;
-        morningState.scanMode = 'link';
         await reloadMorningAssignments();
     } catch (err) {
         showToast(err.message, 'error');
     }
 }
 
-function cancelMorningScan() {
+function cancelChangeEmployee() {
     stopCamera();
-    const ws = morningState.selectedWorkstation;
+    const wsCode = morningState.selectedWorkstation;
     const planId = morningState.selectedWorkstationPlanId;
-    const mapped = morningState.mappedEmployee;
 
-    // Restore the inline card footer to the default Scan & Link button
-    if (ws) {
-        const card = document.getElementById(`ws-card-${ws}`);
+    if (wsCode) {
+        const card = document.getElementById(`ws-card-${wsCode}`);
         const footer = card ? card.querySelector('.ws-card-footer') : null;
         if (footer) {
-            footer.innerHTML = _morningDefaultScanBtn(
-                ws, planId,
-                mapped?.id || null,
-                mapped?.emp_code || '',
-                mapped?.emp_name || ''
-            );
+            // Restore footer from current morningState data
+            const ws = (morningState.workstations || []).find(w => w.workstation_code === wsCode);
+            if (ws) {
+                const isLinked = !!(ws.assigned_is_linked);
+                footer.innerHTML = _renderWsCardFooter(wsCode, planId, ws.assigned_employee_id || null, ws.assigned_emp_code || '', ws.assigned_emp_name || '', isLinked);
+            } else {
+                // Fallback no-plan path
+                const mapped = morningState.mappedEmployee;
+                footer.innerHTML = _renderWsCardFooter(wsCode, planId, mapped?.id || null, mapped?.emp_code || '', mapped?.emp_name || '', false);
+            }
         }
     }
 
-    // Also hide fixed fallback panel if it was used
     const scanPanel = document.getElementById('morning-scan-panel');
     if (scanPanel) scanPanel.style.display = 'none';
 
@@ -747,7 +722,6 @@ function cancelMorningScan() {
     morningState.selectedWorkstationPlanId = null;
     morningState.scannedEmployee = null;
     morningState.mappedEmployee = null;
-    morningState.scanMode = 'link';
 }
 
 async function unlinkAllMapping() {
@@ -873,11 +847,12 @@ function renderFeedInput() {
             ? `<p style="color:#d97706;font-size:12px;font-weight:600;margin:4px 0 0;">&#128279; Map Employee — supervisor must link ${ws.assigned_emp_name} to this workstation in the Mapping section.</p>`
             : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
                 <input type="number" id="feed-qty-${ws.workstation_code}" min="0"
-                    value="${ws.material_provided ?? 0}"
+                    value=""
+                    placeholder="Add qty"
                     class="form-control" style="width:100px;text-align:center;">
                 <span style="font-size:13px;color:#6b7280;">pcs</span>
                 <button class="btn btn-primary" onclick="saveFeedInput('${ws.workstation_code}')">
-                    &#10003; Save
+                    &#10010; Add Feed
                 </button>
                </div>`;
 
@@ -945,7 +920,7 @@ async function saveFeedInput(wsCode) {
         });
         const result = await res.json();
         if (!result.success) { showToast(result.error || 'Failed to save', 'error'); return; }
-        showToast(`Material saved: ${qty} pcs for ${wsCode}`, 'success');
+        showToast(`Added ${result.data?.added_quantity ?? qty} pcs to ${wsCode}. Total: ${result.data?.material_provided ?? qty} pcs`, 'success');
         await onFeedLineChange();
     } catch (err) {
         showToast(err.message, 'error');
@@ -981,6 +956,14 @@ const SHORTFALL_REASONS = [
     'QUALITY MEETING',
     'PRODUCTION MEETING'
 ];
+
+function formatHourlyEntryTime(hourSlot) {
+    return `${String(hourSlot + 1).padStart(2, '0')}:00`;
+}
+
+function formatHourlyRange(hourSlot) {
+    return `${String(hourSlot).padStart(2, '0')}:00-${String(hourSlot + 1).padStart(2, '0')}:00`;
+}
 
 function buildReasonSelectHTML(existingReason, isCombined) {
     // If existingReason is not in our known list and not WORKSTATION COMBINED, it was an "Other" free-text entry
@@ -1093,7 +1076,7 @@ async function loadHourlyProcedure() {
         const hour = new Date().getHours();
         const hourStart = 8;
         const hourEnd = 19;
-        const defaultHour = Math.min(Math.max(hour, hourStart), hourEnd);
+        const defaultHour = Math.min(Math.max(hour - 1, hourStart), hourEnd);
 
         content.innerHTML = `
             <div class="page-header">
@@ -1126,7 +1109,7 @@ async function loadHourlyProcedure() {
                             <select class="form-control" id="hourly-hour">
                                 ${Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
                                     const v = hourStart + i;
-                                    return `<option value="${v}" ${v === defaultHour ? 'selected' : ''}>${String(v).padStart(2, '0')}:00</option>`;
+                                    return `<option value="${v}" ${v === defaultHour ? 'selected' : ''}>${formatHourlyEntryTime(v)} (${formatHourlyRange(v)})</option>`;
                                 }).join('')}
                             </select>
                         </div>
@@ -2101,7 +2084,7 @@ function openHourlyEntry(processId) {
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                 <div>
                     <div style="font-weight:700;font-size:14px;">${process.workstation_code || process.group_name || ''} — Enter Output</div>
-                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${String(hour).padStart(2,'0')}:00 &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}/hr</div>
+                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${formatHourlyRange(hour)} &nbsp;|&nbsp; Entry at: ${formatHourlyEntryTime(hour)} &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}/hr</div>
                 </div>
                 <button class="btn btn-secondary btn-sm" onclick="cancelHourlyEntry()">Cancel</button>
             </div>
@@ -2172,7 +2155,7 @@ function openWorkstationHourlyEntry(workstationPlanId) {
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                 <div>
                     <div style="font-weight:700;font-size:14px;">${ws.workstation_code} — Enter Output</div>
-                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${String(hour).padStart(2,'0')}:00 &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}/hr</div>
+                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${formatHourlyRange(hour)} &nbsp;|&nbsp; Entry at: ${formatHourlyEntryTime(hour)} &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}/hr</div>
                 </div>
                 <button class="btn btn-secondary btn-sm" onclick="cancelHourlyEntry()">Cancel</button>
             </div>
@@ -3058,6 +3041,13 @@ async function loadAdjustmentPanel() {
     } catch (e) { /* ignore */ }
 }
 
+function compareAdjustmentWorkstations(a, b) {
+    const aNum = Number.isFinite(parseInt(a?.workstation_number, 10)) ? parseInt(a.workstation_number, 10) : Number.MAX_SAFE_INTEGER;
+    const bNum = Number.isFinite(parseInt(b?.workstation_number, 10)) ? parseInt(b.workstation_number, 10) : Number.MAX_SAFE_INTEGER;
+    if (aNum !== bNum) return aNum - bNum;
+    return String(a?.workstation_code || '').localeCompare(String(b?.workstation_code || ''), undefined, { numeric: true, sensitivity: 'base' });
+}
+
 async function loadAdjLineStatus() {
     const sel = document.getElementById('adj-line-select');
     const lineId = sel?.value;
@@ -3076,9 +3066,9 @@ async function loadAdjLineStatus() {
         const statusData = await statusRes.json();
         const histData = await histRes.json();
 
-        adjustState.workstations = statusData.data?.workstations || [];
+        adjustState.workstations = (statusData.data?.workstations || []).slice().sort(compareAdjustmentWorkstations);
         renderAdjStatusTable(adjustState.workstations);
-        renderAdjHistory(histData.data || []);
+        renderAdjHistory((histData.data || []).slice().sort(compareAdjustmentWorkstations));
     } catch (err) {
         panel.innerHTML = `<p style="color:#dc2626;">Failed to load: ${err.message}</p>`;
     }
