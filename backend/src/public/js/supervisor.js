@@ -1145,9 +1145,11 @@ async function loadHourlyProcedure() {
         const lines = result.data || [];
         const today = new Date().toISOString().slice(0, 10);
         const hour = new Date().getHours();
-        const hourStart = 8;
-        const hourEnd = 19;
-        const defaultHour = Math.min(Math.max(hour - 1, hourStart), hourEnd);
+        const hourStart = 9;
+        const hourEnd = 16;
+        // Skip lunch hour (12:00-13:00); clamp default to valid working hours
+        const rawDefault = Math.min(Math.max(hour - 1, hourStart), hourEnd);
+        const defaultHour = rawDefault === 12 ? 13 : rawDefault;
 
         content.innerHTML = `
             <div class="page-header">
@@ -1180,6 +1182,7 @@ async function loadHourlyProcedure() {
                             <select class="form-control" id="hourly-hour">
                                 ${Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
                                     const v = hourStart + i;
+                                    if (v === 12) return ''; // Skip lunch hour 12:00-13:00
                                     return `<option value="${v}" ${v === defaultHour ? 'selected' : ''}>${formatHourlyEntryTime(v)} (${formatHourlyRange(v)})</option>`;
                                 }).join('')}
                             </select>

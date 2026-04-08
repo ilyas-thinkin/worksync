@@ -1130,11 +1130,12 @@ router.get('/lines/:lineId/ot-plan', async (req, res) => {
                 [lineId, date]
             );
             const dailyTarget = parseInt(dpRes.rows[0]?.target_units, 10) || 0;
-            const inTime  = await getSettingValue('default_in_time',  '08:00');
+            const inTime  = await getSettingValue('default_in_time',  '09:00');
             const outTime = await getSettingValue('default_out_time', '17:00');
+            const lunchMinsOt = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10);
             const [inH, inM]   = inTime.split(':').map(Number);
             const [outH, outM] = outTime.split(':').map(Number);
-            const workingHours = ((outH * 60 + outM) - (inH * 60 + inM)) / 60;
+            const workingHours = ((outH * 60 + outM) - (inH * 60 + inM) - lunchMinsOt) / 60;
             if (dailyTarget > 0 && workingHours > 0) perHourTarget = dailyTarget / workingHours;
         } catch (_) { /* non-fatal */ }
 
@@ -1969,11 +1970,12 @@ router.get('/reports/daily', async (req, res) => {
         )
         ]);
 
-        const inTime = await getSettingValue('default_in_time', '08:00');
+        const inTime = await getSettingValue('default_in_time', '09:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
+        const lunchMinsEff = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10);
         const [inH, inM] = inTime.split(':').map(Number);
         const [outH, outM] = outTime.split(':').map(Number);
-        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60) - lunchMinsEff / 60;
         const workingSeconds = workingHours * 3600;
 
         const lineMetrics = metricsResponse.rows.map(row => {
@@ -2139,11 +2141,12 @@ router.get('/reports/range', async (req, res) => {
         const linesResult = await pool.query(
             `SELECT id, line_name FROM production_lines WHERE is_active = true ORDER BY id`
         );
-        const inTime = await getSettingValue('default_in_time', '08:00');
+        const inTime = await getSettingValue('default_in_time', '09:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
+        const lunchMinsRange = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10);
         const [inH, inM] = inTime.split(':').map(Number);
         const [outH, outM] = outTime.split(':').map(Number);
-        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60) - lunchMinsRange / 60;
         const workingSeconds = workingHours * 3600;
 
         const dates = [];
@@ -4548,12 +4551,13 @@ router.post('/lines/:lineId/workstation-plan/generate', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Target units must be greater than 0 to generate workstations.' });
         }
 
-        // Get working seconds from settings
-        const inTime = await getSettingValue('default_in_time', '08:00');
+        // Get working seconds from settings (subtract lunch break)
+        const inTime = await getSettingValue('default_in_time', '09:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
+        const lunchMinsGen = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10);
         const [inH, inM] = inTime.split(':').map(Number);
         const [outH, outM] = outTime.split(':').map(Number);
-        const workingSeconds = ((outH * 60 + outM) - (inH * 60 + inM)) * 60;
+        const workingSeconds = ((outH * 60 + outM) - (inH * 60 + inM) - lunchMinsGen) * 60;
         const taktTime = workingSeconds / plan.target_units;
 
         // Get product processes ordered by sequence
@@ -5946,6 +5950,49 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         if (!productName)                      throw new Error('Product Name is required (row 7)');
         if (!targetUnits || targetUnits <= 0)  throw new Error('Target Units must be > 0 (row 9)');
 
+        // Resolve user confirmations from the request body
+        const confirmLine    = req.body?.confirm_line === 'true';
+        const confirmProduct = req.body?.confirm_product || null; // 'use_existing' | 'replace' | null
+        const overrideCode   = req.body?.new_product_code ? normalizeCode(req.body.new_product_code) : null;
+        const effectiveProdCode = overrideCode || productCode;
+
+        // --- Pre-check: line conflict ---
+        if (!confirmLine) {
+            const lineCheck = await pool.query(
+                `SELECT id, line_code, line_name FROM production_lines
+                 WHERE UPPER(TRIM(line_code)) = $1 ORDER BY is_active DESC LIMIT 1`,
+                [lineCode]
+            );
+            if (lineCheck.rows[0]) {
+                client.release();
+                return res.status(409).json({
+                    success: false,
+                    code: 'LINE_EXISTS',
+                    line_code: lineCheck.rows[0].line_code,
+                    line_name: lineCheck.rows[0].line_name || lineCheck.rows[0].line_code
+                });
+            }
+        }
+
+        // --- Pre-check: product conflict ---
+        if (!confirmProduct) {
+            const prodCheck = await pool.query(
+                `SELECT id, product_code, product_name FROM products WHERE product_code = $1 LIMIT 1`,
+                [effectiveProdCode]
+            );
+            if (prodCheck.rows[0]) {
+                client.release();
+                return res.status(409).json({
+                    success: false,
+                    code: 'PRODUCT_EXISTS',
+                    product_code: prodCheck.rows[0].product_code,
+                    existing_product_name: prodCheck.rows[0].product_name,
+                    uploaded_product_name: productName,
+                    is_new_code: !!overrideCode
+                });
+            }
+        }
+
         await client.query('BEGIN');
 
         // Find or create line — if it already exists, use it as-is (no updates to name/hall)
@@ -5984,17 +6031,29 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         }
 
         // Find or create primary product
-        const prodResult = await client.query(
-            `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
-             VALUES ($1, $2, $3, $4, true)
-             ON CONFLICT (product_code) DO UPDATE
-               SET product_name = EXCLUDED.product_name,
-                   buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
-                   plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month)
-             RETURNING id`,
-            [productCode, productName, buyerName, planMonth]
-        );
-        const productId = prodResult.rows[0].id;
+        let productId;
+        if (confirmProduct === 'use_existing') {
+            // Use the existing product record without modifying it
+            const existProd = await client.query(
+                `SELECT id FROM products WHERE product_code = $1 LIMIT 1`,
+                [effectiveProdCode]
+            );
+            if (!existProd.rows[0]) throw new Error(`Product "${effectiveProdCode}" not found`);
+            productId = existProd.rows[0].id;
+        } else {
+            // Create new or replace existing (ON CONFLICT updates name/buyer/month)
+            const prodResult = await client.query(
+                `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
+                 VALUES ($1, $2, $3, $4, true)
+                 ON CONFLICT (product_code) DO UPDATE
+                   SET product_name = EXCLUDED.product_name,
+                       buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
+                       plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month)
+                 RETURNING id`,
+                [effectiveProdCode, productName, buyerName, planMonth]
+            );
+            productId = prodResult.rows[0].id;
+        }
 
         // Find or create changeover product (optional)
         let coProductId = null;
@@ -6520,7 +6579,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             message: 'Line plan uploaded successfully',
             summary: {
                 line: lineCode,
-                product: productCode,
+                product: effectiveProdCode,
                 date: workDate,
                 target: targetUnits,
                 workstations: wsGroupsMap.size,
@@ -9649,11 +9708,12 @@ router.get('/osm-report', async (req, res) => {
         return res.status(400).json({ success: false, error: 'line_id and to_date (or date) are required' });
     }
     try {
-        const inTime  = await getSettingValue('default_in_time',  '08:00');
+        const inTime  = await getSettingValue('default_in_time',  '09:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
+        const lunchMinsOsm = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10);
         const [inH, inM]   = inTime.split(':').map(Number);
         const [outH, outM] = outTime.split(':').map(Number);
-        const workingSeconds = (outH * 3600 + outM * 60) - (inH * 3600 + inM * 60);
+        const workingSeconds = (outH * 3600 + outM * 60) - (inH * 3600 + inM * 60) - lunchMinsOsm * 60;
         const workingHours   = workingSeconds / 3600;
 
         const lineResult = await pool.query(`
@@ -9963,12 +10023,13 @@ router.get('/efficiency-report', async (req, res) => {
         `, [productId]);
         const styleSAH = parseFloat(sahResult.rows[0].style_sah) || 0;
 
-        // 3. Working hours
-        const inTime = await getSettingValue('default_in_time', '08:00');
+        // 3. Working hours (subtract lunch break)
+        const inTime = await getSettingValue('default_in_time', '09:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
+        const lunchMinsEffRpt = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10);
         const [inH, inM] = inTime.split(':').map(Number);
         const [outH, outM] = outTime.split(':').map(Number);
-        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60) - lunchMinsEffRpt / 60;
         const workingSeconds = workingHours * 3600;
 
         // 4. Regular workstations with employee assignments
@@ -10107,6 +10168,7 @@ router.get('/efficiency-report', async (req, res) => {
                 hourly_output: hourly?.total_output || 0,
                 hourly_rejection: hourly?.total_rejection || 0,
                 hourly_efficiency_percent: hourly?.efficiency_percent || 0,
+                hourly_not_entered: !hourly && Number.isFinite(reportHour),
                 last_updated: hourly?.last_updated || emp.last_updated || null
             };
         });
@@ -10125,7 +10187,7 @@ router.get('/efficiency-report', async (req, res) => {
                     report_hour_label: hourLabel,
                     live_hours: liveHours,
                     hourly_target_units: workingHours > 0 && targetUnits > 0
-                        ? Math.round((targetUnits / workingHours) * 100) / 100
+                        ? Math.ceil(targetUnits / workingHours)
                         : 0,
                     takt_time_seconds: taktTimeSeconds,
                     in_time: inTime,

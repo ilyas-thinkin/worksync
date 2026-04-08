@@ -425,16 +425,16 @@ async function loadFinalStatus() {
 // OSM REPORT (Management Panel)
 // ============================================================================
 function mgmtGetDefaultReportHour() {
-    const hourStart = 8;
-    const hourEnd = 19;
-    const now = new Date();
-    return Math.min(Math.max(now.getHours() - 1, hourStart), hourEnd);
+    const hourStart = 9;
+    const hourEnd = 16;
+    const raw = Math.min(Math.max(new Date().getHours() - 1, hourStart), hourEnd);
+    return raw === 12 ? 13 : raw; // skip lunch hour
 }
 
 function mgmtBuildReportHourOptions(selectedHour) {
     const selected = Number.isFinite(parseInt(selectedHour, 10)) ? parseInt(selectedHour, 10) : mgmtGetDefaultReportHour();
-    return Array.from({ length: 12 }).map((_, idx) => {
-        const hour = 8 + idx;
+    // Working hours 09:00-17:00, skipping lunch 12:00-13:00
+    return [9, 10, 11, 13, 14, 15, 16].map(hour => {
         const start = `${String(hour).padStart(2, '0')}:00`;
         const end = `${String(hour + 1).padStart(2, '0')}:00`;
         return `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${end} (${start}-${end})</option>`;
@@ -603,7 +603,10 @@ function _buildMgmtOsmTable(data) {
     const outH = parseInt((out_time || '17:00').split(':')[0]);
 
     const hours = [];
-    for (let h = inH; h < outH; h++) hours.push(h);
+    for (let h = inH; h < outH; h++) {
+        if (h === 12) continue; // skip lunch hour 12:00-13:00
+        hours.push(h);
+    }
 
     const perHourTarget = (working_hours > 0 && target_units > 0)
         ? Math.round(target_units / working_hours) : 0;

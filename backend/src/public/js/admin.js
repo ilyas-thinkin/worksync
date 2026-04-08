@@ -3345,6 +3345,9 @@ async function submitPlanUpload(options = {}) {
         return;
     }
 
+    // Persist options so conflict handlers can read them without re-passing
+    window._pendingUploadOptions = options;
+
     btn.disabled = true;
     btn.textContent = 'Uploading\u2026';
     resultDiv.innerHTML = '<div style="color:#6b7280;font-size:13px;">Processing\u2026</div>';
@@ -3352,22 +3355,70 @@ async function submitPlanUpload(options = {}) {
     const fd = new FormData();
     fd.append('file', fileInput.files[0]);
     const selectedDate = document.getElementById('plan-date')?.value;
-    if (selectedDate) {
-        fd.append('work_date', selectedDate);
-    }
-    if (Array.isArray(options.missingEmployees) && options.missingEmployees.length) {
+    if (selectedDate) fd.append('work_date', selectedDate);
+    if (Array.isArray(options.missingEmployees) && options.missingEmployees.length)
         fd.append('missing_employees', JSON.stringify(options.missingEmployees));
-    }
-    if (Array.isArray(options.duplicateAssignments) && options.duplicateAssignments.length) {
+    if (Array.isArray(options.duplicateAssignments) && options.duplicateAssignments.length)
         fd.append('duplicate_assignments', JSON.stringify(options.duplicateAssignments));
-    }
-    if (options.skipMissingEmployees) {
-        fd.append('skip_missing_employees', 'true');
-    }
+    if (options.skipMissingEmployees) fd.append('skip_missing_employees', 'true');
+    if (options.confirm_line)    fd.append('confirm_line', 'true');
+    if (options.confirm_product) fd.append('confirm_product', options.confirm_product);
+    if (options.new_product_code) fd.append('new_product_code', options.new_product_code);
 
     try {
         const r = await fetch('/api/lines/plan-upload-excel', { method: 'POST', body: fd });
         const data = await r.json();
+
+        // --- Line conflict ---
+        if (r.status === 409 && data.code === 'LINE_EXISTS') {
+            btn.disabled = false;
+            btn.textContent = 'Upload';
+            resultDiv.innerHTML = `
+                <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
+                    <div style="font-weight:600;margin-bottom:6px;">⚠ Line already exists</div>
+                    <div style="margin-bottom:12px;">Line <strong>${data.line_code}</strong>${data.line_name && data.line_name !== data.line_code ? ` (${data.line_name})` : ''} is already in the system. Would you like to change the plan to this line?</div>
+                    <div style="display:flex;gap:8px;">
+                        <button onclick="_planUploadConfirmLine()" style="padding:7px 16px;background:#d97706;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Yes, use this line</button>
+                        <button onclick="_planUploadCancel()" style="padding:7px 16px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                    </div>
+                </div>`;
+            return;
+        }
+
+        // --- Product conflict ---
+        if (r.status === 409 && data.code === 'PRODUCT_EXISTS') {
+            btn.disabled = false;
+            btn.textContent = 'Upload';
+            const sameNames = (data.existing_product_name || '').toUpperCase() === (data.uploaded_product_name || '').toUpperCase();
+            const nameNote = sameNames
+                ? `<strong>${data.product_code}</strong>`
+                : `<strong>${data.product_code}</strong> (currently named <em>${data.existing_product_name}</em>, upload has <em>${data.uploaded_product_name}</em>)`;
+            resultDiv.innerHTML = `
+                <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
+                    <div style="font-weight:600;margin-bottom:6px;">⚠ Product already exists</div>
+                    <div style="margin-bottom:12px;">Product ${nameNote} is already in the system. How would you like to proceed?</div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button onclick="_planUploadUseExistingProduct()" style="padding:7px 14px;background:#d97706;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Use existing product</button>
+                        <button onclick="_planUploadShowNewProductInput()" style="padding:7px 14px;background:#1d4ed8;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Create new product</button>
+                        <button onclick="_planUploadCancel()" style="padding:7px 14px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                    </div>
+                    <div id="plan-upload-new-product-input" style="display:none;margin-top:12px;border-top:1px solid #fcd34d;padding-top:12px;">
+                        <div style="margin-bottom:8px;font-weight:600;">Create new product:</div>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <div>
+                                <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:3px;">Enter a different product code</label>
+                                <input id="plan-upload-new-product-code" type="text" placeholder="e.g. ABC-002"
+                                    style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;width:160px;">
+                            </div>
+                            <div style="display:flex;flex-direction:column;gap:6px;margin-top:auto;">
+                                <button onclick="_planUploadCreateWithNewCode()" style="padding:7px 14px;background:#1d4ed8;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Create with new code</button>
+                                <button onclick="_planUploadReplaceExistingProduct()" style="padding:7px 14px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Replace existing product</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            return;
+        }
 
         if (!r.ok && data.code === 'MISSING_EMPLOYEES' && Array.isArray(data.missing_employees)) {
             resultDiv.innerHTML = `
@@ -3431,6 +3482,38 @@ async function submitPlanUpload(options = {}) {
         btn.disabled = false;
         btn.textContent = 'Upload';
     }
+}
+
+// --- Plan upload conflict resolution helpers ---
+function _planUploadConfirmLine() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_line: true });
+}
+function _planUploadUseExistingProduct() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_product: 'use_existing' });
+}
+function _planUploadReplaceExistingProduct() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_product: 'replace' });
+}
+function _planUploadShowNewProductInput() {
+    const panel = document.getElementById('plan-upload-new-product-input');
+    if (panel) panel.style.display = '';
+}
+function _planUploadCreateWithNewCode() {
+    const codeInput = document.getElementById('plan-upload-new-product-code');
+    const newCode = (codeInput?.value || '').trim().toUpperCase();
+    if (!newCode) {
+        codeInput?.focus();
+        codeInput?.style && (codeInput.style.borderColor = '#dc2626');
+        return;
+    }
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_product: null, new_product_code: newCode });
+}
+function _planUploadCancel() {
+    window._pendingUploadOptions = {};
+    const resultDiv = document.getElementById('plan-upload-result');
+    if (resultDiv) resultDiv.innerHTML = '';
+    const btn = document.getElementById('plan-upload-btn');
+    if (btn) { btn.disabled = false; btn.textContent = 'Upload'; }
 }
 
 function openMissingEmployeesModal(missingEmployees) {
@@ -5348,47 +5431,20 @@ async function unlockDailyPlan(lineId) {
 async function deleteDailyPlan(lineId) {
     const date = document.getElementById('plan-date').value;
     try {
-        const existedBefore = await doesDailyPlanExist(lineId, date);
-        if (!existedBefore) {
-            if (window._dailyPlanMap?.delete) window._dailyPlanMap.delete(String(lineId));
-            clearDailyPlanRow(lineId);
-            showToast('Daily plan deleted', 'success');
-            await loadDailyPlanData();
-            return;
-        }
-
         let result = await requestDailyPlanDelete(lineId, date);
         if (result?.requires_confirmation) {
             const confirmed = confirm('This is an ongoing plan. Are you sure you want to delete it permanently?');
             if (!confirmed) return;
             result = await requestDailyPlanDelete(lineId, date, true);
         }
-        if (result?.http_status === 404) {
-            const stillExists = await doesDailyPlanExist(lineId, date);
-            if (stillExists) {
-                showToast('Delete did not apply to the saved plan shown in the panel', 'error');
-                await loadDailyPlanData();
-                return;
-            }
-            if (window._dailyPlanMap?.delete) window._dailyPlanMap.delete(String(lineId));
-            clearDailyPlanRow(lineId);
-            showToast('Daily plan deleted', 'success');
-            await loadDailyPlanData();
-            return;
-        }
-        if (!result?.success) {
+        // 404 = plan was already gone — treat as success
+        if (result?.http_status !== 404 && !result?.success) {
             showToast(result?.error || 'Delete failed', 'error');
             return;
         }
         if (window._dailyPlanMap?.delete) window._dailyPlanMap.delete(String(lineId));
         clearDailyPlanRow(lineId);
         await loadDailyPlanData();
-        const stillExists = await doesDailyPlanExist(lineId, date);
-        if (stillExists) {
-            showToast('Delete completed on the server but the panel still shows the plan. Reloading…', 'error');
-            window.location.reload();
-            return;
-        }
         showToast('Daily plan deleted', 'success');
     } catch (err) {
         showToast(err.message, 'error');
@@ -7384,16 +7440,16 @@ async function toggleOsmCheck(lpwpId, checked, cbEl) {
 
 // ============================================================================
 function getDefaultReportHour() {
-    const hourStart = 8;
-    const hourEnd = 19;
-    const now = new Date();
-    return Math.min(Math.max(now.getHours() - 1, hourStart), hourEnd);
+    const hourStart = 9;
+    const hourEnd = 16;
+    const raw = Math.min(Math.max(new Date().getHours() - 1, hourStart), hourEnd);
+    return raw === 12 ? 13 : raw; // skip lunch hour
 }
 
 function buildReportHourOptions(selectedHour) {
     const selected = Number.isFinite(parseInt(selectedHour, 10)) ? parseInt(selectedHour, 10) : getDefaultReportHour();
-    return Array.from({ length: 12 }).map((_, idx) => {
-        const hour = 8 + idx;
+    // Working hours 09:00-17:00, skipping lunch 12:00-13:00
+    return [9, 10, 11, 13, 14, 15, 16].map(hour => {
         const start = `${String(hour).padStart(2, '0')}:00`;
         const end = `${String(hour + 1).padStart(2, '0')}:00`;
         return `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${end} (${start}-${end})</option>`;
@@ -7576,7 +7632,10 @@ function _buildOsmTable(data) {
     const outH = parseInt((out_time || '17:00').split(':')[0]);
 
     const hours = [];
-    for (let h = inH; h < outH; h++) hours.push(h);
+    for (let h = inH; h < outH; h++) {
+        if (h === 12) continue; // skip lunch hour 12:00-13:00
+        hours.push(h);
+    }
 
     const perHourTarget = (working_hours > 0 && target_units > 0)
         ? Math.round(target_units / working_hours) : 0;
@@ -7931,7 +7990,12 @@ async function refreshEfficiencyReport() {
         return;
     }
 
-    container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+    // Save scroll before refresh so auto-refresh doesn't jump page to top
+    const savedScrollY = window.scrollY;
+    const isInitialLoad = !container.querySelector('table');
+    if (isInitialLoad) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+    }
 
     try {
         const r = await fetch(`${API_BASE}/efficiency-report?line_id=${lineId}&date=${date}&hour=${hour}`, { credentials: 'include' });
@@ -7950,13 +8014,14 @@ async function refreshEfficiencyReport() {
             return;
         }
 
-        container.innerHTML = _buildEfficiencyTable(resp.data);
+        container.innerHTML = _buildEfficiencyTable(resp.data, hour);
+        requestAnimationFrame(() => window.scrollTo(0, savedScrollY));
     } catch (err) {
         container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${err.message}</div></div>`;
     }
 }
 
-function _buildEfficiencyTable(data) {
+function _buildEfficiencyTable(data, selectedHour) {
     const { line, plan, summary, workstations, employee_progress = [] } = data;
     const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
     const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
@@ -7964,6 +8029,15 @@ function _buildEfficiencyTable(data) {
     const reportLabel = plan.report_hour_label || 'Full Day';
     const hourlyTarget = plan.hourly_target_units || 0;
     const liveHours = plan.live_hours || 0;
+    const reportHourLabel = reportLabel;
+
+    // Live window: from working day start to end of selected hour
+    const reportHourNum = parseInt(selectedHour, 10);
+    const liveWindowStart = plan.in_time || '09:00';
+    const liveWindowEnd = Number.isFinite(reportHourNum)
+        ? `${String(reportHourNum + 1).padStart(2, '0')}:00`
+        : (plan.out_time || '17:00');
+    const liveWindowLabel = `${liveWindowStart} → ${liveWindowEnd}`;
 
     const liveEff = summary.live_efficiency_pct;
     const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 75 ? '#16a34a' : liveEff >= 50 ? '#d97706' : '#dc2626';
@@ -7972,21 +8046,32 @@ function _buildEfficiencyTable(data) {
     const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 75 ? '#16a34a' : hourlyEff >= 50 ? '#d97706' : '#dc2626';
     const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
 
+    // Formula explanations
+    const formulaBox = `
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:11px;color:#374151;line-height:1.8;">
+            <strong style="font-size:12px;">Efficiency Formulas</strong>
+            <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:6px;">
+                <span><strong>Hourly WS Eff%</strong> = (Hourly Output × WS SAM) ÷ 3600 × 100</span>
+                <span><strong>Live WS Eff%</strong> = (Live Output × WS SAM) ÷ (Live Hours × 3600) × 100</span>
+                <span><strong>Hourly Line Eff%</strong> = (Last WS Hourly Output × Style SAH) ÷ Manpower × 100</span>
+                <span><strong>Live Line Eff%</strong> = (Last WS Live Output × Style SAH) ÷ (Manpower × Live Hours) × 100</span>
+                <span style="color:#6b7280;font-style:italic;">SAM = Cycle Time in seconds &nbsp;|&nbsp; Style SAH = Total SAH for all processes</span>
+            </div>
+        </div>`;
+
     const summaryBar = `
         <div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:12px;align-items:center;">
             <span style="font-size:12px;"><strong>Product:</strong> ${plan.product_name || '-'} (${plan.product_code || '-'})</span>
-            <span style="font-size:12px;"><strong>Hourly Efficiency:</strong> ${reportLabel}</span>
-            <span style="font-size:12px;"><strong>Live Window:</strong> Start to ${reportLabel}</span>
+            <span style="font-size:12px;"><strong>Selected Hour:</strong> ${reportLabel}</span>
+            <span style="font-size:12px;"><strong>Live Window:</strong> ${liveWindowLabel}</span>
             <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
             <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
             <span style="font-size:12px;"><strong>Hour Target:</strong> ${hourlyTarget}</span>
             <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
-            <span style="font-size:12px;"><strong>Live Output:</strong> ${summary.live_output}</span>
-            <span style="font-size:12px;"><strong>Hourly Output:</strong> ${summary.hourly_output}</span>
             <span style="font-size:12px;"><strong>Daily Target:</strong> ${plan.target_units}</span>
-            <span style="font-size:14px;font-weight:700;color:${liveEffColor};margin-left:auto;">LIVE EFFICIENCY: ${liveEffText}</span>
-            <span style="font-size:14px;font-weight:700;color:${hourlyEffColor};">HOURLY EFFICIENCY: ${hourlyEffText}</span>
+            <span style="font-size:14px;font-weight:700;color:${hourlyEffColor};">HOURLY EFF: ${hourlyEffText} (${summary.hourly_output} pcs)</span>
+            <span style="font-size:14px;font-weight:700;color:${liveEffColor};margin-left:auto;">LIVE EFF: ${liveEffText} (${summary.live_output} pcs)</span>
         </div>`;
 
     const dataRows = workstations.map(ws => {
@@ -8021,10 +8106,10 @@ function _buildEfficiencyTable(data) {
             <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
             <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
             <td style="${tcS}font-weight:700;color:${wlColor};background:${wlBg};">${wl.toFixed(1)}%</td>
-            <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
-            <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
             <td style="${tcS}font-weight:700;">${ws.hourly_output ?? 0}</td>
             <td style="${tcS}font-weight:700;color:${hourlyWeColor};background:${hourlyWeBg};">${hourlyWeText}</td>
+            <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
+            <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
         </tr>`;
     }).join('');
 
@@ -8033,14 +8118,19 @@ function _buildEfficiencyTable(data) {
             const updatedText = emp.last_updated
                 ? new Date(emp.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                 : '—';
+            const remarksText = emp.hourly_not_entered
+                ? `<span style="color:#d97706;font-size:11px;">⚠ Output not entered for ${reportHourLabel}</span>`
+                : (emp.hourly_output === 0
+                    ? `<span style="color:#dc2626;font-size:11px;">0 pcs entered for ${reportHourLabel}</span>`
+                    : '—');
             return `<tr>
                 <td style="${tdS}"><strong>${emp.emp_code}</strong><div style="color:var(--secondary);font-size:11px;">${emp.emp_name}</div></td>
                 <td style="${tcS}">${emp.workstation_code || '—'}</td>
-                <td style="${tcS}">${emp.live_output || 0}</td>
-                <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
-                <td style="${tcS}">${emp.hourly_output || 0}</td>
+                <td style="${tcS}font-weight:700;">${emp.hourly_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
-                <td style="${tcS}">${updatedText}</td>
+                <td style="${tcS}font-weight:700;">${emp.live_output || 0}</td>
+                <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tdS}">${remarksText}</td>
             </tr>`;
         }).join('')
         : `<tr><td colspan="7" style="${tdS}text-align:center;color:#6b7280;">No employee progress recorded for ${reportLabel}.</td></tr>`;
@@ -8053,11 +8143,12 @@ function _buildEfficiencyTable(data) {
                     <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
                         ${line.line_name} (${line.line_code})
                         &nbsp;&bull;&nbsp; Date: ${document.getElementById('eff-date')?.value || ''}
-                        &nbsp;&bull;&nbsp; Hourly Efficiency: ${reportLabel}
+                        &nbsp;&bull;&nbsp; Hourly Window: ${reportLabel}
                     </div>
                 </div>
             </div>
             <div class="card-body">
+                ${formulaBox}
                 ${summaryBar}
                 <div style="overflow-x:auto;">
                     <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
@@ -8069,10 +8160,10 @@ function _buildEfficiencyTable(data) {
                                 <th style="${thS}min-width:80px;">CYCLE TIME<br>(s)</th>
                                 <th style="${thS}min-width:75px;">TAKT TIME<br>(s)</th>
                                 <th style="${thS}min-width:70px;">WKLD%</th>
-                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
-                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
                                 <th style="${thS}min-width:90px;">HOURLY OUTPUT<br>${reportLabel}</th>
                                 <th style="${thS}min-width:90px;">HOURLY EFF%</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
                             </tr>
                         </thead>
                         <tbody>${dataRows}</tbody>
@@ -8084,11 +8175,11 @@ function _buildEfficiencyTable(data) {
                             <tr>
                                 <th style="${thS}min-width:150px;">EMPLOYEE</th>
                                 <th style="${thS}min-width:70px;">WS</th>
-                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
-                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
                                 <th style="${thS}min-width:90px;">HOURLY OUTPUT</th>
-                                <th style="${thS}min-width:90px;">HOURLY EFF%</th>
-                                <th style="${thS}min-width:100px;">LIVE UPDATE</th>
+                                <th style="${thS}min-width:100px;">HOURLY EFFICIENCY</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:100px;">LIVE EFFICIENCY</th>
+                                <th style="${thS}min-width:180px;white-space:normal;">REMARKS</th>
                             </tr>
                         </thead>
                         <tbody>${employeeRows}</tbody>
