@@ -424,6 +424,44 @@ async function loadFinalStatus() {
 // ============================================================================
 // OSM REPORT (Management Panel)
 // ============================================================================
+function mgmtGetDefaultReportHour() {
+    const hourStart = 8;
+    const hourEnd = 19;
+    const now = new Date();
+    return Math.min(Math.max(now.getHours() - 1, hourStart), hourEnd);
+}
+
+function mgmtBuildReportHourOptions(selectedHour) {
+    const selected = Number.isFinite(parseInt(selectedHour, 10)) ? parseInt(selectedHour, 10) : mgmtGetDefaultReportHour();
+    return Array.from({ length: 12 }).map((_, idx) => {
+        const hour = 8 + idx;
+        const start = `${String(hour).padStart(2, '0')}:00`;
+        const end = `${String(hour + 1).padStart(2, '0')}:00`;
+        return `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${end} (${start}-${end})</option>`;
+    }).join('');
+}
+
+function mgmtFormatReportHourLabel(hour) {
+    const hourValue = parseInt(hour, 10);
+    if (!Number.isFinite(hourValue)) return '';
+    const start = `${String(hourValue).padStart(2, '0')}:00`;
+    const end = `${String(hourValue + 1).padStart(2, '0')}:00`;
+    return `${end} (${start}-${end})`;
+}
+
+function setMgmtLiveReportTimer(refreshFn, guardId) {
+    if (window._mgmtLiveReportTimer) clearInterval(window._mgmtLiveReportTimer);
+    if (typeof refreshFn !== 'function') return;
+    window._mgmtLiveReportTimer = setInterval(() => {
+        if (!document.getElementById(guardId)) {
+            clearInterval(window._mgmtLiveReportTimer);
+            window._mgmtLiveReportTimer = null;
+            return;
+        }
+        refreshFn();
+    }, 30000);
+}
+
 async function loadMgmtOsmReport() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
@@ -573,7 +611,7 @@ function _buildMgmtOsmTable(data) {
     let maxDataHour = -1;
     for (const pt of osm_points) {
         for (const h of Object.keys(pt.hourly || {})) {
-            const hInt = parseInt(h);
+            const hInt = parseInt(h, 10);
             if (hInt > maxDataHour) maxDataHour = hInt;
         }
     }
@@ -691,7 +729,7 @@ function _buildMgmtOsmRangeTable(data) {
     const dataRows = osm_points.map(pt => {
         const blog = pt.blog;
         const balToProd = range_target - pt.total_output;
-        const orderBalProd = (total_target || 0) - pt.total_output;
+        const orderBalProd = (range_target || 0) - pt.total_output;
         const remainingDays = (target_units > 0 && orderBalProd > 0)
             ? Math.ceil(orderBalProd / target_units) : 0;
         return `<tr>
@@ -823,6 +861,10 @@ async function loadMgmtEfficiencyReport() {
                     <label for="mgmt-eff-date">Date</label>
                     <input type="date" id="mgmt-eff-date" value="${today}">
                 </div>
+                <div class="ie-date">
+                    <label for="mgmt-eff-hour">Hour</label>
+                    <select id="mgmt-eff-hour" class="form-control" style="min-width:180px;">${mgmtBuildReportHourOptions()}</select>
+                </div>
                 <button class="btn btn-secondary" onclick="refreshMgmtEfficiencyReport()">Refresh</button>
                 <button class="btn btn-secondary" onclick="printMgmtEfficiencyReport()">&#9113; Print</button>
                 <button class="btn btn-secondary" onclick="downloadMgmtEfficiencyExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
@@ -847,11 +889,14 @@ async function loadMgmtEfficiencyReport() {
     } catch (e) { /* ignore */ }
 
     document.getElementById('mgmt-eff-date').addEventListener('change', refreshMgmtEfficiencyReport);
+    document.getElementById('mgmt-eff-hour').addEventListener('change', refreshMgmtEfficiencyReport);
+    setMgmtLiveReportTimer(() => refreshMgmtEfficiencyReport(), 'mgmt-eff-content');
 }
 
 async function refreshMgmtEfficiencyReport() {
     const lineId = document.getElementById('mgmt-eff-line')?.value;
     const date   = document.getElementById('mgmt-eff-date')?.value;
+    const hour   = document.getElementById('mgmt-eff-hour')?.value || String(mgmtGetDefaultReportHour());
     const container = document.getElementById('mgmt-eff-content');
     if (!container) return;
 
@@ -863,7 +908,7 @@ async function refreshMgmtEfficiencyReport() {
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
 
     try {
-        const r = await fetch(`${API_BASE}/efficiency-report?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const r = await fetch(`${API_BASE}/efficiency-report?line_id=${lineId}&date=${date}&hour=${hour}`, { credentials: 'include' });
         const resp = await r.json();
 
         if (!resp.success) {
@@ -886,50 +931,61 @@ async function refreshMgmtEfficiencyReport() {
 }
 
 function _buildMgmtEfficiencyTable(data, date) {
-    const { line, plan, summary, ot_summary, workstations } = data;
+    const { line, plan, summary, workstations, employee_progress = [] } = data;
     const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
     const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
     const tcS = tdS + 'text-align:center;';
+    const reportLabel = plan.report_hour_label || 'Full Day';
+    const hourlyTarget = plan.hourly_target_units || 0;
+    const liveHours = plan.live_hours || 0;
 
-    const le = summary.line_efficiency_pct;
-    const leColor = le === null ? '#6b7280' : le >= 75 ? '#16a34a' : le >= 50 ? '#d97706' : '#dc2626';
-    const leText = le === null ? 'N/A' : le.toFixed(2) + '%';
+    const liveEff = summary.live_efficiency_pct;
+    const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 75 ? '#16a34a' : liveEff >= 50 ? '#d97706' : '#dc2626';
+    const liveEffText = liveEff === null ? 'N/A' : liveEff.toFixed(2) + '%';
+    const hourlyEff = summary.hourly_efficiency_pct;
+    const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 75 ? '#16a34a' : hourlyEff >= 50 ? '#d97706' : '#dc2626';
+    const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
 
     const summaryBar = `
         <div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:12px;align-items:center;">
-            <span style="font-size:12px;"><strong>Style:</strong> ${plan.product_code || '-'} — ${plan.product_name || '-'}</span>
+            <span style="font-size:12px;"><strong>Product:</strong> ${plan.product_name || '-'} (${plan.product_code || '-'})</span>
+            <span style="font-size:12px;"><strong>Hourly Efficiency:</strong> ${reportLabel}</span>
+            <span style="font-size:12px;"><strong>Live Window:</strong> Start to ${reportLabel}</span>
             <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
             <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
-            <span style="font-size:12px;"><strong>Working Hours:</strong> ${plan.working_hours.toFixed(1)} h</span>
+            <span style="font-size:12px;"><strong>Hour Target:</strong> ${hourlyTarget}</span>
+            <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
-            <span style="font-size:12px;"><strong>Line Output:</strong> ${summary.line_output}</span>
-            <span style="font-size:12px;"><strong>Target:</strong> ${plan.target_units}</span>
-            ${summary.total_ot_hours > 0 ? `<span style="font-size:12px;"><strong>Total OT Hours:</strong> ${summary.total_ot_hours.toFixed(2)} h</span>` : ''}
-            <span style="font-size:14px;font-weight:700;color:${leColor};margin-left:auto;">LINE EFFICIENCY: ${leText}</span>
+            <span style="font-size:12px;"><strong>Live Output:</strong> ${summary.live_output}</span>
+            <span style="font-size:12px;"><strong>Hourly Output:</strong> ${summary.hourly_output}</span>
+            <span style="font-size:12px;"><strong>Daily Target:</strong> ${plan.target_units}</span>
+            <span style="font-size:14px;font-weight:700;color:${liveEffColor};margin-left:auto;">LIVE EFFICIENCY: ${liveEffText}</span>
+            <span style="font-size:14px;font-weight:700;color:${hourlyEffColor};">HOURLY EFFICIENCY: ${hourlyEffText}</span>
         </div>`;
-
-    const otRow = ot_summary ? `
-        <tr style="background:#fef9c3;">
-            <td colspan="10" style="${tdS}font-size:12px;font-weight:600;text-align:center;">
-                OT: ${ot_summary.active_ot_workstations} active workstations
-                &nbsp;&bull;&nbsp; OT Output: ${ot_summary.total_ot_output}
-                &nbsp;&bull;&nbsp; OT Target: ${ot_summary.ot_target_units}
-            </td>
-        </tr>` : '';
 
     const dataRows = workstations.map(ws => {
         const wl = parseFloat(ws.workload_pct || 0);
         const wlColor = wl >= 100 ? '#dc2626' : wl >= 80 ? '#d97706' : '#16a34a';
         const wlBg    = wl >= 100 ? '#fee2e2' : wl >= 80 ? '#fef3c7' : '#dcfce7';
 
-        const we = ws.worker_efficiency_pct;
-        let weText, weColor, weBg;
-        if (we === null || !ws.employee_code) {
-            weText = '—'; weColor = '#6b7280'; weBg = '#f9fafb';
+        const liveWe = ws.live_efficiency_pct;
+        let liveWeText, liveWeColor, liveWeBg;
+        if (liveWe === null || !ws.employee_code) {
+            liveWeText = '—'; liveWeColor = '#6b7280'; liveWeBg = '#f9fafb';
         } else {
-            weText = we.toFixed(2) + '%';
-            weColor = we >= 75 ? '#16a34a' : we >= 50 ? '#d97706' : '#dc2626';
-            weBg    = we >= 75 ? '#dcfce7'  : we >= 50 ? '#fef3c7'  : '#fee2e2';
+            liveWeText = liveWe.toFixed(2) + '%';
+            liveWeColor = liveWe >= 75 ? '#16a34a' : liveWe >= 50 ? '#d97706' : '#dc2626';
+            liveWeBg    = liveWe >= 75 ? '#dcfce7'  : liveWe >= 50 ? '#fef3c7'  : '#fee2e2';
+        }
+
+        const hourlyWe = ws.hourly_efficiency_pct;
+        let hourlyWeText, hourlyWeColor, hourlyWeBg;
+        if (hourlyWe === null || !ws.employee_code) {
+            hourlyWeText = '—'; hourlyWeColor = '#6b7280'; hourlyWeBg = '#f9fafb';
+        } else {
+            hourlyWeText = hourlyWe.toFixed(2) + '%';
+            hourlyWeColor = hourlyWe >= 75 ? '#16a34a' : hourlyWe >= 50 ? '#d97706' : '#dc2626';
+            hourlyWeBg    = hourlyWe >= 75 ? '#dcfce7'  : hourlyWe >= 50 ? '#fef3c7'  : '#fee2e2';
         }
 
         return `<tr>
@@ -939,21 +995,39 @@ function _buildMgmtEfficiencyTable(data, date) {
             <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
             <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
             <td style="${tcS}font-weight:700;color:${wlColor};background:${wlBg};">${wl.toFixed(1)}%</td>
-            <td style="${tcS}font-weight:700;">${ws.regular_output}</td>
-            <td style="${tcS}color:#7c3aed;">${ws.ot_minutes > 0 ? ws.ot_minutes.toFixed(0) + ' min' : '—'}</td>
-            <td style="${tcS}color:#7c3aed;">${ws.ot_output > 0 ? ws.ot_output : '—'}</td>
-            <td style="${tcS}font-weight:700;color:${weColor};background:${weBg};">${weText}</td>
+            <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
+            <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
+            <td style="${tcS}font-weight:700;">${ws.hourly_output ?? 0}</td>
+            <td style="${tcS}font-weight:700;color:${hourlyWeColor};background:${hourlyWeBg};">${hourlyWeText}</td>
         </tr>`;
     }).join('');
+
+    const employeeRows = employee_progress.length
+        ? employee_progress.map(emp => {
+            const updatedText = emp.last_updated
+                ? new Date(emp.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                : '—';
+            return `<tr>
+                <td style="${tdS}"><strong>${emp.emp_code}</strong><div style="color:var(--secondary);font-size:11px;">${emp.emp_name}</div></td>
+                <td style="${tcS}">${emp.workstation_code || '—'}</td>
+                <td style="${tcS}">${emp.live_output || 0}</td>
+                <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tcS}">${emp.hourly_output || 0}</td>
+                <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tcS}">${updatedText}</td>
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="7" style="${tdS}text-align:center;color:#6b7280;">No employee progress recorded for ${reportLabel}.</td></tr>`;
 
     return `<div id="mgmt-efficiency-print-area">
         <div class="card">
             <div class="card-header">
                 <div>
-                    <h3 class="card-title">EFFICIENCY REPORT</h3>
+                    <h3 class="card-title">LIVE AND HOURLY EFFICIENCY REPORT</h3>
                     <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
                         ${line.line_name} (${line.line_code})
                         &nbsp;&bull;&nbsp; Date: ${date}
+                        &nbsp;&bull;&nbsp; Hourly Efficiency: ${reportLabel}
                     </div>
                 </div>
             </div>
@@ -969,16 +1043,29 @@ function _buildMgmtEfficiencyTable(data, date) {
                                 <th style="${thS}min-width:80px;">CYCLE TIME<br>(s)</th>
                                 <th style="${thS}min-width:75px;">TAKT TIME<br>(s)</th>
                                 <th style="${thS}min-width:70px;">WKLD%</th>
-                                <th style="${thS}min-width:70px;">OUTPUT</th>
-                                <th style="${thS}min-width:70px;">OT MIN</th>
-                                <th style="${thS}min-width:75px;">OT OUTPUT</th>
-                                <th style="${thS}min-width:90px;">WORKER EFF%</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
+                                <th style="${thS}min-width:90px;">HOURLY OUTPUT<br>${reportLabel}</th>
+                                <th style="${thS}min-width:90px;">HOURLY EFF%</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            ${dataRows}
-                            ${otRow}
-                        </tbody>
+                        <tbody>${dataRows}</tbody>
+                    </table>
+                </div>
+                <div style="margin-top:16px;overflow-x:auto;">
+                    <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
+                        <thead>
+                            <tr>
+                                <th style="${thS}min-width:150px;">EMPLOYEE</th>
+                                <th style="${thS}min-width:70px;">WS</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
+                                <th style="${thS}min-width:90px;">HOURLY OUTPUT</th>
+                                <th style="${thS}min-width:90px;">HOURLY EFF%</th>
+                                <th style="${thS}min-width:100px;">LIVE UPDATE</th>
+                            </tr>
+                        </thead>
+                        <tbody>${employeeRows}</tbody>
                     </table>
                 </div>
             </div>
@@ -1211,16 +1298,22 @@ function renderMgmtWieFiltered() {
 
 function buildMgmtWorkerEfficiencyGraphs(data) {
     const { dates, rows } = data;
+    const workedRows = rows.filter(row =>
+        dates.some(date => Number(row.dates?.[date]?.hours_worked || 0) > 0)
+    );
 
     const dayStats = dates.map(date => {
-        const values = rows
-            .map(row => Number(row.dates?.[date]?.eff ?? 0))
+        const values = workedRows
+            .map(row => {
+                const cell = row.dates?.[date];
+                return Number(cell?.hours_worked || 0) > 0 ? Number(cell?.eff) : null;
+            })
             .filter(v => Number.isFinite(v));
         const avg = values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : 0;
         return { date, avg };
     });
 
-    const topRows = [...rows]
+    const topRows = [...workedRows]
         .sort((a, b) => Number(b.overall_eff || 0) - Number(a.overall_eff || 0))
         .slice(0, 10)
         .map(row => ({
@@ -1234,7 +1327,7 @@ function buildMgmtWorkerEfficiencyGraphs(data) {
         { label: '1-49%', color: '#dc2626', count: 0 },
         { label: '0%', color: '#64748b', count: 0 }
     ];
-    rows.forEach(row => {
+    workedRows.forEach(row => {
         const eff = Number(row.overall_eff || 0);
         if (eff >= 75) bands[0].count++;
         else if (eff >= 50) bands[1].count++;
@@ -1242,13 +1335,24 @@ function buildMgmtWorkerEfficiencyGraphs(data) {
         else bands[3].count++;
     });
 
-    const allEmployeeBars = rows
+    const allEmployeeBars = workedRows
         .map(row => ({
             label: `${row.emp_name || '-'} (${row.emp_code || '-'})`,
             value: Number(row.overall_eff || 0),
             emp_name: row.emp_name || '',
             emp_code: row.emp_code || '',
-            total_output: Number(row.total_output || 0)
+            total_output: Number(row.total_output || 0),
+            daily_efficiencies: dates
+                .map(date => {
+                    const cell = row.dates?.[date];
+                    if (Number(cell?.hours_worked || 0) <= 0) return null;
+                    return {
+                        label: formatMgmtWieChartDate(date),
+                        value: Number(cell?.eff || 0),
+                        color: '#2563eb'
+                    };
+                })
+                .filter(Boolean)
         }))
         .filter(item => mgmtGraphMatchesEffBand(item.value) && mgmtGraphMatchesSearch(item))
         .sort((a, b) => {
@@ -1284,7 +1388,7 @@ function buildMgmtWorkerEfficiencyGraphs(data) {
         </div>
         <div class="card" style="margin-bottom:16px;">
             <div class="card-header">
-                <h3 class="card-title">All Employee Bars</h3>
+                <h3 class="card-title">Employee Daily Bars</h3>
             </div>
             <div class="card-body">
                 <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
@@ -1304,7 +1408,7 @@ function buildMgmtWorkerEfficiencyGraphs(data) {
                             placeholder="Search by employee name or code" oninput="setMgmtGraphSearch(this.value)">
                     </div>
                     <div style="font-size:12px;color:#64748b;padding-bottom:8px;">
-                        Showing <strong style="color:#0f172a;">${allEmployeeBars.length}</strong> of <strong style="color:#0f172a;">${rows.length}</strong> employees
+                        Showing <strong style="color:#0f172a;">${allEmployeeBars.length}</strong> of <strong style="color:#0f172a;">${workedRows.length}</strong> employees
                     </div>
                 </div>
                 ${buildMgmtGraphAllEmployeeBars(allEmployeeBars)}
@@ -1440,25 +1544,23 @@ function buildMgmtGraphAllEmployeeBars(items) {
     if (!items.length) {
         return `<div style="height:180px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12px;border:1px dashed #cbd5e1;border-radius:10px;">No employees match the selected filters.</div>`;
     }
-    const maxValue = Math.max(100, ...items.map(item => Number(item.value || 0)));
     return `
         <div style="max-height:560px;overflow:auto;border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#f8fafc;">
             <div style="display:flex;flex-direction:column;gap:10px;">
                 ${items.map(item => {
                     const value = Number(item.value || 0);
-                    const pct = Math.max(0, Math.min(100, (value / maxValue) * 100));
                     const color = value >= 75 ? '#16a34a' : value >= 50 ? '#d97706' : value > 0 ? '#dc2626' : '#64748b';
                     return `
                         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;">
                             <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:6px;">
                                 <div style="min-width:0;">
                                     <div style="font-size:12px;font-weight:700;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.label}</div>
-                                    <div style="font-size:11px;color:#64748b;">Output: ${item.total_output}</div>
+                                    <div style="font-size:11px;color:#64748b;">Output: ${item.total_output} | Overall Efficiency: ${value.toFixed(1)}%</div>
                                 </div>
                                 <div style="font-size:13px;font-weight:800;color:${color};flex-shrink:0;">${value.toFixed(1)}%</div>
                             </div>
-                            <div style="height:12px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
-                                <div style="height:100%;width:${pct}%;background:${color};border-radius:999px;"></div>
+                            <div style="margin-top:8px;">
+                                ${buildMgmtWieMiniBarChart(item.daily_efficiencies, { height: 140, emptyText: 'No day-wise data.' })}
                             </div>
                         </div>
                     `;
@@ -1707,20 +1809,21 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
     const dataRows = rows.map((row, idx) => {
         const dateCells = dates.map(d => {
             const cell = row.dates[d];
+            const hasWorkedHours = Number(cell?.hours_worked || 0) > 0;
             const tagKey = cell?.tag ? cell.tag.split(' ')[0] : null;
             const tS = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
             const tagBadge = cell?.tag ? `<br><span style="font-size:8px;font-weight:700;">${cell.tag}</span>` : '';
             const effVal = Number.isFinite(Number(cell?.eff)) ? Number(cell.eff) : 0;
             const effTxt = effVal.toFixed(1) + '%';
             const effC = effColor(effVal);
-            const zeroCell = `<td style="${tcS}">0</td>`;
+            const blankCell = `<td style="${tcS}">-</td>`;
 
-            if (!cell) {
+            if (!cell || !hasWorkedHours) {
                 return [
-                    showTarget ? zeroCell : '',
-                    showWip ? zeroCell : '',
-                    showOutput ? zeroCell : '',
-                    showEff ? `<td style="${tcS}font-weight:600;color:${effColor(0)};">0.0%</td>` : ''
+                    showTarget ? blankCell : '',
+                    showWip ? blankCell : '',
+                    showOutput ? blankCell : '',
+                    showEff ? `<td style="${tcS}font-weight:600;color:#6b7280;">-</td>` : ''
                 ].join('');
             }
 

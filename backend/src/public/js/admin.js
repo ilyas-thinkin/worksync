@@ -153,6 +153,9 @@ async function loadSection(section) {
         case 'wifi':
             await loadWifiSection();
             break;
+        case 'material-tracking':
+            await loadMaterialTracking();
+            break;
     }
 }
 
@@ -1483,6 +1486,122 @@ window.addEventListener('resize', _repositionOpenDropdowns, { passive: true });
 // ============================================================================
 let allEmployees = [];
 let allLines = [];
+let employeeQrExportSelection = new Set();
+
+function resetEmployeeQrExportSelection(employees) {
+    employeeQrExportSelection = new Set((employees || []).map(emp => String(emp.id)));
+}
+
+function areAllEmployeesSelected() {
+    return allEmployees.length > 0 && employeeQrExportSelection.size === allEmployees.length;
+}
+
+function syncEmployeeSelectAllCheckbox() {
+    const checkbox = document.getElementById('employees-select-all');
+    if (!checkbox) return;
+    const total = allEmployees.length;
+    const selected = employeeQrExportSelection.size;
+    checkbox.checked = total > 0 && selected === total;
+    checkbox.indeterminate = selected > 0 && selected < total;
+    const countEl = document.getElementById('employees-export-selected-count');
+    if (countEl) countEl.textContent = `${selected} selected`;
+}
+
+function toggleEmployeeQrSelection(employeeId, checked) {
+    const key = String(employeeId);
+    if (checked) employeeQrExportSelection.add(key);
+    else employeeQrExportSelection.delete(key);
+    syncEmployeeSelectAllCheckbox();
+}
+
+function toggleAllEmployeesForQrExport(checked) {
+    if (checked) {
+        resetEmployeeQrExportSelection(allEmployees);
+    } else {
+        employeeQrExportSelection.clear();
+    }
+    document.querySelectorAll('.employee-export-checkbox').forEach(cb => {
+        cb.checked = checked;
+    });
+    syncEmployeeSelectAllCheckbox();
+}
+
+async function downloadSelectedEmployeesQrExcel() {
+    const selectedIds = [...employeeQrExportSelection];
+    if (!selectedIds.length) {
+        showToast('Select at least one employee', 'error');
+        return;
+    }
+    await downloadEmployeeQrExcelForIds(selectedIds, 'employee_qr_codes');
+}
+
+async function downloadEmployeeQrExcelForIds(employeeIds, filenameBase = 'employee_qr_codes') {
+    if (!Array.isArray(employeeIds) || !employeeIds.length) {
+        showToast('Select at least one employee', 'error');
+        return;
+    }
+    try {
+        const response = await fetch(`${API_BASE}/employees/qr-export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ employee_ids: employeeIds })
+        });
+        if (!response.ok) {
+            let message = 'Failed to download employee QR Excel';
+            try {
+                const error = await response.json();
+                message = error.error || message;
+            } catch (err) {
+                // ignore
+            }
+            throw new Error(message);
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${filenameBase}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showToast('Employee QR Excel downloaded', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function buildEmployeeRows(employees, showActions) {
+    return employees.map((emp, index) => `
+        <tr>
+            <td style="text-align:center;">
+                <input type="checkbox" class="employee-export-checkbox"
+                    ${employeeQrExportSelection.has(String(emp.id)) ? 'checked' : ''}
+                    onchange="toggleEmployeeQrSelection('${emp.id}', this.checked)">
+            </td>
+            <td>${index + 1}</td>
+            <td><strong>${emp.emp_code}</strong></td>
+            <td>${emp.emp_name}</td>
+            <td>${emp.designation || '-'}</td>
+            <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
+            <td>${formatEmployeeWork(emp) || '-'}</td>
+            <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
+            <td><span class="badge ${emp.is_active ? 'badge-success' : 'badge-danger'}">${emp.is_active ? 'Active' : 'Inactive'}</span></td>
+            <td>
+                <button class="btn btn-secondary btn-sm" ${emp.qr_code_path ? '' : 'disabled'} onclick='showEmployeeQrModal(${JSON.stringify(emp)})'>View QR</button>
+            </td>
+            ${showActions ? `
+                <td>
+                    <div class="action-btns">
+                        <button class="btn btn-secondary btn-sm" onclick='showEmployeeWorkModal(${JSON.stringify(emp)})'>Assign Work</button>
+                        <button class="btn btn-secondary btn-sm" onclick='showEmployeeModal(${JSON.stringify(emp)})'>Edit</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteEmployee(${emp.id})">Delete</button>
+                    </div>
+                </td>
+            ` : ''}
+        </tr>
+    `).join('');
+}
 
 async function loadEmployees() {
     const content = document.getElementById('main-content');
@@ -1499,6 +1618,7 @@ async function loadEmployees() {
 
         allEmployees = empResult.data;
         allLines = linesResult.data;
+        resetEmployeeQrExportSelection(allEmployees);
 
         renderEmployeesTable(allEmployees);
     } catch (err) {
@@ -1515,14 +1635,22 @@ function renderEmployeesTable(employees) {
                 <h1 class="page-title">Employees</h1>
                 <p class="page-subtitle">Manage workforce and their assignments</p>
             </div>
-            ${showActions ? `
-                <button class="btn btn-primary" onclick="showEmployeeModal()">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="downloadSelectedEmployeesQrExcel()">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v10m0 0l-4-4m4 4l4-4M5 19h14"/>
                     </svg>
-                    Add Employee
+                    Download QR Excel
                 </button>
-            ` : ''}
+                ${showActions ? `
+                    <button class="btn btn-primary" onclick="showEmployeeModal()">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                        </svg>
+                        Add Employee
+                    </button>
+                ` : ''}
+            </div>
         </div>
 
         <div class="card">
@@ -1534,13 +1662,20 @@ function renderEmployeesTable(employees) {
                         </svg>
                         <input type="text" placeholder="Search employees..." onkeyup="filterEmployees(this.value)">
                     </div>
-                    <div style="width: 1px;"></div>
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px;color:var(--secondary);">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                            <input type="checkbox" id="employees-select-all" checked onchange="toggleAllEmployeesForQrExport(this.checked)">
+                            <span>Select all for Excel</span>
+                        </label>
+                        <span id="employees-export-selected-count">${employeeQrExportSelection.size} selected</span>
+                    </div>
                 </div>
 
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
+                                <th style="width:52px;text-align:center;">Pick</th>
                                 <th>S.No</th>
                                 <th>Code</th>
                                 <th>Name</th>
@@ -1549,32 +1684,12 @@ function renderEmployeesTable(employees) {
                                 <th>Current Work</th>
                                 <th>QR Code</th>
                                 <th>Status</th>
+                                <th>View QR</th>
                                 ${showActions ? '<th>Actions</th>' : ''}
                             </tr>
                         </thead>
                         <tbody id="employees-table-body">
-                            ${employees.map((emp, index) => `
-                                <tr>
-                                    <td>${index + 1}</td>
-                                    <td><strong>${emp.emp_code}</strong></td>
-                                    <td>${emp.emp_name}</td>
-                                    <td>${emp.designation || '-'}</td>
-                                    <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
-                                    <td>${formatEmployeeWork(emp) || '-'}</td>
-                                    <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
-                                    <td><span class="badge ${emp.is_active ? 'badge-success' : 'badge-danger'}">${emp.is_active ? 'Active' : 'Inactive'}</span></td>
-                                    ${showActions ? `
-                                        <td>
-                                            <div class="action-btns">
-                                                <button class="btn btn-secondary btn-sm" onclick='showEmployeeWorkModal(${JSON.stringify(emp)})'>Assign Work</button>
-                                                <button class="btn btn-secondary btn-sm" ${emp.qr_code_path ? '' : 'disabled'} onclick='showEmployeeQrModal(${JSON.stringify(emp)})'>Show QR</button>
-                                                <button class="btn btn-secondary btn-sm" onclick='showEmployeeModal(${JSON.stringify(emp)})'>Edit</button>
-                                                <button class="btn btn-danger btn-sm" onclick="deleteEmployee(${emp.id})">Delete</button>
-                                            </div>
-                                        </td>
-                                    ` : ''}
-                                </tr>
-                            `).join('')}
+                            ${buildEmployeeRows(employees, showActions)}
                         </tbody>
                     </table>
                 </div>
@@ -1585,6 +1700,7 @@ function renderEmployeesTable(employees) {
             </div>
         </div>
     `;
+    syncEmployeeSelectAllCheckbox();
 }
 
 function filterEmployees(search) {
@@ -1599,28 +1715,8 @@ function filterEmployees(search) {
 function updateEmployeesTableBody(employees) {
     const tbody = document.getElementById('employees-table-body');
     const showActions = !isIeMode;
-    tbody.innerHTML = employees.map((emp, index) => `
-        <tr>
-            <td>${index + 1}</td>
-            <td><strong>${emp.emp_code}</strong></td>
-            <td>${emp.emp_name}</td>
-            <td>${emp.designation || '-'}</td>
-            <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
-            <td>${formatEmployeeWork(emp) || '-'}</td>
-            <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
-            <td><span class="badge ${emp.is_active ? 'badge-success' : 'badge-danger'}">${emp.is_active ? 'Active' : 'Inactive'}</span></td>
-            ${showActions ? `
-                <td>
-                    <div class="action-btns">
-                        <button class="btn btn-secondary btn-sm" onclick='showEmployeeWorkModal(${JSON.stringify(emp)})'>Assign Work</button>
-                        <button class="btn btn-secondary btn-sm" ${emp.qr_code_path ? '' : 'disabled'} onclick='showEmployeeQrModal(${JSON.stringify(emp)})'>Show QR</button>
-                        <button class="btn btn-secondary btn-sm" onclick='showEmployeeModal(${JSON.stringify(emp)})'>Edit</button>
-                        <button class="btn btn-danger btn-sm" onclick="deleteEmployee(${emp.id})">Delete</button>
-                    </div>
-                </td>
-            ` : ''}
-        </tr>
-    `).join('');
+    tbody.innerHTML = buildEmployeeRows(employees, showActions);
+    syncEmployeeSelectAllCheckbox();
 }
 
 function formatEmployeeWork(emp) {
@@ -3589,9 +3685,8 @@ async function loadDailyPlanData() {
     const container = document.getElementById('daily-plan-table');
     container.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
     try {
-        const response = await fetch(`/api/daily-plans?date=${date}`);
-        const result = await response.json();
-        if (!result.success) {
+        const result = await fetchDailyPlanSnapshot(date);
+        if (!result?.success) {
             container.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
             return;
         }
@@ -3599,7 +3694,14 @@ async function loadDailyPlanData() {
         window.dailyPlanProducts = products;
         window.changeoverEnabled = changeover_enabled !== false;
         const planMap = new Map(plans.map(plan => [String(plan.line_id), plan]));
+        const renderedLines = isIeMode
+            ? lines.filter(line => planMap.has(String(line.id)))
+            : lines;
         window._dailyPlanMap = planMap;
+        if (!renderedLines.length) {
+            container.innerHTML = '<div style="padding:24px;color:#6b7280;">No saved daily plans found for this date.</div>';
+            return;
+        }
         container.innerHTML = `
             <table>
                 <thead>
@@ -3616,16 +3718,17 @@ async function loadDailyPlanData() {
                     </tr>
                 </thead>
                 <tbody>
-                    ${lines.map(line => {
+                    ${renderedLines.map(line => {
                         const plan = planMap.get(String(line.id));
                         const locked = plan?.is_locked;
-                        const selectedProduct = plan?.product_id || line.current_product_id || '';
-                        const selectedTarget = plan?.target_units ?? line.target_units ?? 0;
+                        const selectedProduct = plan?.product_id || '';
+                        const selectedTarget = plan?.target_units ?? 0;
                         const selectedIncoming = plan?.incoming_product_id || '';
                         const selectedIncomingTarget = plan?.incoming_target_units || 0;
                         const selectedChangeover = plan?.changeover_sequence ?? 0;
                         const planExists = Boolean(plan?.id);
                         const hasChangeover = !!plan?.incoming_product_id;
+                        const canOpenDetails = Boolean(planExists);
                         const otEnabled = plan?.ot_enabled || false;
                         const primaryCum   = plan?.product_cumulative || 0;
                         const primaryOQ    = plan?.target_qty || 0;
@@ -3643,11 +3746,12 @@ async function loadDailyPlanData() {
                             return `<span style="font-size:10px;color:#1e40af;font-weight:600;background:#eff6ff;padding:1px 5px;border-radius:3px;">${mns[parseInt(m)]} ${y}</span>`;
                         })() : '';
                         return `
-                            <tr style="cursor:pointer;${primaryOver ? 'background:#fffbeb;' : primaryComplete ? 'background:#f0fdf4;' : ''}" onclick="toggleLineDetails(${line.id})">
+                            <tr style="cursor:${canOpenDetails ? 'pointer' : 'default'};${primaryOver ? 'background:#fffbeb;' : primaryComplete ? 'background:#f0fdf4;' : ''}" ${canOpenDetails ? `onclick="toggleLineDetails(${line.id})"` : `title="Save the daily plan first to open line details"`}>
                                 <td>
                                     <strong>${line.line_code}</strong>
                                     <div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div>
                                     ${hasChangeover ? '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">CHANGEOVER</span>' : ''}
+                                    ${!planExists ? '<div style="color:#b45309;font-size:11px;font-weight:600;margin-top:4px;">Save daily plan to open details</div>' : ''}
                                     ${primaryOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ OVER-PRODUCED +${(primaryCum - primaryOQ).toLocaleString()}</span>` : primaryComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ ORDER COMPLETE</span>' : ''}
                                     ${incomingOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ INCOMING OVER +${(incomingCum - incomingOQ).toLocaleString()}</span>` : incomingComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ INCOMING COMPLETE</span>' : ''}
                                 </td>
@@ -3699,7 +3803,7 @@ async function loadDailyPlanData() {
                                         <button class="btn btn-danger btn-sm" onclick="lockDailyPlan(${line.id})" ${!planExists || locked ? 'disabled' : ''}>Lock</button>
                                         <button class="btn btn-secondary btn-sm" onclick="unlockDailyPlan(${line.id})" ${!planExists || !locked ? 'disabled' : ''}>Unlock</button>
                                         <button class="btn btn-secondary btn-sm" onclick="copyDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Copy From</button>
-                                        <button class="btn btn-danger btn-sm" onclick="deleteDailyPlan(${line.id})" ${!planExists ? 'disabled' : ''}>Delete</button>
+                                        <button class="btn btn-danger btn-sm" onclick="deleteDailyPlan(${line.id})" ${locked ? 'disabled' : ''}>Delete</button>
                                     </div>
                                 </td>
                             </tr>
@@ -3727,6 +3831,11 @@ let _ldData = null; // { lineId, date, data }
 
 async function toggleLineDetails(lineId) {
     const date = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
+    const plan = window._dailyPlanMap?.get?.(String(lineId));
+    if (!plan?.id) {
+        showToast('Save the daily plan first to open line details', 'error');
+        return;
+    }
     const productId = document.getElementById(`plan-product-${lineId}`)?.value || '';
     const target = document.getElementById(`plan-target-${lineId}`)?.value || '';
     await openLineDetailsPage(lineId, date, productId, target);
@@ -4001,6 +4110,33 @@ function ldWsToggleOTSkip(btn, lineId) {
 // ============================================================
 // Searchable employee picker (replaces native <select>)
 // ============================================================
+function ldPositionEmpDropdown(pickerEl) {
+    const dropdown = pickerEl?.querySelector('.ld-emp-dropdown');
+    if (!dropdown) return;
+
+    dropdown.style.top = 'calc(100% + 3px)';
+    dropdown.style.bottom = 'auto';
+    dropdown.style.maxHeight = '220px';
+
+    const pickerRect = pickerEl.getBoundingClientRect();
+    const dropdownRect = dropdown.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const gap = 12;
+    const spaceBelow = viewportHeight - pickerRect.bottom - gap;
+    const spaceAbove = pickerRect.top - gap;
+    const needsOpenUp = dropdownRect.height > spaceBelow && spaceAbove > spaceBelow;
+    const availableHeight = Math.max(140, Math.floor((needsOpenUp ? spaceAbove : spaceBelow) - 8));
+
+    dropdown.style.maxHeight = `${availableHeight}px`;
+    if (needsOpenUp) {
+        dropdown.style.top = 'auto';
+        dropdown.style.bottom = 'calc(100% + 3px)';
+    } else {
+        dropdown.style.top = 'calc(100% + 3px)';
+        dropdown.style.bottom = 'auto';
+    }
+}
+
 function ldEmpPickerToggle(pickerEl, lineId) {
     const dropdown = pickerEl.querySelector('.ld-emp-dropdown');
     const isOpen = dropdown.style.display !== 'none';
@@ -4008,6 +4144,7 @@ function ldEmpPickerToggle(pickerEl, lineId) {
     document.querySelectorAll('.ld-emp-dropdown').forEach(d => { d.style.display = 'none'; });
     if (!isOpen) {
         dropdown.style.display = 'block';
+        ldPositionEmpDropdown(pickerEl);
         const search = dropdown.querySelector('.ld-emp-search');
         if (search) {
             search.value = '';
@@ -4062,7 +4199,26 @@ document.addEventListener('click', e => {
     if (!e.target.closest('.ld-emp-picker')) {
         document.querySelectorAll('.ld-emp-dropdown').forEach(d => { d.style.display = 'none'; });
     }
+    if (!e.target.closest('[id^="ld-qr-picker-"]')) {
+        document.querySelectorAll('[id^="ld-qr-dropdown-"]').forEach(d => { d.style.display = 'none'; });
+    }
 }, true);
+
+window.addEventListener('resize', () => {
+    document.querySelectorAll('.ld-emp-dropdown').forEach(dropdown => {
+        if (dropdown.style.display !== 'none') {
+            ldPositionEmpDropdown(dropdown.closest('.ld-emp-picker'));
+        }
+    });
+}, { passive: true });
+
+window.addEventListener('scroll', () => {
+    document.querySelectorAll('.ld-emp-dropdown').forEach(dropdown => {
+        if (dropdown.style.display !== 'none') {
+            ldPositionEmpDropdown(dropdown.closest('.ld-emp-picker'));
+        }
+    });
+}, { passive: true, capture: true });
 
 // Show a QR image in a full-screen modal overlay
 function showQrModal(src, label) {
@@ -4342,6 +4498,111 @@ function renderLineDetailsPanel(panel, lineId, date, data) {
     renderLineDetailsContent(panel, lineId, date, data);
 }
 
+function _ldQrSelectionKey(lineId, date, activeOT, displayIsChangeover) {
+    return [lineId, date, activeOT ? 'ot' : 'regular', displayIsChangeover ? 'changeover' : 'primary'].join(':');
+}
+
+function _ldBuildQrEmployeeList(wsGroups, employees) {
+    const seen = new Set();
+    const byId = new Map((employees || []).map(emp => [String(emp.id), emp]));
+    const list = [];
+    (wsGroups || []).forEach(group => {
+        if (!group.employee_id) return;
+        const key = String(group.employee_id);
+        if (seen.has(key)) return;
+        seen.add(key);
+        const emp = byId.get(key) || {};
+        list.push({
+            id: key,
+            emp_code: group.emp_code || emp.emp_code || '',
+            emp_name: group.emp_name || emp.emp_name || ''
+        });
+    });
+    return list.sort((a, b) => `${a.emp_name} ${a.emp_code}`.localeCompare(`${b.emp_name} ${b.emp_code}`, undefined, { sensitivity: 'base' }));
+}
+
+function _ldEnsureQrSelection(lineId, date, activeOT, displayIsChangeover, lineEmployees) {
+    if (!window._ldQrSelections) window._ldQrSelections = {};
+    if (!window._ldQrEmployees) window._ldQrEmployees = {};
+    const key = _ldQrSelectionKey(lineId, date, activeOT, displayIsChangeover);
+    window._ldQrEmployees[key] = lineEmployees;
+    if (!window._ldQrSelections[key]) {
+        window._ldQrSelections[key] = new Set(lineEmployees.map(emp => String(emp.id)));
+    } else {
+        const currentIds = new Set(lineEmployees.map(emp => String(emp.id)));
+        const next = new Set();
+        window._ldQrSelections[key].forEach(id => {
+            if (currentIds.has(String(id))) next.add(String(id));
+        });
+        lineEmployees.forEach(emp => {
+            const id = String(emp.id);
+            if (!window._ldQrSelections[key].has(id)) next.add(id);
+        });
+        window._ldQrSelections[key] = next;
+    }
+    return window._ldQrSelections[key];
+}
+
+function _ldUpdateQrSelectionUI(lineId, date, activeOT, displayIsChangeover, lineEmployees) {
+    const key = _ldQrSelectionKey(lineId, date, activeOT, displayIsChangeover);
+    const selected = window._ldQrSelections?.[key] || new Set();
+    const total = lineEmployees.length;
+    const countEl = document.getElementById(`ld-qr-count-${lineId}`);
+    if (countEl) countEl.textContent = `${selected.size} selected`;
+    const allCb = document.getElementById(`ld-qr-all-${lineId}`);
+    if (allCb) {
+        allCb.checked = total > 0 && selected.size === total;
+        allCb.indeterminate = selected.size > 0 && selected.size < total;
+    }
+}
+
+function toggleLdQrEmpDropdown(lineId) {
+    const dd = document.getElementById(`ld-qr-dropdown-${lineId}`);
+    if (!dd) return;
+    const isOpen = dd.style.display !== 'none';
+    document.querySelectorAll('[id^="ld-qr-dropdown-"]').forEach(el => { el.style.display = 'none'; });
+    dd.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) document.getElementById(`ld-qr-search-${lineId}`)?.focus();
+}
+
+function filterLdQrEmpList(lineId) {
+    const q = (document.getElementById(`ld-qr-search-${lineId}`)?.value || '').toLowerCase();
+    document.querySelectorAll(`#ld-qr-list-${lineId} .ld-qr-emp-item`).forEach(item => {
+        item.style.display = item.dataset.label.toLowerCase().includes(q) ? '' : 'flex';
+    });
+}
+
+function toggleLdQrEmployee(lineId, date, activeOT, displayIsChangeover, employeeId, checked) {
+    if (!window._ldQrSelections) window._ldQrSelections = {};
+    const key = _ldQrSelectionKey(lineId, date, activeOT, displayIsChangeover);
+    if (!window._ldQrSelections[key]) window._ldQrSelections[key] = new Set();
+    if (checked) window._ldQrSelections[key].add(String(employeeId));
+    else window._ldQrSelections[key].delete(String(employeeId));
+    _ldUpdateQrSelectionUI(lineId, date, activeOT, displayIsChangeover, window._ldQrEmployees?.[key] || []);
+}
+
+function toggleLdQrAllEmployees(lineId, date, activeOT, displayIsChangeover, checked) {
+    if (!window._ldQrSelections) window._ldQrSelections = {};
+    const key = _ldQrSelectionKey(lineId, date, activeOT, displayIsChangeover);
+    const lineEmployees = window._ldQrEmployees?.[key] || [];
+    window._ldQrSelections[key] = checked ? new Set(lineEmployees.map(emp => String(emp.id))) : new Set();
+    document.querySelectorAll(`#ld-qr-list-${lineId} .ld-qr-emp-item input[type="checkbox"]`).forEach(cb => {
+        cb.checked = checked;
+    });
+    _ldUpdateQrSelectionUI(lineId, date, activeOT, displayIsChangeover, lineEmployees);
+}
+
+async function downloadLineDetailsQrExcel(lineId, date, activeOT, displayIsChangeover) {
+    const key = _ldQrSelectionKey(lineId, date, activeOT, displayIsChangeover);
+    const selectedIds = [...(window._ldQrSelections?.[key] || [])];
+    if (!selectedIds.length) {
+        showToast('Select at least one employee from this line', 'error');
+        return;
+    }
+    const suffix = activeOT ? 'ot' : (displayIsChangeover ? 'changeover' : 'primary');
+    await downloadEmployeeQrExcelForIds(selectedIds, `line_${lineId}_${suffix}_employee_qr_codes`);
+}
+
 function renderLineDetailsContent(panel, lineId, date, data) {
     // Plan-level fields — always from the primary plan data
     const { employees, products, product,
@@ -4388,6 +4649,39 @@ function renderLineDetailsContent(panel, lineId, date, data) {
 
     const wsGroups = _buildWsGroups(processes, activeTakt, activeOT);
     const assignedWs = wsGroups.filter(g => g.ws).length;
+    const lineQrEmployees = _ldBuildQrEmployeeList(wsGroups, employees);
+    const lineQrSelection = _ldEnsureQrSelection(lineId, date, activeOT, displayIsChangeover, lineQrEmployees);
+    const lineQrPicker = lineQrEmployees.length ? `
+        <div id="ld-qr-picker-${lineId}" style="position:relative;">
+            <button class="btn btn-secondary btn-sm" onclick="toggleLdQrEmpDropdown(${lineId})" type="button">
+                QR Employees
+            </button>
+            <div id="ld-qr-dropdown-${lineId}" style="display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:800;background:#fff;border:1px solid #d1d5db;border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.18);width:300px;overflow:hidden;">
+                <div style="padding:10px;border-bottom:1px solid #eef2f7;">
+                    <input id="ld-qr-search-${lineId}" class="form-control" style="font-size:12px;padding:6px 8px;" placeholder="Search employee..." oninput="filterLdQrEmpList(${lineId})">
+                    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;font-weight:600;cursor:pointer;color:#374151;">
+                        <input type="checkbox" id="ld-qr-all-${lineId}" ${lineQrSelection.size === lineQrEmployees.length ? 'checked' : ''} onchange="toggleLdQrAllEmployees(${lineId},'${date}',${activeOT ? 'true' : 'false'},${displayIsChangeover ? 'true' : 'false'},this.checked)">
+                        <span>Select all line employees</span>
+                    </label>
+                </div>
+                <div id="ld-qr-list-${lineId}" style="max-height:260px;overflow-y:auto;padding:6px 0;">
+                    ${lineQrEmployees.map(emp => {
+                        const label = `${emp.emp_name} (${emp.emp_code})`;
+                        return `<label class="ld-qr-emp-item" data-label="${label.replace(/"/g, '&quot;')}" style="display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;font-size:12px;color:#374151;">
+                            <input type="checkbox" ${lineQrSelection.has(String(emp.id)) ? 'checked' : ''} onchange="toggleLdQrEmployee(${lineId},'${date}',${activeOT ? 'true' : 'false'},${displayIsChangeover ? 'true' : 'false'},'${String(emp.id)}',this.checked)">
+                            <span>${emp.emp_name} <span style="color:#6b7280;">(${emp.emp_code})</span></span>
+                        </label>`;
+                    }).join('')}
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-top:1px solid #eef2f7;background:#f8fafc;">
+                    <span id="ld-qr-count-${lineId}" style="font-size:12px;color:#6b7280;">${lineQrSelection.size} selected</span>
+                    <button class="btn btn-primary btn-sm" onclick="downloadLineDetailsQrExcel(${lineId},'${date}',${activeOT ? 'true' : 'false'},${displayIsChangeover ? 'true' : 'false'})" type="button">
+                        Download QR Sheet
+                    </button>
+                </div>
+            </div>
+        </div>
+    ` : '';
 
     const otToggleHtml = hasOT ? `
         <span style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;background:#f3f4f6;border-radius:20px;padding:2px 4px;border:1px solid #e5e7eb;">
@@ -4505,7 +4799,8 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 &nbsp;|&nbsp; Workstations: <strong>${assignedWs}</strong>
                 ${hasOT ? `&nbsp;|&nbsp; OT: <strong style="color:#7c3aed;">+${otMins}m / +${otTarget} units</strong>` : ''}
             </span>
-            <div style="margin-left:auto;">
+            <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                ${lineQrPicker}
                 <button class="btn btn-primary btn-sm" onclick="saveLineDetails(${lineId})" ${is_locked ? 'disabled' : ''}
                     style="${activeOT ? 'background:#7c3aed;border-color:#7c3aed;' : displayIsChangeover ? 'background:#f59e0b;border-color:#f59e0b;' : ''}">
                     &#10003; ${activeOT ? `Save OT Employees${isOTChangeover ? ' (Changeover)' : ''}` : displayIsChangeover ? 'Save Changeover Plan' : 'Save Workstation Plan'}
@@ -4542,6 +4837,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     `;
     _buildLdTbody(document.getElementById(`ld-body-${lineId}`), lineId, wsGroups, employees, activeOT,
         { workSecs, target_units, otMins, otTarget, hasOT });
+    _ldUpdateQrSelectionUI(lineId, date, activeOT, displayIsChangeover, lineQrEmployees);
 }
 
 function switchLdTakt(lineId, useOT) {
@@ -5051,29 +5347,99 @@ async function unlockDailyPlan(lineId) {
 
 async function deleteDailyPlan(lineId) {
     const date = document.getElementById('plan-date').value;
-    if (!confirm(`This will permanently delete the daily plan for ${date}. Continue?`)) return;
     try {
-        const params = new URLSearchParams({ line_id: String(lineId), work_date: date });
-        const response = await fetch(`/api/daily-plans?${params.toString()}`, {
-            method: 'DELETE',
-            credentials: 'include'
-        });
-        const raw = await response.text();
-        let result = null;
-        try {
-            result = raw ? JSON.parse(raw) : null;
-        } catch (parseErr) {
-            throw new Error(`Delete request returned an unexpected response (HTTP ${response.status})`);
+        const existedBefore = await doesDailyPlanExist(lineId, date);
+        if (!existedBefore) {
+            if (window._dailyPlanMap?.delete) window._dailyPlanMap.delete(String(lineId));
+            clearDailyPlanRow(lineId);
+            showToast('Daily plan deleted', 'success');
+            await loadDailyPlanData();
+            return;
         }
-        if (!result.success) {
-            showToast(result.error, 'error');
+
+        let result = await requestDailyPlanDelete(lineId, date);
+        if (result?.requires_confirmation) {
+            const confirmed = confirm('This is an ongoing plan. Are you sure you want to delete it permanently?');
+            if (!confirmed) return;
+            result = await requestDailyPlanDelete(lineId, date, true);
+        }
+        if (result?.http_status === 404) {
+            const stillExists = await doesDailyPlanExist(lineId, date);
+            if (stillExists) {
+                showToast('Delete did not apply to the saved plan shown in the panel', 'error');
+                await loadDailyPlanData();
+                return;
+            }
+            if (window._dailyPlanMap?.delete) window._dailyPlanMap.delete(String(lineId));
+            clearDailyPlanRow(lineId);
+            showToast('Daily plan deleted', 'success');
+            await loadDailyPlanData();
+            return;
+        }
+        if (!result?.success) {
+            showToast(result?.error || 'Delete failed', 'error');
+            return;
+        }
+        if (window._dailyPlanMap?.delete) window._dailyPlanMap.delete(String(lineId));
+        clearDailyPlanRow(lineId);
+        await loadDailyPlanData();
+        const stillExists = await doesDailyPlanExist(lineId, date);
+        if (stillExists) {
+            showToast('Delete completed on the server but the panel still shows the plan. Reloading…', 'error');
+            window.location.reload();
             return;
         }
         showToast('Daily plan deleted', 'success');
-        loadDailyPlanData();
     } catch (err) {
         showToast(err.message, 'error');
     }
+}
+
+async function fetchDailyPlanSnapshot(date) {
+    const response = await fetch(`/api/daily-plans?date=${encodeURIComponent(date)}&_=${Date.now()}`, {
+        cache: 'no-store',
+        credentials: 'include'
+    });
+    return response.json();
+}
+
+async function doesDailyPlanExist(lineId, date) {
+    const result = await fetchDailyPlanSnapshot(date);
+    if (!result?.success) return false;
+    return (result.data?.plans || []).some(plan => String(plan.line_id) === String(lineId));
+}
+
+async function requestDailyPlanDelete(lineId, date, force = false) {
+    const params = new URLSearchParams({ line_id: String(lineId), work_date: date });
+    if (force) params.set('force', 'true');
+
+    const response = await fetch(`/api/daily-plans?${params.toString()}`, {
+        method: 'DELETE',
+        credentials: 'include'
+    });
+    const raw = await response.text();
+    try {
+        const parsed = raw ? JSON.parse(raw) : {};
+        return { ...parsed, http_status: response.status };
+    } catch (parseErr) {
+        throw new Error(`Delete request returned an unexpected response (HTTP ${response.status})`);
+    }
+}
+
+function clearDailyPlanRow(lineId) {
+    const productEl = document.getElementById(`plan-product-${lineId}`);
+    const targetEl = document.getElementById(`plan-target-${lineId}`);
+    const incomingEl = document.getElementById(`plan-incoming-${lineId}`);
+    const incomingTargetEl = document.getElementById(`plan-incoming-target-${lineId}`);
+    const wsRow = document.getElementById(`ws-plan-row-${lineId}`);
+    const wsPanel = document.getElementById(`ws-plan-panel-${lineId}`);
+
+    if (productEl) productEl.value = '';
+    if (targetEl) targetEl.value = '0';
+    if (incomingEl) incomingEl.value = '';
+    if (incomingTargetEl) incomingTargetEl.value = '0';
+    if (wsRow) wsRow.style.display = 'none';
+    if (wsPanel) wsPanel.innerHTML = '';
 }
 
 function copyDailyPlan(lineId) {
@@ -5163,9 +5529,15 @@ async function loadOtPlanSection(date) {
         if (!result.success) { container.innerHTML = `<div class="alert alert-danger">${result.error}</div>`; return; }
         const { plans, lines } = result.data;
         const planMap = new Map(plans.map(p => [String(p.line_id), p]));
-        if (!lines.length) { container.innerHTML = '<div style="padding:24px;color:#6b7280;">No active lines found.</div>'; return; }
+        const renderedLines = isIeMode
+            ? lines.filter(line => planMap.has(String(line.id)))
+            : lines;
+        if (!renderedLines.length) {
+            container.innerHTML = `<div style="padding:24px;color:#6b7280;">${isIeMode ? 'No saved OT plans found for this date.' : 'No active lines found.'}</div>`;
+            return;
+        }
 
-        container.innerHTML = lines.map(line => {
+        container.innerHTML = renderedLines.map(line => {
             const plan = planMap.get(String(line.id));
             const hasPlan = !!plan?.id;
             const otEnabled = plan?.ot_enabled || false;
@@ -5173,7 +5545,7 @@ async function loadOtPlanSection(date) {
         }).join('');
 
         // Auto-load expanded cards
-        lines.forEach(line => {
+        renderedLines.forEach(line => {
             const plan = planMap.get(String(line.id));
             if (plan?.ot_enabled) loadOtLineCard(line.id, date);
         });
@@ -7011,6 +7383,44 @@ async function toggleOsmCheck(lpwpId, checked, cbEl) {
 }
 
 // ============================================================================
+function getDefaultReportHour() {
+    const hourStart = 8;
+    const hourEnd = 19;
+    const now = new Date();
+    return Math.min(Math.max(now.getHours() - 1, hourStart), hourEnd);
+}
+
+function buildReportHourOptions(selectedHour) {
+    const selected = Number.isFinite(parseInt(selectedHour, 10)) ? parseInt(selectedHour, 10) : getDefaultReportHour();
+    return Array.from({ length: 12 }).map((_, idx) => {
+        const hour = 8 + idx;
+        const start = `${String(hour).padStart(2, '0')}:00`;
+        const end = `${String(hour + 1).padStart(2, '0')}:00`;
+        return `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${end} (${start}-${end})</option>`;
+    }).join('');
+}
+
+function formatReportHourLabel(hour) {
+    const hourValue = parseInt(hour, 10);
+    if (!Number.isFinite(hourValue)) return '';
+    const start = `${String(hourValue).padStart(2, '0')}:00`;
+    const end = `${String(hourValue + 1).padStart(2, '0')}:00`;
+    return `${end} (${start}-${end})`;
+}
+
+function setAdminLiveReportTimer(refreshFn, guardId) {
+    if (window._adminLiveReportTimer) clearInterval(window._adminLiveReportTimer);
+    if (typeof refreshFn !== 'function') return;
+    window._adminLiveReportTimer = setInterval(() => {
+        if (!document.getElementById(guardId)) {
+            clearInterval(window._adminLiveReportTimer);
+            window._adminLiveReportTimer = null;
+            return;
+        }
+        refreshFn();
+    }, 30000);
+}
+
 // OSM REPORT — Stagewise Hourly OSM Report
 // ============================================================================
 async function loadOsmReport() {
@@ -7175,12 +7585,12 @@ function _buildOsmTable(data) {
     let maxDataHour = -1;
     for (const pt of osm_points) {
         for (const h of Object.keys(pt.hourly)) {
-            const hInt = parseInt(h);
+            const hInt = parseInt(h, 10);
             if (hInt > maxDataHour) maxDataHour = hInt;
         }
     }
     const elapsedHours = maxDataHour >= inH ? hours.filter(h => h <= maxDataHour).length : 0;
-    const totalTargetSoFar = elapsedHours * perHourTarget;   // target AS ON TIME
+    const totalTargetSoFar = elapsedHours * perHourTarget;
 
     const ordinals = ['1ST','2ND','3RD','4TH','5TH','6TH','7TH','8TH','9TH','10TH','11TH','12TH'];
     const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
@@ -7204,7 +7614,6 @@ function _buildOsmTable(data) {
 
         const todayOutput = Object.values(pt.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
 
-        // B.LOG = sum of per-hour deficits only (hours where output < target, no netting with surpluses)
         let combinedBacklog = 0;
         for (const h of hours.filter(h => h <= maxDataHour)) {
             const qty = pt.hourly[h]?.quantity || 0;
@@ -7212,7 +7621,6 @@ function _buildOsmTable(data) {
         }
         const backlog = combinedBacklog < 0 ? combinedBacklog : 0;
 
-        // Extra produced: sum of per-hour surpluses
         let combinedExtra = 0;
         for (const h of hours.filter(h => h <= maxDataHour)) {
             const qty = pt.hourly[h]?.quantity || 0;
@@ -7220,12 +7628,9 @@ function _buildOsmTable(data) {
         }
         const extra = combinedExtra > 0 ? combinedExtra : 0;
 
-        // BAL TO PROD = remaining from today's target as of now
         const balToProd = totalTargetSoFar - todayOutput;
-        // ORDER BAL PROD = remaining order quantity yet to be produced
         const orderBalProd = (total_target || 0) - (pt.cumulative_output || 0);
         const orderComplete = total_target > 0 && orderBalProd <= 0;
-        // REMAINING DAYS = order bal prod / daily target
         const remainingDays = (target_units > 0 && orderBalProd > 0)
             ? Math.ceil(orderBalProd / target_units) : 0;
 
@@ -7234,6 +7639,7 @@ function _buildOsmTable(data) {
         )].join('; ');
 
         const rowBg = orderComplete ? 'background:#f0fdf4;' : '';
+
         return `<tr style="${rowBg}">
             <td style="${tcS}font-weight:700;color:#7c3aed;">${pt.osm_label}</td>
             <td style="${tcS}font-weight:600;">${pt.cumulative_output || 0}</td>
@@ -7252,7 +7658,7 @@ function _buildOsmTable(data) {
     }).join('');
 
     const maxCumulative = total_target > 0 ? Math.max(...osm_points.map(pt => pt.cumulative_output || 0)) : 0;
-    const orderOver     = total_target > 0 && maxCumulative > total_target;
+    const orderOver = total_target > 0 && maxCumulative > total_target;
     const orderComplete = total_target > 0 && maxCumulative >= total_target;
     const completionBanner = orderOver
         ? `<div style="background:#f59e0b;color:#fff;padding:10px 16px;font-weight:700;font-size:13px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
@@ -7323,7 +7729,7 @@ function _buildOsmRangeTable(data) {
         const blog = pt.blog;
         const extra = pt.extra;
         const balToProd = range_target - pt.total_output;
-        const orderBalProd = (total_target || 0) - pt.total_output;
+        const orderBalProd = (range_target || 0) - pt.total_output;
         const remainingDays = (target_units > 0 && orderBalProd > 0)
             ? Math.ceil(orderBalProd / target_units) : 0;
         return `<tr>
@@ -7481,6 +7887,10 @@ async function loadEfficiencyReport() {
                     <label for="eff-date">Date</label>
                     <input type="date" id="eff-date" value="${today}">
                 </div>
+                <div class="ie-date">
+                    <label for="eff-hour">Hour</label>
+                    <select id="eff-hour" class="form-control" style="min-width:180px;">${buildReportHourOptions()}</select>
+                </div>
                 <button class="btn btn-secondary" onclick="refreshEfficiencyReport()">Refresh</button>
                 <button class="btn btn-secondary" onclick="printEfficiencyReport()">&#9113; Print</button>
                 <button class="btn btn-secondary" onclick="downloadEfficiencyExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
@@ -7505,11 +7915,14 @@ async function loadEfficiencyReport() {
     } catch (e) { /* ignore */ }
 
     document.getElementById('eff-date').addEventListener('change', refreshEfficiencyReport);
+    document.getElementById('eff-hour').addEventListener('change', refreshEfficiencyReport);
+    setAdminLiveReportTimer(() => refreshEfficiencyReport(), 'eff-content');
 }
 
 async function refreshEfficiencyReport() {
     const lineId = document.getElementById('eff-line')?.value;
     const date   = document.getElementById('eff-date')?.value;
+    const hour   = document.getElementById('eff-hour')?.value || String(getDefaultReportHour());
     const container = document.getElementById('eff-content');
     if (!container) return;
 
@@ -7521,7 +7934,7 @@ async function refreshEfficiencyReport() {
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
 
     try {
-        const r = await fetch(`${API_BASE}/efficiency-report?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const r = await fetch(`${API_BASE}/efficiency-report?line_id=${lineId}&date=${date}&hour=${hour}`, { credentials: 'include' });
         const resp = await r.json();
 
         if (!resp.success) {
@@ -7544,59 +7957,62 @@ async function refreshEfficiencyReport() {
 }
 
 function _buildEfficiencyTable(data) {
-    const { line, plan, summary, ot_summary, workstations } = data;
+    const { line, plan, summary, workstations, employee_progress = [] } = data;
     const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
     const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
     const tcS = tdS + 'text-align:center;';
+    const reportLabel = plan.report_hour_label || 'Full Day';
+    const hourlyTarget = plan.hourly_target_units || 0;
+    const liveHours = plan.live_hours || 0;
 
-    // Line Efficiency color
-    const le = summary.line_efficiency_pct;
-    const leColor = le === null ? '#6b7280' : le >= 75 ? '#16a34a' : le >= 50 ? '#d97706' : '#dc2626';
-    const leText = le === null ? 'N/A' : le.toFixed(2) + '%';
+    const liveEff = summary.live_efficiency_pct;
+    const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 75 ? '#16a34a' : liveEff >= 50 ? '#d97706' : '#dc2626';
+    const liveEffText = liveEff === null ? 'N/A' : liveEff.toFixed(2) + '%';
+    const hourlyEff = summary.hourly_efficiency_pct;
+    const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 75 ? '#16a34a' : hourlyEff >= 50 ? '#d97706' : '#dc2626';
+    const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
 
-    // Summary bar
     const summaryBar = `
         <div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:12px;align-items:center;">
             <span style="font-size:12px;"><strong>Product:</strong> ${plan.product_name || '-'} (${plan.product_code || '-'})</span>
+            <span style="font-size:12px;"><strong>Hourly Efficiency:</strong> ${reportLabel}</span>
+            <span style="font-size:12px;"><strong>Live Window:</strong> Start to ${reportLabel}</span>
             <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
             <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
-            <span style="font-size:12px;"><strong>Working Hours:</strong> ${plan.working_hours.toFixed(1)} h</span>
+            <span style="font-size:12px;"><strong>Hour Target:</strong> ${hourlyTarget}</span>
+            <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
-            <span style="font-size:12px;"><strong>Line Output:</strong> ${summary.line_output}</span>
-            <span style="font-size:12px;"><strong>Target:</strong> ${plan.target_units}</span>
-            ${summary.total_ot_hours > 0 ? `<span style="font-size:12px;"><strong>Total OT Hours:</strong> ${summary.total_ot_hours.toFixed(2)} h</span>` : ''}
-            <span style="font-size:14px;font-weight:700;color:${leColor};margin-left:auto;">LINE EFFICIENCY: ${leText}</span>
+            <span style="font-size:12px;"><strong>Live Output:</strong> ${summary.live_output}</span>
+            <span style="font-size:12px;"><strong>Hourly Output:</strong> ${summary.hourly_output}</span>
+            <span style="font-size:12px;"><strong>Daily Target:</strong> ${plan.target_units}</span>
+            <span style="font-size:14px;font-weight:700;color:${liveEffColor};margin-left:auto;">LIVE EFFICIENCY: ${liveEffText}</span>
+            <span style="font-size:14px;font-weight:700;color:${hourlyEffColor};">HOURLY EFFICIENCY: ${hourlyEffText}</span>
         </div>`;
 
-    // OT summary row (if OT data exists)
-    const otRow = ot_summary ? `
-        <tr style="background:#fef9c3;">
-            <td colspan="10" style="${tdS}font-size:12px;font-weight:600;text-align:center;">
-                OT: ${ot_summary.active_ot_workstations} active workstations
-                &nbsp;&bull;&nbsp; OT Output: ${ot_summary.total_ot_output}
-                &nbsp;&bull;&nbsp; OT Target: ${ot_summary.ot_target_units}
-            </td>
-        </tr>` : '';
-
     const dataRows = workstations.map(ws => {
-        // Workload% color
         const wl = parseFloat(ws.workload_pct || 0);
         const wlColor = wl >= 100 ? '#dc2626' : wl >= 80 ? '#d97706' : '#16a34a';
         const wlBg    = wl >= 100 ? '#fee2e2' : wl >= 80 ? '#fef3c7' : '#dcfce7';
 
-        // Worker Efficiency color
-        const we = ws.worker_efficiency_pct;
-        let weText, weColor, weBg;
-        if (we === null || !ws.employee_code) {
-            weText = '—'; weColor = '#6b7280'; weBg = '#f9fafb';
+        const liveWe = ws.live_efficiency_pct;
+        let liveWeText, liveWeColor, liveWeBg;
+        if (liveWe === null || !ws.employee_code) {
+            liveWeText = '—'; liveWeColor = '#6b7280'; liveWeBg = '#f9fafb';
         } else {
-            weText = we.toFixed(2) + '%';
-            weColor = we >= 75 ? '#16a34a' : we >= 50 ? '#d97706' : '#dc2626';
-            weBg    = we >= 75 ? '#dcfce7'  : we >= 50 ? '#fef3c7'  : '#fee2e2';
+            liveWeText = liveWe.toFixed(2) + '%';
+            liveWeColor = liveWe >= 75 ? '#16a34a' : liveWe >= 50 ? '#d97706' : '#dc2626';
+            liveWeBg    = liveWe >= 75 ? '#dcfce7'  : liveWe >= 50 ? '#fef3c7'  : '#fee2e2';
         }
 
-        const otMinDisplay = ws.ot_minutes > 0 ? ws.ot_minutes.toFixed(0) + ' min' : '—';
-        const otOutDisplay = ws.ot_output > 0 ? ws.ot_output : '—';
+        const hourlyWe = ws.hourly_efficiency_pct;
+        let hourlyWeText, hourlyWeColor, hourlyWeBg;
+        if (hourlyWe === null || !ws.employee_code) {
+            hourlyWeText = '—'; hourlyWeColor = '#6b7280'; hourlyWeBg = '#f9fafb';
+        } else {
+            hourlyWeText = hourlyWe.toFixed(2) + '%';
+            hourlyWeColor = hourlyWe >= 75 ? '#16a34a' : hourlyWe >= 50 ? '#d97706' : '#dc2626';
+            hourlyWeBg    = hourlyWe >= 75 ? '#dcfce7'  : hourlyWe >= 50 ? '#fef3c7'  : '#fee2e2';
+        }
 
         return `<tr>
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
@@ -7605,21 +8021,39 @@ function _buildEfficiencyTable(data) {
             <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
             <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
             <td style="${tcS}font-weight:700;color:${wlColor};background:${wlBg};">${wl.toFixed(1)}%</td>
-            <td style="${tcS}font-weight:700;">${ws.regular_output}</td>
-            <td style="${tcS}color:#7c3aed;">${otMinDisplay}</td>
-            <td style="${tcS}color:#7c3aed;">${otOutDisplay}</td>
-            <td style="${tcS}font-weight:700;color:${weColor};background:${weBg};">${weText}</td>
+            <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
+            <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
+            <td style="${tcS}font-weight:700;">${ws.hourly_output ?? 0}</td>
+            <td style="${tcS}font-weight:700;color:${hourlyWeColor};background:${hourlyWeBg};">${hourlyWeText}</td>
         </tr>`;
     }).join('');
+
+    const employeeRows = employee_progress.length
+        ? employee_progress.map(emp => {
+            const updatedText = emp.last_updated
+                ? new Date(emp.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                : '—';
+            return `<tr>
+                <td style="${tdS}"><strong>${emp.emp_code}</strong><div style="color:var(--secondary);font-size:11px;">${emp.emp_name}</div></td>
+                <td style="${tcS}">${emp.workstation_code || '—'}</td>
+                <td style="${tcS}">${emp.live_output || 0}</td>
+                <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tcS}">${emp.hourly_output || 0}</td>
+                <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tcS}">${updatedText}</td>
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="7" style="${tdS}text-align:center;color:#6b7280;">No employee progress recorded for ${reportLabel}.</td></tr>`;
 
     return `<div id="efficiency-print-area">
         <div class="card">
             <div class="card-header">
                 <div>
-                    <h3 class="card-title">EFFICIENCY REPORT</h3>
+                    <h3 class="card-title">LIVE AND HOURLY EFFICIENCY REPORT</h3>
                     <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
                         ${line.line_name} (${line.line_code})
                         &nbsp;&bull;&nbsp; Date: ${document.getElementById('eff-date')?.value || ''}
+                        &nbsp;&bull;&nbsp; Hourly Efficiency: ${reportLabel}
                     </div>
                 </div>
             </div>
@@ -7635,16 +8069,29 @@ function _buildEfficiencyTable(data) {
                                 <th style="${thS}min-width:80px;">CYCLE TIME<br>(s)</th>
                                 <th style="${thS}min-width:75px;">TAKT TIME<br>(s)</th>
                                 <th style="${thS}min-width:70px;">WKLD%</th>
-                                <th style="${thS}min-width:70px;">OUTPUT</th>
-                                <th style="${thS}min-width:70px;">OT MIN</th>
-                                <th style="${thS}min-width:75px;">OT OUTPUT</th>
-                                <th style="${thS}min-width:90px;">WORKER EFF%</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
+                                <th style="${thS}min-width:90px;">HOURLY OUTPUT<br>${reportLabel}</th>
+                                <th style="${thS}min-width:90px;">HOURLY EFF%</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            ${dataRows}
-                            ${otRow}
-                        </tbody>
+                        <tbody>${dataRows}</tbody>
+                    </table>
+                </div>
+                <div style="margin-top:16px;overflow-x:auto;">
+                    <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
+                        <thead>
+                            <tr>
+                                <th style="${thS}min-width:150px;">EMPLOYEE</th>
+                                <th style="${thS}min-width:70px;">WS</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
+                                <th style="${thS}min-width:90px;">HOURLY OUTPUT</th>
+                                <th style="${thS}min-width:90px;">HOURLY EFF%</th>
+                                <th style="${thS}min-width:100px;">LIVE UPDATE</th>
+                            </tr>
+                        </thead>
+                        <tbody>${employeeRows}</tbody>
                     </table>
                 </div>
             </div>
@@ -7951,19 +8398,20 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
     const dataRows = rows.map((row, idx) => {
         const dateCells = dates.map(d => {
             const cell = row.dates[d];
+            const hasWorkedHours = Number(cell?.hours_worked || 0) > 0;
             const tagKey = cell?.tag ? cell.tag.split(' ')[0] : null;
             const tS = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
             const tagBadge = cell?.tag ? `<br><span style="font-size:8px;font-weight:700;">${cell.tag}</span>` : '';
             const effVal = Number.isFinite(Number(cell?.eff)) ? Number(cell.eff) : 0;
             const effTxt = effVal.toFixed(1) + '%';
             const effC   = effColor(effVal);
-            const zeroCell = `<td style="${tcS}">0</td>`;
+            const blankCell = `<td style="${tcS}">-</td>`;
 
-            if (!cell) return [
-                showTarget ? zeroCell : '',
-                showWip    ? zeroCell : '',
-                showOutput ? zeroCell : '',
-                showEff    ? `<td style="${tcS}font-weight:600;color:${effColor(0)};">0.0%</td>` : '',
+            if (!cell || !hasWorkedHours) return [
+                showTarget ? blankCell : '',
+                showWip    ? blankCell : '',
+                showOutput ? blankCell : '',
+                showEff    ? `<td style="${tcS}font-weight:600;color:#6b7280;">-</td>` : '',
             ].join('');
 
             const wip      = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
@@ -8359,4 +8807,168 @@ async function doWifiConnect() {
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = 'Connect'; }
     }
+}
+
+// ============================================================================
+// MATERIAL TRACKING
+// ============================================================================
+let _mtRefreshTimer = null;
+
+async function loadMaterialTracking() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Material Tracking</h1>
+                <p class="page-subtitle">Live feed, workstation output, and WIP per group</p>
+            </div>
+            <span class="status-badge" id="mt-last-updated"></span>
+        </div>
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+                <div>
+                    <label class="form-label">Line</label>
+                    <select id="mt-line" class="form-control" style="min-width:200px;">
+                        <option value="">Select Line</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Date</label>
+                    <input type="date" id="mt-date" class="form-control" value="${today}">
+                </div>
+                <button class="btn btn-primary" onclick="refreshMaterialTracking()">Load</button>
+                <span id="mt-auto-badge" style="font-size:12px;color:var(--text-muted);align-self:center;display:none;">Auto-refreshing every 60s</span>
+            </div>
+        </div>
+        <div id="mt-content"></div>
+    `;
+
+    // Load lines
+    try {
+        const res = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await res.json();
+        const sel = document.getElementById('mt-line');
+        (result.data || []).forEach(l => {
+            const opt = document.createElement('option');
+            opt.value = l.id;
+            opt.textContent = `${l.line_name} (${l.line_code})`;
+            sel.appendChild(opt);
+        });
+        sel.addEventListener('change', refreshMaterialTracking);
+        document.getElementById('mt-date').addEventListener('change', refreshMaterialTracking);
+    } catch (err) {
+        document.getElementById('mt-content').innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+async function refreshMaterialTracking() {
+    const lineId = document.getElementById('mt-line')?.value;
+    const date   = document.getElementById('mt-date')?.value;
+    const container = document.getElementById('mt-content');
+    if (!container) return;
+    if (!lineId || !date) { container.innerHTML = ''; return; }
+
+    // Start auto-refresh timer (reset on each explicit call)
+    if (_mtRefreshTimer) clearInterval(_mtRefreshTimer);
+    document.getElementById('mt-auto-badge').style.display = 'inline';
+    _mtRefreshTimer = setInterval(() => {
+        if (currentSection !== 'material-tracking') {
+            clearInterval(_mtRefreshTimer);
+            _mtRefreshTimer = null;
+            return;
+        }
+        refreshMaterialTracking();
+    }, 60_000);
+
+    try {
+        const res = await fetch(`${API_BASE}/material-tracking?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const result = await res.json();
+        if (!result.success) throw new Error(result.error || 'Failed to load');
+
+        const { line, groups } = result.data;
+        const updEl = document.getElementById('mt-last-updated');
+        if (updEl) updEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+        if (!groups.length) {
+            container.innerHTML = `<div class="alert alert-info">No workstation plan for this line on ${date}.</div>`;
+            return;
+        }
+
+        // Collect all hour slots that appear across any workstation
+        const allHours = [...new Set(
+            groups.flatMap(g => g.workstations.flatMap(ws => Object.keys(ws.hourly).map(Number)))
+        )].sort((a, b) => a - b);
+
+        const fmtHour = h => `${String(h).padStart(2,'0')}:00`;
+
+        container.innerHTML = `
+            <div style="margin-bottom:8px;color:var(--text-muted);font-size:13px;">
+                ${line.line_name} &mdash; ${line.product_name ?? 'No product'} &mdash; Target: <strong>${line.target_units ?? '—'}</strong> pcs
+            </div>
+            ${groups.map(g => _buildMtGroupCard(g, allHours, fmtHour)).join('')}
+        `;
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function _buildMtGroupCard(group, allHours, fmtHour) {
+    const wipColor = group.wip > 0 ? '#d97706' : '#16a34a';
+    const groupLabel = group.group_name ? `Group: ${group.group_name}` : group.group_identifier;
+
+    const wsRows = group.workstations.map((ws, idx) => {
+        const isLast = idx === group.workstations.length - 1;
+        const hourCells = allHours.map(h => {
+            const qty = ws.hourly[h] ?? null;
+            return `<td style="text-align:center;padding:6px 10px;${isLast ? 'font-weight:600;' : ''}">${qty != null ? qty : '<span style="color:#d1d5db;">—</span>'}</td>`;
+        }).join('');
+        const empLabel = ws.emp_name ? `${ws.emp_code} — ${ws.emp_name}` : '<span style="color:#9ca3af;">Unassigned</span>';
+        const lastBadge = isLast ? `<span style="background:#dbeafe;color:#1d4ed8;font-size:10px;padding:1px 5px;border-radius:8px;margin-left:4px;">LAST</span>` : '';
+        return `
+            <tr style="${isLast ? 'background:#f0fdf4;' : ''}">
+                <td style="padding:6px 10px;white-space:nowrap;font-weight:${isLast ? '700' : '500'};">${ws.workstation_code}${lastBadge}</td>
+                <td style="padding:6px 10px;font-size:12px;color:#6b7280;white-space:nowrap;">${empLabel}</td>
+                <td style="padding:6px 10px;text-align:center;font-weight:600;">${ws.cumulative_output}</td>
+                ${hourCells}
+            </tr>
+        `;
+    }).join('');
+
+    const hourHeaders = allHours.map(h =>
+        `<th style="padding:6px 10px;text-align:center;font-weight:600;white-space:nowrap;">${fmtHour(h)}</th>`
+    ).join('');
+
+    return `
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <h3 class="card-title" style="margin:0;">${groupLabel}</h3>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                    <span style="background:#dcfce7;color:#16a34a;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:700;">
+                        Feed: ${group.feed} pcs
+                    </span>
+                    <span style="background:#dbeafe;color:#1d4ed8;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:700;">
+                        Output: ${group.group_output} pcs
+                    </span>
+                    <span style="background:#fff7ed;color:${wipColor};padding:4px 10px;border-radius:12px;font-size:12px;font-weight:700;">
+                        WIP: ${group.wip} pcs
+                    </span>
+                </div>
+            </div>
+            <div class="card-body" style="padding:0;overflow-x:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead>
+                        <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
+                            <th style="padding:6px 10px;text-align:left;font-weight:600;">Workstation</th>
+                            <th style="padding:6px 10px;text-align:left;font-weight:600;">Employee</th>
+                            <th style="padding:6px 10px;text-align:center;font-weight:600;">Total</th>
+                            ${hourHeaders}
+                        </tr>
+                    </thead>
+                    <tbody>${wsRows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
 }

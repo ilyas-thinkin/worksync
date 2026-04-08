@@ -519,8 +519,72 @@ function _renderWsCardFooter(wsCode, planId, empId, empCode, empName, isLinked) 
     return `<div style="display:flex;align-items:center;gap:6px;width:100%;">${linkBtn}${changeBtn}${unlinkBtn}</div>`;
 }
 
+// Shows a late-reason picker if current time >= 09:00.
+// Returns the chosen reason string, or null if before 09:00 (no reason needed), or false if cancelled.
+function _pickLateReason(wsCode) {
+    return new Promise(resolve => {
+        const now = new Date();
+        if (now.getHours() < 9) { resolve(null); return; }  // before 09:00 — no reason needed
+
+        const existingModal = document.getElementById('late-reason-modal');
+        if (existingModal) existingModal.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'late-reason-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        modal.innerHTML = `
+            <div style="background:#fff;border-radius:12px;padding:24px;max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                <h3 style="margin:0 0 6px;font-size:1rem;font-weight:700;color:#111827;">Late Link — ${wsCode}</h3>
+                <p style="margin:0 0 18px;font-size:13px;color:#6b7280;">Current time is <strong>${timeStr}</strong>. Why is this employee being linked now?</p>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                    <button class="late-reason-btn" data-reason="linking_took_time"
+                        style="text-align:left;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#1d4ed8;">Linking took time</strong>
+                        <span style="color:#6b7280;font-size:12px;">Employee was present — system/process delayed scan</span>
+                    </button>
+                    <button class="late-reason-btn" data-reason="meeting"
+                        style="text-align:left;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#1d4ed8;">Meeting</strong>
+                        <span style="color:#6b7280;font-size:12px;">Employee was at work but in a meeting</span>
+                    </button>
+                    <button class="late-reason-btn" data-reason="permission"
+                        style="text-align:left;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#d97706;">Permission</strong>
+                        <span style="color:#6b7280;font-size:12px;">Approved late arrival — clock from link time</span>
+                    </button>
+                    <button class="late-reason-btn" data-reason="other"
+                        style="text-align:left;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#d97706;">Other</strong>
+                        <span style="color:#6b7280;font-size:12px;">Other reason — clock from link time</span>
+                    </button>
+                    <button id="late-reason-cancel"
+                        style="padding:10px;border:none;background:none;color:#6b7280;cursor:pointer;font-size:13px;margin-top:4px;">
+                        Cancel
+                    </button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+
+        modal.querySelectorAll('.late-reason-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                modal.remove();
+                resolve(btn.dataset.reason);
+            });
+        });
+        document.getElementById('late-reason-cancel').addEventListener('click', () => {
+            modal.remove();
+            resolve(false);
+        });
+    });
+}
+
 // "Link" button handler — confirms the pre-mapped employee without needing a scan
 async function linkMappedEmployee(wsCode, planId, empId, empCode, empName) {
+    const lateReason = await _pickLateReason(wsCode);
+    if (lateReason === false) return; // cancelled
     try {
         const workDate = morningState.workDate || getSupervisorLocalDate();
         const res = await fetch(`${API_BASE}/workstation-assignments`, {
@@ -532,7 +596,8 @@ async function linkMappedEmployee(wsCode, planId, empId, empCode, empName) {
                 employee_id: empId,
                 work_date: workDate,
                 line_plan_workstation_id: planId,
-                is_linked: true
+                is_linked: true,
+                late_reason: lateReason || undefined
             })
         });
         const result = await res.json();
@@ -660,6 +725,9 @@ async function confirmChangeEmployee() {
         return;
     }
 
+    const lateReason = await _pickLateReason(morningState.selectedWorkstation);
+    if (lateReason === false) return; // cancelled
+
     try {
         const emp = morningState.scannedEmployee;
         const workDate = morningState.workDate || getSupervisorLocalDate();
@@ -673,7 +741,8 @@ async function confirmChangeEmployee() {
                 employee_id: emp.id,
                 work_date: workDate,
                 line_plan_workstation_id: morningState.selectedWorkstationPlanId,
-                is_linked: true
+                is_linked: true,
+                late_reason: lateReason || undefined
             })
         });
         const result = await res.json();
@@ -723,6 +792,8 @@ function cancelChangeEmployee() {
     morningState.scannedEmployee = null;
     morningState.mappedEmployee = null;
 }
+
+const cancelMorningScan = cancelChangeEmployee;
 
 async function unlinkAllMapping() {
     if (!morningState.lineId) return;

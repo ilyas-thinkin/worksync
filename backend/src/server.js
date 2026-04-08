@@ -129,7 +129,13 @@ app.use((req, res, next) => {
 });
 
 // Serve static files (public assets)
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (/\.(html|js)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+  }
+}));
 // Serve QR code images
 app.use('/qrcodes', express.static(process.env.QRCODES_DIR || path.join(__dirname, '..', '..', 'qrcodes')));
 
@@ -230,21 +236,25 @@ app.get('/health', (req, res) => {
 
 // Admin page
 app.get('/admin', requireRole('admin'), (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
 // IE page
 app.get('/ie', requireRole('ie'), (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'ie.html'));
 });
 
 // Line supervisor page
 app.get('/supervisor', requireRole('supervisor'), (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'supervisor.html'));
 });
 
 // Management page
 app.get('/management', requireAnyRole(['admin', 'ie', 'supervisor', 'management']), (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'management.html'));
 });
 

@@ -71,7 +71,7 @@ async function generateEmployeeQrById(id) {
     const employee = result.rows[0];
     if (!employee) return null;
 
-    const filename = `employee_${employee.id}.svg`;
+    const filename = `${employee.id}.svg`;
     const relativePath = `qrcodes/employees/${filename}`;
     const fullPath = path.join(dirs.employees, filename);
     const payload = {
