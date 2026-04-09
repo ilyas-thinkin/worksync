@@ -5972,7 +5972,6 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 [lineCode]
             );
             if (lineCheck.rows[0]) {
-                client.release();
                 return res.status(409).json({
                     success: false,
                     code: 'LINE_EXISTS',
@@ -5989,7 +5988,6 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 [effectiveProdCode]
             );
             if (prodCheck.rows[0]) {
-                client.release();
                 return res.status(409).json({
                     success: false,
                     code: 'PRODUCT_EXISTS',
@@ -6109,6 +6107,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             const osmVal = getCellStr(rowNum, 2);   // B: OSM
             const sah    = getCellNum(rowNum, 10);  // J: SAH (formula result = process_time/3600)
             if (!sah || sah <= 0) continue;         // skip rows with no process time entered
+            if (!wsCode) throw new Error(`Workstation is required for every process row (row ${rowNum})`);
             let empName = getCellStr(rowNum, 12);   // L: SELECT EMPLOYEE (combined "CODE | NAME" or plain)
             const empPipe = empName.indexOf(' | ');
             if (empPipe !== -1) empName = empName.slice(empPipe + 3).trim();
