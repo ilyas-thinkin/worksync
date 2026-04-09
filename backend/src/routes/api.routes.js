@@ -36,6 +36,7 @@ const excelUpload = multer({
 router.use(sanitizeInputs);
 
 const CHANGEOVER_ENABLED = process.env.CHANGEOVER_ENABLED !== 'false';
+const OPERATION_CODE_LOCK_KEY = 32001;
 
 const getSettingValue = async (key, fallback) => {
     const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -82,6 +83,17 @@ const collectDuplicateEmployeeIds = (items, selector) => {
     }
     return Array.from(duplicates);
 };
+
+async function generateNextOperationCode(db) {
+    await db.query('SELECT pg_advisory_xact_lock($1)', [OPERATION_CODE_LOCK_KEY]);
+    const result = await db.query(
+        `SELECT COALESCE(MAX(SUBSTRING(operation_code FROM '^OP-([0-9]+)$')::int), 0) + 1 AS next_num
+         FROM operations
+         WHERE operation_code ~ '^OP-[0-9]+$'`
+    );
+    const nextNum = parseInt(result.rows[0]?.next_num || 1, 10);
+    return `OP-${String(nextNum).padStart(4, '0')}`;
+}
 
 async function clearEmployeeAssignmentConflicts(db, employeeId, workDate, isOvertime, keepLineId, keepWorkstationCode) {
     const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
@@ -3762,17 +3774,7 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
             productId = insertResult.rows[0].id;
         }
 
-        // 2. Get next available operation code
-        const maxCodeResult = await client.query(
-            `SELECT operation_code FROM operations WHERE operation_code ~ '^OP-[0-9]+$' ORDER BY operation_code DESC LIMIT 1`
-        );
-        let nextOpNum = 1;
-        if (maxCodeResult.rows.length > 0) {
-            const match = maxCodeResult.rows[0].operation_code.match(/^OP-(\d+)$/);
-            if (match) nextOpNum = parseInt(match[1]) + 1;
-        }
-
-        // 3. Process each row - create operations and product_processes
+        // 2. Process each row - create operations and product_processes
         const newOperations = [];
         const operationCache = {};
         let autoSeq = 1;
@@ -3793,8 +3795,7 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
                 if (opResult.rows.length > 0) {
                     operationId = opResult.rows[0].id;
                 } else {
-                    const opCode = `OP-${String(nextOpNum).padStart(4, '0')}`;
-                    nextOpNum++;
+                    const opCode = await generateNextOperationCode(client);
                     const newOp = await client.query(
                         `INSERT INTO operations (operation_code, operation_name, is_active, created_by)
                          VALUES ($1, $2, true, $3) RETURNING id, operation_code`,
@@ -4002,17 +4003,24 @@ router.get('/operations/categories', async (req, res) => {
 });
 
 router.post('/operations', validateBody(schemas.operation.partial()), async (req, res) => {
-    const { operation_code, operation_name, operation_description, operation_category } = req.body;
+    const { operation_name, operation_description, operation_category } = req.body;
+    const client = await pool.connect();
     try {
-        const result = await pool.query(
+        await client.query('BEGIN');
+        const operationCode = await generateNextOperationCode(client);
+        const result = await client.query(
             `INSERT INTO operations (operation_code, operation_name, operation_description, operation_category, is_active)
              VALUES ($1, $2, $3, $4, true) RETURNING *`,
-            [operation_code, operation_name, operation_description, operation_category]
+            [operationCode, operation_name, operation_description, operation_category]
         );
+        await client.query('COMMIT');
         realtime.broadcast('data_change', { entity: 'operations', action: 'create', id: result.rows[0].id });
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -6352,18 +6360,6 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             });
         }
 
-        // Pre-fetch next auto-op number for rows with missing operation code
-        let nextOpNum = 1;
-        if (dataRows.some(r => !r.opCode)) {
-            const maxCode = await client.query(
-                `SELECT operation_code FROM operations WHERE operation_code ~ '^OP-[0-9]+$' ORDER BY operation_code DESC LIMIT 1`
-            );
-            if (maxCode.rows.length) {
-                const m = maxCode.rows[0].operation_code.match(/^OP-(\d+)$/);
-                if (m) nextOpNum = parseInt(m[1]) + 1;
-            }
-        }
-
         // Deactivate all existing product_processes for this product.
         // uq_product_sequence is a PARTIAL unique index (WHERE is_active = true), so deactivated
         // rows do not participate in uniqueness checks — no sequence shifting needed.
@@ -6374,31 +6370,46 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
         // Upsert operations + product_processes.
         for (const row of dataRows) {
-            // If operation code is missing, find by name or auto-generate
-            if (!row.opCode) {
-                const byName = await client.query(
-                    `SELECT id, operation_code FROM operations WHERE UPPER(operation_name) = UPPER($1) LIMIT 1`,
-                    [row.opName]
-                );
-                if (byName.rows[0]) {
-                    row.opId   = byName.rows[0].id;
-                    row.opCode = byName.rows[0].operation_code;
-                } else {
-                    row.opCode = 'OP-' + String(nextOpNum).padStart(4, '0');
-                    nextOpNum++;
-                }
-            }
-
             if (!row.opId) {
-                const opResult = await client.query(
-                    `INSERT INTO operations (operation_code, operation_name, is_active)
-                     VALUES ($1, $2, true)
-                     ON CONFLICT (operation_code) DO UPDATE
-                       SET operation_name = EXCLUDED.operation_name
-                     RETURNING id`,
-                    [row.opCode, row.opName]
+                let resolvedOperation = null;
+
+                const byCode = await client.query(
+                    `SELECT id, operation_code
+                     FROM operations
+                     WHERE UPPER(TRIM(operation_code)) = UPPER(TRIM($1))
+                     LIMIT 1`,
+                    [row.opCode || '']
                 );
-                row.opId = opResult.rows[0].id;
+
+                if (byCode.rows[0]) {
+                    resolvedOperation = byCode.rows[0];
+                } else {
+                    const byName = await client.query(
+                        `SELECT id, operation_code
+                         FROM operations
+                         WHERE UPPER(TRIM(operation_name)) = UPPER(TRIM($1))
+                         LIMIT 1`,
+                        [row.opName]
+                    );
+
+                    if (byName.rows[0]) {
+                        resolvedOperation = byName.rows[0];
+                    }
+                }
+
+                if (resolvedOperation) {
+                    row.opId = resolvedOperation.id;
+                    row.opCode = resolvedOperation.operation_code;
+                } else {
+                    row.opCode = await generateNextOperationCode(client);
+                    const opResult = await client.query(
+                        `INSERT INTO operations (operation_code, operation_name, is_active)
+                         VALUES ($1, $2, true)
+                         RETURNING id`,
+                        [row.opCode, row.opName]
+                    );
+                    row.opId = opResult.rows[0].id;
+                }
             }
 
             // OSM checked: true only when the upload marks the box as checked.

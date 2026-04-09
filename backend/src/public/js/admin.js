@@ -2835,8 +2835,11 @@ function showOperationModal(op = null) {
             <div class="modal-body">
                 <form id="operation-form">
                     <div class="form-group">
-                        <label class="form-label">Operation Code *</label>
-                        <input type="text" class="form-control" name="operation_code" value="${op?.operation_code || ''}" required placeholder="e.g., OP_072">
+                        <label class="form-label">Operation Code ${isEdit ? '*' : ''}</label>
+                        ${isEdit
+                            ? `<input type="text" class="form-control" name="operation_code" value="${op?.operation_code || ''}" required>`
+                            : `<input type="text" class="form-control" value="Auto-generated on save" readonly>`
+                        }
                     </div>
                     <div class="form-group">
                         <label class="form-label">Operation Name *</label>
