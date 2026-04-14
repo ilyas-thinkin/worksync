@@ -1,5 +1,9 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 require('dotenv').config();
+
+// Return DATE columns as plain strings (YYYY-MM-DD) instead of JS Date objects.
+// Without this, pg interprets dates as UTC midnight, causing off-by-one errors in IST (UTC+5:30).
+types.setTypeParser(1082, val => val);
 
 const pool = new Pool({
     host: process.env.DB_HOST || '127.0.0.1',

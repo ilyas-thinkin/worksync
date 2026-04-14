@@ -363,7 +363,7 @@ function renderMorningAssignments(hasPlan) {
             const hasEmployee = !!ws.assigned_emp_name;
             const isLinked   = hasEmployee && ws.assigned_is_linked !== false;
             const processList = (ws.processes || []).map(p => `${p.operation_code} – ${p.operation_name}`).join(', ');
-            const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
+            const workloadColor = ws.workload_pct >= 90 ? '#16a34a' : ws.workload_pct >= 80 ? '#d97706' : '#dc2626';
             const workloadPct = parseFloat(ws.workload_pct||0).toFixed(0);
 
             const assignedHtml = hasEmployee
@@ -415,7 +415,6 @@ function renderMorningAssignments(hasPlan) {
                             ${workstations.length} workstations &nbsp;|&nbsp;
                             ${allLinked ? '<span style="color:#16a34a;">&#10003; All linked</span>' : '<span style="color:#dc2626;">&#9888; Some not linked</span>'}
                         </span>
-                        <button class="btn btn-secondary btn-sm" onclick="unlinkAllMapping()">Unlink All</button>
                     </div>
                 </div>
                 <div class="card-body">
@@ -612,6 +611,7 @@ async function linkMappedEmployee(wsCode, planId, empId, empCode, empName) {
 // "Unlink" button handler — unlinks a single workstation
 async function unlinkWorkstation(wsCode, planId) {
     if (!morningState.lineId) return;
+    if (!confirm(`Are you sure you want to unlink ${wsCode}?`)) return;
     try {
         const workDate = morningState.workDate || getSupervisorLocalDate();
         const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-workstation`, {
@@ -1028,12 +1028,41 @@ const SHORTFALL_REASONS = [
     'PRODUCTION MEETING'
 ];
 
+// Display labels with serial numbers and Tamil translations
+const SHORTFALL_REASON_LABELS = {
+    'WORKMANSHIP PROBLEM':      '1. WORKMANSHIP PROBLEM (தொழில்நுட்பக் குறைபாடு)',
+    'MC BREAKDOWN':             '2. MC BREAKDOWN (இயந்திர கோளாறு)',
+    'FEEDING NOT RECEIVED':     '3. FEEDING NOT RECEIVED (மூலப்பொருள் கிடைக்கவில்லை)',
+    'INEFFICIENT':              '4. INEFFICIENT (திறனற்ற செயல்பாடு)',
+    'TECHNICAL ISSUES':         '5. TECHNICAL ISSUES (தொழில்நுட்ப சிக்கல்)',
+    'COMMERCIAL PACKAGE ISSUES':'6. COMMERCIAL PACKAGE ISSUES (வணிக பொதி சிக்கல்)',
+    'HR MEETING':               '7. HR MEETING (மனித வளக் கூட்டம்)',
+    'QUALITY MEETING':          '8. QUALITY MEETING (தர மேலாண்மை கூட்டம்)',
+    'PRODUCTION MEETING':       '9. PRODUCTION MEETING (உற்பத்தி கூட்டம்)'
+};
+
+const SUP_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+const supHourOrdinal = (n) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return `${n}st`;
+    if (mod10 === 2 && mod100 !== 12) return `${n}nd`;
+    if (mod10 === 3 && mod100 !== 13) return `${n}rd`;
+    return `${n}th`;
+};
+const supHourRange = (hourSlot) => `${String(hourSlot).padStart(2, '0')}:00-${String(hourSlot + 1).padStart(2, '0')}:00`;
+const supHourLabel = (hourSlot) => {
+    const idx = SUP_WORK_HOURS.indexOf(hourSlot);
+    const ord = supHourOrdinal((idx >= 0 ? idx : 0) + 1);
+    return `${ord} hour (${supHourRange(hourSlot)})`;
+};
+
 function formatHourlyEntryTime(hourSlot) {
     return `${String(hourSlot + 1).padStart(2, '0')}:00`;
 }
 
 function formatHourlyRange(hourSlot) {
-    return `${String(hourSlot).padStart(2, '0')}:00-${String(hourSlot + 1).padStart(2, '0')}:00`;
+    return supHourLabel(hourSlot);
 }
 
 function buildReasonSelectHTML(existingReason, isCombined) {
@@ -1042,24 +1071,54 @@ function buildReasonSelectHTML(existingReason, isCombined) {
     const isOtherText = existingReason && !knownReasons.includes(existingReason);
     const selectVal = isOtherText ? '__OTHER__' : (existingReason || '');
     const otherText = isOtherText ? existingReason : '';
+
+    function reasonBtn(value, english, tamil, selected) {
+        const sel = selected ? 'border:2px solid #3b82f6;background:#eff6ff;' : 'border:1px solid #e5e7eb;background:#f9fafb;';
+        return `<button type="button" class="reason-option-btn${selected ? ' reason-selected' : ''}"
+            data-value="${value}"
+            onclick="selectReasonOption(this)"
+            style="width:100%;text-align:left;padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:6px;display:block;${sel}">
+            <span style="display:block;font-size:13px;font-weight:700;color:#1e40af;line-height:1.3;">${english}</span>
+            ${tamil ? `<span style="display:block;font-size:12px;color:#6b7280;margin-top:3px;line-height:1.4;">${tamil}</span>` : ''}
+        </button>`;
+    }
+
+    const items = knownReasons.map(r => {
+        const label = SHORTFALL_REASON_LABELS[r] || r;
+        const parenIdx = label.indexOf('(');
+        const english = parenIdx > -1 ? label.substring(0, parenIdx).trim() : label;
+        const tamil   = parenIdx > -1 ? label.substring(parenIdx + 1, label.lastIndexOf(')')) : '';
+        return reasonBtn(r, english, tamil, selectVal === r);
+    }).join('');
+
     return `
-        <select class="form-control reason-select" id="hourly-reason" onchange="onReasonChange()">
-            <option value="">-- Select Reason --</option>
-            ${knownReasons.map(r => `<option value="${r}" ${selectVal === r ? 'selected' : ''}>${r}</option>`).join('')}
-            <option value="__OTHER__" ${selectVal === '__OTHER__' ? 'selected' : ''}>Other</option>
-        </select>
+        <input type="hidden" id="hourly-reason" value="${selectVal}">
+        <div id="reason-options-list" style="max-height:320px;overflow-y:auto;padding-right:2px;">
+            ${items}
+            ${reasonBtn('__OTHER__', 'Other', 'மற்றவை', selectVal === '__OTHER__')}
+        </div>
         <input type="text" class="form-control" id="hourly-reason-other"
                placeholder="Enter reason..."
                style="margin-top:6px;display:${selectVal === '__OTHER__' ? 'block' : 'none'};"
                value="${otherText.replace(/"/g, '&quot;')}">`;
 }
 
-function onReasonChange() {
-    const sel = document.getElementById('hourly-reason');
+function selectReasonOption(btn) {
+    document.querySelectorAll('.reason-option-btn').forEach(b => {
+        b.style.border = '1px solid #e5e7eb';
+        b.style.background = '#f9fafb';
+    });
+    btn.style.border = '2px solid #3b82f6';
+    btn.style.background = '#eff6ff';
+    document.getElementById('hourly-reason').value = btn.dataset.value;
     const inp = document.getElementById('hourly-reason-other');
-    if (inp) inp.style.display = sel?.value === '__OTHER__' ? 'block' : 'none';
+    if (inp) inp.style.display = btn.dataset.value === '__OTHER__' ? 'block' : 'none';
     const warn = document.getElementById('hourly-reason-warning');
     if (warn) warn.style.display = 'none';
+}
+
+function onReasonChange() {
+    // kept for compatibility — logic now handled by selectReasonOption
 }
 
 function getFinalReason() {
@@ -1145,11 +1204,11 @@ async function loadHourlyProcedure() {
         const lines = result.data || [];
         const today = new Date().toISOString().slice(0, 10);
         const hour = new Date().getHours();
-        const hourStart = 9;
-        const hourEnd = 16;
         // Skip lunch hour (12:00-13:00); clamp default to valid working hours
-        const rawDefault = Math.min(Math.max(hour - 1, hourStart), hourEnd);
-        const defaultHour = rawDefault === 12 ? 13 : rawDefault;
+        const rawDefault = SUP_WORK_HOURS.includes(hour - 1)
+            ? hour - 1
+            : (hour - 1 < SUP_WORK_HOURS[0] ? SUP_WORK_HOURS[0] : SUP_WORK_HOURS[SUP_WORK_HOURS.length - 1]);
+        const defaultHour = rawDefault;
 
         content.innerHTML = `
             <div class="page-header">
@@ -1180,11 +1239,9 @@ async function loadHourlyProcedure() {
                         <div class="hc-field" id="hourly-hour-wrap" style="min-width:90px;">
                             <label class="form-label">Hour</label>
                             <select class="form-control" id="hourly-hour">
-                                ${Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
-                                    const v = hourStart + i;
-                                    if (v === 12) return ''; // Skip lunch hour 12:00-13:00
-                                    return `<option value="${v}" ${v === defaultHour ? 'selected' : ''}>${formatHourlyEntryTime(v)} (${formatHourlyRange(v)})</option>`;
-                                }).join('')}
+                                ${SUP_WORK_HOURS.map(v =>
+                                    `<option value="${v}" ${v === defaultHour ? 'selected' : ''}>${supHourLabel(v)}</option>`
+                                ).join('')}
                             </select>
                         </div>
                     </div>
@@ -1849,7 +1906,7 @@ function renderHourlySummary() {
             }
 
             const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
-            const workloadColor = ws.workload_pct > 100 ? '#dc2626' : ws.workload_pct > 85 ? '#d97706' : '#16a34a';
+            const workloadColor = ws.workload_pct >= 90 ? '#16a34a' : ws.workload_pct >= 80 ? '#d97706' : '#dc2626';
             const needsReason = output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
 
             // Block hourly input if no daily plan, no employee assigned, or employee not mapped

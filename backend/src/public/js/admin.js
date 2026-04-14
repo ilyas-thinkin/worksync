@@ -432,17 +432,36 @@ async function adminLoadLineOptions() {
         .join('');
 }
 
+const ADMIN_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+const adminHourOrdinal = (n) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return `${n}st`;
+    if (mod10 === 2 && mod100 !== 12) return `${n}nd`;
+    if (mod10 === 3 && mod100 !== 13) return `${n}rd`;
+    return `${n}th`;
+};
+const adminHourRange = (hour) => {
+    const start = `${String(hour).padStart(2, '0')}:00`;
+    const end = `${String(hour + 1).padStart(2, '0')}:00`;
+    return `${start}-${end}`;
+};
+const adminHourLabel = (hour) => {
+    const idx = ADMIN_WORK_HOURS.indexOf(hour);
+    const ord = adminHourOrdinal((idx >= 0 ? idx : 0) + 1);
+    return `${ord} hour (${adminHourRange(hour)})`;
+};
+
 function adminLoadHourOptions() {
     const select = document.getElementById('admin-mgmt-hour-select');
     if (!select) return;
-    const hourStart = 8;
-    const hourEnd = 19;
     const now = new Date();
-    const defaultHour = Math.min(Math.max(now.getHours(), hourStart), hourEnd);
-    select.innerHTML = Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
-        const value = hourStart + i;
-        return `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${String(value).padStart(2, '0')}:00</option>`;
-    }).join('');
+    const defaultHour = ADMIN_WORK_HOURS.includes(now.getHours())
+        ? now.getHours()
+        : (now.getHours() < ADMIN_WORK_HOURS[0] ? ADMIN_WORK_HOURS[0] : ADMIN_WORK_HOURS[ADMIN_WORK_HOURS.length - 1]);
+    select.innerHTML = ADMIN_WORK_HOURS.map((value, i) =>
+        `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${adminHourLabel(value)}</option>`
+    ).join('');
 }
 
 async function adminSetLatestHour(lineId, date) {
@@ -3208,7 +3227,7 @@ async function saveAttendance(employeeId, date, inTime, outTime, status, notes, 
 // ============================================================================
 async function loadDailyPlans() {
     const content = document.getElementById('main-content');
-    const today = new Date().toISOString().slice(0, 10);
+    const _ld = new Date(); const today = `${_ld.getFullYear()}-${String(_ld.getMonth()+1).padStart(2,'0')}-${String(_ld.getDate()).padStart(2,'0')}`;
     if (!window._dpTab) window._dpTab = 'regular';
     content.innerHTML = `
         <div class="ie-section">
@@ -3915,8 +3934,25 @@ async function loadDailyPlanData() {
 // ============================================================================
 let _ldData = null; // { lineId, date, data }
 
+function _ldResolveCopyProductId(lineId) {
+    const primaryId = _ldData?.data?.product?.id || _ldData?.data?.product_id || '';
+    const incomingId = _ldData?.data?.incoming_product_id || '';
+    const mode = window._ldProductMode?.[lineId] || 'primary';
+    if (mode === 'changeover' && incomingId) {
+        return _ldData?.changeoverData?.product?.id || incomingId || '';
+    }
+    return primaryId || incomingId || '';
+}
+
+function _ldSyncCopyPlanButton(lineId) {
+    const cpBtn = document.getElementById('ld-copy-plan-btn');
+    if (!cpBtn) return;
+    cpBtn.dataset.productId = _ldResolveCopyProductId(lineId) || '';
+}
+
 async function toggleLineDetails(lineId) {
-    const date = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
+    const _tld = new Date(); const _tldf = `${_tld.getFullYear()}-${String(_tld.getMonth()+1).padStart(2,'0')}-${String(_tld.getDate()).padStart(2,'0')}`;
+    const date = document.getElementById('plan-date')?.value || _tldf;
     const plan = window._dailyPlanMap?.get?.(String(lineId));
     if (!plan?.id) {
         showToast('Save the daily plan first to open line details', 'error');
@@ -3950,6 +3986,8 @@ async function openLineDetailsPage(lineId, date, productId, target) {
                 <span id="ld-overlay-title" style="font-weight:700;font-size:1rem;">Line Details</span>
                 <span style="color:#6b7280;font-size:0.85em;margin-left:10px;">Date: ${date}</span>
             </div>
+            <button id="ld-copy-plan-btn" style="font-size:12px;padding:5px 14px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldOpenCopyPlanModal()">&#128203; Copy Plan</button>
+            <button id="ld-download-template-btn" style="font-size:12px;padding:5px 14px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldDownloadPlanTemplate()">Download Template</button>
             <div style="margin-left:auto;display:flex;align-items:center;gap:5px;flex-shrink:0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:5px 10px;">
                 <span style="font-size:11px;color:#6b7280;font-weight:600;white-space:nowrap;">Work Hours:</span>
                 <input type="time" value="${wh.start}" style="font-size:12px;padding:3px 5px;border:1px solid #d1d5db;border-radius:5px;width:88px;"
@@ -3993,28 +4031,18 @@ async function openLineDetailsPage(lineId, date, productId, target) {
                 titleEl.insertAdjacentElement('afterend', badge);
             }
         }
-        // Fetch the most recent previous WS plan date for "Copy from [date]" button
-        const resolvedProductId = result.data.product?.id;
-        if (resolvedProductId) {
-            fetch(`/api/lines/${lineId}/workstation-plan/latest-date?product_id=${resolvedProductId}&before_date=${date}`)
-                .then(r => r.json())
-                .then(r => {
-                    if (r.success && r.date) {
-                        const hdr = document.getElementById('line-details-overlay')?.querySelector('div[style*="sticky"]');
-                        const existing = document.getElementById('ld-copy-btn');
-                        if (existing) existing.remove();
-                        if (hdr) {
-                            const btn = document.createElement('button');
-                            btn.id = 'ld-copy-btn';
-                            btn.textContent = `↩ Copy layout from ${r.date}`;
-                            btn.style.cssText = 'font-size:11px;padding:4px 12px;background:#f0fdf4;color:#166534;border:1px solid #86efac;border-radius:6px;cursor:pointer;white-space:nowrap;';
-                            btn.onclick = () => ldCopyFromDate(lineId, r.date, date, resolvedProductId);
-                            hdr.appendChild(btn);
-                        }
-                    }
-                })
-                .catch(() => {});
+        // Store resolved line/date on the copy-plan button for modal use
+        const cpBtn = document.getElementById('ld-copy-plan-btn');
+        if (cpBtn) {
+            cpBtn.dataset.lineId = lineId;
+            cpBtn.dataset.toDate = date;
         }
+        const dlBtn = document.getElementById('ld-download-template-btn');
+        if (dlBtn) {
+            dlBtn.dataset.lineId = lineId;
+            dlBtn.dataset.toDate = date;
+        }
+        _ldSyncCopyPlanButton(lineId);
 
         // Add OT tab buttons if OT is enabled for this plan
         const headerBar = overlay.querySelector('div[style*="sticky"]');
@@ -4054,8 +4082,194 @@ function closeLineDetailsPage() {
     document.body.style.overflow = '';
 }
 
-async function ldCopyFromDate(lineId, fromDate, toDate, productId) {
-    if (!confirm(`Copy workstation layout and employee assignments from ${fromDate} to ${toDate}?\n\nThis will overwrite any existing workstation plan for ${toDate}.`)) return;
+// ── Copy Plan Modal ─────────────────────────────────────────────────────────
+
+function ldOpenCopyPlanModal() {
+    const btn = document.getElementById('ld-copy-plan-btn');
+    const lineId    = btn?.dataset.lineId    || (_ldData?.lineId    || '');
+    const toDate    = btn?.dataset.toDate    || (_ldData?.date      || '');
+    const productId = btn?.dataset.productId || '';
+
+    let modal = document.getElementById('ld-copy-plan-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'ld-copy-plan-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center;';
+        document.body.appendChild(modal);
+    }
+
+    // Default source date = yesterday relative to toDate
+    const _td = new Date(toDate + 'T00:00:00');
+    _td.setDate(_td.getDate() - 1);
+    const defaultSource = `${_td.getFullYear()}-${String(_td.getMonth()+1).padStart(2,'0')}-${String(_td.getDate()).padStart(2,'0')}`;
+
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:28px 28px 24px;width:min(640px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+                <h3 style="margin:0;font-size:1.05rem;font-weight:700;color:#1e293b;">&#128203; Copy Plan from Date</h3>
+                <button onclick="ldCloseCopyPlanModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280;line-height:1;">&#10005;</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
+                <label style="font-size:13px;font-weight:600;color:#374151;white-space:nowrap;">Copy from date:</label>
+                <input type="date" id="ld-cpm-source-date" value="${defaultSource}" max="${toDate}"
+                    style="font-size:13px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;flex:1;min-width:140px;">
+                <button onclick="ldPreviewCopyPlan('${lineId}','${toDate}','${productId}')"
+                    style="font-size:13px;padding:7px 18px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;">
+                    Preview Plan
+                </button>
+            </div>
+            <div id="ld-cpm-preview" style="min-height:60px;"></div>
+            <div id="ld-cpm-actions" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px;"></div>
+        </div>`;
+    modal.style.display = 'flex';
+}
+
+function ldCloseCopyPlanModal() {
+    const modal = document.getElementById('ld-copy-plan-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function ldDownloadPlanTemplate() {
+    const btn = document.getElementById('ld-download-template-btn');
+    const lineId = btn?.dataset.lineId || _ldData?.lineId;
+    const date = btn?.dataset.toDate || _ldData?.date;
+    if (!lineId || !date) { showToast('Open line details first', 'error'); return; }
+    try {
+        const url = `/api/lines/plan-upload-template/filled?line_id=${encodeURIComponent(lineId)}&date=${encodeURIComponent(date)}`;
+        const resp = await fetch(url);
+        if (!resp.ok) {
+            const j = await resp.json().catch(() => ({}));
+            throw new Error(j.error || `Server error ${resp.status}`);
+        }
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/vnd.openxmlformats-officedocument')) {
+            throw new Error('Template download failed. Please refresh the page and try again.');
+        }
+        const blob = await resp.blob();
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `line_plan_${lineId}_${date}.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function ldPreviewCopyPlan(lineId, toDate, productId) {
+    const sourceDate = document.getElementById('ld-cpm-source-date')?.value;
+    if (!sourceDate) { showToast('Select a source date', 'error'); return; }
+
+    const previewEl  = document.getElementById('ld-cpm-preview');
+    const actionsEl  = document.getElementById('ld-cpm-actions');
+    if (!previewEl) return;
+
+    previewEl.innerHTML = '<div style="text-align:center;padding:24px;color:#6b7280;font-size:13px;">Loading preview…</div>';
+    if (actionsEl) actionsEl.style.display = 'none';
+
+    try {
+        const params = new URLSearchParams({ date: sourceDate });
+        if (productId) params.set('product_id', productId);
+        const res  = await fetch(`/api/lines/${lineId}/workstation-plan/preview?${params.toString()}`);
+        const data = await res.json();
+
+        if (!data.success) throw new Error(data.error);
+
+        if (!data.workstations.length) {
+            previewEl.innerHTML = '<div style="text-align:center;padding:24px;color:#ef4444;font-size:13px;font-weight:600;">No workstation plan found for this date.</div>';
+            return;
+        }
+
+        // Build summary stats
+        const totalWs  = data.workstations.length;
+        const assigned = data.workstations.filter(w => w.employee).length;
+        const groups   = [...new Set(data.workstations.map(w => w.group_name).filter(Boolean))];
+        const totalProc = data.workstations.reduce((s, w) => s + w.process_count, 0);
+        const osmChecked = data.workstations.reduce((s, w) => s + w.osm_checked_count, 0);
+
+        // Build table rows (group by group_name for readability)
+        let rows = '';
+        let lastGroup = null;
+        for (const w of data.workstations) {
+            const groupCell = w.group_name !== lastGroup
+                ? `<td rowspan="1" style="font-size:11px;font-weight:700;color:#6b7280;padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;">${w.group_name || '—'}</td>`
+                : `<td style="font-size:11px;color:#9ca3af;padding:5px 8px;border:1px solid #e5e7eb;">${w.group_name || '—'}</td>`;
+            lastGroup = w.group_name;
+            const empCell = w.employee
+                ? `<span style="color:#166534;font-weight:600;">${w.employee}</span>`
+                : `<span style="color:#9ca3af;">—</span>`;
+            const osmCell = w.osm_checked_count > 0
+                ? `<span style="color:#2563eb;">${w.osm_checked_count}/${w.process_count} ✓</span>`
+                : `<span style="color:#d1d5db;">${w.process_count}</span>`;
+            rows += `<tr>
+                <td style="font-size:12px;font-weight:600;padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;">${w.workstation_code}</td>
+                ${groupCell}
+                <td style="font-size:12px;padding:5px 8px;border:1px solid #e5e7eb;">${empCell}</td>
+                <td style="font-size:12px;padding:5px 8px;border:1px solid #e5e7eb;text-align:center;">${osmCell}</td>
+            </tr>`;
+        }
+
+        previewEl.innerHTML = `
+            <div style="margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap;">
+                <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:8px 16px;text-align:center;">
+                    <div style="font-size:20px;font-weight:700;color:#166534;">${totalWs}</div>
+                    <div style="font-size:11px;color:#6b7280;">Workstations</div>
+                </div>
+                <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 16px;text-align:center;">
+                    <div style="font-size:20px;font-weight:700;color:#1d4ed8;">${assigned}/${totalWs}</div>
+                    <div style="font-size:11px;color:#6b7280;">Employees Assigned</div>
+                </div>
+                <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:8px 16px;text-align:center;">
+                    <div style="font-size:20px;font-weight:700;color:#7c3aed;">${groups.length}</div>
+                    <div style="font-size:11px;color:#6b7280;">Groups</div>
+                </div>
+                <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 16px;text-align:center;">
+                    <div style="font-size:20px;font-weight:700;color:#c2410c;">${totalProc}</div>
+                    <div style="font-size:11px;color:#6b7280;">Processes</div>
+                </div>
+                <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:8px 16px;text-align:center;">
+                    <div style="font-size:20px;font-weight:700;color:#166534;">${osmChecked}</div>
+                    <div style="font-size:11px;color:#6b7280;">OSM ✓</div>
+                </div>
+            </div>
+            <div style="max-height:280px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead style="position:sticky;top:0;background:#f9fafb;">
+                        <tr>
+                            <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Workstation</th>
+                            <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Group</th>
+                            <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Employee</th>
+                            <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:center;font-size:11px;color:#374151;">Processes / OSM</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+
+        // Use the product_id from the SOURCE plan (returned by preview endpoint)
+        // This ensures the copy query finds the right workstations regardless of
+        // what product_id the caller passed in.
+        const sourcePlanProductId = data.product_id || productId;
+        if (actionsEl) {
+            actionsEl.style.display = 'flex';
+            actionsEl.innerHTML = `
+                <span style="font-size:12px;color:#6b7280;align-self:center;flex:1;">
+                    Copying from <strong>${sourceDate}</strong> → <strong>${toDate}</strong>. This will overwrite any existing plan for ${toDate}.
+                </span>
+                <button onclick="ldCloseCopyPlanModal()" style="padding:7px 18px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
+                <button onclick="ldExecuteCopyPlan('${lineId}','${sourceDate}','${toDate}','${sourcePlanProductId}')"
+                    style="padding:7px 20px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">
+                    &#128203; Confirm Copy
+                </button>`;
+        }
+    } catch (err) {
+        previewEl.innerHTML = `<div style="text-align:center;padding:24px;color:#ef4444;font-size:13px;">${err.message}</div>`;
+    }
+}
+
+async function ldExecuteCopyPlan(lineId, fromDate, toDate, productId) {
     try {
         const res = await fetch(`/api/lines/${lineId}/workstation-plan/copy-from-date`, {
             method: 'POST',
@@ -4064,19 +4278,34 @@ async function ldCopyFromDate(lineId, fromDate, toDate, productId) {
         });
         const result = await res.json();
         if (!result.success) { showToast(result.error, 'error'); return; }
-        showToast(`Layout copied from ${fromDate}`, 'success');
-        // Reload line details to show the copied plan
-        if (_ldData) {
-            const content = document.getElementById('ld-overlay-content');
-            if (content) {
-                content.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Reloading...</div>';
-                const params = new URLSearchParams({ date: toDate, product_id: productId });
-                const r = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
-                const d = await r.json();
-                if (d.success) {
-                    _ldData.data = d.data;
-                    renderLineDetailsContent(content, lineId, toDate, d.data);
+        ldCloseCopyPlanModal();
+        showToast(`Plan copied from ${fromDate}`, 'success');
+        // Reload line details — use the target plan's product_id (from _ldData) for the reload query
+        const reloadProductId = _ldData?.data?.product?.id || productId;
+        const content = document.getElementById('ld-overlay-content');
+        if (content) {
+            content.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Reloading…</div>';
+            const params = new URLSearchParams({ date: toDate });
+            if (reloadProductId) params.set('product_id', reloadProductId);
+            const r = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+            const d = await r.json();
+            if (d.success) {
+                if (_ldData) _ldData.data = d.data;
+                const mode = window._ldProductMode?.[lineId] || 'primary';
+                const incomingId = _ldData?.data?.incoming_product_id;
+                const incomingTarget = _ldData?.data?.incoming_target_units || 0;
+                if (mode === 'changeover' && incomingId) {
+                    const coParams = new URLSearchParams({ date: toDate });
+                    coParams.set('product_id', incomingId);
+                    if (incomingTarget > 0) coParams.set('target', incomingTarget);
+                    const r2 = await fetch(`/api/lines/${lineId}/line-process-details?${coParams}`);
+                    const d2 = await r2.json();
+                    if (d2.success && _ldData) _ldData.changeoverData = d2.data;
                 }
+                _ldSyncCopyPlanButton(lineId);
+                renderLineDetailsContent(content, lineId, toDate, d.data);
+            } else {
+                content.innerHTML = `<div style="text-align:center;padding:40px;color:#ef4444;">${d.error || 'Failed to reload'}</div>`;
             }
         }
     } catch (err) {
@@ -4121,16 +4350,18 @@ const WS_ROW_COLORS = [
     '#F0F9FF', '#FFF1F2', '#F5F3FF', '#ECFDF5', '#FEF9C3'
 ];
 
-// Group processes by workstation code, computing SAM sum + workload per group
+// Group processes by workstation code, computing SAM sum + workload per group.
+// If a workstation is not assigned (blank), treat each process separately (no summing).
 function _buildWsGroups(processes, taktSecs, useOT) {
     const groups = [];
     const indexMap = new Map();
     processes.forEach(p => {
         const ws = (p.workstation_code || '').trim();
-        const key = ws || `__u_${p.id}`;
+        const hasWs = !!ws && ws !== '-';
+        const key = hasWs ? ws : `__u_${p.id}`;
         if (!indexMap.has(key)) {
             indexMap.set(key, groups.length);
-            groups.push({ ws, processes: [], sam: 0, employee_id: null, emp_name: '', emp_code: '', group_name: '', is_ot_skipped: false, lpw_id: null });
+            groups.push({ ws, processes: [], sam: 0, employee_id: null, emp_name: '', emp_code: '', group_name: '', is_ot_skipped: false, lpw_id: null, has_ws: hasWs });
         }
         const g = groups[indexMap.get(key)];
         g.processes.push(p);
@@ -4141,15 +4372,20 @@ function _buildWsGroups(processes, taktSecs, useOT) {
             const empId   = hasOTEmp ? p.ot_employee_id : p.employee_id;
             const empName = hasOTEmp ? (p.ot_emp_name || '') : (p.emp_name || '');
             const empCode = hasOTEmp ? (p.ot_emp_code || '') : (p.emp_code || '');
-            if (empId) { g.employee_id = empId; g.emp_name = empName; g.emp_code = empCode; }
+            if (empId) {
+                g.employee_id = empId;
+                g.emp_name = empName;
+                g.emp_code = empCode;
+            }
         }
+        if (hasWs) g.has_ws = true;
         if (!g.group_name && (p.group_name || '').trim()) g.group_name = (p.group_name || '').trim();
         if (!g.lpw_id && p.lpw_id) g.lpw_id = p.lpw_id;
         // is_ot_skipped is the same for every process in the same workstation
         if (p.is_ot_skipped) g.is_ot_skipped = true;
     });
     groups.forEach((g, i) => {
-        g.workload_pct = (taktSecs > 0 && g.ws) ? (g.sam / taktSecs) * 100 : null;
+        g.workload_pct = (taktSecs > 0 && g.has_ws) ? (g.sam / taktSecs) * 100 : null;
         g.color = g.ws ? WS_ROW_COLORS[i % WS_ROW_COLORS.length] : '#fff';
     });
     return groups;
@@ -4408,8 +4644,8 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
             const wsOtMins = (hasOT && g.ws) ? (window._ldWsOtMins?.[lineId]?.[g.ws] ?? otMins) : 0;
             const wsOtSecs = wsOtMins * 60;
             const otTakt   = (wsOtSecs > 0 && otTarget > 0) ? wsOtSecs / otTarget : 0;
-            const regEff   = (regTakt > 0 && g.ws) ? (g.sam / regTakt) * 100 : null;
-            const otEff    = (hasOT && wsOtSecs > 0 && otTakt > 0 && g.ws) ? (g.sam / otTakt) * 100 : null;
+            const regEff   = (regTakt > 0 && g.has_ws) ? (g.sam / regTakt) * 100 : null;
+            const otEff    = (hasOT && wsOtSecs > 0 && otTakt > 0 && g.has_ws) ? (g.sam / otTakt) * 100 : null;
             const totalEff = (regEff != null && otEff != null)
                 ? (g.sam * (target_units + otTarget)) / (workSecs + wsOtSecs) * 100 : null;
             const regEffCell = isFirst
@@ -4960,6 +5196,7 @@ async function switchLdOTProduct(lineId, mode) {
             _ldData.changeoverData = r.data;
         } catch (err) { showToast(err.message, 'error'); return; }
     }
+    _ldSyncCopyPlanButton(lineId);
     renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
 }
 
@@ -4990,6 +5227,7 @@ async function switchLdProduct(lineId, mode) {
         } catch (err) { showToast(err.message, 'error'); return; }
     }
 
+    _ldSyncCopyPlanButton(lineId);
     renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
 }
 
@@ -5503,7 +5741,9 @@ function clearDailyPlanRow(lineId) {
 
 function copyDailyPlan(lineId) {
     const targetDate = document.getElementById('plan-date').value;
-    const yesterday = new Date(new Date(targetDate).getTime() - 86400000).toISOString().slice(0, 10);
+    const _td = new Date(targetDate + 'T00:00:00');
+    _td.setDate(_td.getDate() - 1);
+    const yesterday = `${_td.getFullYear()}-${String(_td.getMonth()+1).padStart(2,'0')}-${String(_td.getDate()).padStart(2,'0')}`;
 
     const existing = document.getElementById('copy-plan-modal');
     if (existing) existing.remove();
@@ -6608,11 +6848,21 @@ async function openDailyPlanPrintModal() {
     const modal = document.createElement('div');
     modal.id = 'dp-print-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;';
+    const planDate = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
     modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:22px 24px 18px;width:700px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.22);">
             <h3 style="margin:0 0 14px;font-size:17px;font-weight:700;color:#111827;">Print / Export Daily Plan</h3>
-            <div id="dp-print-lines-config" style="flex:1;overflow-y:auto;min-height:60px;">
-                <div style="text-align:center;padding:24px;color:#6b7280;font-size:13px;">Loading plans\u2026</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+                <label style="font-size:12px;font-weight:600;color:#374151;">Date</label>
+                <input type="date" id="dp-print-date" value="${planDate}"
+                    style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 10px;">
+                <button onclick="dpLoadPrintPreview()"
+                    style="padding:6px 14px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;font-size:12px;cursor:pointer;">
+                    Preview
+                </button>
+            </div>
+            <div id="dp-print-preview" style="flex:1;overflow-y:auto;min-height:120px;border:1px solid #e5e7eb;border-radius:8px;padding:10px;">
+                <div style="text-align:center;padding:24px;color:#6b7280;font-size:13px;">Loading preview\u2026</div>
             </div>
             <div id="dp-print-status" style="min-height:18px;margin-top:10px;font-size:12px;color:#6b7280;"></div>
             <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:14px;margin-top:6px;">
@@ -6626,46 +6876,112 @@ async function openDailyPlanPrintModal() {
         </div>
     `;
     document.body.appendChild(modal);
-
-    const date = document.getElementById('plan-date').value;
-    try {
-        const resp   = await fetch(`/api/daily-plans?date=${date}`);
-        const result = await resp.json();
-        if (!result.success) throw new Error(result.error);
-        const { plans, lines } = result.data;
-        const planMap     = new Map(plans.map(p => [String(p.line_id), p]));
-        const activeLines = lines.filter(l => planMap.has(String(l.id)));
-
-        // Initialise per-line config with defaults
-        window._dpPrintConfig = {};
-        activeLines.forEach(line => {
-            const plan = planMap.get(String(line.id));
-            window._dpPrintConfig[line.id] = {
-                start:     '08:00',
-                end:       '17:00',
-                lunchMins: 60,
-                otMins:    parseInt(plan.overtime_minutes  || 0, 10),
-                otTarget:  parseInt(plan.overtime_target   || 0, 10),
-                productId: plan.product_id,
-                wsOt:      {},      // { [wsCode]: overrideMinutes }
-                wsLoaded:  false,
-            };
-        });
-
-        if (!activeLines.length) {
-            document.getElementById('dp-print-lines-config').innerHTML =
-                '<div style="color:#6b7280;font-size:13px;padding:8px 0;">No plans set for this date.</div>';
-            return;
-        }
-        _renderDpPrintConfig(activeLines, planMap);
-    } catch (err) {
-        document.getElementById('dp-print-lines-config').innerHTML =
-            `<div style="color:#dc2626;font-size:13px;">\u26a0 ${err.message}</div>`;
+    const dateInput = document.getElementById('dp-print-date');
+    if (dateInput) {
+        dateInput.addEventListener('change', () => dpLoadPrintPreview());
     }
+    dpLoadPrintPreview();
 }
 
 function dpToggleSelectAll(checked) {
     document.querySelectorAll('[id^="dp-sel-"]:not(#dp-sel-all)').forEach(cb => { cb.checked = checked; });
+}
+
+async function dpLoadPrintPreview() {
+    const date = document.getElementById('dp-print-date')?.value;
+    const previewEl = document.getElementById('dp-print-preview');
+    const statusEl = document.getElementById('dp-print-status');
+    if (!date || !previewEl) return;
+    previewEl.innerHTML = '<div style="text-align:center;padding:24px;color:#6b7280;font-size:13px;">Loading preview\u2026</div>';
+    if (statusEl) statusEl.textContent = '';
+    try {
+        const [dpResp, phResp] = await Promise.all([
+            fetch(`/api/daily-plans?date=${date}`),
+            fetch(`/api/plan-history?date=${date}`)
+        ]);
+        const dpResult = await dpResp.json();
+        const phResult = await phResp.json();
+        if (!dpResult.success) throw new Error(dpResult.error);
+        if (!phResult.success) throw new Error(phResult.error);
+
+        const plans = dpResult.data?.plans || [];
+        const planMap = new Map(plans.map(p => [String(p.line_id), p]));
+        const lines = phResult.lines || [];
+
+        window._dpPrintConfig = {};
+        plans.forEach(plan => {
+            window._dpPrintConfig[plan.line_id] = {
+                start:     '08:00',
+                end:       '17:00',
+                lunchMins: 60,
+                otMins:    parseInt(plan.overtime_minutes || 0, 10),
+                otTarget:  parseInt(plan.overtime_target  || 0, 10),
+                productId: plan.product_id,
+                wsOt:      {},
+                wsLoaded:  false,
+            };
+        });
+
+        if (!lines.length) {
+            previewEl.innerHTML = '<div style="color:#6b7280;font-size:13px;padding:8px 0;">No workstation plans found for this date.</div>';
+            return;
+        }
+
+        const lineBlocks = lines.map(line => {
+            const plan = planMap.get(String(line.line_id));
+            const productLabel = line.product_code ? `${line.product_code} \u2014 ${line.product_name}` : 'Deleted / Not Available';
+            const targetUnits = plan?.target_units ?? line.target_units ?? 0;
+            const wsRows = (line.workstations || []).map(ws => {
+                const procList = (ws.processes || []).map(p =>
+                    `${p.operation_code || ''} ${p.operation_name || ''}`.trim()
+                ).filter(Boolean).join('<br>');
+                const emp = ws.employee ? `${ws.employee.emp_code} \u2014 ${ws.employee.emp_name}` : '\u2014';
+                return `
+                    <tr>
+                        <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;font-weight:600;">${ws.workstation_code || '\u2014'}</td>
+                        <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${ws.group_name || '\u2014'}</td>
+                        <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">
+                            <div style="max-height:180px;overflow:auto;font-size:11px;line-height:1.4;">${procList || '\u2014'}</div>
+                        </td>
+                        <td style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">${emp}</td>
+                    </tr>`;
+            }).join('');
+
+            return `
+                <div style="border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;margin-bottom:12px;">
+                    <div style="background:#f8fafc;padding:10px 12px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+                        <div style="font-weight:700;">${line.line_code} ${line.line_name ? '— ' + line.line_name : ''}</div>
+                        <div style="color:#6b7280;font-size:12px;">${productLabel}</div>
+                        <div style="margin-left:auto;font-size:12px;color:#374151;">
+                            Target: <strong>${targetUnits}</strong> &nbsp;|&nbsp;
+                            Workstations: <strong>${line.workstation_count ?? 0}</strong> &nbsp;|&nbsp;
+                            Processes: <strong>${line.process_count ?? 0}</strong>
+                        </div>
+                    </div>
+                    <div style="overflow-x:auto;">
+                        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                            <thead>
+                                <tr style="background:#fff;border-bottom:1px solid #e5e7eb;">
+                                    <th style="text-align:left;padding:6px 8px;">WS</th>
+                                    <th style="text-align:left;padding:6px 8px;">Group</th>
+                                    <th style="text-align:left;padding:6px 8px;">Processes</th>
+                                    <th style="text-align:left;padding:6px 8px;">Employee</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${wsRows || `<tr><td colspan="4" style="padding:8px;color:#6b7280;">No workstations</td></tr>`}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        previewEl.innerHTML = lineBlocks;
+        if (statusEl) statusEl.textContent = `${lines.length} line plans found for ${date}.`;
+    } catch (err) {
+        previewEl.innerHTML = `<div style="color:#dc2626;font-size:13px;">\u26a0 ${err.message}</div>`;
+    }
 }
 
 function _renderDpPrintConfig(activeLines, planMap) {
@@ -6785,16 +7101,12 @@ async function dpToggleWsOt(lineId) {
 }
 
 async function printDailyPlans() {
-    const date     = document.getElementById('plan-date').value;
+    const date     = document.getElementById('dp-print-date')?.value || document.getElementById('plan-date')?.value;
     const statusEl = document.getElementById('dp-print-status');
     const config   = window._dpPrintConfig || {};
     if (!Object.keys(config).length) { statusEl.textContent = 'Open this modal from the daily plans page first.'; return; }
-    // Only print selected (checked) lines
-    const selectedIds = Object.keys(config).filter(id => {
-        const cb = document.getElementById(`dp-sel-${id}`);
-        return !cb || cb.checked;
-    });
-    if (!selectedIds.length) { statusEl.textContent = 'No lines selected. Tick at least one line.'; return; }
+    const selectedIds = Object.keys(config);
+    if (!selectedIds.length) { statusEl.textContent = 'No plans found for this date.'; return; }
     statusEl.textContent = 'Fetching workstation data\u2026';
 
     const fmtTakt  = s => s > 0 ? `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s` : '\u2014';
@@ -6830,24 +7142,29 @@ async function printDailyPlans() {
             const wsIdxMap = new Map();
             (data.processes || []).forEach(p => {
                 const ws  = (p.workstation_code || '').trim();
-                const key = ws || `__u_${p.id}`;
+                const hasWs = !!ws && ws !== '-';
+                const key = hasWs ? ws : `__u_${p.id}`;
                 if (!wsIdxMap.has(key)) {
                     wsIdxMap.set(key, groups.length);
-                    groups.push({ ws, processes: [], sam: 0, group_name: '', emp_name: '', emp_code: '' });
+                    groups.push({ ws, processes: [], sam: 0, group_name: '', emp_name: '', emp_code: '', has_ws: hasWs });
                 }
                 const g = groups[wsIdxMap.get(key)];
                 g.processes.push(p);
                 g.sam += parseFloat(p.operation_sah || 0) * 3600;
                 if (!g.group_name && p.group_name) g.group_name = p.group_name;
-                if (!g.emp_name && p.emp_name) { g.emp_name = p.emp_name; g.emp_code = p.emp_code || ''; }
+                if (!g.emp_name && p.emp_name) {
+                    g.emp_name = p.emp_name;
+                    g.emp_code = p.emp_code || '';
+                }
+                if (hasWs) g.has_ws = true;
             });
             groups.forEach(g => {
-                g.reg_eff = regTakt > 0 ? (g.sam / regTakt) * 100 : null;
+                g.reg_eff = (regTakt > 0 && g.has_ws) ? (g.sam / regTakt) * 100 : null;
                 // Per-workstation OT: use WS override if set, else line OT
                 const wsOtMins = hasLineOT ? ((g.ws && cfg.wsOt[g.ws] != null) ? cfg.wsOt[g.ws] : cfg.otMins) : 0;
                 const otSecs   = wsOtMins * 60;
                 const otTakt   = (otSecs > 0 && otTarget > 0) ? otSecs / otTarget : 0;
-                g.ot_eff    = (hasLineOT && wsOtMins > 0 && otTakt > 0) ? (g.sam / otTakt) * 100 : null;
+                g.ot_eff    = (hasLineOT && wsOtMins > 0 && otTakt > 0 && g.has_ws) ? (g.sam / otTakt) * 100 : null;
                 g.total_eff = (g.reg_eff != null && g.ot_eff != null)
                     ? (g.sam * (target + otTarget)) / (workSecs + otSecs) * 100
                     : null;
@@ -6918,23 +7235,16 @@ async function printDailyPlans() {
 }
 
 async function downloadDailyPlansExcel() {
-    const date     = document.getElementById('plan-date').value;
+    const date     = document.getElementById('dp-print-date')?.value || document.getElementById('plan-date')?.value;
     const statusEl = document.getElementById('dp-print-status');
     const config   = window._dpPrintConfig || {};
     if (!Object.keys(config).length) { statusEl.textContent = 'Open this modal from the daily plans page first.'; return; }
-    // Only export selected (checked) lines
-    const filteredConfig = {};
-    Object.keys(config).forEach(id => {
-        const cb = document.getElementById(`dp-sel-${id}`);
-        if (!cb || cb.checked) filteredConfig[id] = config[id];
-    });
-    if (!Object.keys(filteredConfig).length) { statusEl.textContent = 'No lines selected. Tick at least one line.'; return; }
     statusEl.textContent = 'Generating Excel\u2026';
     try {
         const resp = await fetch('/api/daily-plans/export-excel', {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ date, lineConfigs: filteredConfig }),
+            body:    JSON.stringify({ date, lineConfigs: config }),
         });
         if (!resp.ok) {
             const j = await resp.json().catch(() => ({}));
@@ -7215,11 +7525,27 @@ async function saveOTPlanWorkstations(lineId, date) {
 async function loadPlanHistory() {
     const content = document.getElementById('main-content');
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    let lineOptions = '<option value=\"\">All Lines</option>';
+    try {
+        const res = await fetch(`${API_BASE}/lines?include_inactive=true`);
+        const data = await res.json();
+        const lines = data.data || [];
+        lineOptions += lines.map(line =>
+            `<option value="${line.id}">${line.line_code} — ${line.line_name}</option>`
+        ).join('');
+    } catch (_) {
+        // Keep the filter usable even if line-list loading fails.
+    }
     content.innerHTML = `
         <div style="padding:24px;max-width:1400px;margin:0 auto;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
                 <h2 style="margin:0;font-size:1.3rem;font-weight:700;color:#1e293b;">Plan History</h2>
                 <div style="display:flex;align-items:center;gap:10px;">
+                    <label style="font-size:13px;color:#6b7280;font-weight:600;">Line:</label>
+                    <select id="ph-line"
+                        style="min-width:220px;font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 10px;">
+                        ${lineOptions}
+                    </select>
                     <label style="font-size:13px;color:#6b7280;font-weight:600;">Date:</label>
                     <input type="date" id="ph-date" value="${yesterday}" max="${yesterday}"
                         style="font-size:13px;border:1px solid #d1d5db;border-radius:6px;padding:5px 10px;">
@@ -7239,16 +7565,19 @@ async function loadPlanHistory() {
 
 async function refreshPlanHistory() {
     const date = document.getElementById('ph-date')?.value;
+    const lineId = document.getElementById('ph-line')?.value || '';
     if (!date) return;
     const container = document.getElementById('ph-content');
     if (!container) return;
     container.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Loading...</div>';
     try {
-        const res = await fetch(`/api/plan-history?date=${date}`);
+        const params = new URLSearchParams({ date });
+        if (lineId) params.set('line_id', lineId);
+        const res = await fetch(`/api/plan-history?${params.toString()}`);
         const data = await res.json();
         if (!data.success) throw new Error(data.error);
         if (!data.lines.length) {
-            container.innerHTML = `<div style="text-align:center;padding:40px;color:#9ca3af;">No workstation plans found for ${date}.</div>`;
+            container.innerHTML = `<div style="text-align:center;padding:40px;color:#9ca3af;">No workstation plans found for the selected line/date.</div>`;
             return;
         }
         container.innerHTML = renderPlanHistoryCards(data.lines, date);
@@ -7297,7 +7626,7 @@ function renderPlanHistoryCards(lines, date) {
                     <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
                         <span style="color:#93c5fd;font-size:12px;">
                             <span style="color:#64748b;">Product:</span>
-                            <strong style="color:#e2e8f0;">${line.product_code} — ${line.product_name}</strong>
+                            <strong style="color:#e2e8f0;">${line.product_code ? `${line.product_code} — ${line.product_name}` : 'Deleted / Not Available'}</strong>
                         </span>
                         <span style="color:#93c5fd;font-size:12px;">
                             <span style="color:#64748b;">Target:</span>
@@ -7324,8 +7653,9 @@ function renderPlanHistoryCards(lines, date) {
                 </div>
                 <!-- Card footer -->
                 <div style="padding:10px 16px;border-top:1px solid #e5e7eb;background:#f9fafb;display:flex;justify-content:flex-end;">
-                    <button onclick="openCopyPlanModal(${line.line_id},'${date}',${line.product_id},'${line.product_code} ${line.product_name.replace(/'/g,"\\'")}','${line.line_code} — ${line.line_name.replace(/'/g,"\\'")}')"
-                        style="padding:6px 16px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                    <button onclick="${line.product_id ? `openCopyPlanModal(${line.line_id},'${date}',${line.product_id},'${(line.product_code ? `${line.product_code} ${line.product_name}` : 'Deleted / Not Available').replace(/'/g,"\\'")}','${line.line_code} — ${line.line_name.replace(/'/g,"\\'")}')` : ''}"
+                        ${line.product_id ? '' : 'disabled'}
+                        style="padding:6px 16px;background:${line.product_id ? '#1e40af' : '#94a3b8'};color:#fff;border:none;border-radius:6px;cursor:${line.product_id ? 'pointer' : 'not-allowed'};font-size:13px;font-weight:600;">
                         Replicate Plan →
                     </button>
                 </div>
@@ -7443,28 +7773,23 @@ async function toggleOsmCheck(lpwpId, checked, cbEl) {
 
 // ============================================================================
 function getDefaultReportHour() {
-    const hourStart = 9;
-    const hourEnd = 16;
-    const raw = Math.min(Math.max(new Date().getHours() - 1, hourStart), hourEnd);
-    return raw === 12 ? 13 : raw; // skip lunch hour
+    const nowHour = new Date().getHours() - 1;
+    if (ADMIN_WORK_HOURS.includes(nowHour)) return nowHour;
+    if (nowHour < ADMIN_WORK_HOURS[0]) return ADMIN_WORK_HOURS[0];
+    return ADMIN_WORK_HOURS[ADMIN_WORK_HOURS.length - 1];
 }
 
 function buildReportHourOptions(selectedHour) {
     const selected = Number.isFinite(parseInt(selectedHour, 10)) ? parseInt(selectedHour, 10) : getDefaultReportHour();
-    // Working hours 09:00-17:00, skipping lunch 12:00-13:00
-    return [9, 10, 11, 13, 14, 15, 16].map(hour => {
-        const start = `${String(hour).padStart(2, '0')}:00`;
-        const end = `${String(hour + 1).padStart(2, '0')}:00`;
-        return `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${end} (${start}-${end})</option>`;
-    }).join('');
+    return ADMIN_WORK_HOURS.map(hour =>
+        `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${adminHourLabel(hour)}</option>`
+    ).join('');
 }
 
 function formatReportHourLabel(hour) {
     const hourValue = parseInt(hour, 10);
     if (!Number.isFinite(hourValue)) return '';
-    const start = `${String(hourValue).padStart(2, '0')}:00`;
-    const end = `${String(hourValue + 1).padStart(2, '0')}:00`;
-    return `${end} (${start}-${end})`;
+    return adminHourLabel(hourValue);
 }
 
 function setAdminLiveReportTimer(refreshFn, guardId) {
@@ -8036,17 +8361,17 @@ function _buildEfficiencyTable(data, selectedHour) {
 
     // Live window: from working day start to end of selected hour
     const reportHourNum = parseInt(selectedHour, 10);
-    const liveWindowStart = plan.in_time || '09:00';
+    const liveWindowStart = plan.in_time || '08:00';
     const liveWindowEnd = Number.isFinite(reportHourNum)
         ? `${String(reportHourNum + 1).padStart(2, '0')}:00`
         : (plan.out_time || '17:00');
     const liveWindowLabel = `${liveWindowStart} → ${liveWindowEnd}`;
 
     const liveEff = summary.live_efficiency_pct;
-    const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 75 ? '#16a34a' : liveEff >= 50 ? '#d97706' : '#dc2626';
+    const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 90 ? '#16a34a' : liveEff >= 80 ? '#d97706' : '#dc2626';
     const liveEffText = liveEff === null ? 'N/A' : liveEff.toFixed(2) + '%';
     const hourlyEff = summary.hourly_efficiency_pct;
-    const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 75 ? '#16a34a' : hourlyEff >= 50 ? '#d97706' : '#dc2626';
+    const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 90 ? '#16a34a' : hourlyEff >= 80 ? '#d97706' : '#dc2626';
     const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
 
     // Formula explanations
@@ -8073,14 +8398,15 @@ function _buildEfficiencyTable(data, selectedHour) {
             <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
             <span style="font-size:12px;"><strong>Daily Target:</strong> ${plan.target_units}</span>
-            <span style="font-size:14px;font-weight:700;color:${hourlyEffColor};">HOURLY EFF: ${hourlyEffText} (${summary.hourly_output} pcs)</span>
-            <span style="font-size:14px;font-weight:700;color:${liveEffColor};margin-left:auto;">LIVE EFF: ${liveEffText} (${summary.live_output} pcs)</span>
+            <span style="margin-left:auto;"></span>
         </div>`;
+
+    const empAvgMap = new Map((employee_progress || []).map(emp => [String(emp.emp_code || ''), emp.hourly_efficiency_avg]));
 
     const dataRows = workstations.map(ws => {
         const wl = parseFloat(ws.workload_pct || 0);
-        const wlColor = wl >= 100 ? '#dc2626' : wl >= 80 ? '#d97706' : '#16a34a';
-        const wlBg    = wl >= 100 ? '#fee2e2' : wl >= 80 ? '#fef3c7' : '#dcfce7';
+        const wlColor = wl >= 90 ? '#16a34a' : wl >= 80 ? '#d97706' : '#dc2626';
+        const wlBg    = wl >= 90 ? '#dcfce7' : wl >= 80 ? '#fef3c7' : '#fee2e2';
 
         const liveWe = ws.live_efficiency_pct;
         let liveWeText, liveWeColor, liveWeBg;
@@ -8088,8 +8414,8 @@ function _buildEfficiencyTable(data, selectedHour) {
             liveWeText = '—'; liveWeColor = '#6b7280'; liveWeBg = '#f9fafb';
         } else {
             liveWeText = liveWe.toFixed(2) + '%';
-            liveWeColor = liveWe >= 75 ? '#16a34a' : liveWe >= 50 ? '#d97706' : '#dc2626';
-            liveWeBg    = liveWe >= 75 ? '#dcfce7'  : liveWe >= 50 ? '#fef3c7'  : '#fee2e2';
+            liveWeColor = liveWe >= 90 ? '#16a34a' : liveWe >= 80 ? '#d97706' : '#dc2626';
+            liveWeBg    = liveWe >= 90 ? '#dcfce7'  : liveWe >= 80 ? '#fef3c7'  : '#fee2e2';
         }
 
         const hourlyWe = ws.hourly_efficiency_pct;
@@ -8098,8 +8424,8 @@ function _buildEfficiencyTable(data, selectedHour) {
             hourlyWeText = '—'; hourlyWeColor = '#6b7280'; hourlyWeBg = '#f9fafb';
         } else {
             hourlyWeText = hourlyWe.toFixed(2) + '%';
-            hourlyWeColor = hourlyWe >= 75 ? '#16a34a' : hourlyWe >= 50 ? '#d97706' : '#dc2626';
-            hourlyWeBg    = hourlyWe >= 75 ? '#dcfce7'  : hourlyWe >= 50 ? '#fef3c7'  : '#fee2e2';
+            hourlyWeColor = hourlyWe >= 90 ? '#16a34a' : hourlyWe >= 80 ? '#d97706' : '#dc2626';
+            hourlyWeBg    = hourlyWe >= 90 ? '#dcfce7'  : hourlyWe >= 80 ? '#fef3c7'  : '#fee2e2';
         }
 
         return `<tr>
@@ -8113,6 +8439,9 @@ function _buildEfficiencyTable(data, selectedHour) {
             <td style="${tcS}font-weight:700;color:${hourlyWeColor};background:${hourlyWeBg};">${hourlyWeText}</td>
             <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
             <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
+            <td style="${tcS}font-weight:700;color:#0f172a;">${
+                ws.employee_code ? ((empAvgMap.get(String(ws.employee_code)) || 0).toFixed(2) + '%') : '—'
+            }</td>
         </tr>`;
     }).join('');
 
@@ -8131,6 +8460,7 @@ function _buildEfficiencyTable(data, selectedHour) {
                 <td style="${tcS}">${emp.workstation_code || '—'}</td>
                 <td style="${tcS}font-weight:700;">${emp.hourly_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_avg || 0).toFixed(2)}%</td>
                 <td style="${tcS}font-weight:700;">${emp.live_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
                 <td style="${tdS}">${remarksText}</td>
@@ -8167,6 +8497,7 @@ function _buildEfficiencyTable(data, selectedHour) {
                                 <th style="${thS}min-width:90px;">HOURLY EFF%</th>
                                 <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
                                 <th style="${thS}min-width:90px;">LIVE EFF%</th>
+                                <th style="${thS}min-width:90px;">AVG EFF</th>
                             </tr>
                         </thead>
                         <tbody>${dataRows}</tbody>
@@ -8180,6 +8511,7 @@ function _buildEfficiencyTable(data, selectedHour) {
                                 <th style="${thS}min-width:70px;">WS</th>
                                 <th style="${thS}min-width:90px;">HOURLY OUTPUT</th>
                                 <th style="${thS}min-width:100px;">HOURLY EFFICIENCY</th>
+                                <th style="${thS}min-width:90px;">AVG EFF</th>
                                 <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
                                 <th style="${thS}min-width:100px;">LIVE EFFICIENCY</th>
                                 <th style="${thS}min-width:180px;white-space:normal;">REMARKS</th>
@@ -8473,7 +8805,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
     };
     const effColor = eff => {
         if (eff == null) return '#6b7280';
-        return eff >= 75 ? '#16a34a' : eff >= 50 ? '#d97706' : '#dc2626';
+        return eff >= 90 ? '#16a34a' : eff >= 80 ? '#d97706' : '#dc2626';
     };
 
     // Header row 1: DATE label | per-date group headers | OVERALL

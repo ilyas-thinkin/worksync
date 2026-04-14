@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!ok) return;
     setupMobileSidebar();
     setupRealtime();
+    setupMgmtFloatingRefresh();
 
     // Section navigation
     document.querySelectorAll('.nav-link[data-section]').forEach(link => {
@@ -62,7 +63,10 @@ function setupMobileSidebar() {
 
 let mgmtRealtimeTimer = null;
 function setupRealtime() {
+    // Realtime auto-refresh is disabled on management pages to prevent scroll jumps.
+    window._mgmtDisableRealtime = true;
     const handleChange = (payload) => {
+        if (window._mgmtDisableRealtime) return;
         if (!payload) return;
         const date = document.getElementById('mgmt-date')?.value;
         if (payload.work_date && date && payload.work_date !== date) {
@@ -110,9 +114,44 @@ function setupRealtime() {
     }
 }
 
+function setMgmtManualRefresh(fn) {
+    window._mgmtManualRefresh = typeof fn === 'function' ? fn : null;
+}
+
+function setupMgmtFloatingRefresh() {
+    if (document.getElementById('mgmt-float-refresh')) return;
+    const btn = document.createElement('button');
+    btn.id = 'mgmt-float-refresh';
+    btn.type = 'button';
+    btn.textContent = 'Refresh';
+    btn.style.cssText = [
+        'position:fixed',
+        'right:18px',
+        'bottom:18px',
+        'z-index:9999',
+        'background:#1e3a5f',
+        'color:#fff',
+        'border:1px solid #0f2744',
+        'border-radius:999px',
+        'padding:10px 16px',
+        'font-weight:700',
+        'box-shadow:0 6px 18px rgba(0,0,0,0.2)',
+        'cursor:pointer'
+    ].join(';');
+    btn.addEventListener('click', async () => {
+        const refreshFn = window._mgmtManualRefresh;
+        if (typeof refreshFn !== 'function') return;
+        const prevY = window.scrollY;
+        await refreshFn();
+        requestAnimationFrame(() => window.scrollTo(0, prevY));
+    });
+    document.body.appendChild(btn);
+}
+
 async function loadManagementDashboard() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
+    setMgmtManualRefresh(() => refreshManagementData());
     content.innerHTML = `
         <div class="page-header">
             <div>
@@ -253,17 +292,36 @@ async function loadLineOptions() {
     select.addEventListener('change', refreshEmployeeEfficiency);
 }
 
+const MGMT_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+const mgmtHourOrdinal = (n) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return `${n}st`;
+    if (mod10 === 2 && mod100 !== 12) return `${n}nd`;
+    if (mod10 === 3 && mod100 !== 13) return `${n}rd`;
+    return `${n}th`;
+};
+const mgmtHourRange = (hour) => {
+    const start = `${String(hour).padStart(2, '0')}:00`;
+    const end = `${String(hour + 1).padStart(2, '0')}:00`;
+    return `${start}-${end}`;
+};
+const mgmtHourLabel = (hour) => {
+    const idx = MGMT_WORK_HOURS.indexOf(hour);
+    const ord = mgmtHourOrdinal((idx >= 0 ? idx : 0) + 1);
+    return `${ord} hour (${mgmtHourRange(hour)})`;
+};
+
 function loadHourOptions() {
     const select = document.getElementById('mgmt-hour-select');
     if (!select) return;
-    const hourStart = 8;
-    const hourEnd = 19;
     const now = new Date();
-    const defaultHour = Math.min(Math.max(now.getHours(), hourStart), hourEnd);
-    select.innerHTML = Array.from({ length: hourEnd - hourStart + 1 }).map((_, i) => {
-        const value = hourStart + i;
-        return `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${String(value).padStart(2, '0')}:00</option>`;
-    }).join('');
+    const defaultHour = MGMT_WORK_HOURS.includes(now.getHours())
+        ? now.getHours()
+        : (now.getHours() < MGMT_WORK_HOURS[0] ? MGMT_WORK_HOURS[0] : MGMT_WORK_HOURS[MGMT_WORK_HOURS.length - 1]);
+    select.innerHTML = MGMT_WORK_HOURS.map(value =>
+        `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${mgmtHourLabel(value)}</option>`
+    ).join('');
     select.addEventListener('change', refreshEmployeeEfficiency);
 }
 
@@ -425,46 +483,38 @@ async function loadFinalStatus() {
 // OSM REPORT (Management Panel)
 // ============================================================================
 function mgmtGetDefaultReportHour() {
-    const hourStart = 9;
-    const hourEnd = 16;
-    const raw = Math.min(Math.max(new Date().getHours() - 1, hourStart), hourEnd);
-    return raw === 12 ? 13 : raw; // skip lunch hour
+    const nowHour = new Date().getHours() - 1;
+    if (MGMT_WORK_HOURS.includes(nowHour)) return nowHour;
+    if (nowHour < MGMT_WORK_HOURS[0]) return MGMT_WORK_HOURS[0];
+    return MGMT_WORK_HOURS[MGMT_WORK_HOURS.length - 1];
 }
 
 function mgmtBuildReportHourOptions(selectedHour) {
     const selected = Number.isFinite(parseInt(selectedHour, 10)) ? parseInt(selectedHour, 10) : mgmtGetDefaultReportHour();
-    // Working hours 09:00-17:00, skipping lunch 12:00-13:00
-    return [9, 10, 11, 13, 14, 15, 16].map(hour => {
-        const start = `${String(hour).padStart(2, '0')}:00`;
-        const end = `${String(hour + 1).padStart(2, '0')}:00`;
-        return `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${end} (${start}-${end})</option>`;
-    }).join('');
+    return MGMT_WORK_HOURS.map(hour =>
+        `<option value="${hour}" ${hour === selected ? 'selected' : ''}>${mgmtHourLabel(hour)}</option>`
+    ).join('');
 }
 
 function mgmtFormatReportHourLabel(hour) {
     const hourValue = parseInt(hour, 10);
     if (!Number.isFinite(hourValue)) return '';
-    const start = `${String(hourValue).padStart(2, '0')}:00`;
-    const end = `${String(hourValue + 1).padStart(2, '0')}:00`;
-    return `${end} (${start}-${end})`;
+    return mgmtHourLabel(hourValue);
 }
 
 function setMgmtLiveReportTimer(refreshFn, guardId) {
     if (window._mgmtLiveReportTimer) clearInterval(window._mgmtLiveReportTimer);
-    if (typeof refreshFn !== 'function') return;
-    window._mgmtLiveReportTimer = setInterval(() => {
-        if (!document.getElementById(guardId)) {
-            clearInterval(window._mgmtLiveReportTimer);
-            window._mgmtLiveReportTimer = null;
-            return;
-        }
-        refreshFn();
-    }, 30000);
+    // Disabled: manual refresh only to prevent scroll jumps.
+    return;
 }
 
 async function loadMgmtOsmReport() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
+    setMgmtManualRefresh(() => {
+        const dailyVisible = document.getElementById('mgmt-osm-ctrl-daily')?.style.display !== 'none';
+        return dailyVisible ? refreshMgmtOsmReport() : refreshMgmtOsmRangeReport();
+    });
     content.innerHTML = `
         <div class="page-header">
             <div>
@@ -535,6 +585,7 @@ function mgmtOsmSwitchTab(tab) {
     document.getElementById('mgmt-osm-ctrl-range').style.display = isDaily ? 'none' : 'flex';
     document.getElementById('osm-content').innerHTML =
         '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
+    setMgmtManualRefresh(() => (isDaily ? refreshMgmtOsmReport() : refreshMgmtOsmRangeReport()));
 }
 
 async function refreshMgmtOsmReport() {
@@ -849,6 +900,7 @@ function downloadMgmtOsmExcel() {
 async function loadMgmtEfficiencyReport() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
+    setMgmtManualRefresh(() => refreshMgmtEfficiencyReport());
     content.innerHTML = `
         <div class="page-header">
             <div>
@@ -943,10 +995,10 @@ function _buildMgmtEfficiencyTable(data, date) {
     const liveHours = plan.live_hours || 0;
 
     const liveEff = summary.live_efficiency_pct;
-    const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 75 ? '#16a34a' : liveEff >= 50 ? '#d97706' : '#dc2626';
+    const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 90 ? '#16a34a' : liveEff >= 80 ? '#d97706' : '#dc2626';
     const liveEffText = liveEff === null ? 'N/A' : liveEff.toFixed(2) + '%';
     const hourlyEff = summary.hourly_efficiency_pct;
-    const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 75 ? '#16a34a' : hourlyEff >= 50 ? '#d97706' : '#dc2626';
+    const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 90 ? '#16a34a' : hourlyEff >= 80 ? '#d97706' : '#dc2626';
     const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
 
     const summaryBar = `
@@ -962,14 +1014,15 @@ function _buildMgmtEfficiencyTable(data, date) {
             <span style="font-size:12px;"><strong>Live Output:</strong> ${summary.live_output}</span>
             <span style="font-size:12px;"><strong>Hourly Output:</strong> ${summary.hourly_output}</span>
             <span style="font-size:12px;"><strong>Daily Target:</strong> ${plan.target_units}</span>
-            <span style="font-size:14px;font-weight:700;color:${liveEffColor};margin-left:auto;">LIVE EFFICIENCY: ${liveEffText}</span>
-            <span style="font-size:14px;font-weight:700;color:${hourlyEffColor};">HOURLY EFFICIENCY: ${hourlyEffText}</span>
+            <span style="margin-left:auto;"></span>
         </div>`;
+
+    const empAvgMap = new Map((employee_progress || []).map(emp => [String(emp.emp_code || ''), emp.hourly_efficiency_avg]));
 
     const dataRows = workstations.map(ws => {
         const wl = parseFloat(ws.workload_pct || 0);
-        const wlColor = wl >= 100 ? '#dc2626' : wl >= 80 ? '#d97706' : '#16a34a';
-        const wlBg    = wl >= 100 ? '#fee2e2' : wl >= 80 ? '#fef3c7' : '#dcfce7';
+        const wlColor = wl >= 90 ? '#16a34a' : wl >= 80 ? '#d97706' : '#dc2626';
+        const wlBg    = wl >= 90 ? '#dcfce7' : wl >= 80 ? '#fef3c7' : '#fee2e2';
 
         const liveWe = ws.live_efficiency_pct;
         let liveWeText, liveWeColor, liveWeBg;
@@ -977,8 +1030,8 @@ function _buildMgmtEfficiencyTable(data, date) {
             liveWeText = '—'; liveWeColor = '#6b7280'; liveWeBg = '#f9fafb';
         } else {
             liveWeText = liveWe.toFixed(2) + '%';
-            liveWeColor = liveWe >= 75 ? '#16a34a' : liveWe >= 50 ? '#d97706' : '#dc2626';
-            liveWeBg    = liveWe >= 75 ? '#dcfce7'  : liveWe >= 50 ? '#fef3c7'  : '#fee2e2';
+            liveWeColor = liveWe >= 90 ? '#16a34a' : liveWe >= 80 ? '#d97706' : '#dc2626';
+            liveWeBg    = liveWe >= 90 ? '#dcfce7'  : liveWe >= 80 ? '#fef3c7'  : '#fee2e2';
         }
 
         const hourlyWe = ws.hourly_efficiency_pct;
@@ -987,8 +1040,8 @@ function _buildMgmtEfficiencyTable(data, date) {
             hourlyWeText = '—'; hourlyWeColor = '#6b7280'; hourlyWeBg = '#f9fafb';
         } else {
             hourlyWeText = hourlyWe.toFixed(2) + '%';
-            hourlyWeColor = hourlyWe >= 75 ? '#16a34a' : hourlyWe >= 50 ? '#d97706' : '#dc2626';
-            hourlyWeBg    = hourlyWe >= 75 ? '#dcfce7'  : hourlyWe >= 50 ? '#fef3c7'  : '#fee2e2';
+            hourlyWeColor = hourlyWe >= 90 ? '#16a34a' : hourlyWe >= 80 ? '#d97706' : '#dc2626';
+            hourlyWeBg    = hourlyWe >= 90 ? '#dcfce7'  : hourlyWe >= 80 ? '#fef3c7'  : '#fee2e2';
         }
 
         return `<tr>
@@ -998,10 +1051,13 @@ function _buildMgmtEfficiencyTable(data, date) {
             <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
             <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
             <td style="${tcS}font-weight:700;color:${wlColor};background:${wlBg};">${wl.toFixed(1)}%</td>
-            <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
-            <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
             <td style="${tcS}font-weight:700;">${ws.hourly_output ?? 0}</td>
             <td style="${tcS}font-weight:700;color:${hourlyWeColor};background:${hourlyWeBg};">${hourlyWeText}</td>
+            <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
+            <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
+            <td style="${tcS}font-weight:700;color:#0f172a;">${
+                ws.employee_code ? ((empAvgMap.get(String(ws.employee_code)) || 0).toFixed(2) + '%') : '—'
+            }</td>
         </tr>`;
     }).join('');
 
@@ -1013,10 +1069,11 @@ function _buildMgmtEfficiencyTable(data, date) {
             return `<tr>
                 <td style="${tdS}"><strong>${emp.emp_code}</strong><div style="color:var(--secondary);font-size:11px;">${emp.emp_name}</div></td>
                 <td style="${tcS}">${emp.workstation_code || '—'}</td>
-                <td style="${tcS}">${emp.live_output || 0}</td>
-                <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
                 <td style="${tcS}">${emp.hourly_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_avg || 0).toFixed(2)}%</td>
+                <td style="${tcS}">${emp.live_output || 0}</td>
+                <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
                 <td style="${tcS}">${updatedText}</td>
             </tr>`;
         }).join('')
@@ -1046,10 +1103,11 @@ function _buildMgmtEfficiencyTable(data, date) {
                                 <th style="${thS}min-width:80px;">CYCLE TIME<br>(s)</th>
                                 <th style="${thS}min-width:75px;">TAKT TIME<br>(s)</th>
                                 <th style="${thS}min-width:70px;">WKLD%</th>
-                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
-                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
                                 <th style="${thS}min-width:90px;">HOURLY OUTPUT<br>${reportLabel}</th>
                                 <th style="${thS}min-width:90px;">HOURLY EFF%</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
+                                <th style="${thS}min-width:90px;">AVG EFF</th>
                             </tr>
                         </thead>
                         <tbody>${dataRows}</tbody>
@@ -1061,10 +1119,11 @@ function _buildMgmtEfficiencyTable(data, date) {
                             <tr>
                                 <th style="${thS}min-width:150px;">EMPLOYEE</th>
                                 <th style="${thS}min-width:70px;">WS</th>
-                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
-                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
                                 <th style="${thS}min-width:90px;">HOURLY OUTPUT</th>
                                 <th style="${thS}min-width:90px;">HOURLY EFF%</th>
+                                <th style="${thS}min-width:90px;">AVG EFF</th>
+                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
                                 <th style="${thS}min-width:100px;">LIVE UPDATE</th>
                             </tr>
                         </thead>
@@ -1141,6 +1200,7 @@ let _mgmtGraphSearch = '';
 async function loadMgmtWorkerIndividualEff() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
+    setMgmtManualRefresh(() => refreshMgmtWorkerIndividualEff());
     const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
     _mgmtWieData = null;
     _mgmtWieMetric = 'all';
@@ -1325,15 +1385,15 @@ function buildMgmtWorkerEfficiencyGraphs(data) {
         }));
 
     const bands = [
-        { label: '75%+', color: '#16a34a', count: 0 },
-        { label: '50-74%', color: '#d97706', count: 0 },
-        { label: '1-49%', color: '#dc2626', count: 0 },
+        { label: '90%+', color: '#16a34a', count: 0 },
+        { label: '80-89%', color: '#d97706', count: 0 },
+        { label: '1-79%', color: '#dc2626', count: 0 },
         { label: '0%', color: '#64748b', count: 0 }
     ];
     workedRows.forEach(row => {
         const eff = Number(row.overall_eff || 0);
-        if (eff >= 75) bands[0].count++;
-        else if (eff >= 50) bands[1].count++;
+        if (eff >= 90) bands[0].count++;
+        else if (eff >= 80) bands[1].count++;
         else if (eff > 0) bands[2].count++;
         else bands[3].count++;
     });
@@ -1399,9 +1459,9 @@ function buildMgmtWorkerEfficiencyGraphs(data) {
                         <label style="font-size:12px;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">Efficiency Filter</label>
                         <select id="mgmt-graph-eff-band" class="form-control" onchange="setMgmtGraphEffBand(this.value)">
                             <option value="all" ${_mgmtGraphEffBand === 'all' ? 'selected' : ''}>All</option>
-                            <option value="ge75" ${_mgmtGraphEffBand === 'ge75' ? 'selected' : ''}>75% and above</option>
-                            <option value="50to74" ${_mgmtGraphEffBand === '50to74' ? 'selected' : ''}>50% to 74.9%</option>
-                            <option value="1to49" ${_mgmtGraphEffBand === '1to49' ? 'selected' : ''}>1% to 49.9%</option>
+                            <option value="ge90" ${_mgmtGraphEffBand === 'ge90' ? 'selected' : ''}>90% and above</option>
+                            <option value="80to89" ${_mgmtGraphEffBand === '80to89' ? 'selected' : ''}>80% to 89.9%</option>
+                            <option value="1to79" ${_mgmtGraphEffBand === '1to79' ? 'selected' : ''}>1% to 79.9%</option>
                             <option value="zero" ${_mgmtGraphEffBand === 'zero' ? 'selected' : ''}>0%</option>
                         </select>
                     </div>
@@ -1477,7 +1537,7 @@ function buildMgmtWieHorizontalBars(items, { emptyText = 'No data.' } = {}) {
             ${items.map(item => {
                 const value = Number(item.value || 0);
                 const pct = Math.max(0, Math.min(100, (value / maxValue) * 100));
-                const color = value >= 75 ? '#16a34a' : value >= 50 ? '#d97706' : '#dc2626';
+                const color = value >= 90 ? '#16a34a' : value >= 80 ? '#d97706' : '#dc2626';
                 return `
                     <div>
                         <div style="display:flex;justify-content:space-between;gap:10px;font-size:11px;margin-bottom:4px;">
@@ -1520,9 +1580,9 @@ function buildMgmtWieDistribution(bands, total) {
 }
 
 function mgmtGraphMatchesEffBand(value) {
-    if (_mgmtGraphEffBand === 'ge75') return value >= 75;
-    if (_mgmtGraphEffBand === '50to74') return value >= 50 && value < 75;
-    if (_mgmtGraphEffBand === '1to49') return value > 0 && value < 50;
+    if (_mgmtGraphEffBand === 'ge90') return value >= 90;
+    if (_mgmtGraphEffBand === '80to89') return value >= 80 && value < 90;
+    if (_mgmtGraphEffBand === '1to79') return value > 0 && value < 80;
     if (_mgmtGraphEffBand === 'zero') return value <= 0;
     return true;
 }
@@ -1552,7 +1612,7 @@ function buildMgmtGraphAllEmployeeBars(items) {
             <div style="display:flex;flex-direction:column;gap:10px;">
                 ${items.map(item => {
                     const value = Number(item.value || 0);
-                    const color = value >= 75 ? '#16a34a' : value >= 50 ? '#d97706' : value > 0 ? '#dc2626' : '#64748b';
+                    const color = value >= 90 ? '#16a34a' : value >= 80 ? '#d97706' : value > 0 ? '#dc2626' : '#64748b';
                     return `
                         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;">
                             <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:6px;">
@@ -1576,6 +1636,7 @@ function buildMgmtGraphAllEmployeeBars(items) {
 async function loadMgmtWorkerEfficiencyGraphs() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
+    setMgmtManualRefresh(() => refreshMgmtWorkerEfficiencyGraphs());
     const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
     _mgmtGraphData = null;
     _mgmtGraphSelectedEmps.clear();
@@ -1798,7 +1859,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
     };
     const effColor = eff => {
         if (eff == null) return '#6b7280';
-        return eff >= 75 ? '#16a34a' : eff >= 50 ? '#d97706' : '#dc2626';
+        return eff >= 90 ? '#16a34a' : eff >= 80 ? '#d97706' : '#dc2626';
     };
 
     const dateGroupHeaders = dates.map(d => `<th colspan="${dateCols}" style="${thS}">${fmtDate(d)}</th>`).join('');
