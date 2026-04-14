@@ -150,6 +150,9 @@ async function loadSection(section) {
         case 'worker-individual-eff':
             await loadWorkerIndividualEff();
             break;
+        case 'downtime':
+            await loadDowntimeReport();
+            break;
         case 'wifi':
             await loadWifiSection();
             break;
@@ -4350,6 +4353,22 @@ const WS_ROW_COLORS = [
     '#F0F9FF', '#FFF1F2', '#F5F3FF', '#ECFDF5', '#FEF9C3'
 ];
 
+const LD_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+const ldHourOrdinal = (n) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return `${n}st`;
+    if (mod10 === 2 && mod100 !== 12) return `${n}nd`;
+    if (mod10 === 3 && mod100 !== 13) return `${n}rd`;
+    return `${n}th`;
+};
+const ldHourRange = (hour) => `${String(hour).padStart(2, '0')}:00-${String(hour + 1).padStart(2, '0')}:00`;
+const ldHourLabel = (hour) => {
+    const idx = LD_WORK_HOURS.indexOf(hour);
+    const ord = ldHourOrdinal((idx >= 0 ? idx : 0) + 1);
+    return `${ord} hour (${ldHourRange(hour)})`;
+};
+
 // Group processes by workstation code, computing SAM sum + workload per group.
 // If a workstation is not assigned (blank), treat each process separately (no summing).
 function _buildWsGroups(processes, taktSecs, useOT) {
@@ -5129,6 +5148,16 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 </button>
             </div>
         </div>
+        <!-- Downtime Report -->
+        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
+                <div style="font-weight:800;font-size:14px;color:#9a3412;">Downtime Report</div>
+                <button class="btn btn-sm btn-secondary" onclick="ldOpenDowntimeModal(${lineId})">View Details</button>
+            </div>
+            <div id="ld-dt-summary-${lineId}" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 12px;font-size:12px;color:#9a3412;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <span>Loading downtime summary…</span>
+            </div>
+        </div>
         ${activeOT ? `<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:8px 14px;margin-bottom:8px;font-size:0.82em;color:#5b21b6;display:flex;align-items:center;gap:8px;">
             <strong>OT Mode${isOTChangeover ? ' — Changeover Product' : ''}:</strong> Assigning employees for the overtime shift${isOTChangeover ? ' on the changeover product' : ''}. Workstation layout unchanged — only employee assignments are saved.
         </div>` : ''}
@@ -5160,6 +5189,206 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     _buildLdTbody(document.getElementById(`ld-body-${lineId}`), lineId, wsGroups, employees, activeOT,
         { workSecs, target_units, otMins, otTarget, hasOT });
     _ldUpdateQrSelectionUI(lineId, date, activeOT, displayIsChangeover, lineQrEmployees);
+    ldLoadDowntimeSummary(lineId, date);
+}
+
+async function ldLoadDowntimeSummary(lineId, date) {
+    const el = document.getElementById(`ld-dt-summary-${lineId}`);
+    if (!el) return;
+    el.innerHTML = '<strong>Downtime Report</strong> <span>Loading downtime summary…</span>';
+    try {
+        const res = await fetch(`/api/lines/${lineId}/downtime-summary?date=${date}`);
+        const result = await res.json();
+        if (!result.success) throw new Error(result.error || 'Failed to load downtime');
+        const data = result.data || {};
+        if (!window._ldDowntimeData) window._ldDowntimeData = {};
+        window._ldDowntimeData[lineId] = data;
+        const total = data.total_occurrences || 0;
+        const minutesPerOcc = data.minutes_per_occurrence_default || 60;
+        const totalMinutes = total * minutesPerOcc;
+        const topReason = data.by_reason?.[0]?.reason || '—';
+        const topProcess = data.by_process?.[0]
+            ? `${data.by_process[0].operation_code} | ${data.by_process[0].operation_name}`
+            : '—';
+        el.innerHTML = `
+            <strong>Downtime Report</strong>
+            <span>Total: <strong>${total}</strong> occurrences · <strong>${totalMinutes}</strong> mins</span>
+            <span>Top Reason: <strong>${topReason}</strong></span>
+            <span>Top Process: <strong>${topProcess}</strong></span>
+            <button class="btn btn-sm btn-secondary" onclick="ldOpenDowntimeModal(${lineId})">View Details</button>
+        `;
+    } catch (err) {
+        el.innerHTML = `<strong>Downtime Report</strong> <span style="color:#b91c1c;">${err.message}</span>`;
+    }
+}
+
+function ldOpenDowntimeModal(lineId) {
+    const data = window._ldDowntimeData?.[lineId];
+    if (!data) return;
+    const existing = document.getElementById('ld-dt-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'ld-dt-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:3000;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 16px;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;max-width:1100px;width:100%;box-shadow:0 18px 60px rgba(0,0,0,0.25);overflow:hidden;">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #e5e7eb;background:#f8fafc;">
+                <div>
+                    <div style="font-weight:800;font-size:16px;">Downtime Drill-down</div>
+                    <div style="font-size:12px;color:#6b7280;">Shortfall reasons only · Output &lt; hourly target</div>
+                </div>
+                <button class="btn btn-sm btn-secondary" onclick="document.getElementById('ld-dt-modal')?.remove()">Close</button>
+            </div>
+            <div id="ld-dt-body" style="padding:16px 18px;"></div>
+        </div>
+    `;
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+    });
+    document.body.appendChild(modal);
+    ldRenderDowntimeModal(data, lineId);
+}
+
+function ldRenderDowntimeModal(data, lineId) {
+    const body = document.getElementById('ld-dt-body');
+    if (!body) return;
+    if (!window._ldDowntimeMinutes) window._ldDowntimeMinutes = data.minutes_per_occurrence_default || 60;
+    const minutesPerOcc = window._ldDowntimeMinutes;
+
+    const total = data.total_occurrences || 0;
+    const totalMinutes = total * minutesPerOcc;
+
+    const reasonPie = ldBuildPieHtml(
+        (data.by_reason || []).map(i => ({ label: i.reason, value: i.count || 0 })),
+        minutesPerOcc
+    );
+    const processPie = ldBuildPieHtml(
+        (data.by_process || []).map(p => ({ label: `${p.operation_code} | ${p.operation_name}`, value: p.count || 0 })),
+        minutesPerOcc
+    );
+
+    const hours = data.hours || LD_WORK_HOURS;
+    const hourCounts = new Map((data.by_hour || []).map(h => [h.hour_slot, h.count]));
+    const hourBars = hours.map(h => ({
+        label: ldHourLabel(h),
+        count: hourCounts.get(h) || 0
+    }));
+
+    const detailRows = (data.details || []).map(d => `
+        <tr>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${ldHourLabel(d.hour_slot)}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${d.operation_code}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${d.operation_name}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${d.reason}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;text-align:right;">${d.quantity}</td>
+        </tr>
+    `).join('') || `<tr><td colspan="5" style="padding:10px;color:#6b7280;">No downtime entries found.</td></tr>`;
+
+    body.innerHTML = `
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+            <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 12px;">
+                <div style="font-size:12px;color:#9a3412;font-weight:700;">Total Downtime</div>
+                <div style="font-size:18px;font-weight:800;color:#9a3412;">${totalMinutes} mins</div>
+                <div style="font-size:12px;color:#9a3412;">${total} occurrences</div>
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+                <label style="font-size:12px;color:#6b7280;">Minutes / occurrence</label>
+                <input type="number" min="1" id="ld-dt-mins" value="${minutesPerOcc}" style="width:80px;" class="form-control"
+                    onchange="window._ldDowntimeMinutes = parseInt(this.value,10)||60; ldRenderDowntimeModal(window._ldDowntimeData['${lineId}'], ${lineId});">
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:12px;">
+            <div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px;">
+                <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Downtime by Reason</div>
+                ${reasonPie}
+            </div>
+            <div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px;">
+                <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Downtime by Process</div>
+                ${processPie}
+            </div>
+            <div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px;">
+                <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Downtime by Hour</div>
+                ${ldBuildBarHtml(hourBars)}
+            </div>
+        </div>
+
+        <div style="border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+            <div style="background:#f8fafc;padding:8px 10px;font-weight:700;font-size:12px;">Detailed Downtime Entries</div>
+            <div style="max-height:320px;overflow:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="background:#f1f5f9;">
+                            <th style="text-align:left;padding:6px 8px;">Hour</th>
+                            <th style="text-align:left;padding:6px 8px;">Op Code</th>
+                            <th style="text-align:left;padding:6px 8px;">Op Name</th>
+                            <th style="text-align:left;padding:6px 8px;">Reason</th>
+                            <th style="text-align:right;padding:6px 8px;">Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody>${detailRows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+function ldBuildPieHtml(items, minutesPerOcc) {
+    const data = items.filter(i => i.value > 0);
+    if (!data.length) return `<div style="color:#6b7280;font-size:12px;">No data.</div>`;
+    const total = data.reduce((s, i) => s + i.value, 0);
+    const colors = ['#f59e0b','#10b981','#3b82f6','#ef4444','#8b5cf6','#14b8a6','#f97316','#22c55e'];
+    let cumulative = 0;
+    const slices = data.map((d, i) => {
+        const [startX, startY] = ldPiePoint(cumulative / total);
+        cumulative += d.value;
+        const [endX, endY] = ldPiePoint(cumulative / total);
+        const largeArc = d.value / total > 0.5 ? 1 : 0;
+        const color = colors[i % colors.length];
+        return `<path d="M 80 80 L ${startX} ${startY} A 80 80 0 ${largeArc} 1 ${endX} ${endY} Z" fill="${color}"></path>`;
+    }).join('');
+    const legend = data.map((d, i) => {
+        const mins = d.value * minutesPerOcc;
+        return `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#374151;margin-bottom:4px;">
+            <span style="width:10px;height:10px;border-radius:2px;background:${colors[i % colors.length]};display:inline-block;"></span>
+            <span>${d.label} — ${d.value} (${mins}m)</span>
+        </div>`;
+    }).join('');
+    return `
+        <div style="display:flex;gap:10px;align-items:center;">
+            <svg width="160" height="160" viewBox="0 0 160 160">${slices}</svg>
+            <div style="flex:1;min-width:0;">${legend}</div>
+        </div>
+    `;
+}
+
+function ldPiePoint(portion) {
+    const angle = (portion * 2 * Math.PI) - Math.PI / 2;
+    const x = 80 + 80 * Math.cos(angle);
+    const y = 80 + 80 * Math.sin(angle);
+    return [x.toFixed(2), y.toFixed(2)];
+}
+
+function ldBuildBarHtml(items) {
+    if (!items.length) return `<div style="color:#6b7280;font-size:12px;">No data.</div>`;
+    const max = Math.max(1, ...items.map(i => i.count));
+    return `
+        <div>
+            ${items.map(i => {
+                const pct = Math.round((i.count / max) * 100);
+                return `
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;">
+                        <div style="width:140px;color:#374151;">${i.label}</div>
+                        <div style="flex:1;background:#e5e7eb;border-radius:6px;height:10px;overflow:hidden;">
+                            <div style="height:100%;width:${pct}%;background:#60a5fa;"></div>
+                        </div>
+                        <div style="width:36px;text-align:right;">${i.count}</div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
 }
 
 function switchLdTakt(lineId, useOT) {
@@ -8643,6 +8872,156 @@ async function loadWorkerIndividualEff() {
     `;
     document.getElementById('wie-from').addEventListener('change', () => {});
     document.getElementById('wie-to').addEventListener('change', () => {});
+}
+
+// ============================================================================
+// DOWNTIME REPORT (IE)
+// ============================================================================
+async function loadDowntimeReport() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Downtime Report</h1>
+                <p class="page-subtitle">Shortfall reasons when output is below hourly target</p>
+            </div>
+            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
+                <div class="ie-date">
+                    <label for="dt-line">Line</label>
+                    <select id="dt-line" class="form-control" style="min-width:180px;"></select>
+                </div>
+                <div class="ie-date">
+                    <label for="dt-date">Date</label>
+                    <input type="date" id="dt-date" class="form-control" value="${today}">
+                </div>
+                <div class="ie-date">
+                    <label for="dt-mins">Minutes / Occurrence</label>
+                    <input type="number" id="dt-mins" class="form-control" value="60" min="1" style="width:120px;">
+                </div>
+                <button class="btn btn-secondary" onclick="refreshDowntimeReport()">Refresh</button>
+            </div>
+        </div>
+        <div id="dt-content">
+            <div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>
+        </div>
+    `;
+
+    try {
+        const r = await fetch(`${API_BASE}/lines`);
+        const result = await r.json();
+        if (result.success) {
+            const opts = '<option value="">-- Select Line --</option>' +
+                result.data.filter(l => l.is_active).map(l =>
+                    `<option value="${l.id}">${l.line_name} (${l.line_code})</option>`
+                ).join('');
+            document.getElementById('dt-line').innerHTML = opts;
+        }
+    } catch (e) { /* ignore */ }
+
+    document.getElementById('dt-line')?.addEventListener('change', refreshDowntimeReport);
+    document.getElementById('dt-date')?.addEventListener('change', refreshDowntimeReport);
+    document.getElementById('dt-mins')?.addEventListener('change', () => {
+        window._dtMinutes = parseInt(document.getElementById('dt-mins').value, 10) || 60;
+        if (window._dtData) renderDowntimeReport(window._dtData);
+    });
+}
+
+async function refreshDowntimeReport() {
+    const lineId = document.getElementById('dt-line')?.value;
+    const date = document.getElementById('dt-date')?.value;
+    const container = document.getElementById('dt-content');
+    if (!container) return;
+    if (!lineId) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);">Select a line to load the report.</div>';
+        return;
+    }
+    container.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    try {
+        const res = await fetch(`${API_BASE}/lines/${lineId}/downtime-summary?date=${date}`);
+        const result = await res.json();
+        if (!result.success) throw new Error(result.error || 'Failed to load');
+        window._dtData = result.data || {};
+        renderDowntimeReport(window._dtData);
+    } catch (err) {
+        container.innerHTML = `<div style="color:#dc2626;padding:20px;">${err.message}</div>`;
+    }
+}
+
+function renderDowntimeReport(data) {
+    const container = document.getElementById('dt-content');
+    if (!container) return;
+    const mins = window._dtMinutes || data.minutes_per_occurrence_default || 60;
+    const total = data.total_occurrences || 0;
+    const totalMins = total * mins;
+
+    const reasonPie = ldBuildPieHtml(
+        (data.by_reason || []).map(i => ({ label: i.reason, value: i.count || 0 })),
+        mins
+    );
+    const processPie = ldBuildPieHtml(
+        (data.by_process || []).map(p => ({ label: `${p.operation_code} | ${p.operation_name}`, value: p.count || 0 })),
+        mins
+    );
+    const hours = data.hours || LD_WORK_HOURS;
+    const hourCounts = new Map((data.by_hour || []).map(h => [h.hour_slot, h.count]));
+    const hourBars = hours.map(h => ({ label: ldHourLabel(h), count: hourCounts.get(h) || 0 }));
+
+    const detailRows = (data.details || []).map(d => `
+        <tr>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${ldHourLabel(d.hour_slot)}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${d.operation_code}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${d.operation_name}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;">${d.reason}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;text-align:right;">${d.quantity}</td>
+        </tr>
+    `).join('') || `<tr><td colspan="5" style="padding:10px;color:#6b7280;">No downtime entries found.</td></tr>`;
+
+    container.innerHTML = `
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+            <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 12px;">
+                <div style="font-size:12px;color:#9a3412;font-weight:700;">Total Downtime</div>
+                <div style="font-size:18px;font-weight:800;color:#9a3412;">${totalMins} mins</div>
+                <div style="font-size:12px;color:#9a3412;">${total} occurrences</div>
+            </div>
+            <div style="font-size:12px;color:#6b7280;">
+                Per-hour target: <strong>${data.per_hour_target ?? 0}</strong>
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:12px;">
+            <div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px;">
+                <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Downtime by Reason</div>
+                ${reasonPie}
+            </div>
+            <div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px;">
+                <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Downtime by Process</div>
+                ${processPie}
+            </div>
+            <div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px;">
+                <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Downtime by Hour</div>
+                ${ldBuildBarHtml(hourBars)}
+            </div>
+        </div>
+
+        <div style="border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+            <div style="background:#f8fafc;padding:8px 10px;font-weight:700;font-size:12px;">Detailed Downtime Entries</div>
+            <div style="max-height:360px;overflow:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="background:#f1f5f9;">
+                            <th style="text-align:left;padding:6px 8px;">Hour</th>
+                            <th style="text-align:left;padding:6px 8px;">Op Code</th>
+                            <th style="text-align:left;padding:6px 8px;">Op Name</th>
+                            <th style="text-align:left;padding:6px 8px;">Reason</th>
+                            <th style="text-align:right;padding:6px 8px;">Qty</th>
+                        </tr>
+                    </thead>
+                    <tbody>${detailRows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
 }
 
 function setWieMetric(metric) {

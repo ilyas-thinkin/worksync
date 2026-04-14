@@ -5214,6 +5214,125 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
     }
 });
 
+// GET /lines/:lineId/downtime-summary?date= — IE downtime report based on shortfall reasons
+router.get('/lines/:lineId/downtime-summary', async (req, res) => {
+    const { lineId } = req.params;
+    const { date } = req.query;
+    if (!date) {
+        return res.status(400).json({ success: false, error: 'date is required' });
+    }
+    try {
+        const planRes = await pool.query(
+            `SELECT product_id, target_units
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2`,
+            [lineId, date]
+        );
+        const plan = planRes.rows[0];
+        if (!plan) {
+            return res.json({ success: true, data: {
+                total_occurrences: 0,
+                minutes_per_occurrence_default: 60,
+                per_hour_target: 0,
+                by_reason: [],
+                by_process: [],
+                by_hour: [],
+                details: [],
+                hours: REPORT_WORK_HOURS
+            }});
+        }
+
+        const inTime = await getSettingValue('default_in_time', '08:00');
+        const outTime = await getSettingValue('default_out_time', '17:00');
+        const lunchMins = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10);
+        const [inH, inM] = inTime.split(':').map(Number);
+        const [outH, outM] = outTime.split(':').map(Number);
+        const workingHours = (outH + outM / 60) - (inH + inM / 60) - lunchMins / 60;
+        const perHourTarget = (workingHours > 0 && plan.target_units > 0)
+            ? (plan.target_units / workingHours)
+            : 0;
+
+        if (perHourTarget <= 0) {
+            return res.json({ success: true, data: {
+                total_occurrences: 0,
+                minutes_per_occurrence_default: 60,
+                per_hour_target: 0,
+                by_reason: [],
+                by_process: [],
+                by_hour: [],
+                details: [],
+                hours: REPORT_WORK_HOURS
+            }});
+        }
+
+        const rowsRes = await pool.query(
+            `SELECT lph.process_id, lph.hour_slot, COALESCE(lph.quantity, 0) AS quantity, lph.shortfall_reason,
+                    pp.sequence_number, o.operation_code, o.operation_name
+             FROM line_process_hourly_progress lph
+             JOIN product_processes pp ON pp.id = lph.process_id
+             JOIN operations o ON o.id = pp.operation_id
+             WHERE lph.line_id = $1 AND lph.work_date = $2
+               AND pp.product_id = $3
+               AND lph.shortfall_reason IS NOT NULL AND lph.shortfall_reason <> ''
+               AND COALESCE(lph.quantity, 0)::numeric < $4::numeric
+             ORDER BY lph.hour_slot, pp.sequence_number`,
+            [lineId, date, plan.product_id, perHourTarget]
+        );
+
+        const byReason = new Map();
+        const byProcess = new Map();
+        const byHour = new Map();
+
+        const details = rowsRes.rows.map(r => {
+            const reason = r.shortfall_reason || '';
+            byReason.set(reason, (byReason.get(reason) || 0) + 1);
+            const pid = parseInt(r.process_id, 10);
+            if (!byProcess.has(pid)) {
+                byProcess.set(pid, {
+                    process_id: pid,
+                    operation_code: r.operation_code,
+                    operation_name: r.operation_name,
+                    count: 0
+                });
+            }
+            byProcess.get(pid).count += 1;
+            const hour = parseInt(r.hour_slot, 10);
+            byHour.set(hour, (byHour.get(hour) || 0) + 1);
+
+            return {
+                process_id: pid,
+                operation_code: r.operation_code,
+                operation_name: r.operation_name,
+                hour_slot: hour,
+                quantity: parseFloat(r.quantity || 0),
+                reason
+            };
+        });
+
+        const by_reason = [...byReason.entries()]
+            .map(([reason, count]) => ({ reason, count }))
+            .sort((a, b) => b.count - a.count);
+        const by_process = [...byProcess.values()]
+            .sort((a, b) => b.count - a.count);
+        const by_hour = [...byHour.entries()]
+            .map(([hour_slot, count]) => ({ hour_slot, count }))
+            .sort((a, b) => a.hour_slot - b.hour_slot);
+
+        res.json({ success: true, data: {
+            total_occurrences: details.length,
+            minutes_per_occurrence_default: 60,
+            per_hour_target: Math.round(perHourTarget * 100) / 100,
+            by_reason,
+            by_process,
+            by_hour,
+            details,
+            hours: REPORT_WORK_HOURS
+        }});
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // POST /lines/:lineId/workstation-plan/save — save from flat table (group/WS per process + employee)
 router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
     const { lineId } = req.params;
