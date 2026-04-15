@@ -7,19 +7,31 @@
 
 set -e  # Exit on error
 
-# Configuration
-BACKUP_BASE_DIR="/home/worksync/worksync/backups"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ROOT_DIR}/backend/.env"
+
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
+
+BACKUP_BASE_DIR="${BACKUP_DIR:-${ROOT_DIR}/backups}"
 DATE=$(date +%Y-%m-%d_%H%M%S)
-LOG_FILE="/home/worksync/worksync/logs/backup.log"
+LOG_FILE="${LOGS_DIR:-${ROOT_DIR}/logs}/backup.log"
 
 # Database credentials
-DB_NAME="worksync_db"
-DB_USER="worksync_user"
-export PGPASSWORD="worksync_secure_2026"
+DB_NAME="${DB_NAME:-worksync_db}"
+DB_USER="${DB_USER:-worksync_user}"
+DB_HOST="${DB_HOST:-127.0.0.1}"
+DB_PORT="${DB_PORT:-5432}"
+export PGPASSWORD="${DB_PASSWORD:-worksync_secure_2026}"
 
 # Create backup directory for today
 BACKUP_DIR="$BACKUP_BASE_DIR/$DATE"
 mkdir -p "$BACKUP_DIR"
+mkdir -p "$(dirname "$LOG_FILE")"
 
 # Log function
 log() {
@@ -30,25 +42,25 @@ log "=== Starting WorkSync Backup ==="
 
 # 1. Backup PostgreSQL database
 log "Backing up database: $DB_NAME"
-pg_dump -h 127.0.0.1 -U "$DB_USER" -F c -b -v \
+pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -F c -b -v \
     -f "$BACKUP_DIR/worksync_db.dump" "$DB_NAME" 2>&1 | tee -a "$LOG_FILE"
 
 # 2. Backup reports directory
-if [ -d "/home/worksync/worksync/reports" ]; then
+if [ -d "${REPORTS_DIR:-${ROOT_DIR}/reports}" ]; then
     log "Backing up reports directory"
-    rsync -av /home/worksync/worksync/reports/ "$BACKUP_DIR/reports/" >> "$LOG_FILE" 2>&1
+    rsync -av "${REPORTS_DIR:-${ROOT_DIR}/reports}/" "$BACKUP_DIR/reports/" >> "$LOG_FILE" 2>&1
 fi
 
 # 3. Backup QR codes directory
-if [ -d "/home/worksync/worksync/qrcodes" ]; then
+if [ -d "${QRCODES_DIR:-${ROOT_DIR}/qrcodes}" ]; then
     log "Backing up QR codes directory"
-    rsync -av /home/worksync/worksync/qrcodes/ "$BACKUP_DIR/qrcodes/" >> "$LOG_FILE" 2>&1
+    rsync -av "${QRCODES_DIR:-${ROOT_DIR}/qrcodes}/" "$BACKUP_DIR/qrcodes/" >> "$LOG_FILE" 2>&1
 fi
 
 # 4. Backup .env configuration (for disaster recovery)
-if [ -f "/home/worksync/worksync/backend/.env" ]; then
+if [ -f "$ENV_FILE" ]; then
     log "Backing up configuration file"
-    cp /home/worksync/worksync/backend/.env "$BACKUP_DIR/.env.backup"
+    cp "$ENV_FILE" "$BACKUP_DIR/.env.backup"
 fi
 
 # 5. Create backup manifest

@@ -5,6 +5,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
+    "migrate": "node src/scripts/run-migrations.js",
+    "system:rollback": "node src/scripts/run-system-rollback.js",
+    "system:update": "node src/scripts/run-system-update.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

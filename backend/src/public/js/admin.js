@@ -12,6 +12,7 @@ let realtimeRefreshTimer = null;
 const isIeMode = typeof window !== 'undefined' && window.IS_IE;
 let ieDefaultIn = '08:00';
 let ieDefaultOut = '17:00';
+let systemUpdatePollTimer = null;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -106,6 +107,9 @@ async function loadSection(section) {
     currentSection = section;
     currentView = { type: 'section', section };
     const content = document.getElementById('main-content');
+    if (section !== 'system-update') {
+        stopSystemUpdatePolling();
+    }
 
     switch(section) {
         case 'dashboard':
@@ -152,6 +156,9 @@ async function loadSection(section) {
             break;
         case 'downtime':
             await loadDowntimeReport();
+            break;
+        case 'system-update':
+            await loadSystemUpdateSection();
             break;
         case 'wifi':
             await loadWifiSection();
@@ -9776,4 +9783,234 @@ function _buildMtGroupCard(group, allHours, fmtHour) {
             </div>
         </div>
     `;
+}
+
+function stopSystemUpdatePolling() {
+    if (systemUpdatePollTimer) {
+        clearInterval(systemUpdatePollTimer);
+        systemUpdatePollTimer = null;
+    }
+}
+
+function formatSystemUpdateTime(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+}
+
+function renderSystemUpdateSection(data = {}) {
+    const content = document.getElementById('main-content');
+    const repo = data.repo || {};
+    const status = data.status || {};
+    const rollbackTarget = data.rollbackTarget || {};
+    const logTail = Array.isArray(data.logTail) ? data.logTail.join('\n') : '';
+    const running = ['starting', 'running'].includes(status.status);
+    const currentAction = status.action || 'update';
+    const statusTone = running ? 'warning' : status.status === 'failed' ? 'danger' : status.status === 'success' ? 'success' : 'info';
+    const updateButtonLabel = running && currentAction === 'update' ? 'Update Running...' : 'Pull Latest Changes';
+    const rollbackButtonLabel = running && currentAction === 'rollback' ? 'Rollback Running...' : 'Rollback System';
+    const canRollback = Boolean(data.canRollback);
+    const currentLabel = currentAction === 'rollback' ? 'Rollback Status' : 'Update Status';
+
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">System Update</h1>
+                <p class="page-subtitle">Pull new code or roll back to a saved backup point with controlled system jobs.</p>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="refreshSystemUpdateStatus()">
+                    Refresh Status
+                </button>
+                <button class="btn btn-primary" id="system-update-start-btn" onclick="startSystemUpdate()" ${running ? 'disabled' : ''}>
+                    ${updateButtonLabel}
+                </button>
+                <button class="btn btn-danger" id="system-rollback-start-btn" onclick="startSystemRollback()" ${running || !canRollback ? 'disabled' : ''}>
+                    ${rollbackButtonLabel}
+                </button>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-info">
+                    <h3 style="font-size:1.15rem;">${repo.branch || 'main'}</h3>
+                    <p>Current Branch</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-info">
+                    <h3 style="font-size:1.15rem;">${repo.commitShort || '—'}</h3>
+                    <p>Current Commit</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-info">
+                    <h3 style="font-size:1.15rem;text-transform:capitalize;">${status.status || 'idle'}</h3>
+                    <p>${currentLabel}</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-info">
+                    <h3 style="font-size:1rem;">${status.step || 'Waiting'}</h3>
+                    <p>Current Step</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="alert alert-${statusTone}" style="margin-bottom:20px;">
+            <strong>${status.message || 'No update has been run from the panel yet.'}</strong>
+            <div style="margin-top:8px;font-size:13px;">
+                Action: ${(status.action || 'update').toUpperCase()}<br>
+                Started: ${formatSystemUpdateTime(status.startedAt)}<br>
+                Finished: ${formatSystemUpdateTime(status.finishedAt)}<br>
+                Job ID: ${status.jobId || '—'}
+            </div>
+        </div>
+
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <h3 class="card-title">Available Rollback Point</h3>
+            </div>
+            <div class="card-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;">
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Backup Tag</div>
+                    <div style="margin-top:6px;word-break:break-word;">${rollbackTarget.backupTag || '—'}</div>
+                </div>
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Database Backup</div>
+                    <div style="margin-top:6px;word-break:break-word;">${rollbackTarget.dbBackup || '—'}</div>
+                </div>
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Target Commit</div>
+                    <div style="margin-top:6px;word-break:break-word;">${rollbackTarget.targetCommit || '—'}</div>
+                </div>
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Last Commit Range</div>
+                    <div style="margin-top:6px;word-break:break-word;">${status.beforeCommit || '—'} → ${status.afterCommit || '—'}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <h3 class="card-title">Safety Snapshot</h3>
+            </div>
+            <div class="card-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;">
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Snapshot Tag</div>
+                    <div style="margin-top:6px;word-break:break-word;">${status.safetySnapshotTag || '—'}</div>
+                </div>
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Snapshot Bundle</div>
+                    <div style="margin-top:6px;word-break:break-word;">${status.safetySnapshotBundle || '—'}</div>
+                </div>
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Snapshot DB Backup</div>
+                    <div style="margin-top:6px;word-break:break-word;">${status.safetySnapshotDbBackup || '—'}</div>
+                </div>
+                <div>
+                    <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em;">Bundle Path</div>
+                    <div style="margin-top:6px;word-break:break-word;">${status.bundlePath || '—'}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Job Log</h3>
+            </div>
+            <div class="card-body">
+                <pre style="margin:0;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:12px;overflow:auto;max-height:420px;white-space:pre-wrap;">${escHtml(logTail || 'No logs yet.')}</pre>
+            </div>
+        </div>
+    `;
+}
+
+async function refreshSystemUpdateStatus(options = {}) {
+    if (currentSection !== 'system-update') return;
+
+    try {
+        const res = await fetch(`${API_BASE}/system-update/status`, { credentials: 'include' });
+        const result = await res.json();
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to load update status');
+        }
+
+        renderSystemUpdateSection(result.data);
+
+        if (['starting', 'running'].includes(result.data?.status?.status)) {
+            if (!systemUpdatePollTimer) {
+                systemUpdatePollTimer = setInterval(() => {
+                    refreshSystemUpdateStatus({ silent: true });
+                }, 4000);
+            }
+        } else {
+            stopSystemUpdatePolling();
+        }
+    } catch (err) {
+        if (!options.silent) {
+            const content = document.getElementById('main-content');
+            content.innerHTML = `<div class="alert alert-danger">Error loading system update status: ${err.message}</div>`;
+        }
+    }
+}
+
+async function loadSystemUpdateSection() {
+    const content = document.getElementById('main-content');
+    content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    await refreshSystemUpdateStatus();
+}
+
+async function startSystemUpdate() {
+    if (!confirm('This will back up the database, pull the latest code from Git, run pending migrations, and reload the app. Continue?')) {
+        return;
+    }
+
+    const button = document.getElementById('system-update-start-btn');
+    if (button) button.disabled = true;
+
+    try {
+        const res = await fetch(`${API_BASE}/system-update/start`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const result = await res.json();
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to start update');
+        }
+
+        showToast(result.message || 'System update started', 'success');
+        await refreshSystemUpdateStatus();
+    } catch (err) {
+        if (button) button.disabled = false;
+        showToast(err.message, 'error');
+    }
+}
+
+async function startSystemRollback() {
+    if (!confirm('This will stop WorkSync, restore code and database from the selected rollback point, and overwrite current system state. Continue?')) {
+        return;
+    }
+
+    const button = document.getElementById('system-rollback-start-btn');
+    if (button) button.disabled = true;
+
+    try {
+        const res = await fetch(`${API_BASE}/system-update/rollback`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const result = await res.json();
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to start rollback');
+        }
+
+        showToast(result.message || 'System rollback started', 'success');
+        await refreshSystemUpdateStatus();
+    } catch (err) {
+        if (button) button.disabled = false;
+        showToast(err.message, 'error');
+    }
 }

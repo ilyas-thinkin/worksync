@@ -1,3 +1,9 @@
+const path = require('path');
+
+const backendDir = __dirname;
+const rootDir = path.resolve(__dirname, '..');
+const logsDir = path.join(rootDir, 'logs');
+
 /**
  * PM2 Ecosystem Configuration for WorkSync
  *
@@ -14,7 +20,7 @@ module.exports = {
     {
       name: 'worksync',
       script: 'src/server.js',
-      cwd: '/home/worksync/worksync/backend',
+      cwd: backendDir,
 
       // Cluster Mode - Use all 4 CPU cores
       instances: 4,
@@ -38,9 +44,9 @@ module.exports = {
       },
 
       // Logging
-      log_file: '/home/worksync/worksync/logs/combined.log',
-      out_file: '/home/worksync/worksync/logs/out.log',
-      error_file: '/home/worksync/worksync/logs/error.log',
+      log_file: path.join(logsDir, 'combined.log'),
+      out_file: path.join(logsDir, 'out.log'),
+      error_file: path.join(logsDir, 'error.log'),
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       merge_logs: true,
 
@@ -77,13 +83,13 @@ module.exports = {
   // Deployment configuration (optional - for remote deployment)
   deploy: {
     production: {
-      user: 'worksync',
+      user: process.env.WORKSYNC_DEPLOY_USER || 'worksync',
       host: 'localhost',
       ref: 'origin/main',
       repo: 'git@github.com:username/worksync.git',
-      path: '/home/worksync/worksync',
+      path: rootDir,
       'pre-deploy': 'git fetch --all',
-      'post-deploy': 'npm install && pm2 reload ecosystem.config.js --env production',
+      'post-deploy': 'cd backend && npm ci --omit=dev && pm2 reload ecosystem.config.js --only worksync --update-env',
       env: {
         NODE_ENV: 'production'
       }

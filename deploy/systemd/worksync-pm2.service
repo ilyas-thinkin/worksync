@@ -1,0 +1,18 @@
+[Unit]
+Description=WorkSync PM2 Process Manager
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=forking
+User={{WORKSYNC_USER}}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PM2_HOME={{WORKSYNC_HOME}}/.pm2
+PIDFile={{WORKSYNC_HOME}}/.pm2/pm2.pid
+Restart=on-failure
+ExecStart={{PM2_PATH}} resurrect
+ExecReload={{PM2_PATH}} reload all
+ExecStop={{PM2_PATH}} kill
+
+[Install]
+WantedBy=multi-user.target

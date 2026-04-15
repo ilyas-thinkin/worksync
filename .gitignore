@@ -8,6 +8,8 @@ node_modules/
 logs/
 *.log
 
+# Runtime data
+backups/
+
 # OS files
 .DS_Store
-

@@ -145,6 +145,7 @@ realtime.startDbListener();
 
 // API Routes
 const apiRoutes = require('./routes/api.routes');
+const systemUpdateRoutes = require('./routes/system-update.routes');
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
@@ -158,6 +159,9 @@ app.use('/api', (req, res, next) => {
     return requireAnyRole(['admin'])(req, res, next);
   }
   if (req.path.startsWith('/line-shifts')) {
+    return requireAnyRole(['admin'])(req, res, next);
+  }
+  if (req.path.startsWith('/system-update')) {
     return requireAnyRole(['admin'])(req, res, next);
   }
   if (req.path.startsWith('/reports')) {
@@ -189,6 +193,7 @@ app.use('/api', (req, res, next) => {
   }
   return requireAnyRole(['admin', 'ie', 'supervisor', 'management'])(req, res, next);
 });
+app.use('/api/system-update', systemUpdateRoutes);
 app.use('/api', apiRoutes);
 
 // Auth routes

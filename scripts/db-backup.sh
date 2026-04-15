@@ -14,13 +14,23 @@
 
 set -e
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ROOT_DIR}/backend/.env"
+
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
+
 # Configuration
-BACKUP_DIR="/home/worksync/worksync/backups"
-DB_NAME="worksync_db"
-DB_USER="worksync_user"
-DB_HOST="127.0.0.1"
-DB_PORT="5432"
-PGPASSWORD="worksync_secure_2026"
+BACKUP_DIR="${BACKUP_DIR:-${ROOT_DIR}/backups}"
+DB_NAME="${DB_NAME:-worksync_db}"
+DB_USER="${DB_USER:-worksync_user}"
+DB_HOST="${DB_HOST:-127.0.0.1}"
+DB_PORT="${DB_PORT:-5432}"
+PGPASSWORD="${DB_PASSWORD:-worksync_secure_2026}"
 export PGPASSWORD
 
 # Retention settings
