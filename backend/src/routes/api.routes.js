@@ -37,6 +37,8 @@ router.use(sanitizeInputs);
 
 const CHANGEOVER_ENABLED = process.env.CHANGEOVER_ENABLED !== 'false';
 const OPERATION_CODE_LOCK_KEY = 32001;
+const REGULAR_HISTORY_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+const OT_HISTORY_HOURS = [17, 18, 19];
 
 const getSettingValue = async (key, fallback) => {
     const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -95,6 +97,202 @@ async function generateNextOperationCode(db) {
     return `OP-${String(nextNum).padStart(4, '0')}`;
 }
 
+const getHistoryHours = (isOvertime = false) => (isOvertime ? OT_HISTORY_HOURS : REGULAR_HISTORY_HOURS);
+
+function resolveHistoryEffectiveFromHour(workDate, isOvertime = false, attendanceStart = null, linkedAt = null) {
+    const hours = getHistoryHours(isOvertime);
+    if (!hours.length) return null;
+    const firstHour = hours[0];
+    const lastHour = hours[hours.length - 1];
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (attendanceStart) {
+        const startHour = new Date(attendanceStart).getHours();
+        const nextHour = hours.find(h => h >= startHour);
+        return nextHour ?? null;
+    }
+
+    if (linkedAt) {
+        const linkedHour = new Date(linkedAt).getHours();
+        const nextHour = hours.find(h => h >= linkedHour);
+        return nextHour ?? null;
+    }
+
+    if (workDate !== today) return firstHour;
+
+    const nowHour = new Date().getHours();
+    if (nowHour < firstHour) return firstHour;
+    const nextHour = hours.find(h => h > nowHour);
+    return nextHour ?? null;
+}
+
+function resolveHistoryEffectiveToHour(workDate, isOvertime = false) {
+    const fromHour = resolveHistoryEffectiveFromHour(workDate, isOvertime);
+    if (fromHour === null) return getHistoryHours(isOvertime).slice(-1)[0] ?? null;
+    return fromHour - 1;
+}
+
+async function closeAssignmentHistoryForEmployee(db, {
+    employeeId,
+    workDate,
+    isOvertime = false,
+    effectiveToHour = null
+}) {
+    const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
+    if (!normalizedEmployeeId || !workDate) return null;
+    const hours = getHistoryHours(isOvertime);
+    if (!hours.length) return null;
+    const boundedToHour = Number.isFinite(effectiveToHour)
+        ? effectiveToHour
+        : resolveHistoryEffectiveToHour(workDate, isOvertime);
+
+    const activeResult = await db.query(
+        `SELECT id, effective_from_hour
+         FROM employee_workstation_assignment_history
+         WHERE employee_id = $1
+           AND work_date = $2
+           AND is_overtime = $3
+           AND effective_to_hour IS NULL
+         ORDER BY effective_from_hour DESC, id DESC
+         LIMIT 1`,
+        [normalizedEmployeeId, workDate, !!isOvertime]
+    );
+    const activeRow = activeResult.rows[0];
+    if (!activeRow) return null;
+
+    if (boundedToHour < parseInt(activeRow.effective_from_hour, 10)) {
+        await db.query(
+            `DELETE FROM employee_workstation_assignment_history
+             WHERE id = $1`,
+            [activeRow.id]
+        );
+        return { closed: false, deleted: true };
+    }
+
+    await db.query(
+        `UPDATE employee_workstation_assignment_history
+         SET effective_to_hour = $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [boundedToHour, activeRow.id]
+    );
+    return { closed: true, deleted: false };
+}
+
+async function syncAssignmentHistoryForCurrentRow(db, {
+    lineId,
+    workDate,
+    workstationCode,
+    employeeId,
+    isOvertime = false,
+    isLinked = false,
+    linkedAt = null,
+    attendanceStart = null,
+    lateReason = null,
+    forceCurrentHourStart = false
+}) {
+    const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
+    if (!normalizedEmployeeId || !workDate || !workstationCode || !isLinked) return null;
+
+    const activeResult = await db.query(
+        `SELECT id, line_id, workstation_code, effective_from_hour
+         FROM employee_workstation_assignment_history
+         WHERE employee_id = $1
+           AND work_date = $2
+           AND is_overtime = $3
+           AND effective_to_hour IS NULL
+         ORDER BY effective_from_hour DESC, id DESC
+         LIMIT 1`,
+        [normalizedEmployeeId, workDate, !!isOvertime]
+    );
+    const activeRow = activeResult.rows[0];
+    const fromHour = forceCurrentHourStart
+        ? resolveHistoryEffectiveFromHour(workDate, isOvertime)
+        : activeRow
+        ? resolveHistoryEffectiveFromHour(workDate, isOvertime)
+        : resolveHistoryEffectiveFromHour(workDate, isOvertime, attendanceStart, linkedAt);
+    if (fromHour === null) return null;
+    if (activeRow) {
+        const activeFrom = parseInt(activeRow.effective_from_hour, 10);
+        if (parseInt(activeRow.line_id, 10) === parseInt(lineId, 10) && activeRow.workstation_code === workstationCode) {
+            await db.query(
+                `UPDATE employee_workstation_assignment_history
+                 SET linked_at = COALESCE($1, linked_at),
+                     attendance_start = COALESCE($2, attendance_start),
+                     late_reason = COALESCE($3, late_reason),
+                     updated_at = NOW()
+                 WHERE id = $4`,
+                [linkedAt || null, attendanceStart || null, lateReason || null, activeRow.id]
+            );
+            return { reused: true };
+        }
+        const closeHour = fromHour - 1;
+        if (closeHour < activeFrom) {
+            await db.query(`DELETE FROM employee_workstation_assignment_history WHERE id = $1`, [activeRow.id]);
+        } else {
+            await db.query(
+                `UPDATE employee_workstation_assignment_history
+                 SET effective_to_hour = $1,
+                     updated_at = NOW()
+                 WHERE id = $2`,
+                [closeHour, activeRow.id]
+            );
+        }
+    }
+
+    await db.query(
+        `INSERT INTO employee_workstation_assignment_history
+           (line_id, work_date, employee_id, workstation_code, is_overtime,
+            effective_from_hour, effective_to_hour, linked_at, attendance_start, late_reason)
+         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9)`,
+        [
+            lineId,
+            workDate,
+            normalizedEmployeeId,
+            workstationCode,
+            !!isOvertime,
+            fromHour,
+            linkedAt || null,
+            attendanceStart || null,
+            lateReason || null
+        ]
+    );
+    return { reused: false };
+}
+
+async function closeHistoryForWorkstationAssignmentIfNeeded(db, {
+    lineId,
+    workDate,
+    workstationCode,
+    isOvertime = false,
+    nextEmployeeId = null
+}) {
+    if (!lineId || !workDate || !workstationCode) return null;
+    const existingResult = await db.query(
+        `SELECT employee_id, is_linked
+         FROM employee_workstation_assignments
+         WHERE line_id = $1
+           AND work_date = $2
+           AND workstation_code = $3
+           AND is_overtime = $4
+         LIMIT 1`,
+        [lineId, workDate, workstationCode, !!isOvertime]
+    );
+    const existingRow = existingResult.rows[0];
+    if (!existingRow || !existingRow.employee_id) return null;
+    const existingEmployeeId = parseInt(existingRow.employee_id, 10);
+    const normalizedNextEmployeeId = nextEmployeeId ? parseInt(nextEmployeeId, 10) : null;
+    if (normalizedNextEmployeeId && normalizedNextEmployeeId === existingEmployeeId) return existingRow;
+    if (existingRow.is_linked) {
+        await closeAssignmentHistoryForEmployee(db, {
+            employeeId: existingEmployeeId,
+            workDate,
+            isOvertime
+        });
+    }
+    return existingRow;
+}
+
 async function clearEmployeeAssignmentConflicts(db, employeeId, workDate, isOvertime, keepLineId, keepWorkstationCode) {
     const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
     if (!normalizedEmployeeId || !workDate) return [];
@@ -112,9 +310,162 @@ async function clearEmployeeAssignmentConflicts(db, employeeId, workDate, isOver
         sql += ` AND NOT (line_id = $4 AND workstation_code = $5)`;
     }
 
-    sql += ' RETURNING line_id, workstation_code';
+    sql += ' RETURNING line_id, workstation_code, employee_id, is_linked';
     const result = await db.query(sql, params);
+    for (const row of result.rows) {
+        if (row.is_linked) {
+            await closeAssignmentHistoryForEmployee(db, {
+                employeeId: row.employee_id,
+                workDate,
+                isOvertime
+            });
+        }
+    }
     return result.rows;
+}
+
+async function findLatestDailyPlanForLine(db, lineId, beforeDate) {
+    if (!lineId || !beforeDate) return null;
+    const result = await db.query(
+        `SELECT *
+         FROM line_daily_plans
+         WHERE line_id = $1
+           AND work_date < $2
+         ORDER BY work_date DESC
+         LIMIT 1`,
+        [lineId, beforeDate]
+    );
+    return result.rows[0] || null;
+}
+
+async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = null) {
+    if (!lineId || !workDate) return null;
+    const db = client || pool;
+    const existing = await db.query(
+        `SELECT *
+         FROM line_daily_plans
+         WHERE line_id = $1 AND work_date = $2
+         LIMIT 1`,
+        [lineId, workDate]
+    );
+    if (existing.rowCount > 0) return existing.rows[0];
+
+    const sourcePlan = await findLatestDailyPlanForLine(db, lineId, workDate);
+    if (!sourcePlan) return null;
+
+    const insertResult = await db.query(
+        `INSERT INTO line_daily_plans
+           (line_id, product_id, work_date, target_units,
+            incoming_product_id, incoming_target_units, changeover_sequence,
+            overtime_minutes, overtime_target, ot_enabled,
+            created_by, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+         ON CONFLICT (line_id, work_date) DO NOTHING
+         RETURNING *`,
+        [
+            lineId,
+            sourcePlan.product_id,
+            workDate,
+            sourcePlan.target_units,
+            sourcePlan.incoming_product_id || null,
+            sourcePlan.incoming_target_units || 0,
+            sourcePlan.changeover_sequence || 0,
+            sourcePlan.overtime_minutes || 0,
+            sourcePlan.overtime_target || 0,
+            !!sourcePlan.ot_enabled,
+            sourcePlan.updated_by || sourcePlan.created_by || null
+        ]
+    );
+
+    return insertResult.rows[0] || existing.rows[0] || {
+        ...sourcePlan,
+        work_date: workDate
+    };
+}
+
+async function ensureDailyPlansCarryForward(workDate, client = null) {
+    if (!workDate) return 0;
+    const db = client || pool;
+    const linesResult = await db.query(
+        `SELECT id
+         FROM production_lines
+         WHERE is_active = true
+         ORDER BY id`
+    );
+    let createdCount = 0;
+    for (const row of linesResult.rows) {
+        const before = await db.query(
+            `SELECT 1
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2
+             LIMIT 1`,
+            [row.id, workDate]
+        );
+        if (before.rowCount > 0) continue;
+        const inserted = await ensureDailyPlanCarryForwardForLine(row.id, workDate, db);
+        if (inserted) createdCount += 1;
+    }
+    return createdCount;
+}
+
+async function getRegularAssignmentStateByEmployee(db, workDate) {
+    if (!workDate) return new Map();
+    const result = await db.query(
+        `SELECT employee_id, is_linked, linked_at, late_reason, attendance_start
+         FROM employee_workstation_assignments
+         WHERE work_date = $1
+           AND is_overtime = false
+           AND employee_id IS NOT NULL
+         ORDER BY is_linked DESC, linked_at DESC NULLS LAST, assigned_at DESC NULLS LAST, id DESC`,
+        [workDate]
+    );
+    const stateByEmployee = new Map();
+    for (const row of result.rows) {
+        const employeeId = parseInt(row.employee_id, 10);
+        if (!employeeId || stateByEmployee.has(employeeId)) continue;
+        stateByEmployee.set(employeeId, row);
+    }
+    return stateByEmployee;
+}
+
+async function detachRegularAssignmentsFromPlan(db, lineId, workDate, productId) {
+    if (!lineId || !workDate || !productId) return;
+    const oldPlanRows = await db.query(
+        `SELECT id
+         FROM line_plan_workstations
+         WHERE line_id = $1 AND work_date = $2 AND product_id = $3`,
+        [lineId, workDate, productId]
+    );
+    const oldIds = oldPlanRows.rows.map(row => parseInt(row.id, 10)).filter(Boolean);
+    if (!oldIds.length) return;
+    await db.query(
+        `UPDATE employee_workstation_assignments
+         SET line_plan_workstation_id = NULL
+         WHERE line_id = $1
+           AND work_date = $2
+           AND is_overtime = false
+           AND line_plan_workstation_id = ANY($3::int[])`,
+        [lineId, workDate, oldIds]
+    );
+}
+
+function getPreservedRegularAssignmentState(stateByEmployee, employeeId) {
+    const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
+    const previous = normalizedEmployeeId ? stateByEmployee.get(normalizedEmployeeId) : null;
+    if (!previous || !previous.is_linked) {
+        return {
+            is_linked: false,
+            linked_at: null,
+            late_reason: null,
+            attendance_start: null
+        };
+    }
+    return {
+        is_linked: true,
+        linked_at: previous.linked_at || null,
+        late_reason: previous.late_reason || null,
+        attendance_start: previous.attendance_start || null
+    };
 }
 
 const REPORT_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
@@ -137,39 +488,53 @@ const formatHourRangeLabel = (hourSlot) => {
 async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = null, endHour = null, isOvertime = false, hoursDenom = 1 } = {}) {
     const useOt = !!isOvertime;
     const workstationTable = useOt ? 'line_ot_workstations' : 'line_plan_workstations';
-    const workstationIdExpr = useOt ? 'ws.id' : 'COALESCE(ewa.line_plan_workstation_id, ws.id)';
     const processJoin = useOt
         ? `LEFT JOIN line_ot_workstation_processes wproc ON wproc.ot_workstation_id = a.workstation_id`
         : `LEFT JOIN line_plan_workstation_processes wproc ON wproc.workstation_id = a.workstation_id`;
+    const historyHours = getHistoryHours(useOt);
+    const defaultWindowEnd = historyHours[historyHours.length - 1] || 23;
     const params = [lineId, workDate];
+    let windowEndHour = defaultWindowEnd;
     let hourPredicate = '';
+    let assignmentWindowPredicate = '';
     if (Number.isFinite(exactHour)) {
         params.push(parseInt(exactHour, 10));
+        windowEndHour = parseInt(exactHour, 10);
         hourPredicate = `AND lph.hour_slot = $${params.length}`;
+        assignmentWindowPredicate = `AND hist.effective_from_hour <= $${params.length}
+                                     AND COALESCE(hist.effective_to_hour, 999) >= $${params.length}`;
     } else if (Number.isFinite(endHour)) {
         params.push(parseInt(endHour, 10));
+        windowEndHour = parseInt(endHour, 10);
         hourPredicate = `AND lph.hour_slot <= $${params.length}`;
+        assignmentWindowPredicate = `AND hist.effective_from_hour <= $${params.length}`;
     }
     params.push(useOt);
     const overtimeIndex = params.length;
+    params.push(windowEndHour);
+    const windowEndIndex = params.length;
 
     const result = await db.query(
         `WITH assignments AS (
-             SELECT ewa.employee_id,
-                    ewa.workstation_code,
-                    ${workstationIdExpr} AS workstation_id,
+             SELECT hist.id AS history_id,
+                    hist.employee_id,
+                    hist.workstation_code,
+                    hist.effective_from_hour,
+                    COALESCE(hist.effective_to_hour, 999) AS effective_to_hour,
+                    ws.id AS workstation_id,
                     ws.workstation_number,
                     COALESCE(ws.group_name, '') AS group_name,
                     COALESCE(ws.actual_sam_seconds, 0) AS actual_sam_seconds
-             FROM employee_workstation_assignments ewa
+             FROM employee_workstation_assignment_history hist
              LEFT JOIN ${workstationTable} ws
-               ON ws.line_id = ewa.line_id
-              AND ws.work_date = ewa.work_date
-              AND ws.workstation_code = ewa.workstation_code
-             WHERE ewa.line_id = $1
-               AND ewa.work_date = $2
-               AND ewa.is_overtime = $${overtimeIndex}
-               AND ewa.employee_id IS NOT NULL
+               ON ws.line_id = hist.line_id
+              AND ws.work_date = hist.work_date
+              AND ws.workstation_code = hist.workstation_code
+             WHERE hist.line_id = $1
+               AND hist.work_date = $2
+               AND hist.is_overtime = $${overtimeIndex}
+               AND hist.employee_id IS NOT NULL
+               ${assignmentWindowPredicate}
          ),
          ws_hour AS (
              SELECT a.workstation_id,
@@ -186,40 +551,71 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
               ${hourPredicate}
              GROUP BY a.workstation_id, lph.hour_slot
          ),
-         ws_stats AS (
-             SELECT a.workstation_id,
+         assignment_stats AS (
+             SELECT a.history_id,
+                    a.employee_id,
+                    a.workstation_id,
+                    a.workstation_code,
+                    a.workstation_number,
+                    a.group_name,
+                    a.actual_sam_seconds,
                     COALESCE(SUM(wh.hour_output), 0) AS total_output,
                     COALESCE(SUM(wh.hour_rejection), 0) AS total_rejection,
+                    COALESCE(SUM((wh.hour_output * a.actual_sam_seconds) / 3600.0), 0) AS total_sah_hours,
                     MAX(wh.hour_updated) AS last_updated
              FROM assignments a
-             LEFT JOIN ws_hour wh ON wh.workstation_id = a.workstation_id
-             GROUP BY a.workstation_id
+             LEFT JOIN ws_hour wh
+               ON wh.workstation_id = a.workstation_id
+              AND wh.hour_slot >= a.effective_from_hour
+              AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
+             GROUP BY a.history_id, a.employee_id, a.workstation_id, a.workstation_code, a.workstation_number, a.group_name, a.actual_sam_seconds
+         ),
+         employee_totals AS (
+             SELECT employee_id,
+                    COALESCE(SUM(total_output), 0) AS total_output,
+                    COALESCE(SUM(total_rejection), 0) AS total_rejection,
+                    COALESCE(SUM(total_sah_hours), 0) AS total_sah_hours,
+                    MAX(last_updated) AS last_updated
+             FROM assignment_stats
+             GROUP BY employee_id
+         ),
+         current_assignment AS (
+             SELECT DISTINCT ON (employee_id)
+                    employee_id,
+                    workstation_id,
+                    workstation_code,
+                    workstation_number,
+                    group_name,
+                    actual_sam_seconds
+             FROM assignments
+             ORDER BY employee_id, effective_from_hour DESC, history_id DESC
          )
          SELECT e.id,
                 e.emp_code,
                 e.emp_name,
                 e.manpower_factor,
-                a.workstation_id,
-                a.workstation_code,
-                a.workstation_number,
-                a.group_name,
-                a.actual_sam_seconds,
-                COALESCE(ws.total_output, 0) AS total_output,
-                COALESCE(ws.total_rejection, 0) AS total_rejection,
-                ws.last_updated
-         FROM assignments a
-         JOIN employees e ON e.id = a.employee_id
-         LEFT JOIN ws_stats ws ON ws.workstation_id = a.workstation_id
-         ORDER BY a.workstation_number NULLS LAST, a.workstation_code, e.emp_code`,
+                ca.workstation_id,
+                ca.workstation_code,
+                ca.workstation_number,
+                ca.group_name,
+                ca.actual_sam_seconds,
+                COALESCE(et.total_output, 0) AS total_output,
+                COALESCE(et.total_rejection, 0) AS total_rejection,
+                COALESCE(et.total_sah_hours, 0) AS total_sah_hours,
+                et.last_updated
+         FROM employee_totals et
+         JOIN employees e ON e.id = et.employee_id
+         LEFT JOIN current_assignment ca ON ca.employee_id = et.employee_id
+         ORDER BY ca.workstation_number NULLS LAST, ca.workstation_code, e.emp_code`,
         params
     );
 
     return result.rows.map(row => {
         const output = parseInt(row.total_output || 0, 10);
-        const sahHours = parseFloat(row.actual_sam_seconds || 0) / 3600;
+        const sahHours = parseFloat(row.total_sah_hours || 0);
         const denom = parseFloat(hoursDenom || 0);
         const efficiency = (sahHours > 0 && denom > 0)
-            ? Math.round((output * sahHours / denom) * 10000) / 100
+            ? Math.round((sahHours / denom) * 10000) / 100
             : 0;
         return {
             id: row.id,
@@ -512,6 +908,7 @@ router.post('/production-days/unlock', async (req, res) => {
 router.get('/daily-plans', async (req, res) => {
     const { date } = req.query;
     try {
+        await ensureDailyPlansCarryForward(date);
         const plansResult = await pool.query(
             `SELECT lp.id, lp.line_id, lp.product_id, lp.work_date, lp.target_units, lp.is_locked,
                     lp.incoming_product_id, lp.incoming_target_units, lp.changeover_sequence,
@@ -4350,6 +4747,13 @@ router.post('/workstation-assignments', async (req, res) => {
         }
 
         if (employee_id) {
+            await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                lineId: line_id,
+                workDate: date,
+                workstationCode: workstation_code,
+                isOvertime: false,
+                nextEmployeeId: employee_id
+            });
             const displacedResult = await clearEmployeeAssignmentConflicts(
                 client, employee_id, date, false, line_id, workstation_code
             );
@@ -4370,7 +4774,26 @@ router.post('/workstation-assignments', async (req, res) => {
                 [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null,
                  linked, linkedAt, late_reason || null, attendanceStart]
             );
+            await syncAssignmentHistoryForCurrentRow(client, {
+                lineId: line_id,
+                workDate: date,
+                workstationCode: workstation_code,
+                employeeId: employee_id,
+                isOvertime: false,
+                isLinked: linked,
+                linkedAt,
+                attendanceStart,
+                lateReason: late_reason || null,
+                forceCurrentHourStart: displacedWorkstations.length > 0
+            });
         } else {
+            await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                lineId: line_id,
+                workDate: date,
+                workstationCode: workstation_code,
+                isOvertime: false,
+                nextEmployeeId: null
+            });
             await client.query(
                 `DELETE FROM employee_workstation_assignments
                  WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
@@ -5170,9 +5593,15 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
         // All employee–workstation assignments for this date (factory-wide, for exclusivity enforcement).
         // is_overtime included so the frontend can filter by current mode.
         const allAssignmentsResult = await pool.query(
-            `SELECT employee_id, line_id, workstation_code, is_overtime
-             FROM employee_workstation_assignments
-             WHERE work_date = $1 AND employee_id IS NOT NULL`,
+            `SELECT ewa.employee_id,
+                    ewa.line_id,
+                    ewa.workstation_code,
+                    ewa.is_overtime,
+                    pl.line_code,
+                    pl.line_name
+             FROM employee_workstation_assignments ewa
+             LEFT JOIN production_lines pl ON pl.id = ewa.line_id
+             WHERE ewa.work_date = $1 AND ewa.employee_id IS NOT NULL`,
             [date]
         );
 
@@ -5403,12 +5832,33 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
             if (!ws.group_name && row.group_name) ws.group_name = (row.group_name || '').trim() || null;
         });
 
+        const assignmentStateByEmployee = !isChangeoverSave
+            ? await getRegularAssignmentStateByEmployee(client, work_date)
+            : new Map();
+
         if (!isChangeoverSave) {
-            // Primary plan save owns the live regular-shift assignment table.
-            await client.query(
-                `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND work_date = $2 AND is_overtime = false`,
-                [lineId, work_date]
-            );
+            // Only remove EWA rows for workstations that are no longer present in this plan
+            // and have not yet been linked by the supervisor (is_linked = false).
+            // Already-linked assignments on other workstations are never wiped by an IE plan save.
+            const planWsCodes = Array.from(wsMap.keys());
+            if (planWsCodes.length > 0) {
+                await client.query(
+                    `DELETE FROM employee_workstation_assignments
+                     WHERE line_id = $1 AND work_date = $2 AND is_overtime = false
+                       AND is_linked = false AND workstation_code != ALL($3::text[])`,
+                    [lineId, work_date, planWsCodes]
+                );
+            } else {
+                await client.query(
+                    `DELETE FROM employee_workstation_assignments
+                     WHERE line_id = $1 AND work_date = $2 AND is_overtime = false AND is_linked = false`,
+                    [lineId, work_date]
+                );
+            }
+        }
+
+        if (!isChangeoverSave) {
+            await detachRegularAssignmentsFromPlan(client, lineId, work_date, product_id);
         }
 
         // Delete existing plan for this line+date+product only
@@ -5457,6 +5907,14 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
                     );
                 } else {
                     // Primary plan: write to employee_workstation_assignments (the live assignment table)
+                    const preservedState = getPreservedRegularAssignmentState(assignmentStateByEmployee, ws.employee_id);
+                    await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                        lineId,
+                        workDate: work_date,
+                        workstationCode: ws.workstation_code,
+                        isOvertime: false,
+                        nextEmployeeId: ws.employee_id
+                    });
                     await clearEmployeeAssignmentConflicts(
                         client,
                         ws.employee_id,
@@ -5467,15 +5925,51 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
                     );
                     await client.query(
                         `INSERT INTO employee_workstation_assignments
-                         (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime)
-                         VALUES ($1, $2, $3, $4, $5, false)
+                         (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime,
+                          is_linked, linked_at, late_reason, attendance_start)
+                         VALUES ($1, $2, $3, $4, $5, false, $6, $7, $8, $9)
                          ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
-                         DO UPDATE SET employee_id = EXCLUDED.employee_id,
+                         DO UPDATE SET employee_id              = EXCLUDED.employee_id,
                                        line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
-                                       assigned_at = NOW()`,
-                        [lineId, work_date, ws.workstation_code, ws.employee_id, wsId]
+                                       assigned_at              = NOW(),
+                                       is_linked                = EXCLUDED.is_linked,
+                                       linked_at                = EXCLUDED.linked_at,
+                                       late_reason              = EXCLUDED.late_reason,
+                                       attendance_start         = EXCLUDED.attendance_start`,
+                        [
+                            lineId,
+                            work_date,
+                            ws.workstation_code,
+                            ws.employee_id,
+                            wsId,
+                            preservedState.is_linked,
+                            preservedState.linked_at,
+                            preservedState.late_reason,
+                            preservedState.attendance_start
+                        ]
                     );
+                    await syncAssignmentHistoryForCurrentRow(client, {
+                        lineId,
+                        workDate: work_date,
+                        workstationCode: ws.workstation_code,
+                        employeeId: ws.employee_id,
+                        isOvertime: false,
+                        isLinked: preservedState.is_linked,
+                        linkedAt: preservedState.linked_at,
+                        attendanceStart: preservedState.attendance_start,
+                        lateReason: preservedState.late_reason,
+                        forceCurrentHourStart: preservedState.is_linked
+                    });
                 }
+            } else if (!isChangeoverSave) {
+                // No employee planned for this workstation — clear any unlinked EWA for it.
+                // Linked (supervisor-confirmed) rows are left untouched.
+                await client.query(
+                    `DELETE FROM employee_workstation_assignments
+                     WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3
+                       AND is_overtime = false AND is_linked = false`,
+                    [lineId, work_date, ws.workstation_code]
+                );
             }
         }
 
@@ -5512,6 +6006,9 @@ router.patch('/lines/:lineId/workstation-plan/employees', async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        const assignmentStateByEmployee = !isOT
+            ? await getRegularAssignmentStateByEmployee(client, work_date)
+            : new Map();
         for (const a of assignments) {
             const wsCode = (a.workstation_code || '').trim();
             if (!wsCode) continue;
@@ -5536,6 +6033,15 @@ router.patch('/lines/:lineId/workstation-plan/employees', async (req, res) => {
                     [lineId, work_date, wsCode]
                 );
                 const lpwId = lpwResult.rows[0]?.id || null;
+                if (!isOT) {
+                    await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                        lineId,
+                        workDate: work_date,
+                        workstationCode: wsCode,
+                        isOvertime: false,
+                        nextEmployeeId: empId
+                    });
+                }
                 await clearEmployeeAssignmentConflicts(
                     client,
                     empId,
@@ -5548,14 +6054,38 @@ router.patch('/lines/:lineId/workstation-plan/employees', async (req, res) => {
                     `INSERT INTO employee_workstation_assignments
                      (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime)
                      VALUES ($1, $2, $3, $4, $5, $6)
-                     ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+                    ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
                      DO UPDATE SET employee_id = EXCLUDED.employee_id,
                                    line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
                                    assigned_at = NOW()`,
                     [lineId, work_date, wsCode, empId, lpwId, isOT]
                 );
+                if (!isOT) {
+                    const preservedState = getPreservedRegularAssignmentState(assignmentStateByEmployee, empId);
+                    await syncAssignmentHistoryForCurrentRow(client, {
+                        lineId,
+                        workDate: work_date,
+                        workstationCode: wsCode,
+                        employeeId: empId,
+                        isOvertime: false,
+                        isLinked: preservedState.is_linked,
+                        linkedAt: preservedState.linked_at,
+                        attendanceStart: preservedState.attendance_start,
+                        lateReason: preservedState.late_reason,
+                        forceCurrentHourStart: preservedState.is_linked
+                    });
+                }
             } else {
                 // Clear assignment (skipped or no employee)
+                if (!isOT) {
+                    await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                        lineId,
+                        workDate: work_date,
+                        workstationCode: wsCode,
+                        isOvertime: false,
+                        nextEmployeeId: null
+                    });
+                }
                 await client.query(
                     `DELETE FROM employee_workstation_assignments
                      WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = $4`,
@@ -5788,6 +6318,9 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
 
         await client.query('BEGIN');
 
+        const assignmentStateByEmployee = await getRegularAssignmentStateByEmployee(client, workDate);
+        await detachRegularAssignmentsFromPlan(client, lineId, workDate, productId);
+
         // Delete existing plan for this line+date+product only
         await client.query('DELETE FROM line_plan_workstations WHERE line_id = $1 AND work_date = $2 AND product_id = $3', [lineId, workDate, productId]);
 
@@ -5849,6 +6382,17 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
                     'SELECT id FROM employees WHERE UPPER(emp_code) = UPPER($1) AND is_active = true', [empCode]
                 );
                 if (empResult.rows[0]) {
+                    const preservedState = getPreservedRegularAssignmentState(
+                        assignmentStateByEmployee,
+                        empResult.rows[0].id
+                    );
+                    await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                        lineId,
+                        workDate,
+                        workstationCode: wsCode,
+                        isOvertime: false,
+                        nextEmployeeId: empResult.rows[0].id
+                    });
                     await clearEmployeeAssignmentConflicts(
                         client,
                         empResult.rows[0].id,
@@ -5858,12 +6402,42 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
                         wsCode
                     );
                     await client.query(
-                        `INSERT INTO employee_workstation_assignments (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id)
-                         VALUES ($1, $2, $3, $4, $5)
+                        `INSERT INTO employee_workstation_assignments
+                         (line_id, workstation_code, employee_id, work_date, line_plan_workstation_id,
+                          is_linked, linked_at, late_reason, attendance_start)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                          ON CONFLICT (line_id, work_date, workstation_code)
-                         DO UPDATE SET employee_id = EXCLUDED.employee_id, line_plan_workstation_id = EXCLUDED.line_plan_workstation_id, assigned_at = NOW()`,
-                        [lineId, wsCode, empResult.rows[0].id, workDate, wsRow.id]
+                         DO UPDATE SET employee_id = EXCLUDED.employee_id,
+                                       line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                                       is_linked = EXCLUDED.is_linked,
+                                       linked_at = EXCLUDED.linked_at,
+                                       late_reason = EXCLUDED.late_reason,
+                                       attendance_start = EXCLUDED.attendance_start,
+                                       assigned_at = NOW()`,
+                        [
+                            lineId,
+                            wsCode,
+                            empResult.rows[0].id,
+                            workDate,
+                            wsRow.id,
+                            preservedState.is_linked,
+                            preservedState.linked_at,
+                            preservedState.late_reason,
+                            preservedState.attendance_start
+                        ]
                     );
+                    await syncAssignmentHistoryForCurrentRow(client, {
+                        lineId,
+                        workDate,
+                        workstationCode: wsCode,
+                        employeeId: empResult.rows[0].id,
+                        isOvertime: false,
+                        isLinked: preservedState.is_linked,
+                        linkedAt: preservedState.linked_at,
+                        attendanceStart: preservedState.attendance_start,
+                        lateReason: preservedState.late_reason,
+                        forceCurrentHourStart: preservedState.is_linked
+                    });
                 } else {
                     warnings.push(`Employee "${empCode}" not found — workstation ${wsCode} left unassigned.`);
                 }
@@ -6852,6 +7426,9 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             );
         }
 
+        const assignmentStateByEmployee = await getRegularAssignmentStateByEmployee(client, workDate);
+        await detachRegularAssignmentsFromPlan(client, lineId, workDate, productId);
+
         // Replace workstation plan for this line + date + product
         await client.query(
             `DELETE FROM line_plan_workstations WHERE line_id = $1 AND work_date = $2 AND product_id = $3`,
@@ -6915,6 +7492,14 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                     empId = empRow.rows[0]?.id || null;
                 }
                 if (empId) {
+                    const preservedState = getPreservedRegularAssignmentState(assignmentStateByEmployee, empId);
+                    await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                        lineId,
+                        workDate,
+                        workstationCode: wsCode,
+                        isOvertime: false,
+                        nextEmployeeId: empId
+                    });
                     await clearEmployeeAssignmentConflicts(
                         client,
                         empId,
@@ -6925,15 +7510,41 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                     );
                     await client.query(
                         `INSERT INTO employee_workstation_assignments
-                           (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime, is_linked)
-                         VALUES ($1, $2, $3, $4, $5, false, false)
+                           (line_id, work_date, workstation_code, employee_id, line_plan_workstation_id, is_overtime,
+                            is_linked, linked_at, late_reason, attendance_start)
+                         VALUES ($1, $2, $3, $4, $5, false, $6, $7, $8, $9)
                          ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
                          DO UPDATE SET employee_id              = EXCLUDED.employee_id,
                                        line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
-                                       is_linked                = false,
+                                       is_linked                = EXCLUDED.is_linked,
+                                       linked_at                = EXCLUDED.linked_at,
+                                       late_reason              = EXCLUDED.late_reason,
+                                       attendance_start         = EXCLUDED.attendance_start,
                                        assigned_at              = NOW()`,
-                        [lineId, workDate, wsCode, empId, wsId]
+                        [
+                            lineId,
+                            workDate,
+                            wsCode,
+                            empId,
+                            wsId,
+                            preservedState.is_linked,
+                            preservedState.linked_at,
+                            preservedState.late_reason,
+                            preservedState.attendance_start
+                        ]
                     );
+                    await syncAssignmentHistoryForCurrentRow(client, {
+                        lineId,
+                        workDate,
+                        workstationCode: wsCode,
+                        employeeId: empId,
+                        isOvertime: false,
+                        isLinked: preservedState.is_linked,
+                        linkedAt: preservedState.linked_at,
+                        attendanceStart: preservedState.attendance_start,
+                        lateReason: preservedState.late_reason,
+                        forceCurrentHourStart: preservedState.is_linked
+                    });
                     employeesAssigned++;
                 }
             }
@@ -7089,6 +7700,7 @@ const getIncomingMaxSequence = async (productId) => {
 
 const getLineProductIds = async (lineId, workDate = null) => {
     const dateValue = workDate || new Date().toISOString().slice(0, 10);
+    await ensureDailyPlanCarryForwardForLine(lineId, dateValue);
     const planResult = await pool.query(
         `SELECT product_id, incoming_product_id, changeover_sequence
          FROM line_daily_plans
@@ -8848,30 +9460,70 @@ router.get('/line-shifts', async (req, res) => {
 router.post('/supervisor/mapping/unlink-workstation', async (req, res) => {
     const { lineId, date, workstationCode } = req.body;
     if (!lineId || !date || !workstationCode) return res.status(400).json({ success: false, error: 'lineId, date, and workstationCode required' });
+    const client = await pool.connect();
     try {
-        await pool.query(
+        await client.query('BEGIN');
+        const existingResult = await client.query(
+            `SELECT employee_id, is_linked
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false
+             LIMIT 1`,
+            [lineId, date, workstationCode]
+        );
+        const existingRow = existingResult.rows[0];
+        await client.query(
             `UPDATE employee_workstation_assignments
              SET is_linked = false
              WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
             [lineId, date, workstationCode]
         );
+        if (existingRow?.employee_id && existingRow?.is_linked) {
+            await closeAssignmentHistoryForEmployee(client, {
+                employeeId: existingRow.employee_id,
+                workDate: date,
+                isOvertime: false
+            });
+        }
+        await client.query('COMMIT');
         res.json({ success: true });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
 router.post('/supervisor/mapping/unlink-all', async (req, res) => {
     const { lineId, date } = req.body;
     if (!lineId || !date) return res.status(400).json({ success: false, error: 'lineId and date required' });
+    const client = await pool.connect();
     try {
-        await pool.query(
+        await client.query('BEGIN');
+        const existingResult = await client.query(
+            `SELECT employee_id
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND is_overtime = false AND is_linked = true AND employee_id IS NOT NULL`,
+            [lineId, date]
+        );
+        await client.query(
             `UPDATE employee_workstation_assignments SET is_linked = false WHERE line_id = $1 AND work_date = $2 AND is_overtime = false`,
             [lineId, date]
         );
+        for (const row of existingResult.rows) {
+            await closeAssignmentHistoryForEmployee(client, {
+                employeeId: row.employee_id,
+                workDate: date,
+                isOvertime: false
+            });
+        }
+        await client.query('COMMIT');
         res.json({ success: true });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -8886,10 +9538,11 @@ router.post('/supervisor/progress', async (req, res) => {
     if (!Number.isFinite(hourValue) || hourValue < 8 || hourValue > 19) {
         return res.status(400).json({ success: false, error: 'hour_slot must be between 8 and 19' });
     }
-    if (await isDayLocked(work_date)) {
+    const adminOverride = req.user?.role === 'admin' && req.headers['x-worksync-admin-override'] === '1';
+    if (!adminOverride && await isDayLocked(work_date)) {
         return res.status(403).json({ success: false, error: 'Production day is locked' });
     }
-    if (await isLineClosed(line_id, work_date)) {
+    if (!adminOverride && await isLineClosed(line_id, work_date)) {
         return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
     }
     try {
@@ -10439,13 +11092,29 @@ router.get('/efficiency-report', async (req, res) => {
         const reportHour = hourValue;
         const hourLabel = reportHour !== null ? formatHourRangeLabel(reportHour) : null;
 
-        // 6. Regular manpower (distinct assigned employees, non-OT)
-        const mpResult = await pool.query(`
-            SELECT COUNT(DISTINCT employee_id) as manpower
-            FROM employee_workstation_assignments
-            WHERE line_id = $1 AND work_date = $2 AND is_overtime = false AND employee_id IS NOT NULL
-        `, [line_id, date]);
-        const manpower = parseInt(mpResult.rows[0].manpower) || 0;
+        const historyDisplayHour = Number.isFinite(reportHour)
+            ? reportHour
+            : (REPORT_WORK_HOURS[REPORT_WORK_HOURS.length - 1] || 16);
+        const activeAssignmentResult = await pool.query(
+            `SELECT DISTINCT ON (hist.employee_id)
+                    hist.employee_id,
+                    hist.workstation_code,
+                    e.emp_code,
+                    e.emp_name
+             FROM employee_workstation_assignment_history hist
+             LEFT JOIN employees e ON e.id = hist.employee_id
+             WHERE hist.line_id = $1
+               AND hist.work_date = $2
+               AND hist.is_overtime = false
+               AND hist.effective_from_hour <= $3
+               AND COALESCE(hist.effective_to_hour, 999) >= $3
+             ORDER BY hist.employee_id, hist.effective_from_hour DESC, hist.id DESC`,
+            [line_id, date, historyDisplayHour]
+        );
+        const activeAssignmentMap = new Map(
+            activeAssignmentResult.rows.map(row => [String(row.workstation_code || ''), row])
+        );
+        const manpower = activeAssignmentResult.rows.length;
 
         // 7. OT workstations (if OT is enabled for this line+date)
         let otWorkstations = [];
@@ -10539,8 +11208,8 @@ router.get('/efficiency-report', async (req, res) => {
                 actual_sam_seconds: parseFloat(ws.actual_sam_seconds || 0),
                 takt_time_seconds: parseFloat(ws.takt_time_seconds || 0),
                 workload_pct: parseFloat(ws.workload_pct || 0),
-                employee_code: ws.emp_code || null,
-                employee_name: ws.emp_name || null,
+                employee_code: activeAssignmentMap.get(String(ws.workstation_code || ''))?.emp_code || null,
+                employee_name: activeAssignmentMap.get(String(ws.workstation_code || ''))?.emp_name || null,
                 live_output: liveOutput,
                 hourly_output: hourlyOutput,
                 live_efficiency_pct: liveEfficiency,

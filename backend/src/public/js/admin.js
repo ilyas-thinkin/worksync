@@ -118,6 +118,9 @@ async function loadSection(section) {
         case 'attendance':
             await loadAttendanceSection();
             break;
+        case 'hourly-update':
+            await loadAdminHourlyUpdate();
+            break;
         case 'daily-plan':
             await loadDailyPlans();
             break;
@@ -166,6 +169,595 @@ async function loadSection(section) {
         case 'material-tracking':
             await loadMaterialTracking();
             break;
+    }
+}
+
+// ============================================================================
+// ADMIN HOURLY UPDATE
+// ============================================================================
+const ADMIN_HOURLY_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+const ADMIN_SHORTFALL_REASONS = [
+    'WORKMANSHIP PROBLEM',
+    'MC BREAKDOWN',
+    'FEEDING NOT RECEIVED',
+    'INEFFICIENT',
+    'TECHNICAL ISSUES',
+    'COMMERCIAL PACKAGE ISSUES',
+    'HR MEETING',
+    'QUALITY MEETING',
+    'PRODUCTION MEETING'
+];
+const ADMIN_SHORTFALL_REASON_LABELS = {
+    'WORKMANSHIP PROBLEM':      '1. WORKMANSHIP PROBLEM (தொழில்நுட்பக் குறைபாடு)',
+    'MC BREAKDOWN':             '2. MC BREAKDOWN (இயந்திர கோளாறு)',
+    'FEEDING NOT RECEIVED':     '3. FEEDING NOT RECEIVED (மூலப்பொருள் கிடைக்கவில்லை)',
+    'INEFFICIENT':              '4. INEFFICIENT (திறனற்ற செயல்பாடு)',
+    'TECHNICAL ISSUES':         '5. TECHNICAL ISSUES (தொழில்நுட்ப சிக்கல்)',
+    'COMMERCIAL PACKAGE ISSUES':'6. COMMERCIAL PACKAGE ISSUES (வணிக பொதி சிக்கல்)',
+    'HR MEETING':               '7. HR MEETING (மனித வளக் கூட்டம்)',
+    'QUALITY MEETING':          '8. QUALITY MEETING (தர மேலாண்மை கூட்டம்)',
+    'PRODUCTION MEETING':       '9. PRODUCTION MEETING (உற்பத்தி கூட்டம்)'
+};
+const adminHourlyState = {
+    lineId: '',
+    date: '',
+    hour: '',
+    processes: [],
+    workstations: null,
+    progressData: [],
+    hourlyTarget: 0,
+    targetQty: 0,
+    selectedProcess: null,
+    selectedWorkstation: null,
+    hasDailyPlan: false
+};
+
+const adminHourlyOrdinal = (n) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return `${n}st`;
+    if (mod10 === 2 && mod100 !== 12) return `${n}nd`;
+    if (mod10 === 3 && mod100 !== 13) return `${n}rd`;
+    return `${n}th`;
+};
+
+function adminHourlyRange(hourSlot) {
+    return `${String(hourSlot).padStart(2, '0')}:00-${String(hourSlot + 1).padStart(2, '0')}:00`;
+}
+
+function adminHourlyLabel(hourSlot) {
+    const idx = ADMIN_HOURLY_HOURS.indexOf(hourSlot);
+    return `${adminHourlyOrdinal((idx >= 0 ? idx : 0) + 1)} hour (${adminHourlyRange(hourSlot)})`;
+}
+
+function adminHourlyEntryTime(hourSlot) {
+    return `${String(hourSlot + 1).padStart(2, '0')}:00`;
+}
+
+function buildAdminReasonSelectHTML(existingReason) {
+    const isOtherText = existingReason && !ADMIN_SHORTFALL_REASONS.includes(existingReason);
+    const selectVal = isOtherText ? '__OTHER__' : (existingReason || '');
+    const otherText = isOtherText ? existingReason : '';
+
+    function reasonBtn(value, english, tamil, selected) {
+        const sel = selected ? 'border:2px solid #3b82f6;background:#eff6ff;' : 'border:1px solid #e5e7eb;background:#f9fafb;';
+        return `<button type="button" class="reason-option-btn${selected ? ' reason-selected' : ''}"
+            data-value="${value}"
+            onclick="selectAdminReasonOption(this)"
+            style="width:100%;text-align:left;padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:6px;display:block;${sel}">
+            <span style="display:block;font-size:13px;font-weight:700;color:#1e40af;line-height:1.3;">${english}</span>
+            ${tamil ? `<span style="display:block;font-size:12px;color:#6b7280;margin-top:3px;line-height:1.4;">${tamil}</span>` : ''}
+        </button>`;
+    }
+
+    const items = ADMIN_SHORTFALL_REASONS.map(r => {
+        const label = ADMIN_SHORTFALL_REASON_LABELS[r] || r;
+        const parenIdx = label.indexOf('(');
+        const english = parenIdx > -1 ? label.substring(0, parenIdx).trim() : label;
+        const tamil   = parenIdx > -1 ? label.substring(parenIdx + 1, label.lastIndexOf(')')) : '';
+        return reasonBtn(r, english, tamil, selectVal === r);
+    }).join('');
+
+    return `
+        <input type="hidden" id="admin-hourly-reason" value="${selectVal}">
+        <div style="max-height:320px;overflow-y:auto;padding-right:2px;">
+            ${items}
+            ${reasonBtn('__OTHER__', 'Other', 'மற்றவை', selectVal === '__OTHER__')}
+        </div>
+        <input type="text" class="form-control" id="admin-hourly-reason-other"
+               placeholder="Enter reason..."
+               style="margin-top:6px;display:${selectVal === '__OTHER__' ? 'block' : 'none'};"
+               value="${escHtml(otherText)}">`;
+}
+
+function selectAdminReasonOption(btn) {
+    document.querySelectorAll('.reason-option-btn').forEach(b => {
+        b.style.border = '1px solid #e5e7eb';
+        b.style.background = '#f9fafb';
+    });
+    btn.style.border = '2px solid #3b82f6';
+    btn.style.background = '#eff6ff';
+    const reasonInput = document.getElementById('admin-hourly-reason');
+    if (reasonInput) reasonInput.value = btn.dataset.value;
+    const other = document.getElementById('admin-hourly-reason-other');
+    if (other) other.style.display = btn.dataset.value === '__OTHER__' ? 'block' : 'none';
+    const warning = document.getElementById('admin-hourly-reason-warning');
+    if (warning) warning.style.display = 'none';
+}
+
+function getAdminFinalReason() {
+    const sel = document.getElementById('admin-hourly-reason')?.value || '';
+    if (sel === '__OTHER__') return document.getElementById('admin-hourly-reason-other')?.value?.trim() || '';
+    return sel;
+}
+
+async function loadAdminHourlyUpdate() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    const currentHour = new Date().getHours();
+    const defaultHour = ADMIN_HOURLY_HOURS.includes(currentHour - 1)
+        ? currentHour - 1
+        : (currentHour - 1 < ADMIN_HOURLY_HOURS[0] ? ADMIN_HOURLY_HOURS[0] : ADMIN_HOURLY_HOURS[ADMIN_HOURLY_HOURS.length - 1]);
+
+    adminHourlyState.lineId = '';
+    adminHourlyState.date = today;
+    adminHourlyState.hour = String(defaultHour);
+    adminHourlyState.processes = [];
+    adminHourlyState.workstations = null;
+    adminHourlyState.progressData = [];
+    adminHourlyState.selectedProcess = null;
+    adminHourlyState.selectedWorkstation = null;
+    adminHourlyState.hourlyTarget = 0;
+    adminHourlyState.targetQty = 0;
+    adminHourlyState.hasDailyPlan = false;
+
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Hourly Output Update</h1>
+                <p class="page-subtitle">Admin can review and update hourly output for current or previous days by line and hour.</p>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-body">
+                <div class="hourly-controls">
+                    <div class="hc-field" style="min-width:220px;">
+                        <label class="form-label">Line</label>
+                        <select class="form-control" id="admin-hourly-line">
+                            <option value="">Select line</option>
+                        </select>
+                    </div>
+                    <div class="hc-field" style="min-width:180px;">
+                        <label class="form-label">Date</label>
+                        <input type="date" class="form-control" id="admin-hourly-date" value="${today}">
+                    </div>
+                    <div class="hc-field" style="min-width:160px;">
+                        <label class="form-label">Hour</label>
+                        <select class="form-control" id="admin-hourly-hour">
+                            ${ADMIN_HOURLY_HOURS.map(v => `<option value="${v}" ${String(v) === String(defaultHour) ? 'selected' : ''}>${adminHourlyLabel(v)}</option>`).join('')}
+                        </select>
+                    </div>
+                </div>
+                <div style="margin-top:12px;padding:10px 14px;border-radius:10px;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:13px;">
+                    Admin override is enabled here for corrections, including closed or previous days.
+                </div>
+            </div>
+        </div>
+        <div id="admin-hourly-summary" style="margin-top:16px;"></div>
+    `;
+
+    document.getElementById('admin-hourly-line')?.addEventListener('change', () => {
+        adminHourlyState.lineId = document.getElementById('admin-hourly-line')?.value || '';
+        loadAdminHourlyLineData();
+    });
+    document.getElementById('admin-hourly-date')?.addEventListener('change', () => {
+        adminHourlyState.date = document.getElementById('admin-hourly-date')?.value || today;
+        loadAdminHourlyLineData();
+    });
+    document.getElementById('admin-hourly-hour')?.addEventListener('change', () => {
+        adminHourlyState.hour = document.getElementById('admin-hourly-hour')?.value || String(defaultHour);
+        renderAdminHourlySummary();
+    });
+
+    await populateAdminHourlyLines();
+}
+
+async function populateAdminHourlyLines() {
+    const lineSelect = document.getElementById('admin-hourly-line');
+    if (!lineSelect) return;
+    lineSelect.innerHTML = '<option value="">Loading lines...</option>';
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/lines`);
+        const result = await response.json();
+        const lines = result.data || [];
+        lineSelect.innerHTML = `
+            <option value="">Select line</option>
+            ${lines.map(line => `<option value="${line.id}">${escHtml(line.line_name || line.line_code)}</option>`).join('')}
+        `;
+        if (lines[0]) {
+            lineSelect.value = String(lines[0].id);
+            adminHourlyState.lineId = String(lines[0].id);
+            await loadAdminHourlyLineData();
+        }
+    } catch (err) {
+        lineSelect.innerHTML = '<option value="">Failed to load lines</option>';
+        showToast(err.message, 'error');
+    }
+}
+
+async function loadAdminHourlyLineData() {
+    const container = document.getElementById('admin-hourly-summary');
+    const lineId = adminHourlyState.lineId;
+    const date = document.getElementById('admin-hourly-date')?.value || adminHourlyState.date;
+    adminHourlyState.date = date;
+    adminHourlyState.selectedProcess = null;
+    adminHourlyState.selectedWorkstation = null;
+
+    if (!container) return;
+    if (!lineId) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
+    try {
+        const [processResp, progressResp] = await Promise.all([
+            fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${encodeURIComponent(date)}`),
+            fetch(`${API_BASE}/supervisor/progress?line_id=${encodeURIComponent(lineId)}&work_date=${encodeURIComponent(date)}`)
+        ]);
+        const processResult = await processResp.json();
+        const progressResult = await progressResp.json();
+
+        adminHourlyState.processes = processResult.data || [];
+        adminHourlyState.workstations = (processResult.has_plan && processResult.workstation_plan?.length > 0)
+            ? processResult.workstation_plan
+            : null;
+        adminHourlyState.hasDailyPlan = processResult.has_daily_plan === true;
+        adminHourlyState.hourlyTarget = processResult.per_hour_target
+            ? Math.round(processResult.per_hour_target)
+            : 0;
+        adminHourlyState.targetQty = processResult.active_target || processResult.primary_target || 0;
+        adminHourlyState.progressData = progressResult.data || [];
+
+        renderAdminHourlySummary();
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${escHtml(err.message)}</div>`;
+    }
+}
+
+function renderAdminHourlySummary() {
+    const container = document.getElementById('admin-hourly-summary');
+    if (!container) return;
+    const hour = parseInt(document.getElementById('admin-hourly-hour')?.value || adminHourlyState.hour || 0, 10);
+    adminHourlyState.hour = String(hour);
+    const hourlyTarget = adminHourlyState.hourlyTarget || 0;
+    const headerNote = `
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-body" style="display:flex;gap:18px;flex-wrap:wrap;">
+                <div><strong>Hour:</strong> ${adminHourlyLabel(hour)}</div>
+                <div><strong>Entry time:</strong> ${adminHourlyEntryTime(hour)}</div>
+                <div><strong>Target/hr:</strong> ${hourlyTarget || '–'}</div>
+                <div><strong>Daily target:</strong> ${adminHourlyState.targetQty || '–'}</div>
+            </div>
+        </div>`;
+
+    if (!adminHourlyState.hasDailyPlan) {
+        container.innerHTML = headerNote + '<div class="alert alert-info">No daily plan found for the selected line/date.</div>';
+        return;
+    }
+
+    if (adminHourlyState.workstations?.length) {
+        const cards = adminHourlyState.workstations.map(ws => {
+            const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10)).filter(Boolean);
+            const progress = adminHourlyState.progressData.find(
+                d => wsProcessIds.includes(parseInt(d.process_id, 10)) && parseInt(d.hour_slot, 10) === hour
+            );
+            const output = progress ? parseInt(progress.quantity || 0, 10) : 0;
+            const reason = progress?.shortfall_reason || '';
+            const needsReason = output > 0 && hourlyTarget > 0 && output < hourlyTarget && !reason;
+            const noEmployee = !ws.assigned_emp_name;
+            const outputColor = output > 0 ? (output >= hourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
+            const processList = (ws.processes || []).map(p => escHtml(p.operation_name)).join(' → ');
+            const workerHtml = ws.assigned_emp_name
+                ? `${escHtml(ws.assigned_emp_code)} – ${escHtml(ws.assigned_emp_name)}`
+                : '<span style="color:#dc2626;">Unassigned</span>';
+            const statusBadge = noEmployee
+                ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Not Assigned</span>`
+                : needsReason
+                    ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Needs Reason</span>`
+                    : output > 0
+                        ? `<span style="background:${output >= hourlyTarget ? '#dcfce7' : '#fef3c7'};color:${output >= hourlyTarget ? '#166534' : '#b45309'};padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">${output >= hourlyTarget ? 'On Track' : 'Below Target'}</span>`
+                        : '';
+            const editBtn = noEmployee
+                ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled>No Employee</button>`
+                : `<button class="btn ${output > 0 ? 'btn-secondary' : 'btn-primary'} ws-card-action" onclick="openAdminWorkstationHourlyEntry(${ws.id})">${output > 0 ? '&#9998; Edit Output' : 'Enter Output'}</button>`;
+            const reasonLine = reason && output > 0 && output < hourlyTarget
+                ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${escHtml(reason)}</span></div>`
+                : '';
+
+            return `
+                <div class="ws-card ${(needsReason || noEmployee) ? 'ws-card--alert' : ''}" id="admin-hourly-ws-card-${ws.id}">
+                    <div class="ws-card-header">
+                        <span class="ws-card-code">${escHtml(ws.workstation_code)} <span style="font-size:12px;font-weight:600;color:#6b7280;">${parseFloat(ws.workload_pct || 0).toFixed(0)}%</span></span>
+                        <div class="ws-card-badges">${statusBadge}</div>
+                    </div>
+                    <div class="ws-card-body">
+                        <div class="ws-card-row">
+                            <span class="ws-card-label">Worker</span>
+                            <span style="font-size:13px;">${workerHtml}</span>
+                        </div>
+                        <div class="ws-card-row">
+                            <span class="ws-card-label">Processes</span>
+                            <span style="font-size:12px;color:#6b7280;">${processList}</span>
+                        </div>
+                        <div class="ws-card-kpi">
+                            <div class="ws-kpi-box">
+                                <div class="ws-kpi-label">Target/hr</div>
+                                <div class="ws-kpi-val">${hourlyTarget || '–'}</div>
+                            </div>
+                            <div class="ws-kpi-box">
+                                <div class="ws-kpi-label">Output</div>
+                                <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
+                            </div>
+                        </div>
+                        ${reasonLine}
+                    </div>
+                    <div class="ws-card-footer">${editBtn}</div>
+                </div>`;
+        }).join('');
+
+        container.innerHTML = headerNote + `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Workstation Output Summary</h3>
+                </div>
+                <div class="card-body">
+                    <div class="ws-cards-grid">${cards}</div>
+                </div>
+            </div>`;
+        return;
+    }
+
+    if (!adminHourlyState.processes.length) {
+        container.innerHTML = headerNote + '<div class="alert alert-info">No processes found for the selected line/date.</div>';
+        return;
+    }
+
+    const cards = adminHourlyState.processes.map(p => {
+        const progress = adminHourlyState.progressData.find(
+            d => parseInt(d.process_id, 10) === parseInt(p.id, 10) && parseInt(d.hour_slot, 10) === hour
+        );
+        const output = progress ? parseInt(progress.quantity || 0, 10) : 0;
+        const reason = progress?.shortfall_reason || '';
+        const needsReason = output > 0 && hourlyTarget > 0 && output < hourlyTarget && !reason;
+        const noEmployee = !p.assigned_emp_name;
+        const outputColor = output > 0 ? (output >= hourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
+        const workerHtml = p.assigned_emp_name
+            ? `${escHtml(p.assigned_emp_code)} – ${escHtml(p.assigned_emp_name)}`
+            : '<span style="color:#dc2626;">Unassigned</span>';
+        const editBtn = noEmployee
+            ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled>No Employee</button>`
+            : `<button class="btn ${output > 0 ? 'btn-secondary' : 'btn-primary'} ws-card-action" onclick="openAdminProcessHourlyEntry(${p.id})">${output > 0 ? '&#9998; Edit Output' : 'Enter Output'}</button>`;
+
+        return `
+            <div class="ws-card ${(needsReason || noEmployee) ? 'ws-card--alert' : ''}" id="admin-hourly-proc-card-${p.id}">
+                <div class="ws-card-header">
+                    <span class="ws-card-code">${escHtml(p.workstation_code || p.group_name || 'Process')}</span>
+                </div>
+                <div class="ws-card-body">
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Process</span>
+                        <span style="font-size:12px;">${escHtml(p.operation_code)} – ${escHtml(p.operation_name)}</span>
+                    </div>
+                    <div class="ws-card-row">
+                        <span class="ws-card-label">Worker</span>
+                        <span style="font-size:13px;">${workerHtml}</span>
+                    </div>
+                    <div class="ws-card-kpi">
+                        <div class="ws-kpi-box">
+                            <div class="ws-kpi-label">Target/hr</div>
+                            <div class="ws-kpi-val">${hourlyTarget || '–'}</div>
+                        </div>
+                        <div class="ws-kpi-box">
+                            <div class="ws-kpi-label">Output</div>
+                            <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="ws-card-footer">${editBtn}</div>
+            </div>`;
+    }).join('');
+
+    container.innerHTML = headerNote + `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Process Output Summary</h3>
+            </div>
+            <div class="card-body">
+                <div class="ws-cards-grid">${cards}</div>
+            </div>
+        </div>`;
+}
+
+function cancelAdminHourlyEntry() {
+    adminHourlyState.selectedProcess = null;
+    adminHourlyState.selectedWorkstation = null;
+    renderAdminHourlySummary();
+}
+
+function openAdminWorkstationHourlyEntry(workstationPlanId) {
+    const ws = adminHourlyState.workstations?.find(w => parseInt(w.id, 10) === parseInt(workstationPlanId, 10));
+    if (!ws) { showToast('Workstation not found', 'error'); return; }
+    adminHourlyState.selectedWorkstation = ws;
+    adminHourlyState.selectedProcess = null;
+
+    const hour = parseInt(document.getElementById('admin-hourly-hour')?.value || adminHourlyState.hour || 0, 10);
+    const hourlyTarget = adminHourlyState.hourlyTarget;
+    const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10)).filter(Boolean);
+    const existing = adminHourlyState.progressData.find(
+        d => wsProcessIds.includes(parseInt(d.process_id, 10)) && parseInt(d.hour_slot, 10) === hour
+    );
+    const existingOutput = existing ? parseInt(existing.quantity || 0, 10) : 0;
+    const existingReason = existing?.shortfall_reason || '';
+    const processList = (ws.processes || []).map(p => escHtml(p.operation_name)).join(' → ');
+    const workerInfo = ws.assigned_emp_name
+        ? `${escHtml(ws.assigned_emp_code)} – ${escHtml(ws.assigned_emp_name)}`
+        : 'Unassigned';
+    const footer = document.querySelector(`#admin-hourly-ws-card-${ws.id} .ws-card-footer`);
+    if (!footer) { showToast('Card not found', 'error'); return; }
+
+    document.querySelectorAll('.hourly-inline-entry').forEach(el => el.remove());
+    footer.innerHTML = `
+        <div class="hourly-inline-entry" style="width:100%;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div>
+                    <div style="font-weight:700;font-size:14px;">${escHtml(ws.workstation_code)} — Update Output</div>
+                    <div style="font-size:12px;color:#6b7280;">${workerInfo} | Hour: ${adminHourlyLabel(hour)} | Entry at: ${adminHourlyEntryTime(hour)} | Target: ${hourlyTarget || '–'}/hr</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="cancelAdminHourlyEntry()">Cancel</button>
+            </div>
+            <div style="font-size:11px;color:#9ca3af;margin-bottom:10px;">${processList}</div>
+            <label class="form-label">Output Quantity</label>
+            <input type="number" class="form-control output-qty-input" id="admin-hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="0" style="margin-bottom:10px;">
+            <div id="admin-hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
+                <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
+                ${buildAdminReasonSelectHTML(existingReason)}
+                <div id="admin-hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
+                    Please select a shortfall reason
+                </div>
+            </div>
+            <div class="entry-form-actions">
+                <button class="btn btn-primary" id="admin-hourly-save-btn">Save Output</button>
+                <button class="btn btn-secondary" onclick="cancelAdminHourlyEntry()">Cancel</button>
+            </div>
+        </div>`;
+
+    const outputInput = document.getElementById('admin-hourly-output-qty');
+    outputInput?.focus();
+    outputInput?.addEventListener('input', () => {
+        const val = parseInt(outputInput.value || 0, 10);
+        const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
+        const reasonSection = document.getElementById('admin-hourly-reason-section');
+        const warning = document.getElementById('admin-hourly-reason-warning');
+        if (reasonSection) reasonSection.style.display = showReason ? 'block' : 'none';
+        if (warning) warning.style.display = 'none';
+    });
+    document.getElementById('admin-hourly-save-btn')?.addEventListener('click', saveAdminHourlyOutput);
+}
+
+function openAdminProcessHourlyEntry(processId) {
+    const process = adminHourlyState.processes.find(p => parseInt(p.id, 10) === parseInt(processId, 10));
+    if (!process) { showToast('Process not found', 'error'); return; }
+    adminHourlyState.selectedProcess = process;
+    adminHourlyState.selectedWorkstation = null;
+
+    const hour = parseInt(document.getElementById('admin-hourly-hour')?.value || adminHourlyState.hour || 0, 10);
+    const hourlyTarget = adminHourlyState.hourlyTarget;
+    const existing = adminHourlyState.progressData.find(
+        d => parseInt(d.process_id, 10) === parseInt(process.id, 10) && parseInt(d.hour_slot, 10) === hour
+    );
+    const existingOutput = existing ? parseInt(existing.quantity || 0, 10) : 0;
+    const existingReason = existing?.shortfall_reason || '';
+    const workerInfo = process.assigned_emp_name
+        ? `${escHtml(process.assigned_emp_code)} – ${escHtml(process.assigned_emp_name)}`
+        : 'Unassigned';
+    const footer = document.querySelector(`#admin-hourly-proc-card-${process.id} .ws-card-footer`);
+    if (!footer) { showToast('Card not found', 'error'); return; }
+
+    document.querySelectorAll('.hourly-inline-entry').forEach(el => el.remove());
+    footer.innerHTML = `
+        <div class="hourly-inline-entry" style="width:100%;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div>
+                    <div style="font-weight:700;font-size:14px;">${escHtml(process.operation_code)} — Update Output</div>
+                    <div style="font-size:12px;color:#6b7280;">${workerInfo} | Hour: ${adminHourlyLabel(hour)} | Entry at: ${adminHourlyEntryTime(hour)} | Target: ${hourlyTarget || '–'}/hr</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="cancelAdminHourlyEntry()">Cancel</button>
+            </div>
+            <label class="form-label">Output Quantity</label>
+            <input type="number" class="form-control output-qty-input" id="admin-hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="0" style="margin-bottom:10px;">
+            <div id="admin-hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
+                <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
+                ${buildAdminReasonSelectHTML(existingReason)}
+                <div id="admin-hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
+                    Please select a shortfall reason
+                </div>
+            </div>
+            <div class="entry-form-actions">
+                <button class="btn btn-primary" id="admin-hourly-save-btn">Save Output</button>
+                <button class="btn btn-secondary" onclick="cancelAdminHourlyEntry()">Cancel</button>
+            </div>
+        </div>`;
+
+    const outputInput = document.getElementById('admin-hourly-output-qty');
+    outputInput?.focus();
+    outputInput?.addEventListener('input', () => {
+        const val = parseInt(outputInput.value || 0, 10);
+        const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
+        const reasonSection = document.getElementById('admin-hourly-reason-section');
+        const warning = document.getElementById('admin-hourly-reason-warning');
+        if (reasonSection) reasonSection.style.display = showReason ? 'block' : 'none';
+        if (warning) warning.style.display = 'none';
+    });
+    document.getElementById('admin-hourly-save-btn')?.addEventListener('click', saveAdminHourlyOutput);
+}
+
+async function saveAdminHourlyOutput() {
+    const lineId = adminHourlyState.lineId;
+    const date = document.getElementById('admin-hourly-date')?.value || adminHourlyState.date;
+    const hour = parseInt(document.getElementById('admin-hourly-hour')?.value || adminHourlyState.hour || 0, 10);
+    const output = parseInt(document.getElementById('admin-hourly-output-qty')?.value || 0, 10);
+    const hourlyTarget = adminHourlyState.hourlyTarget;
+    const warningEl = document.getElementById('admin-hourly-reason-warning');
+    const reason = getAdminFinalReason();
+
+    if (!lineId || !date || !hour) { showToast('Line, date and hour are required', 'error'); return; }
+    if (!Number.isFinite(output) || output < 0) { showToast('Output must be 0 or more', 'error'); return; }
+
+    const isShortfall = hourlyTarget > 0 && output > 0 && output < hourlyTarget;
+    if (isShortfall && !reason) {
+        if (warningEl) warningEl.style.display = 'block';
+        showToast('Please select a shortfall reason', 'error');
+        return;
+    }
+
+    const payload = {
+        line_id: parseInt(lineId, 10),
+        work_date: date,
+        hour_slot: hour,
+        quantity: output,
+        forwarded_quantity: output,
+        remaining_quantity: 0,
+        qa_rejection: 0,
+        remarks: '',
+        shortfall_reason: isShortfall ? reason : null
+    };
+    if (adminHourlyState.selectedWorkstation?.id) {
+        payload.workstation_plan_id = parseInt(adminHourlyState.selectedWorkstation.id, 10);
+    } else if (adminHourlyState.selectedProcess?.id) {
+        payload.process_id = parseInt(adminHourlyState.selectedProcess.id, 10);
+    } else {
+        showToast('No process or workstation selected', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/progress`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-worksync-admin-override': '1'
+            },
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (!result.success) { showToast(result.error || 'Failed to save output', 'error'); return; }
+        showToast('Hourly output updated', 'success');
+        adminHourlyState.selectedProcess = null;
+        adminHourlyState.selectedWorkstation = null;
+        await loadAdminHourlyLineData();
+    } catch (err) {
+        showToast(err.message, 'error');
     }
 }
 
@@ -4485,6 +5077,23 @@ function ldPositionEmpDropdown(pickerEl) {
     }
 }
 
+function ldTakenAssignmentLabel(assignInfo) {
+    if (!assignInfo) return '';
+    const lineLabel = (assignInfo.line_name || assignInfo.line_code || `Line ${assignInfo.line_id || ''}`).trim();
+    const wsLabel = (assignInfo.workstation_code || '').trim();
+    if (lineLabel && wsLabel) return ` (${lineLabel} - ${wsLabel})`;
+    if (lineLabel) return ` (${lineLabel})`;
+    if (wsLabel) return ` (${wsLabel})`;
+    return '';
+}
+
+function ldSetPickerValue(picker, empId, label) {
+    if (!picker) return;
+    picker.dataset.value = empId || '';
+    const labelEl = picker.querySelector('.ld-emp-current-label');
+    if (labelEl) labelEl.textContent = empId ? label : '— Not assigned —';
+}
+
 function ldEmpPickerToggle(pickerEl, lineId) {
     const dropdown = pickerEl.querySelector('.ld-emp-dropdown');
     const isOpen = dropdown.style.display !== 'none';
@@ -4513,13 +5122,27 @@ function ldEmpPickerFilter(searchInput) {
 }
 
 function ldEmpPickerSelect(optionEl, lineId) {
-    if (optionEl.classList.contains('ld-emp-taken')) return; // blocked
     const picker = optionEl.closest('.ld-emp-picker');
     const dropdown = optionEl.closest('.ld-emp-dropdown');
     const empId = optionEl.dataset.empId || '';
     const label = empId ? (optionEl.dataset.empLabel || optionEl.textContent.trim()) : '— Not assigned —';
-    picker.dataset.value = empId;
-    picker.querySelector('.ld-emp-current-label').textContent = label;
+    const isTaken = optionEl.classList.contains('ld-emp-taken');
+    if (isTaken && empId) {
+        const takenText = optionEl.dataset.takenText || optionEl.querySelector('.ld-taken-badge')?.textContent || 'Taken';
+        const confirmMsg = `Do you want to reassign ${label} to ${picker.dataset.ws}?\n\nCurrent assignment: ${takenText}`;
+        if (!confirm(confirmMsg)) return;
+
+        const tbody = document.getElementById(`ld-body-${lineId}`);
+        if (tbody) {
+            const sourcePicker = Array.from(tbody.querySelectorAll('.ld-emp-picker'))
+                .find(p => p !== picker && String(p.dataset.value || '') === String(empId));
+            if (sourcePicker) {
+                ldSetPickerValue(sourcePicker, '', '— Not assigned —');
+            }
+        }
+    }
+
+    ldSetPickerValue(picker, empId, label);
     dropdown.style.display = 'none';
 
     // OT mode: auto-save employee assignment via OT API
@@ -4618,11 +5241,16 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
     // Map: empId (string) → { line_id, workstation_code } where they're currently saved
     const savedAssignMap = new Map();
     allAssignments.forEach(a => {
-        savedAssignMap.set(String(a.employee_id), { line_id: String(a.line_id), workstation_code: a.workstation_code });
+        savedAssignMap.set(String(a.employee_id), {
+            line_id: String(a.line_id),
+            workstation_code: a.workstation_code,
+            line_code: a.line_code || '',
+            line_name: a.line_name || ''
+        });
     });
-    // Current page WS → empId selections (from wsGroups, not yet saved)
-    const pageWsEmp = new Map(); // wsCode → empId
-    wsGroups.forEach(g => { if (g.ws && g.employee_id) pageWsEmp.set(g.ws, String(g.employee_id)); });
+    // Current page empId → wsCode selections (from wsGroups, not yet saved)
+    const pageWsEmp = new Map();
+    wsGroups.forEach(g => { if (g.ws && g.employee_id) pageWsEmp.set(String(g.employee_id), g.ws); });
 
     // Build searchable picker options
     const empPickerOpts = (selId, wsCode) => {
@@ -4639,14 +5267,24 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
             const takenSaved = savedTo && !(String(savedTo.line_id) === String(lineId) && savedTo.workstation_code === wsCode);
             const isTaken = !isSelected && (takenOnPage || takenSaved);
             const cleanLabel = `${e.emp_code} — ${e.emp_name}`;
+            const pageTakenInfo = takenOnPage ? {
+                line_id: lineId,
+                line_name: _ldData?.data?.line?.line_name || _ldData?.data?.line?.line_code || '',
+                line_code: _ldData?.data?.line?.line_code || '',
+                workstation_code: pageWsEmp.get(eStr) || ''
+            } : null;
+            const takenSuffix = isTaken ? ldTakenAssignmentLabel(pageTakenInfo || savedTo) : '';
+            const titleText = `${cleanLabel}${takenSuffix}`;
             return `<div class="ld-emp-option${isTaken ? ' ld-emp-taken' : ''}"
                  data-emp-id="${eStr}" data-emp-label="${cleanLabel.replace(/"/g,'&quot;')}"
+                 data-taken-text="${(`Taken${takenSuffix}`).replace(/"/g,'&quot;')}"
                  onclick="ldEmpPickerSelect(this,${lineId})"
-                 style="padding:7px 10px;cursor:${isTaken?'default':'pointer'};font-size:0.82em;
+                 title="${titleText.replace(/"/g,'&quot;')}"
+                 style="padding:7px 10px;cursor:pointer;font-size:0.82em;
                         background:${isSelected?'#eff6ff':''};font-weight:${isSelected?'600':'400'};
                         color:${isTaken?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;">
                  <span>${e.emp_code} — ${e.emp_name}</span>
-                 ${isTaken ? '<span style="color:#f87171;font-size:11px;margin-left:6px;">Taken ✗</span>' : ''}
+                 <span class="ld-taken-badge" style="color:#f87171;font-size:11px;margin-left:6px;${isTaken ? '' : 'display:none;'}">Taken${takenSuffix}</span>
              </div>`;
         }).join('');
     };
@@ -4787,7 +5425,12 @@ function syncEmpDropdowns(lineId) {
     const otherLineTaken = new Map();
     allAssignments.forEach(a => {
         if (String(a.line_id) !== String(lineId))
-            otherLineTaken.set(String(a.employee_id), a.workstation_code);
+            otherLineTaken.set(String(a.employee_id), {
+                workstation_code: a.workstation_code,
+                line_code: a.line_code || '',
+                line_name: a.line_name || '',
+                line_id: a.line_id
+            });
     });
 
     const empQrMap = new Map((_ldData?.data?.employees || []).map(e => [String(e.id), e.qr_code_path || '']));
@@ -4802,26 +5445,35 @@ function syncEmpDropdowns(lineId) {
             if (!eId) return; // "Not assigned" — always available
             const isThisSelected = eId === thisSelected;
             const takenOnPage = pageSelected.has(eId) && pageSelected.get(eId) !== thisWs;
-            const takenOtherLine = otherLineTaken.has(eId);
+            const takenEntry = otherLineTaken.get(eId);
+            const takenOtherLine = !!takenEntry;
             const isTaken = !isThisSelected && (takenOnPage || takenOtherLine);
+            const suffixInfo = takenOnPage ? {
+                line_id: lineId,
+                line_name: _ldData?.data?.line?.line_name || _ldData?.data?.line?.line_code || '',
+                line_code: _ldData?.data?.line?.line_code || '',
+                workstation_code: pageSelected.get(eId) || ''
+            } : takenEntry;
+            const takenSuffix = isTaken ? ldTakenAssignmentLabel(suffixInfo) : '';
+            opt.title = isTaken ? `${opt.dataset.empLabel || ''}${takenSuffix}` : (opt.dataset.empLabel || '');
+            opt.dataset.takenText = `Taken${takenSuffix}`;
 
             opt.classList.toggle('ld-emp-taken', isTaken);
-            opt.style.cursor = isTaken ? 'default' : 'pointer';
+            opt.style.cursor = 'pointer';
             opt.style.color = isTaken ? '#9ca3af' : '';
             opt.style.background = isThisSelected ? '#eff6ff' : '';
             opt.style.fontWeight = isThisSelected ? '600' : '';
 
             // Taken badge
             let badge = opt.querySelector('.ld-taken-badge');
-            if (isTaken && !badge) {
+            if (!badge) {
                 badge = document.createElement('span');
                 badge.className = 'ld-taken-badge';
                 badge.style.cssText = 'color:#f87171;font-size:11px;margin-left:6px;';
-                badge.textContent = 'Taken ✗';
                 opt.appendChild(badge);
-            } else if (!isTaken && badge) {
-                badge.remove();
             }
+            badge.textContent = `Taken${takenSuffix}`;
+            badge.style.display = isTaken ? '' : 'none';
         });
 
         // Update employee QR image
