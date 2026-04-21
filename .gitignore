@@ -10,6 +10,9 @@ logs/
 
 # Runtime data
 backups/
+graphify-out/
+backend/src/graphify-out/
+.graphify_*
 
 # OS files
 .DS_Store

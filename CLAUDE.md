@@ -63,6 +63,16 @@ Use when asked to:
 - **Reports**: OSM Report, Efficiency Report — available in admin, IE, and management views
 - **Excel Upload**: `POST /api/lines/plan-upload-excel` — auto-creates line, product, operations, workstation plan in one transaction
 
+## graphify Knowledge Graph
+
+This project has a graphify knowledge graph at `backend/src/graphify-out/`.
+
+Rules:
+- Before answering architecture or codebase questions, read `backend/src/graphify-out/GRAPH_REPORT.md` for god nodes and community structure
+- If `backend/src/graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
+- After modifying code files in this session, run `graphify update backend/src` from the worksync project root to keep the code graph current
+- Use `/graphify backend/src` in Claude when you need the full graph workflow over the backend codebase
+
 ## Skills — When to Use
 
 | Skill | Trigger |

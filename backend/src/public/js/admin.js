@@ -3057,7 +3057,9 @@ function scheduleRealtimeRefresh(payload) {
                 applyProcessAssignmentUpdate(payload.process_id, payload.employee_id, payload.line_id);
                 return;
             }
-            if (['lines', 'products', 'product_processes', 'employees'].includes(entity)) {
+            if (['lines', 'products', 'product_processes', 'employees',
+                 'workstation_plan', 'workstation_assignments', 'employee_assignments',
+                 'workstations', 'daily_plans', 'ot_plan'].includes(entity)) {
                 viewLineDetails(currentView.lineId);
             }
             return;
@@ -4944,6 +4946,24 @@ function ldUpdateWsOt(lineId, wsCode, value) {
     recolorDetailRows(lineId);
 }
 
+async function ensureLdOtMinutes(lineId, date) {
+    if (!lineId || !date) return;
+    if (!window._ldWsOtMins) window._ldWsOtMins = {};
+    if (window._ldWsOtMins[lineId] && Object.keys(window._ldWsOtMins[lineId]).length) return;
+    try {
+        const res = await fetch(`/api/lines/${lineId}/ot-plan?date=${encodeURIComponent(date)}`);
+        const result = await res.json();
+        if (!result.success || !result.data?.workstations?.length) return;
+        const wsMap = {};
+        result.data.workstations.forEach(ws => {
+            wsMap[ws.workstation_code] = parseInt(ws.ot_minutes || 0, 10) || 0;
+        });
+        window._ldWsOtMins[lineId] = wsMap;
+    } catch (_) {
+        // non-fatal: fall back to global OT minutes
+    }
+}
+
 async function loadLineDetailsPanel(lineId) { /* no-op — replaced by overlay */ }
 async function loadWorkstationPlanPanel(lineId) { return loadLineDetailsPanel(lineId); }
 
@@ -5053,26 +5073,40 @@ function ldWsToggleOTSkip(btn, lineId) {
 function ldPositionEmpDropdown(pickerEl) {
     const dropdown = pickerEl?.querySelector('.ld-emp-dropdown');
     if (!dropdown) return;
-
-    dropdown.style.top = 'calc(100% + 3px)';
-    dropdown.style.bottom = 'auto';
-    dropdown.style.maxHeight = '220px';
-
+    const optionsEl = dropdown.querySelector('.ld-emp-options');
+    const searchWrap = dropdown.querySelector('.ld-emp-search')?.parentElement || null;
     const pickerRect = pickerEl.getBoundingClientRect();
-    const dropdownRect = dropdown.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
     const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
     const gap = 12;
+    const desiredWidth = Math.max(260, Math.ceil(pickerRect.width));
+    const maxLeft = Math.max(gap, viewportWidth - desiredWidth - gap);
+    const left = Math.max(gap, Math.min(Math.round(pickerRect.left), maxLeft));
     const spaceBelow = viewportHeight - pickerRect.bottom - gap;
     const spaceAbove = pickerRect.top - gap;
-    const needsOpenUp = dropdownRect.height > spaceBelow && spaceAbove > spaceBelow;
+    const estimatedPanelHeight = Math.min(320, Math.max(180, dropdown.scrollHeight || 260));
+    const needsOpenUp = estimatedPanelHeight > spaceBelow && spaceAbove > spaceBelow;
     const availableHeight = Math.max(140, Math.floor((needsOpenUp ? spaceAbove : spaceBelow) - 8));
+    const searchHeight = Math.ceil(searchWrap?.getBoundingClientRect().height || 42);
+    const optionsHeight = Math.max(84, availableHeight - searchHeight - 8);
 
-    dropdown.style.maxHeight = `${availableHeight}px`;
+    dropdown.style.position = 'fixed';
+    dropdown.style.left = `${left}px`;
+    dropdown.style.width = `${desiredWidth}px`;
+    dropdown.style.minWidth = `${desiredWidth}px`;
+    dropdown.style.maxWidth = `${Math.max(desiredWidth, 320)}px`;
+    dropdown.style.maxHeight = 'none';
+    dropdown.style.zIndex = '4000';
+
+    if (optionsEl) {
+        optionsEl.style.maxHeight = `${optionsHeight}px`;
+    }
+
     if (needsOpenUp) {
         dropdown.style.top = 'auto';
-        dropdown.style.bottom = 'calc(100% + 3px)';
+        dropdown.style.bottom = `${Math.max(gap, Math.round(viewportHeight - pickerRect.top + 3))}px`;
     } else {
-        dropdown.style.top = 'calc(100% + 3px)';
+        dropdown.style.top = `${Math.round(pickerRect.bottom + 3)}px`;
         dropdown.style.bottom = 'auto';
     }
 }
@@ -6050,10 +6084,13 @@ function ldBuildBarHtml(items) {
     `;
 }
 
-function switchLdTakt(lineId, useOT) {
+async function switchLdTakt(lineId, useOT) {
     if (!_ldData || _ldData.lineId !== lineId) return;
     if (typeof window._ldActiveOT === 'undefined') window._ldActiveOT = {};
     window._ldActiveOT[lineId] = useOT;
+    if (useOT) {
+        await ensureLdOtMinutes(lineId, _ldData.date);
+    }
     const panel = document.getElementById('ld-overlay-content');
     if (panel) renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
 }
@@ -6359,7 +6396,28 @@ async function saveLineDetails(lineId) {
             employee_id: val.is_skipped ? null : (val.employee_id || null),
             is_skipped: val.is_skipped
         }));
+        const otWorkstations = Array.from(wsMap.entries()).map(([ws, val]) => ({
+            workstation_code: ws,
+            is_active: !val.is_skipped,
+            ot_minutes: parseInt(document.getElementById(`ot-mins-${ws}`)?.value || 0, 10) || 0
+        }));
         try {
+            const otWsRes = await fetch(`/api/lines/${lineId}/ot-plan/workstations`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date, workstations: otWorkstations })
+            });
+            const otWsResult = await otWsRes.json();
+            if (!otWsResult.success) {
+                showToast(otWsResult.error || 'Failed to save OT timings', 'error');
+                return;
+            }
+            if (!window._ldWsOtMins) window._ldWsOtMins = {};
+            if (!window._ldWsOtMins[lineId]) window._ldWsOtMins[lineId] = {};
+            otWorkstations.forEach(ws => {
+                window._ldWsOtMins[lineId][ws.workstation_code] = ws.ot_minutes;
+            });
+
             const res = await fetch(`/api/lines/${lineId}/workstation-plan/employees`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
@@ -6367,7 +6425,7 @@ async function saveLineDetails(lineId) {
             });
             const result = await res.json();
             if (result.success) {
-                showToast('OT employee assignments saved', 'success');
+                showToast('OT workstation settings saved', 'success');
                 const params = new URLSearchParams({ date });
                 if (activeProductId) params.set('product_id', activeProductId);
                 if (activeTarget) params.set('target', activeTarget);

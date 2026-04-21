@@ -27,7 +27,7 @@ function broadcast(event, payload) {
 
 setInterval(() => {
     for (const res of clients) {
-        res.write(':keep-alive\n\n');
+        res.write('event: heartbeat\ndata: {}\n\n');
     }
 }, 25000);
 

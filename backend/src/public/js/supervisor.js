@@ -1013,7 +1013,19 @@ const hourlyState = {
     changeoverActive: false,
     incomingProductId: null,
     incomingProductName: '',
-    activeTarget: 0
+    incomingEffectiveTarget: 0,
+    incomingRemainingHours: 0,
+    activeTarget: 0,
+    hasDailyPlan: false,
+    primaryTarget: 0,
+    incomingTarget: 0,
+    perHourTarget: 0,
+    perHourIncomingTarget: 0,
+    workingHours: 8,
+    inTime: '08:00',
+    outTime: '17:00',
+    changeoverUiEnabled: false,
+    changeoverUiEnabledKey: null
 };
 
 const SHORTFALL_REASONS = [
@@ -1340,6 +1352,7 @@ async function loadHourlyProcedure() {
         hourlyState.lineId = null;
         hourlyState.processes = [];
         hourlyState.selectedProcess = null;
+        hourlyState.changeoverUiEnabled = false;
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -1377,6 +1390,7 @@ async function onHourlyLineChange() {
     hourlyState.lineId = lineId;
     hourlyState.selectedProcess = null;
     hourlyState.workstations = null;
+    hourlyState.changeoverUiEnabled = false;
     stopCamera();
     hideHourlyPanels();
 
@@ -1403,6 +1417,8 @@ async function onHourlyLineChange() {
         hourlyState.changeoverActive = !!result.changeover_active;
         hourlyState.incomingProductId = result.incoming_product_id || null;
         hourlyState.incomingProductName = result.incoming_product_name || result.incoming_product_code || '';
+        hourlyState.incomingEffectiveTarget = result.incoming_effective_target || result.incoming_target || 0;
+        hourlyState.incomingRemainingHours = result.incoming_remaining_hours || 0;
         hourlyState.activeTarget = result.active_target || 0;
         hourlyState.primaryTarget = result.primary_target || result.active_target || 0;
         hourlyState.incomingTarget = result.incoming_target || 0;
@@ -1411,10 +1427,21 @@ async function onHourlyLineChange() {
         hourlyState.workingHours = result.working_hours || 8;
         hourlyState.inTime = result.in_time || '08:00';
         hourlyState.outTime = result.out_time || '17:00';
+        // Restore changeoverUiEnabled from sessionStorage (survives reload, not cross-day)
+        const coKey = `co_ui_enabled_${lineId}_${date}`;
+        hourlyState.changeoverUiEnabledKey = coKey;
+        if (hourlyState.changeoverActive) {
+            hourlyState.changeoverUiEnabled = false;
+            try { sessionStorage.removeItem(coKey); } catch (_) {}
+        } else {
+            try { hourlyState.changeoverUiEnabled = sessionStorage.getItem(coKey) === '1'; } catch (_) { hourlyState.changeoverUiEnabled = false; }
+        }
         // targetQty = line target (target_units from daily plan) — used for all formula calculations.
         // Never fall back to product's order quantity (target_qty); that is only for balance-to-produce.
         hourlyState.targetQty = hourlyState.activeTarget || 0;
-        hourlyState.hourlyTarget = result.per_hour_target ? Math.round(result.per_hour_target) : (hourlyState.targetQty > 0 ? Math.round(hourlyState.targetQty / (result.working_hours || 8)) : 0);
+        hourlyState.hourlyTarget = hourlyState.changeoverActive
+            ? (result.per_hour_incoming_target ? Math.round(result.per_hour_incoming_target) : 0)
+            : (result.per_hour_target ? Math.round(result.per_hour_target) : (hourlyState.targetQty > 0 ? Math.round(hourlyState.targetQty / (result.working_hours || 8)) : 0));
         await refreshHourlySummary();
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
@@ -1439,6 +1466,21 @@ async function refreshHourlySummary() {
     }
 
     renderHourlySummary();
+}
+
+function getWorkstationHourlyTarget(ws) {
+    if (!ws) return hourlyState.hourlyTarget || 0;
+    if (ws.ws_changeover_active) {
+        return ws.ws_changeover_hourly_target != null
+            ? Math.round(ws.ws_changeover_hourly_target)
+            : Math.round(hourlyState.perHourIncomingTarget || 0);
+    }
+    return Math.round(hourlyState.perHourTarget || hourlyState.hourlyTarget || 0);
+}
+
+function getWorkstationEffectiveTarget(ws) {
+    if (!ws || !ws.ws_changeover_active) return null;
+    return ws.ws_changeover_target != null ? ws.ws_changeover_target : null;
 }
 
 function computeTotalOutput(progressData, workstations) {
@@ -1503,70 +1545,85 @@ async function activateWsChangeover(wsCode, date, force) {
 }
 
 // Employee reassignment for a workstation in changeover (same API as morning assign)
-function openWsChangeoverEmployeeChange(wsCode, linePlanWsId) {
+async function openWsChangeoverEmployeeChange(wsCode, linePlanWsId) {
     const lineId = hourlyState.lineId;
     const date = document.getElementById('hourly-date')?.value || '';
     if (!lineId || !date) return;
 
-    // Reuse morning procedure's scan/assign flow — set the state and open the morning scan panel
-    morningState.selectedWorkstation = wsCode;
-    morningState.selectedWorkstationPlanId = linePlanWsId || null;
-    morningState.scannedEmployee = null;
-
-    // Build an inline modal for employee selection (dropdown + scan option)
     const existing = document.getElementById('co-emp-modal');
     if (existing) existing.remove();
 
-    // Build employee options from morningState employees (loaded at morning procedure time)
-    const employees = morningState.employees || [];
-    const empOptions = employees.map(e =>
-        `<option value="${e.id}">${e.emp_code} - ${e.emp_name}</option>`
-    ).join('');
+    const employees = await ensureSupervisorEmployeeList();
+
+    // Build taken map: employee_id → workstation_code from current assignments
+    const takenMap = new Map();
+    (hourlyState.workstations || []).forEach(ws => {
+        if (ws.assigned_employee_id && ws.workstation_code !== wsCode) {
+            takenMap.set(String(ws.assigned_employee_id), ws.workstation_code);
+        }
+    });
+
+    const empRows = employees.map(e => {
+        const eStr = String(e.id);
+        const takenWs = takenMap.get(eStr);
+        const label = `${e.emp_code} — ${e.emp_name}`;
+        const takenBadge = takenWs
+            ? `<span style="font-size:11px;color:#f87171;margin-left:6px;">Taken (${takenWs})</span>`
+            : '';
+        return `<div class="co-emp-opt" data-id="${eStr}" data-label="${label.replace(/"/g,'&quot;')}"
+            data-taken="${takenWs || ''}"
+            onclick="coEmpOptSelect(this,${JSON.stringify(wsCode)},${linePlanWsId || 'null'})"
+            style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6;${takenWs?'color:#9ca3af;':''}">
+            <span>${label}</span>${takenBadge}
+        </div>`;
+    }).join('');
 
     const modal = document.createElement('div');
     modal.id = 'co-emp-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:3000;display:flex;align-items:center;justify-content:center;';
     modal.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:24px;width:min(400px,95vw);box-shadow:0 20px 60px rgba(0,0,0,.3);">
-            <h3 style="margin:0 0 16px;font-size:15px;font-weight:700;">Change Employee — ${wsCode} (Changeover)</h3>
-            <div style="margin-bottom:12px;">
-                <input type="text" id="co-emp-search" placeholder="🔍 Search by name or code…"
-                    style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px;"
-                    oninput="filterCoEmpSelect(this)">
-                <select id="co-emp-select" size="6"
-                    style="width:100%;border:1px solid #d1d5db;border-radius:6px;font-size:13px;padding:4px;">
-                    <option value="">— No employee —</option>
-                    ${empOptions}
-                </select>
+        <div style="background:#fff;border-radius:12px;padding:24px;width:min(420px,95vw);box-shadow:0 20px 60px rgba(0,0,0,.3);">
+            <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;">Change Employee — ${wsCode} (Changeover)</h3>
+            <input type="text" placeholder="Search by name or code…"
+                style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:8px;box-sizing:border-box;"
+                oninput="coEmpSearch(this)">
+            <div id="co-emp-list" style="max-height:260px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;">
+                <div class="co-emp-opt" data-id="" data-label="— No employee —" data-taken=""
+                    onclick="coEmpOptSelect(this,${JSON.stringify(wsCode)},${linePlanWsId || 'null'})"
+                    style="padding:8px 10px;cursor:pointer;font-size:13px;color:#9ca3af;border-bottom:1px solid #f3f4f6;">
+                    — No employee —
+                </div>
+                ${empRows}
             </div>
-            <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <div style="display:flex;justify-content:flex-end;margin-top:14px;">
                 <button onclick="document.getElementById('co-emp-modal').remove()"
                     style="padding:7px 18px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
-                <button onclick="confirmCoEmpAssign(${JSON.stringify(wsCode)}, ${linePlanWsId || 'null'})"
-                    style="padding:7px 20px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Assign</button>
             </div>
         </div>`;
     document.body.appendChild(modal);
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 }
 
-function filterCoEmpSelect(searchInput) {
-    const q = searchInput.value.toLowerCase();
-    const sel = document.getElementById('co-emp-select');
-    if (!sel) return;
-    Array.from(sel.options).forEach(opt => {
-        opt.style.display = (!opt.value || opt.text.toLowerCase().includes(q)) ? '' : 'none';
+function coEmpSearch(input) {
+    const q = input.value.toLowerCase();
+    document.querySelectorAll('#co-emp-list .co-emp-opt').forEach(opt => {
+        const label = (opt.dataset.label || '').toLowerCase();
+        opt.style.display = (!opt.dataset.id || label.includes(q)) ? '' : 'none';
     });
 }
 
-async function confirmCoEmpAssign(wsCode, linePlanWsId) {
-    const sel = document.getElementById('co-emp-select');
-    const empId = sel?.value;
+async function coEmpOptSelect(optEl, wsCode, linePlanWsId) {
+    const empId = optEl.dataset.id || '';
+    const label = optEl.dataset.label || '';
+    const takenWs = optEl.dataset.taken || '';
+    if (takenWs && empId) {
+        if (!confirm(`${label} is currently assigned to ${takenWs}.\n\nUnassign from ${takenWs} and assign to ${wsCode}?`)) return;
+    }
     const lineId = hourlyState.lineId;
     const date = document.getElementById('hourly-date')?.value || '';
     if (!lineId || !date) return;
     try {
-        const r = await fetch(`${API_BASE}/supervisor/assign`, {
+        const r = await fetch(`${API_BASE}/workstation-assignments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1580,7 +1637,7 @@ async function confirmCoEmpAssign(wsCode, linePlanWsId) {
         const result = await r.json();
         if (!result.success) throw new Error(result.error || 'Assignment failed');
         document.getElementById('co-emp-modal')?.remove();
-        showToast(`Employee updated for ${wsCode}`, 'success');
+        showToast(empId ? `${label} assigned to ${wsCode}` : `Employee cleared from ${wsCode}`, 'success');
         await onHourlyLineChange();
     } catch (err) {
         showToast(err.message, 'error');
@@ -1596,20 +1653,19 @@ const coPromptState = {
     scannedEmployee: null
 };
 
-function _coBtnHtml(wsCode, wsId, date, empId, empCode, empName, coEmpId, coEmpCode, coEmpName) {
-    const safeCode = (empCode || '').replace(/"/g, '&quot;');
-    const safeName = (empName || '').replace(/"/g, '&quot;');
-    const safeCoCode = (coEmpCode || '').replace(/"/g, '&quot;');
-    const safeCoPName = (coEmpName || '').replace(/"/g, '&quot;');
-    const coHint = coEmpId ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${coEmpCode}</span>` : '';
-    return `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
-        data-ws-code="${wsCode}" data-ws-id="${wsId}" data-date="${date}"
-        data-emp-id="${empId || ''}" data-emp-code="${safeCode}" data-emp-name="${safeName}"
-        data-co-emp-id="${coEmpId || ''}" data-co-emp-code="${safeCoCode}" data-co-emp-name="${safeCoPName}"
-        onclick="promptWsChangeover(this)">&#8652; Start CO${coHint}</button>`;
+async function ensureSupervisorEmployeeList() {
+    if (Array.isArray(morningState.employees) && morningState.employees.length) {
+        return morningState.employees;
+    }
+    const response = await fetch(`${API_BASE}/employees`);
+    const result = await response.json();
+    morningState.employees = Array.isArray(result?.data)
+        ? result.data.filter(emp => emp.is_active !== false)
+        : [];
+    return morningState.employees;
 }
 
-function promptWsChangeover(btn) {
+async function promptWsChangeover(btn) {
     stopCamera();
     const wsCode = btn.dataset.wsCode;
     const wsId = parseInt(btn.dataset.wsId);
@@ -1631,141 +1687,191 @@ function promptWsChangeover(btn) {
     coPromptState.coSuggestedEmpCode = coEmpCode;
     coPromptState.coSuggestedEmpName = coEmpName;
     coPromptState.scannedEmployee = null;
-
-    const card = document.getElementById(`hourly-ws-card-${wsId}`);
-    if (!card) return;
-    const footer = card.querySelector('.ws-card-footer');
-    if (!footer) return;
-
-    coPromptState.origFooterHtml = footer.innerHTML;
-
-    // IE suggestion block (shown when IE pre-assigned a CO employee)
-    const ieSuggestionHtml = coEmpId ? `
-        <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
-            <p style="font-size:11px;font-weight:700;color:#7c3aed;margin:0 0 4px;text-transform:uppercase;letter-spacing:.4px;">IE Pre-Assigned</p>
-            <p style="font-size:13px;font-weight:700;color:#5b21b6;margin:0;">&#128100; ${coEmpCode} — ${coEmpName}</p>
-        </div>` : '';
-
-    // Current employee line (only shown when different from IE suggestion or no suggestion)
-    const isSameasSuggestion = coEmpId && empId === coEmpId;
-    const currentEmpHtml = empId && !isSameasSuggestion
-        ? `<p style="font-size:12px;color:#6b7280;margin:0 0 10px;">Currently: <strong>${empCode} — ${empName}</strong></p>`
-        : (!empId ? `<p style="font-size:12px;color:#6b7280;margin:0 0 10px;">No employee currently assigned.</p>` : '');
-
-    footer.innerHTML = `
-        <div style="width:100%;padding:4px 0;">
-            <p style="font-weight:700;color:#5b21b6;font-size:13px;margin:0 0 8px;">&#8652; Start Changeover — ${wsCode}</p>
-            ${ieSuggestionHtml}
-            ${currentEmpHtml}
-            <div class="mismatch-actions">
-                ${coEmpId ? `<button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
-                    onclick="confirmWsCo(${coEmpId}, false)">&#10003; Confirm IE Assignment</button>` : ''}
-                ${empId && !isSameasSuggestion ? `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
-                    onclick="confirmWsCo(${empId}, false)">Keep Current (${empCode})</button>` : ''}
-                ${!coEmpId && empId ? `<button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
-                    onclick="confirmWsCo(${empId}, false)">Continue with ${empCode}</button>` : ''}
-                <button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
-                    onclick="startCoScan()">&#128247; Assign Different Employee</button>
-                <button class="btn ws-card-action" style="background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
-                    onclick="cancelCoPrompt()">Cancel</button>
-            </div>
-        </div>`;
-    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (!confirm(`Start changeover for ${wsCode}?`)) {
+        return;
+    }
+    await openWsChangeoverModal();
 }
 
-async function startCoScan() {
-    const { wsId, wsCode } = coPromptState;
-    if (!wsId || isNaN(wsId)) { showToast('Error: workstation state lost, please close and retry', 'error'); return; }
+async function openWsChangeoverModal(warningMessage = '') {
+    const { wsCode, origEmpId, origEmpCode, origEmpName, coSuggestedEmpId, coSuggestedEmpCode, coSuggestedEmpName } = coPromptState;
+    const employees = await ensureSupervisorEmployeeList();
+    const existing = document.getElementById('ws-changeover-modal');
+    if (existing) existing.remove();
 
-    const card = document.getElementById(`hourly-ws-card-${wsId}`);
-    if (!card) { showToast('Error: card not found — please refresh', 'error'); return; }
-    const footer = card.querySelector('.ws-card-footer');
-    if (!footer) { showToast('Error: footer not found — please refresh', 'error'); return; }
+    const defaultMode = origEmpId ? 'same' : 'change';
+    const defaultEmployeeId = coSuggestedEmpId || '';
 
-    footer.innerHTML = `
-        <div style="width:100%;padding:4px 0;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
-                <span style="font-size:13px;font-weight:600;color:#374151;">&#128247; Scan Employee QR — ${wsCode}</span>
-                <button class="btn btn-secondary btn-sm" onclick="cancelCoPrompt()">Cancel</button>
-            </div>
-            <video id="co-camera-${wsId}" playsinline muted
-                style="width:100%;border-radius:8px;background:#000;display:block;max-height:260px;"></video>
-            <div id="co-scan-result-${wsId}" style="margin-top:10px;">
-                <p style="color:#6b7280;font-size:13px;">Starting camera...</p>
-            </div>
-        </div>`;
-    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-    await startCamera(`co-camera-${wsId}`, `co-scan-result-${wsId}`, async (rawValue) => {
-        stopCamera();
-        const result = document.getElementById(`co-scan-result-${wsId}`);
-        if (result) result.innerHTML = '<p style="color:#6b7280;font-size:13px;">Resolving employee...</p>';
-        try {
-            const r = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ employee_qr: rawValue })
-            });
-            const data = await r.json();
-            if (!data.success || !data.data?.employee) {
-                if (result) result.innerHTML = `
-                    <p style="color:#dc2626;font-size:13px;">${data.error || 'Employee not found.'}</p>
-                    <button class="btn ws-card-action" style="margin-top:6px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
-                        onclick="startCoScan()">&#8635; Retry Scan</button>`;
-                return;
-            }
-            coPromptState.scannedEmployee = data.data.employee;
-            showCoEmployeeConfirm(data.data.employee);
-        } catch (err) {
-            const result2 = document.getElementById(`co-scan-result-${wsId}`);
-            if (result2) result2.innerHTML = `<p style="color:#dc2626;font-size:13px;">${err.message}</p>`;
+    // Build taken map: emp_id → ws_code from current assignments (excluding this ws)
+    const coTakenMap = new Map();
+    (hourlyState.workstations || []).forEach(ws => {
+        if (ws.assigned_employee_id && ws.workstation_code !== wsCode) {
+            coTakenMap.set(String(ws.assigned_employee_id), ws.workstation_code);
         }
     });
 
-    // If camera failed to start, show inline message (startCamera shows a toast too)
-    if (!scanning) {
-        const result = document.getElementById(`co-scan-result-${wsId}`);
-        if (result && result.querySelector('p')?.textContent === 'Starting camera...') {
-            result.innerHTML = `<p style="color:#dc2626;font-size:13px;">Camera unavailable. Check permissions or use HTTPS.</p>
-                <button class="btn ws-card-action" style="margin-top:6px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
-                    onclick="cancelCoPrompt()">Back</button>`;
-        }
-    }
-}
+    const defaultEmpLabel = defaultEmployeeId
+        ? (() => { const e = employees.find(x => String(x.id) === String(defaultEmployeeId)); return e ? `${e.emp_code} — ${e.emp_name}` : 'Select employee'; })()
+        : 'Select employee';
 
-function showCoEmployeeConfirm(emp) {
-    const { wsId, wsCode } = coPromptState;
-    const card = document.getElementById(`hourly-ws-card-${wsId}`);
-    if (!card) return;
-    const footer = card.querySelector('.ws-card-footer');
-    if (!footer) return;
+    const empPickerRows = employees.map(emp => {
+        const eStr = String(emp.id);
+        const isDefault = eStr === String(defaultEmployeeId);
+        const takenWs = coTakenMap.get(eStr);
+        const label = `${emp.emp_code} — ${emp.emp_name}`;
+        return `<div class="co-picker-opt" data-id="${eStr}" data-label="${label.replace(/"/g,'&quot;')}" data-taken="${takenWs||''}"
+            style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6;background:${isDefault?'#eff6ff':''};font-weight:${isDefault?'600':'400'};"
+            onmouseenter="this.style.background='#f5f3ff'" onmouseleave="this.style.background='${isDefault?'#eff6ff':''}'"
+            onclick="coPickerSelect(this)">
+            <span style="color:${takenWs?'#9ca3af':''}">${label}</span>
+            ${takenWs ? `<span style="font-size:11px;color:#f87171;white-space:nowrap;margin-left:8px;">Taken (${takenWs})</span>` : ''}
+        </div>`;
+    }).join('');
 
-    footer.innerHTML = `
-        <div style="width:100%;padding:4px 0;">
-            <p style="font-weight:700;color:#5b21b6;font-size:13px;margin:0 0 8px;">&#8652; Start Changeover — ${wsCode}</p>
-            <p style="font-size:13px;color:#16a34a;margin:0 0 12px;">&#10003; ${emp.emp_code} — ${emp.emp_name}</p>
-            <div class="mismatch-actions">
-                <button class="btn ws-card-action" style="background:#7c3aed;color:#fff;border:none;"
-                    onclick="confirmWsCo(${emp.id}, false)">Confirm CO</button>
-                <button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
-                    onclick="startCoScan()">&#128247; Scan Different</button>
-                <button class="btn ws-card-action" style="background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
-                    onclick="cancelCoPrompt()">Cancel</button>
+    const modal = document.createElement('div');
+    modal.id = 'ws-changeover-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3100;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:14px;width:min(560px,96vw);box-shadow:0 24px 60px rgba(0,0,0,.28);overflow:hidden;">
+            <div style="padding:20px 22px 14px;border-bottom:1px solid #e5e7eb;">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+                    <div>
+                        <h3 style="margin:0;font-size:18px;font-weight:700;color:#111827;">Start Changeover</h3>
+                        <p style="margin:6px 0 0;color:#6b7280;font-size:13px;">${wsCode} will switch from the primary product to the changeover product plan.</p>
+                    </div>
+                    <button onclick="closeWsChangeoverModal()" style="background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:#6b7280;">&times;</button>
+                </div>
+            </div>
+            <div style="padding:18px 22px;display:grid;gap:14px;">
+                ${warningMessage ? `<div style="background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:8px;padding:10px 12px;font-size:13px;">${warningMessage}</div>` : ''}
+                ${coSuggestedEmpId ? `<div style="background:#f5f3ff;border:1px solid #ddd6fe;color:#5b21b6;border-radius:8px;padding:10px 12px;font-size:13px;"><strong>IE suggestion:</strong> ${coSuggestedEmpCode} - ${coSuggestedEmpName}</div>` : ''}
+                <div style="font-size:13px;color:#374151;">
+                    Current employee:
+                    ${origEmpId ? `<strong>${origEmpCode} - ${origEmpName}</strong>` : '<strong style="color:#dc2626;">Unassigned</strong>'}
+                </div>
+                <div>
+                    <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:8px;">Feed given for this workstation?</div>
+                    <label style="display:inline-flex;align-items:center;gap:8px;margin-right:16px;font-size:13px;color:#374151;">
+                        <input type="radio" name="co-feed-given" value="no" checked onchange="toggleWsChangeoverModalFields()">
+                        No
+                    </label>
+                    <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;color:#374151;">
+                        <input type="radio" name="co-feed-given" value="yes" onchange="toggleWsChangeoverModalFields()">
+                        Yes
+                    </label>
+                    <div id="co-feed-qty-wrap" style="display:none;margin-top:10px;">
+                        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:6px;">Feed quantity</label>
+                        <input type="number" id="co-feed-qty" min="0" value="" style="width:100%;padding:9px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;">
+                    </div>
+                </div>
+                <div>
+                    <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:8px;">Employee after changeover</div>
+                    <label style="display:block;font-size:13px;color:#374151;margin-bottom:8px;${origEmpId ? '' : 'opacity:.55;'}">
+                        <input type="radio" name="co-employee-mode" value="same" ${defaultMode === 'same' ? 'checked' : ''} ${origEmpId ? '' : 'disabled'} onchange="toggleWsChangeoverModalFields()">
+                        Continue with same employee
+                    </label>
+                    <label style="display:block;font-size:13px;color:#374151;">
+                        <input type="radio" name="co-employee-mode" value="change" ${defaultMode === 'change' ? 'checked' : ''} onchange="toggleWsChangeoverModalFields()">
+                        Change employee
+                    </label>
+                    <div id="co-employee-select-wrap" style="display:${defaultMode === 'change' ? 'block' : 'none'};margin-top:10px;">
+                        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:6px;">Select employee</label>
+                        <input type="hidden" id="co-employee-select" value="${defaultEmployeeId}">
+                        <div id="co-emp-picker-selected" style="font-size:13px;font-weight:600;color:#7c3aed;min-height:18px;margin-bottom:6px;">${defaultEmpLabel !== 'Select employee' ? defaultEmpLabel : ''}</div>
+                        <input type="text" placeholder="Search by name or code…" id="co-emp-picker-search"
+                            style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;margin-bottom:4px;"
+                            oninput="coPickerFilter(this)">
+                        <div style="max-height:180px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;">
+                            <div class="co-picker-opt" data-id="" data-label="— No employee —" data-taken=""
+                                onclick="coPickerSelect(this)"
+                                style="padding:8px 12px;cursor:pointer;font-size:13px;color:#9ca3af;border-bottom:1px solid #f3f4f6;">
+                                — No employee —
+                            </div>
+                            ${empPickerRows}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div style="padding:14px 22px 20px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px;">
+                <button onclick="closeWsChangeoverModal()" style="padding:9px 16px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-size:13px;cursor:pointer;">Cancel</button>
+                <button onclick="submitWsChangeoverStart(false)" style="padding:9px 18px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">Start Changeover</button>
             </div>
         </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeWsChangeoverModal();
+    });
+    toggleWsChangeoverModalFields();
 }
 
-async function confirmWsCo(employeeId, force) {
-    const { wsCode, wsId, date } = coPromptState;
+function toggleWsChangeoverModalFields() {
+    const feedWrap = document.getElementById('co-feed-qty-wrap');
+    const feedYes = document.querySelector('input[name="co-feed-given"]:checked')?.value === 'yes';
+    if (feedWrap) feedWrap.style.display = feedYes ? 'block' : 'none';
+
+    const employeeWrap = document.getElementById('co-employee-select-wrap');
+    const employeeMode = document.querySelector('input[name="co-employee-mode"]:checked')?.value;
+    if (employeeWrap) employeeWrap.style.display = employeeMode === 'change' ? 'block' : 'none';
+}
+
+function coPickerFilter(input) {
+    const q = (input.value || '').toLowerCase();
+    document.querySelectorAll('#co-employee-select-wrap .co-picker-opt').forEach(opt => {
+        if (!opt.dataset.id) { opt.style.display = ''; return; }
+        opt.style.display = (opt.dataset.label || '').toLowerCase().includes(q) ? '' : 'none';
+    });
+}
+
+function coPickerSelect(optEl) {
+    const empId = optEl.dataset.id || '';
+    const label = optEl.dataset.label || '— No employee —';
+    const takenWs = optEl.dataset.taken || '';
+    if (takenWs && empId) {
+        if (!confirm(`${label} is currently assigned to ${takenWs}.\n\nUnassign from ${takenWs} and assign to ${coPromptState.wsCode}?`)) return;
+    }
+    const hidden = document.getElementById('co-employee-select');
+    const selLabel = document.getElementById('co-emp-picker-selected');
+    if (hidden) hidden.value = empId;
+    if (selLabel) { selLabel.textContent = empId ? label : ''; }
+    // Highlight selected row
+    document.querySelectorAll('#co-employee-select-wrap .co-picker-opt').forEach(o => {
+        o.style.background = o === optEl && empId ? '#eff6ff' : '';
+        o.style.fontWeight = o === optEl && empId ? '600' : '400';
+    });
+}
+
+async function submitWsChangeoverStart(force = false) {
+    const { wsCode, date } = coPromptState;
     const lineId = hourlyState.lineId;
     if (!lineId || !date || !wsCode) return;
 
-    const card = document.getElementById(`hourly-ws-card-${wsId}`);
-    const footer = card ? card.querySelector('.ws-card-footer') : null;
-
     try {
-        const body = { line_id: lineId, work_date: date, workstation_code: wsCode, force: !!force };
-        if (employeeId) body.employee_id = employeeId;
+        const feedGiven = document.querySelector('input[name="co-feed-given"]:checked')?.value === 'yes';
+        const feedQty = parseInt(document.getElementById('co-feed-qty')?.value || '0', 10) || 0;
+        const employeeMode = document.querySelector('input[name="co-employee-mode"]:checked')?.value || 'same';
+        const selectedEmployeeId = parseInt(document.getElementById('co-employee-select')?.value || '0', 10) || null;
+
+        if (feedGiven && feedQty <= 0) {
+            showToast('Enter the feed quantity for this workstation', 'error');
+            return;
+        }
+        if (employeeMode === 'change' && !selectedEmployeeId) {
+            showToast('Select the employee for the changeover workstation', 'error');
+            return;
+        }
+
+        const body = {
+            line_id: lineId,
+            work_date: date,
+            workstation_code: wsCode,
+            force: !!force,
+            employee_mode: employeeMode,
+            feed_given: feedGiven,
+            feed_quantity: feedGiven ? feedQty : 0
+        };
+        if (employeeMode === 'change' && selectedEmployeeId) {
+            body.employee_id = selectedEmployeeId;
+        }
 
         const r = await fetch(`${API_BASE}/supervisor/changeover/activate-workstation`, {
             method: 'POST',
@@ -1775,25 +1881,14 @@ async function confirmWsCo(employeeId, force) {
         const data = await r.json();
 
         if (data.target_warning) {
-            if (footer) {
-                footer.innerHTML = `
-                    <div style="width:100%;padding:4px 0;">
-                        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px;margin-bottom:10px;">
-                            <p style="font-weight:700;color:#c2410c;margin:0 0 6px;">&#9888; Target Not Met</p>
-                            <p style="font-size:13px;color:#374151;margin:0;">${data.message}</p>
-                        </div>
-                        <div class="mismatch-actions">
-                            <button class="btn ws-card-action" style="background:#dc2626;color:#fff;border:none;"
-                                onclick="confirmWsCo(${employeeId || 'null'}, true)">Proceed Anyway</button>
-                            <button class="btn ws-card-action" style="background:#f1f5f9;color:#374151;border:1px solid #d1d5db;"
-                                onclick="cancelCoPrompt()">Cancel</button>
-                        </div>
-                    </div>`;
+            if (confirm(`${data.message}\n\nProceed with changeover anyway?`)) {
+                await submitWsChangeoverStart(true);
             }
             return;
         }
 
         if (!data.success) { showToast(data.error || 'Failed to activate changeover', 'error'); return; }
+        closeWsChangeoverModal();
         showToast(`Changeover started for ${wsCode}`, 'success');
         await onHourlyLineChange();
     } catch (err) {
@@ -1801,15 +1896,31 @@ async function confirmWsCo(employeeId, force) {
     }
 }
 
-function cancelCoPrompt() {
+function closeWsChangeoverModal() {
     stopCamera();
-    const { wsId, origFooterHtml } = coPromptState;
-    if (wsId) {
-        const card = document.getElementById(`hourly-ws-card-${wsId}`);
-        const footer = card ? card.querySelector('.ws-card-footer') : null;
-        if (footer && origFooterHtml != null) footer.innerHTML = origFooterHtml;
+    document.getElementById('ws-changeover-modal')?.remove();
+    Object.assign(coPromptState, {
+        wsCode: null,
+        wsId: null,
+        date: null,
+        origEmpId: null,
+        origEmpCode: null,
+        origEmpName: null,
+        coSuggestedEmpId: null,
+        coSuggestedEmpCode: null,
+        coSuggestedEmpName: null,
+        scannedEmployee: null,
+        origFooterHtml: null
+    });
+}
+
+function enableHourlyChangeover() {
+    hourlyState.changeoverUiEnabled = true;
+    // Persist so page reload remembers the supervisor already enabled changeover
+    if (hourlyState.changeoverUiEnabledKey) {
+        try { sessionStorage.setItem(hourlyState.changeoverUiEnabledKey, '1'); } catch (_) {}
     }
-    Object.assign(coPromptState, { wsCode: null, wsId: null, date: null, origEmpId: null, origEmpCode: null, origEmpName: null, coSuggestedEmpId: null, coSuggestedEmpCode: null, coSuggestedEmpName: null, scannedEmployee: null, origFooterHtml: null });
+    renderHourlySummary();
 }
 
 function renderHourlySummary() {
@@ -1824,7 +1935,7 @@ function renderHourlySummary() {
         if (hourlyState.changeoverActive) {
             // CO is running — show CO output vs CO target (mirrors the pre-CO primary progress bar)
             const coOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations);
-            const coTarget = hourlyState.incomingTarget || 0;
+            const coTarget = hourlyState.incomingEffectiveTarget || hourlyState.incomingTarget || 0;
             const coPct = coTarget > 0 ? Math.min(Math.round(coOutput / coTarget * 100), 999) : 0;
             const coTargetMet = coPct >= 100;
             const coPctColor = coTargetMet ? '#16a34a' : coPct >= 80 ? '#d97706' : '#6b7280';
@@ -1840,6 +1951,12 @@ function renderHourlySummary() {
                             ${coTargetMet ? '&nbsp;<span style="color:#16a34a;font-weight:700;">&#10003; Target Met</span>' : ''}
                         </span>
                     </div>
+                    <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">
+                        Hourly target: <strong>${Math.round((hourlyState.perHourIncomingTarget || 0) * 10) / 10}</strong>/hr
+                        &nbsp;|&nbsp; Session target: <strong>${coTarget}</strong>
+                        ${hourlyState.incomingRemainingHours ? `&nbsp;|&nbsp; Remaining hours: <strong>${hourlyState.incomingRemainingHours}</strong>` : ''}
+                        &nbsp;|&nbsp; Full-day CO target: <strong>${hourlyState.incomingTarget || 0}</strong>
+                    </div>
                     <div style="background:#ede9fe;border-radius:4px;height:6px;overflow:hidden;">
                         <div style="background:${coTargetMet ? '#16a34a' : '#7c3aed'};height:100%;width:${coBarWidth}%;transition:width 0.4s;"></div>
                     </div>
@@ -1850,19 +1967,25 @@ function renderHourlySummary() {
             const pct = target > 0 ? Math.min(Math.round(totalOutput / target * 100), 999) : 0;
             const targetMet = pct >= 100;
             const pctColor = pct >= 100 ? '#16a34a' : pct >= 80 ? '#d97706' : '#6b7280';
+            const coEnableBtn = targetMet
+                ? (hourlyState.changeoverUiEnabled
+                    ? `<button class="btn btn-secondary btn-sm" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" disabled>Changeover Enabled</button>`
+                    : `<button class="btn btn-primary btn-sm" style="background:#7c3aed;border-color:#7c3aed;" onclick="enableHourlyChangeover()">Enable Changeover</button>`)
+                : '';
             changeoverBanner = `
                 <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
                     <span style="font-size:13px;color:#374151;">
                         Total Output: <strong>${totalOutput}</strong> / <strong>${target}</strong>
                         &nbsp;<span style="color:${pctColor};font-weight:700;">(${pct}%)</span>
                     </span>
-                    <button onclick="activateChangeover(${hourlyState.lineId},'${date}')"
-                        id="btn-start-co"
-                        ${targetMet ? '' : 'disabled'}
-                        style="margin-left:auto;padding:6px 18px;background:${targetMet ? '#7c3aed' : '#e5e7eb'};color:${targetMet ? '#fff' : '#9ca3af'};border:none;border-radius:6px;cursor:${targetMet ? 'pointer' : 'default'};font-weight:600;font-size:13px;transition:background 0.2s;"
-                        title="${targetMet ? 'Click to start changeover to ' + (hourlyState.incomingProductName || 'changeover product') : 'Primary target not yet met (' + pct + '%)'}">
-                        &#8652; Start Changeover
-                    </button>
+                    <span style="font-size:13px;color:${targetMet ? '#6d28d9' : '#6b7280'};font-weight:600;">
+                        ${targetMet
+                            ? (hourlyState.changeoverUiEnabled
+                                ? `Changeover enabled. Choose the workstation you want to switch.`
+                                : `Primary target reached. Enable changeover to choose workstations.`)
+                            : `Primary target not yet met.`}
+                    </span>
+                    <span style="margin-left:auto;">${coEnableBtn}</span>
                 </div>`;
         }
     }
@@ -1878,12 +2001,12 @@ function renderHourlySummary() {
         const perHourTarget = hourlyState.perHourTarget || hourlyTarget || 0;
         const perHourIncoming = hourlyState.perHourIncomingTarget || 0;
         const hasChangeover = !!hourlyState.incomingProductId;
+        const canStartWorkstationChangeover = !!hourlyState.changeoverActive || !!hourlyState.changeoverUiEnabled;
 
         const cards = workstations.map(ws => {
             const isWsChangeover = !!ws.ws_changeover_active;
-            const wsHourlyTarget = isWsChangeover
-                ? (ws.ws_changeover_target != null ? ws.ws_changeover_target : Math.round(perHourIncoming))
-                : Math.round(perHourTarget);
+            const wsHourlyTarget = getWorkstationHourlyTarget(ws);
+            const wsEffectiveTarget = getWorkstationEffectiveTarget(ws);
 
             const wsProcessIds = (ws.processes || []).map(p => p.process_id || p.id);
             const progress = hourlyState.progressData.find(
@@ -1951,25 +2074,44 @@ function renderHourlySummary() {
                                 : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
             let coBtn = '';
-            if (hasChangeover && ws.has_co_plan) {
-                if (isWsChangeover) {
-                    coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" onclick="openWsChangeoverEmployeeChange(${JSON.stringify(ws.workstation_code)}, ${ws.id || ws.primary_ws_id || 'null'})">Change Employee</button>`;
-                } else {
-                    const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
-                    coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
-                        data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
-                        data-emp-id="${ws.assigned_employee_id || ''}"
-                        data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
-                        data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"
-                        data-co-emp-id="${ws.co_suggested_emp_id || ''}"
-                        data-co-emp-code="${(ws.co_suggested_emp_code || '').replace(/"/g, '&quot;')}"
-                        data-co-emp-name="${(ws.co_suggested_emp_name || '').replace(/"/g, '&quot;')}"
-                        onclick="promptWsChangeover(this)">&#8652; Start CO${_coHint}</button>`;
-                }
+            if (isWsChangeover) {
+                // CO active — no extra button; employee change available via Enter Output flow if needed
+            } else if (canStartWorkstationChangeover && hasChangeover) {
+                const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
+                coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
+                    data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
+                    data-emp-id="${ws.assigned_employee_id || ''}"
+                    data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
+                    data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"
+                    data-co-emp-id="${ws.co_suggested_emp_id || ''}"
+                    data-co-emp-code="${(ws.co_suggested_emp_code || '').replace(/"/g, '&quot;')}"
+                    data-co-emp-name="${(ws.co_suggested_emp_name || '').replace(/"/g, '&quot;')}"
+                    onclick="promptWsChangeover(this)">&#8652; CO${_coHint}</button>`;
             }
 
             const reasonLine = reason && output > 0 && output < wsHourlyTarget
                 ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
+                : '';
+            const changeoverNote = isWsChangeover
+                ? `<div class="ws-card-row">
+                        <span class="ws-card-label">CO Saved</span>
+                        <span style="font-size:12px;color:#6b7280;">
+                            Primary output: <strong>${ws.changeover_primary_output_quantity || 0}</strong>
+                            &nbsp;|&nbsp; Balance: <strong>${ws.changeover_primary_balance_quantity || 0}</strong>
+                            &nbsp;|&nbsp; WIP: <strong>${ws.changeover_primary_pending_wip || 0}</strong>
+                            &nbsp;|&nbsp; Feed: <strong>${ws.changeover_feed_quantity || 0}</strong>
+                        </span>
+                    </div>`
+                : '';
+            const changeoverTargetNote = isWsChangeover
+                ? `<div class="ws-card-row">
+                        <span class="ws-card-label">CO Target</span>
+                        <span style="font-size:12px;color:#6b7280;">
+                            Hourly: <strong>${wsHourlyTarget || '–'}</strong>/hr
+                            ${wsEffectiveTarget != null ? `&nbsp;|&nbsp; Session: <strong>${wsEffectiveTarget}</strong>` : ''}
+                            ${ws.ws_changeover_remaining_hours != null ? `&nbsp;|&nbsp; Remaining hrs: <strong>${ws.ws_changeover_remaining_hours}</strong>` : ''}
+                        </span>
+                    </div>`
                 : '';
 
             let cardClass = '';
@@ -2002,6 +2144,8 @@ function renderHourlySummary() {
                                 <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
                             </div>
                         </div>
+                        ${changeoverTargetNote}
+                        ${changeoverNote}
                         ${reasonLine}
                     </div>
                     <div class="ws-card-footer">
@@ -2015,9 +2159,9 @@ function renderHourlySummary() {
             ? Math.round((hourlyState.perHourIncomingTarget || 0) * 10) / 10
             : Math.round(perHourTarget * 10) / 10;
         const dailyTargetDisplay = hourlyState.changeoverActive
-            ? hourlyState.incomingTarget || '–'
+            ? hourlyState.incomingEffectiveTarget || hourlyState.incomingTarget || '–'
             : hourlyState.primaryTarget || hourlyState.targetQty || '–';
-        const targetLabel = hourlyState.changeoverActive ? 'CO Target' : 'Daily';
+        const targetLabel = hourlyState.changeoverActive ? 'CO Session' : 'Daily';
         container.innerHTML = changeoverBanner + `
             <div class="card">
                 <div class="card-header">
@@ -2258,7 +2402,7 @@ function openWorkstationHourlyEntry(workstationPlanId) {
     hourlyState.selectedProcess = null;
 
     const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
-    const hourlyTarget = hourlyState.hourlyTarget;
+    const hourlyTarget = getWorkstationHourlyTarget(ws);
 
     const wsProcessIds = (ws.processes || []).map(p => p.process_id || p.id);
     const existing = hourlyState.progressData.find(
@@ -2334,7 +2478,7 @@ async function saveWorkstationHourlyOutput() {
     const date = document.getElementById('hourly-date')?.value;
     const hour = document.getElementById('hourly-hour')?.value;
     const output = parseInt(document.getElementById('hourly-output-qty')?.value || 0, 10);
-    const hourlyTarget = hourlyState.hourlyTarget;
+    const hourlyTarget = getWorkstationHourlyTarget(ws);
     const reason = getFinalReason();
     const warningEl = document.getElementById('hourly-reason-warning');
 
@@ -2501,8 +2645,6 @@ function renderOtPlanList(plans, allLines, date) {
         const plan = planMap[line.id];
         const otEnabled = plan?.ot_enabled || false;
         const product = plan ? `${plan.product_code} - ${plan.product_name}` : '—';
-        const otTarget = plan?.overtime_target || '';
-        const disabledAttr = otEnabled ? '' : 'disabled';
         const dimStyle = otEnabled ? '' : 'opacity:0.45;';
         return `<tr>
             <td>
@@ -2511,8 +2653,9 @@ function renderOtPlanList(plans, allLines, date) {
             </td>
             <td style="${dimStyle}">${product}</td>
             <td>
-                <input type="number" class="form-control" id="ot-list-target-${line.id}"
-                    value="${otTarget}" min="0" style="width:90px;" ${!otEnabled ? 'disabled' : ''}>
+                <span style="font-size:12px;color:${otEnabled ? '#7c3aed' : '#9ca3af'};font-weight:600;">
+                    ${otEnabled ? 'Derived from OT minutes' : 'Enable OT first'}
+                </span>
             </td>
             <td>
                 <button onclick="toggleOtEnabled(${line.id}, '${date}', ${otEnabled})"
@@ -2525,9 +2668,6 @@ function renderOtPlanList(plans, allLines, date) {
                     <button class="btn btn-primary btn-sm"
                         onclick="openOtPlanDetails(${line.id}, ${JSON.stringify(line.line_name)}, '${date}', ${JSON.stringify(line.line_code)})"
                         ${!plan ? 'disabled' : ''}>Details</button>
-                    <button class="btn btn-secondary btn-sm"
-                        onclick="saveOtLineSummary(${line.id}, '${date}', ${plan?.product_id || 'null'})"
-                        ${(!otEnabled || !plan) ? 'disabled' : ''}>Save</button>
                 </div>
             </td>
         </tr>`;
@@ -2545,8 +2685,8 @@ function renderOtPlanList(plans, allLines, date) {
                     <thead>
                         <tr>
                             <th>Line</th>
-                            <th>Product (Primary)</th>
-                            <th>Target</th>
+                            <th>Current Plan</th>
+                            <th>OT Target</th>
                             <th>Status</th>
                             <th>Action</th>
                         </tr>
@@ -2574,20 +2714,7 @@ async function toggleOtEnabled(lineId, workDate, currentEnabled) {
 }
 
 async function saveOtLineSummary(lineId, date, productId) {
-    if (!productId) { showToast('No product assigned to this line', 'error'); return; }
-    const target = parseInt(document.getElementById(`ot-list-target-${lineId}`)?.value || 0, 10);
-    try {
-        const r = await fetch(`${API_BASE}/lines/${lineId}/ot-plan`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date, product_id: productId, global_ot_minutes: 60, ot_target_units: target })
-        });
-        const result = await r.json();
-        if (!result.success) throw new Error(result.error || 'Failed');
-        showToast('OT target saved', 'success');
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
+    openOtPlanDetails(lineId, otPlanState.detailsLineName || '', date, otPlanState.detailsLineCode || '');
 }
 
 // ─── OT Plan Details View ─────────────────────────────────────────────────────
@@ -2641,10 +2768,12 @@ function renderOtPlanSection() {
     const lineCode = otPlanState.detailsLineCode || '';
 
     const globalMins = plan.global_ot_minutes || 0;
-    const globalTarget = plan.ot_target_units || 0;
+    const globalTarget = plan.computed_ot_target_units ?? plan.ot_target_units ?? 0;
     const supAuthorized = plan.supervisor_authorized === true;
     const allAssigned = workstations.every(ws => ws.assigned_emp_name);
     const effColor = e => e == null ? '#9ca3af' : e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
+    const mixedSourceState = new Set(workstations.map(ws => `${ws.source_mode}:${ws.source_product_id || ''}`)).size > 1;
+    const activeCount = workstations.filter(ws => ws.is_active !== false).length;
 
     const wsQrPath = wsCode => {
         if (!lineCode || !wsCode) return '';
@@ -2687,17 +2816,29 @@ function renderOtPlanSection() {
     const rowColors = ['#ffffff', '#f8fafc'];
     const rows = workstations.map((ws, wsIdx) => {
         const isActive = ws.is_active !== false;
-        const taktSecs = globalTarget > 0 ? (globalMins * 60 / globalTarget) : 0;
         const samSecs = parseFloat(ws.actual_sam_seconds || 0);
-        const eff = (taktSecs > 0 && samSecs > 0) ? (samSecs / taktSecs) * 100 : null;
         const wsMins = ws.ot_minutes || 0;
+        const hourlyTarget = parseFloat(ws.source_hourly_target || 0) || 0;
+        const wsTarget = parseInt(ws.ot_target_units || Math.round((hourlyTarget * wsMins) / 60) || 0, 10);
+        const taktSecs = wsTarget > 0 && wsMins > 0 ? ((wsMins * 60) / wsTarget) : 0;
+        const eff = (taktSecs > 0 && samSecs > 0) ? (samSecs / taktSecs) * 100 : null;
         const qty = ws.progress?.quantity ?? '';
         const qaRej = ws.progress?.qa_rejection ?? '';
         const remarks = ws.progress?.remarks || '';
+        const openingWip = parseInt(ws.opening_wip_quantity ?? ws.regular_shift_wip_quantity ?? 0, 10) || 0;
+        const balanceQty = parseInt(ws.balance_quantity ?? Math.max(0, wsTarget - (parseInt(qty || 0, 10) || 0)), 10) || 0;
+        const closingWip = parseInt(ws.closing_wip_quantity ?? Math.max(0, openingWip - (parseInt(qty || 0, 10) || 0)), 10) || 0;
+        const combinedOutput = (parseInt(ws.regular_shift_output_quantity || 0, 10) || 0) + (parseInt(qty || 0, 10) || 0);
         const wsQr = wsQrPath(ws.workstation_code);
         const currEmpLabel = empLabel(ws.assigned_employee_id).replace(/</g,'&lt;').replace(/>/g,'&gt;');
         const rowBg = rowColors[wsIdx % 2];
         const dimStyle = isActive ? '' : 'opacity:0.5;';
+        const sourceProduct = ws.processes?.[0]
+            ? `${ws.processes[0].product_code || ''} ${ws.processes[0].product_name || ''}`.trim()
+            : (ws.source_mode === 'changeover' ? 'Changeover' : 'Primary');
+        const employeeMode = ws.assigned_employee_id && ws.source_employee_id && String(ws.assigned_employee_id) !== String(ws.source_employee_id)
+            ? 'Changed employee'
+            : 'Same employee';
 
         return (ws.processes || []).map((p, idx) => {
             const isFirst = idx === 0;
@@ -2747,12 +2888,35 @@ function renderOtPlanSection() {
             const otMinCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
                 <input type="number" id="ot-mins-${ws.workstation_code}" min="0" value="${wsMins>0?wsMins:''}"
                     placeholder="${globalMins}" class="form-control" style="width:60px;display:inline-block;text-align:center;"></td>` : '';
+            const sourceCell = isFirst ? `<td style="vertical-align:middle;"${rs}>
+                <div style="font-size:12px;font-weight:700;color:${ws.source_mode === 'changeover' ? '#92400e' : '#1d4ed8'};">
+                    ${ws.source_mode === 'changeover' ? 'Changeover' : 'Primary'}
+                </div>
+                <div style="font-size:11px;color:#6b7280;">${sourceProduct || '—'}</div>
+                <div style="font-size:11px;color:#7c3aed;margin-top:4px;">${employeeMode}</div>
+            </td>` : '';
+            const targetCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
+                <div style="font-weight:700;color:#111827;">${hourlyTarget ? hourlyTarget.toFixed(2) : '0.00'}</div>
+                <div style="font-size:11px;color:#6b7280;">/ hr</div>
+                <div style="margin-top:6px;font-weight:700;color:#7c3aed;">${wsTarget}</div>
+                <div style="font-size:11px;color:#6b7280;">OT target</div>
+            </td>` : '';
             const outCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
                 <input type="number" id="ot-qty-${ws.workstation_code}" min="0" value="${qty}" placeholder="0"
                     class="form-control" style="width:70px;display:inline-block;text-align:center;" ${isActive?'':'disabled'}></td>` : '';
             const qaCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
                 <input type="number" id="ot-qar-${ws.workstation_code}" min="0" value="${qaRej}" placeholder="0"
                     class="form-control" style="width:60px;display:inline-block;text-align:center;" ${isActive?'':'disabled'}></td>` : '';
+            const wipCell = isFirst ? `<td style="vertical-align:middle;"${rs}>
+                <div style="font-size:11px;color:#6b7280;">Regular shift <span style="display:inline-flex;align-items:center;gap:4px;background:#eff6ff;color:#1d4ed8;padding:2px 6px;border-radius:999px;font-weight:700;">REG</span></div>
+                <div style="font-size:12px;font-weight:700;color:#1f2937;">Output ${parseInt(ws.regular_shift_output_quantity || 0, 10) || 0}</div>
+                <div style="font-size:12px;font-weight:700;color:#92400e;">WIP ${openingWip}</div>
+                <div style="margin-top:6px;font-size:11px;color:#6b7280;">OT flow <span style="display:inline-flex;align-items:center;gap:4px;background:#f5f3ff;color:#7c3aed;padding:2px 6px;border-radius:999px;font-weight:700;">OT</span></div>
+                <div style="font-size:12px;font-weight:700;color:#7c3aed;">Balance ${balanceQty}</div>
+                <div style="font-size:12px;font-weight:700;color:#15803d;">Closing WIP ${closingWip}</div>
+                <div style="margin-top:6px;font-size:11px;color:#6b7280;">Combined flow</div>
+                <div style="font-size:12px;font-weight:700;color:#111827;">Output ${combinedOutput}</div>
+            </td>` : '';
             const remCell = isFirst ? `<td style="vertical-align:middle;"${rs}>
                 <input type="text" id="ot-rem-${ws.workstation_code}" value="${remarks}" placeholder="Remarks"
                     class="form-control" style="min-width:90px;" ${isActive?'':'disabled'}></td>` : '';
@@ -2770,6 +2934,7 @@ function renderOtPlanSection() {
                 ${cycleCell}${effCell}
                 <td style="text-align:center;">${parseFloat(p.operation_sah||0).toFixed(4)}</td>
                 ${empCell}${statusCell}${otMinCell}${outCell}${qaCell}${remCell}${saveCell}
+                ${sourceCell}${targetCell}${wipCell}
             </tr>`;
         }).join('');
     }).join('');
@@ -2783,8 +2948,9 @@ function renderOtPlanSection() {
                     <div>
                         <h3 class="card-title" style="margin:0;">${lineName} — OT Workstations</h3>
                         <div style="font-size:0.82em;color:#6b7280;margin-top:2px;">
-                            ${plan.product_code} ${plan.product_name} &nbsp;·&nbsp; ${otPlanState.date}
+                            ${mixedSourceState ? 'Mixed shift-end state' : `${plan.product_code || ''} ${plan.product_name || ''}`.trim()} &nbsp;·&nbsp; ${otPlanState.date}
                             &nbsp;·&nbsp; ${allAssigned ? '<span style="color:#16a34a;">All assigned</span>' : '<span style="color:#dc2626;">Some unassigned</span>'}
+                            &nbsp;·&nbsp; <span style="color:#7c3aed;">${activeCount}/${workstations.length} active for OT</span>
                         </div>
                     </div>
                 </div>
@@ -2792,10 +2958,9 @@ function renderOtPlanSection() {
                     <span style="font-size:0.85em;color:#6b7280;">
                         OT Min: <input type="number" id="ot-global-mins" value="${globalMins}" min="0"
                             class="form-control" style="width:70px;display:inline-block;text-align:center;margin:0 4px;">
-                        &nbsp;Target: <input type="number" id="ot-global-target" value="${globalTarget}" min="0"
-                            class="form-control" style="width:80px;display:inline-block;text-align:center;margin:0 4px;">
+                        &nbsp;Derived OT Target: <strong style="color:#7c3aed;">${globalTarget}</strong>
                     </span>
-                    <button onclick="saveOtGlobalSettings()" class="btn btn-secondary btn-sm">Save OT Settings</button>
+                    <button onclick="saveOtGlobalSettings()" class="btn btn-secondary btn-sm">Save Default OT Min</button>
                     <button onclick="saveAllOtMinutes()" class="btn btn-secondary btn-sm">Save WS Minutes</button>
                 </div>
             </div>
@@ -2808,7 +2973,7 @@ function renderOtPlanSection() {
                     </div>
                 </div>` : ''}
                 <p style="font-size:0.82em;color:#6b7280;padding:8px 16px 4px;margin:0;">
-                    Processes with the same workstation share one employee assignment. Tab out to regroup.
+                    OT inherits the line's shift-end workstation state. Leaving the same employee selected means OT continues with the same person; changing the picker reassigns OT only.
                 </p>
                 <table style="width:100%;border-collapse:collapse;">
                     <thead>
@@ -2829,6 +2994,9 @@ function renderOtPlanSection() {
                             <th style="${thS}text-align:center;">QA REJ</th>
                             <th style="${thS}">REMARKS</th>
                             <th style="${thS}text-align:center;">SAVE</th>
+                            <th style="${thS}">SOURCE</th>
+                            <th style="${thS}text-align:center;">TARGET</th>
+                            <th style="${thS}">WIP FLOW</th>
                         </tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -2874,7 +3042,7 @@ async function otEmpPickerSelect(el) {
     if (display) display.textContent = label;
     picker.dataset.value = empId;
     picker.querySelector('.ot-emp-dropdown').style.display = 'none';
-    if (empId) await assignOtEmployee(wsCode, empId);
+    await assignOtEmployee(wsCode, empId || null);
 }
 
 async function toggleOtWsActive(wsCode, makeActive) {
@@ -2895,8 +3063,13 @@ async function toggleOtWsActive(wsCode, makeActive) {
             })
         });
         const result = await r.json();
-        if (!result.success) { showToast(result.error || 'Failed to update status', 'error'); ws.is_active = !makeActive; }
-        else showToast(`${wsCode} ${makeActive ? 'activated' : 'deactivated'}`, 'success');
+        if (!result.success) {
+            showToast(result.error || 'Failed to update status', 'error');
+            ws.is_active = !makeActive;
+        } else {
+            otPlanState.otPlan.computed_ot_target_units = result.computed_ot_target_units ?? otPlanState.otPlan.computed_ot_target_units;
+            showToast(`${wsCode} ${makeActive ? 'activated' : 'deactivated'}`, 'success');
+        }
     } catch (err) {
         showToast(err.message, 'error'); ws.is_active = !makeActive;
     }
@@ -2905,19 +3078,18 @@ async function toggleOtWsActive(wsCode, makeActive) {
 
 async function saveOtGlobalSettings() {
     const mins = parseInt(document.getElementById('ot-global-mins')?.value || 0, 10);
-    const target = parseInt(document.getElementById('ot-global-target')?.value || 0, 10);
     if (!otPlanState.lineId || !otPlanState.date) return;
     try {
         const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: otPlanState.date, product_id: otPlanState.otPlan.product_id, global_ot_minutes: mins, ot_target_units: target })
+            body: JSON.stringify({ date: otPlanState.date, global_ot_minutes: mins })
         });
         const result = await r.json();
         if (!result.success) throw new Error(result.error || 'Failed');
         otPlanState.otPlan.global_ot_minutes = mins;
-        otPlanState.otPlan.ot_target_units = target;
-        showToast('Global OT settings saved', 'success');
+        otPlanState.otPlan.computed_ot_target_units = result.computed_ot_target_units ?? otPlanState.otPlan.computed_ot_target_units;
+        showToast('Default OT minutes saved', 'success');
         renderOtPlanSection();
     } catch (err) {
         showToast(err.message, 'error');
@@ -2944,7 +3116,14 @@ async function saveAllOtMinutes() {
             const ws = otPlanState.workstations.find(w => w.workstation_code === p.workstation_code);
             if (ws) ws.ot_minutes = p.ot_minutes;
         });
+        otPlanState.otPlan.computed_ot_target_units = result.computed_ot_target_units ?? otPlanState.otPlan.computed_ot_target_units;
+        otPlanState.workstations.forEach(ws => {
+            const mins = parseInt(ws.ot_minutes || 0, 10) || 0;
+            const hourly = parseFloat(ws.source_hourly_target || 0) || 0;
+            ws.ot_target_units = Math.round((hourly * mins) / 60);
+        });
         showToast('OT minutes saved', 'success');
+        renderOtPlanSection();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -2966,8 +3145,15 @@ async function saveOtProgress(wsCode, otWorkstationId) {
         if (!result.success) throw new Error(result.error || 'Failed');
         // Update local progress state
         const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
-        if (ws) ws.progress = { quantity: qty, qa_rejection: qaRej, remarks };
+        if (ws) {
+            ws.progress = { quantity: qty, qa_rejection: qaRej, remarks };
+            ws.opening_wip_quantity = result.data?.opening_wip_quantity ?? ws.opening_wip_quantity;
+            ws.ot_target_units = result.data?.ot_target_units ?? ws.ot_target_units;
+            ws.balance_quantity = result.data?.balance_quantity ?? ws.balance_quantity;
+            ws.closing_wip_quantity = result.data?.closing_wip_quantity ?? ws.closing_wip_quantity;
+        }
         showToast(`OT output saved for ${wsCode}`, 'success');
+        renderOtPlanSection();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -3076,24 +3262,25 @@ function filterOtEmpSelect(searchInput, selectId) {
 
 // Assign OT employee via dropdown selection (replaces QR scan assignment)
 async function assignOtEmployee(wsCode, empId) {
-    if (!empId || !otPlanState.lineId || !otPlanState.date) return;
-    const emp = (otPlanState.employees || []).find(e => String(e.id) === String(empId));
-    if (!emp) return;
+    if (!otPlanState.lineId || !otPlanState.date) return;
+    const emp = empId ? (otPlanState.employees || []).find(e => String(e.id) === String(empId)) : null;
+    if (empId && !emp) return;
     try {
         const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan/employee`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: otPlanState.date, workstation_code: wsCode, employee_id: parseInt(empId, 10) })
+            body: JSON.stringify({ date: otPlanState.date, workstation_code: wsCode, employee_id: empId ? parseInt(empId, 10) : null })
         });
         const result = await r.json();
         if (!result.success) throw new Error(result.error || 'Assignment failed');
         const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
         if (ws) {
-            ws.assigned_employee_id = emp.id;
-            ws.assigned_emp_code = emp.emp_code;
-            ws.assigned_emp_name = emp.emp_name;
+            ws.assigned_employee_id = emp?.id || null;
+            ws.assigned_emp_code = emp?.emp_code || null;
+            ws.assigned_emp_name = emp?.emp_name || null;
         }
-        showToast(`${emp.emp_name} assigned to OT ${wsCode}`, 'success');
+        showToast(emp ? `${emp.emp_name} assigned to OT ${wsCode}` : `OT employee cleared for ${wsCode}`, 'success');
+        renderOtPlanSection();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -3101,26 +3288,19 @@ async function assignOtEmployee(wsCode, empId) {
 
 // Setup SSE listener to refresh OT plan when another session updates it
 function setupOtRealtimeListener() {
-    if (window._otSSESource) return; // already set up
-    const source = new EventSource('/events');
-    source.addEventListener('data_change', (event) => {
-        try {
-            const payload = JSON.parse(event.data || '{}');
-            if (payload.entity === 'ot_plan') {
-                if (otPlanState.detailsLineId && String(payload.line_id) === String(otPlanState.detailsLineId)) {
-                    openOtPlanDetails(otPlanState.detailsLineId, otPlanState.detailsLineName, otPlanState.date);
-                } else if (!otPlanState.detailsLineId && otPlanState.date) {
-                    loadOtPlanList(otPlanState.date);
-                }
-            }
-        } catch (e) { /* ignore */ }
-    });
-    source.onerror = () => {
-        source.close();
-        window._otSSESource = null;
-        setTimeout(setupOtRealtimeListener, 3000);
+    if (window._otSSEListenerRegistered) return;
+    window._otSSEListenerRegistered = true;
+    const handler = (payload) => {
+        if (!payload || payload.entity !== 'ot_plan') return;
+        if (otPlanState.detailsLineId && String(payload.line_id) === String(otPlanState.detailsLineId)) {
+            openOtPlanDetails(otPlanState.detailsLineId, otPlanState.detailsLineName, otPlanState.date);
+        } else if (!otPlanState.detailsLineId && otPlanState.date) {
+            loadOtPlanList(otPlanState.date);
+        }
     };
-    window._otSSESource = source;
+    if (typeof SSEManager !== 'undefined') {
+        SSEManager.on('data_change', handler);
+    }
 }
 
 // ==========================================
