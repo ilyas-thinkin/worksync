@@ -444,7 +444,10 @@ async function refreshEmployeeEfficiency() {
     tbody.innerHTML = employees.map(emp => `
         <tr>
             <td><strong>${emp.emp_code}</strong><div style="color: var(--secondary); font-size: 12px;">${emp.emp_name}</div></td>
-            <td>${emp.operation_code} - ${emp.operation_name}</td>
+            <td>
+                ${emp.operation_code} - ${emp.operation_name}
+                ${emp.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}
+            </td>
             <td>${emp.total_output}</td>
             <td>${emp.total_rejection || 0}</td>
             <td>${emp.efficiency_percent || 0}%</td>
@@ -993,6 +996,8 @@ function _buildMgmtEfficiencyTable(data, date) {
     const reportLabel = plan.report_hour_label || 'Full Day';
     const hourlyTarget = plan.hourly_target_units || 0;
     const liveHours = plan.live_hours || 0;
+    const coWsList = Array.isArray(plan.co_workstations) ? plan.co_workstations.filter(Boolean) : [];
+    const usesCombinedChangeoverEfficiency = !!summary.combined_changeover_efficiency;
 
     const liveEff = summary.live_efficiency_pct;
     const liveEffColor = liveEff === null ? '#6b7280' : liveEff >= 90 ? '#16a34a' : liveEff >= 80 ? '#d97706' : '#dc2626';
@@ -1000,20 +1005,26 @@ function _buildMgmtEfficiencyTable(data, date) {
     const hourlyEff = summary.hourly_efficiency_pct;
     const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 90 ? '#16a34a' : hourlyEff >= 80 ? '#d97706' : '#dc2626';
     const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
+    const hourlyLineFormula = usesCombinedChangeoverEfficiency
+        ? 'Combined primary + CO workstation earned hours'
+        : reportLabel;
+    const liveOutputLabel = usesCombinedChangeoverEfficiency ? 'Combined WS Output' : 'Live Output';
+    const hourlyOutputLabel = usesCombinedChangeoverEfficiency ? 'Combined WS Output' : 'Hourly Output';
 
     const summaryBar = `
         <div style="display:flex;flex-wrap:wrap;gap:12px;padding:12px 16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:12px;align-items:center;">
             <span style="font-size:12px;"><strong>Product:</strong> ${plan.product_name || '-'} (${plan.product_code || '-'})</span>
-            <span style="font-size:12px;"><strong>Hourly Efficiency:</strong> ${reportLabel}</span>
+            <span style="font-size:12px;"><strong>Hourly Efficiency:</strong> ${hourlyLineFormula}</span>
             <span style="font-size:12px;"><strong>Live Window:</strong> Start to ${reportLabel}</span>
             <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
             <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
             <span style="font-size:12px;"><strong>Hour Target:</strong> ${hourlyTarget}</span>
             <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
-            <span style="font-size:12px;"><strong>Live Output:</strong> ${summary.live_output}</span>
-            <span style="font-size:12px;"><strong>Hourly Output:</strong> ${summary.hourly_output}</span>
+            <span style="font-size:12px;"><strong>${liveOutputLabel}:</strong> ${summary.live_output}</span>
+            <span style="font-size:12px;"><strong>${hourlyOutputLabel}:</strong> ${summary.hourly_output}</span>
             <span style="font-size:12px;"><strong>Daily Target:</strong> ${plan.target_units}</span>
+            ${coWsList.length ? `<span style="font-size:12px;"><strong>CO Workstations:</strong> ${coWsList.join(', ')}</span>` : ''}
             <span style="margin-left:auto;"></span>
         </div>`;
 
@@ -1046,7 +1057,7 @@ function _buildMgmtEfficiencyTable(data, date) {
 
         return `<tr>
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
-            <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}${ws.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
             <td style="${tdS}">${ws.employee_code ? `${ws.employee_name} (${ws.employee_code})` : '<span style="color:#9ca3af;">Unassigned</span>'}</td>
             <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
             <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
@@ -1068,7 +1079,7 @@ function _buildMgmtEfficiencyTable(data, date) {
                 : '—';
             return `<tr>
                 <td style="${tdS}"><strong>${emp.emp_code}</strong><div style="color:var(--secondary);font-size:11px;">${emp.emp_name}</div></td>
-                <td style="${tcS}">${emp.workstation_code || '—'}</td>
+                <td style="${tcS}">${emp.workstation_code || '—'}${emp.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
                 <td style="${tcS}">${emp.hourly_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_avg || 0).toFixed(2)}%</td>
@@ -1197,6 +1208,21 @@ let _mgmtGraphSelectedEmps = new Set();
 let _mgmtGraphEffBand = 'all';
 let _mgmtGraphSearch = '';
 
+async function loadMgmtWorkerEfficiencyLineOptions(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    try {
+        const r = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await r.json();
+        if (!result.success) return;
+        select.innerHTML = '<option value="">All Lines</option>' +
+            result.data
+                .filter(line => line.is_active)
+                .map(line => `<option value="${line.id}">${line.line_name} (${line.line_code})</option>`)
+                .join('');
+    } catch (_) { /* ignore */ }
+}
+
 async function loadMgmtWorkerIndividualEff() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
@@ -1219,6 +1245,16 @@ async function loadMgmtWorkerIndividualEff() {
                 <div class="ie-date">
                     <label for="mgmt-wie-to">To</label>
                     <input type="date" id="mgmt-wie-to" value="${today}">
+                </div>
+                <div class="ie-date">
+                    <label for="mgmt-wie-line">Line</label>
+                    <select id="mgmt-wie-line" class="form-control" style="min-width:180px;">
+                        <option value="">All Lines</option>
+                    </select>
+                </div>
+                <div class="ie-date">
+                    <label for="mgmt-wie-date">Exact Date</label>
+                    <input type="date" id="mgmt-wie-date" class="form-control">
                 </div>
                 <button class="btn btn-primary" onclick="refreshMgmtWorkerIndividualEff()">Load</button>
                 <button class="btn btn-secondary" onclick="printMgmtWorkerIndividualEff()">&#9113; Print</button>
@@ -1257,6 +1293,7 @@ async function loadMgmtWorkerIndividualEff() {
             <div style="text-align:center;padding:60px;color:#9ca3af;">Select a date range and click <strong>Load</strong>.</div>
         </div>
     `;
+    await loadMgmtWorkerEfficiencyLineOptions('mgmt-wie-line');
 }
 
 function setMgmtWieMetric(metric) {
@@ -1657,6 +1694,16 @@ async function loadMgmtWorkerEfficiencyGraphs() {
                     <label for="mgmt-graph-to">To</label>
                     <input type="date" id="mgmt-graph-to" value="${today}">
                 </div>
+                <div class="ie-date">
+                    <label for="mgmt-graph-line">Line</label>
+                    <select id="mgmt-graph-line" class="form-control" style="min-width:180px;">
+                        <option value="">All Lines</option>
+                    </select>
+                </div>
+                <div class="ie-date">
+                    <label for="mgmt-graph-date">Exact Date</label>
+                    <input type="date" id="mgmt-graph-date" class="form-control">
+                </div>
                 <button class="btn btn-primary" onclick="refreshMgmtWorkerEfficiencyGraphs()">Load</button>
             </div>
         </div>
@@ -1685,6 +1732,7 @@ async function loadMgmtWorkerEfficiencyGraphs() {
             <div style="text-align:center;padding:60px;color:#9ca3af;">Select a date range and click <strong>Load</strong>.</div>
         </div>
     `;
+    await loadMgmtWorkerEfficiencyLineOptions('mgmt-graph-line');
 }
 
 function toggleMgmtGraphEmpDropdown() {
@@ -1764,11 +1812,16 @@ function populateMgmtGraphEmpList(rows) {
 async function refreshMgmtWorkerEfficiencyGraphs() {
     const from = document.getElementById('mgmt-graph-from')?.value;
     const to = document.getElementById('mgmt-graph-to')?.value;
+    const lineId = document.getElementById('mgmt-graph-line')?.value || '';
+    const exactDate = document.getElementById('mgmt-graph-date')?.value || '';
     const container = document.getElementById('mgmt-graph-content');
     if (!container) return;
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
     try {
-        const r = await fetch(`${API_BASE}/worker-individual-efficiency?from_date=${from}&to_date=${to}`, { credentials: 'include' });
+        const params = new URLSearchParams({ from_date: from, to_date: to });
+        if (lineId) params.set('line_id', lineId);
+        if (exactDate) params.set('date', exactDate);
+        const r = await fetch(`${API_BASE}/worker-individual-efficiency?${params.toString()}`, { credentials: 'include' });
         const resp = await r.json();
         if (!resp.success) {
             container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${resp.error || 'Failed to load'}</div></div>`;
@@ -1805,11 +1858,16 @@ function renderMgmtWorkerEfficiencyGraphs() {
 async function refreshMgmtWorkerIndividualEff() {
     const from = document.getElementById('mgmt-wie-from')?.value;
     const to = document.getElementById('mgmt-wie-to')?.value;
+    const lineId = document.getElementById('mgmt-wie-line')?.value || '';
+    const exactDate = document.getElementById('mgmt-wie-date')?.value || '';
     const container = document.getElementById('mgmt-wie-content');
     if (!container) return;
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
     try {
-        const r = await fetch(`${API_BASE}/worker-individual-efficiency?from_date=${from}&to_date=${to}`, { credentials: 'include' });
+        const params = new URLSearchParams({ from_date: from, to_date: to });
+        if (lineId) params.set('line_id', lineId);
+        if (exactDate) params.set('date', exactDate);
+        const r = await fetch(`${API_BASE}/worker-individual-efficiency?${params.toString()}`, { credentials: 'include' });
         const resp = await r.json();
         if (!resp.success) {
             container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${resp.error || 'Failed to load'}</div></div>`;

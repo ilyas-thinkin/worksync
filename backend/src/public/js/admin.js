@@ -1183,7 +1183,10 @@ async function adminRefreshEmployeeEfficiency() {
     tbody.innerHTML = employees.map(emp => `
         <tr>
             <td><strong>${emp.emp_code}</strong><div style="color: var(--secondary); font-size: 12px;">${emp.emp_name}</div></td>
-            <td>${emp.operation_code} - ${emp.operation_name}</td>
+            <td>
+                ${emp.operation_code} - ${emp.operation_name}
+                ${emp.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}
+            </td>
             <td>${emp.total_output}</td>
             <td>${emp.total_rejection || 0}</td>
             <td>${emp.efficiency_percent || 0}%</td>
@@ -9383,6 +9386,8 @@ function _buildEfficiencyTable(data, selectedHour) {
     const hourlyTarget = plan.hourly_target_units || 0;
     const liveHours = plan.live_hours || 0;
     const reportHourLabel = reportLabel;
+    const coWsList = Array.isArray(plan.co_workstations) ? plan.co_workstations.filter(Boolean) : [];
+    const usesCombinedChangeoverEfficiency = !!summary.combined_changeover_efficiency;
 
     // Live window: from working day start to end of selected hour
     const reportHourNum = parseInt(selectedHour, 10);
@@ -9398,6 +9403,12 @@ function _buildEfficiencyTable(data, selectedHour) {
     const hourlyEff = summary.hourly_efficiency_pct;
     const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 90 ? '#16a34a' : hourlyEff >= 80 ? '#d97706' : '#dc2626';
     const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
+    const hourlyLineFormula = usesCombinedChangeoverEfficiency
+        ? '<strong>Hourly Line Eff%</strong> = SUM(WS Hourly Output x WS SAM) / 3600 / Manpower x 100'
+        : '<strong>Hourly Line Eff%</strong> = (Last WS Hourly Output × Style SAH) ÷ Manpower × 100';
+    const liveLineFormula = usesCombinedChangeoverEfficiency
+        ? '<strong>Live Line Eff%</strong> = SUM(WS Live Output x WS SAM) / 3600 / (Manpower x Live Hours) x 100'
+        : '<strong>Live Line Eff%</strong> = (Last WS Live Output × Style SAH) ÷ (Manpower × Live Hours) × 100';
 
     // Formula explanations
     const formulaBox = `
@@ -9406,8 +9417,8 @@ function _buildEfficiencyTable(data, selectedHour) {
             <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:6px;">
                 <span><strong>Hourly WS Eff%</strong> = (Hourly Output × WS SAM) ÷ 3600 × 100</span>
                 <span><strong>Live WS Eff%</strong> = (Live Output × WS SAM) ÷ (Live Hours × 3600) × 100</span>
-                <span><strong>Hourly Line Eff%</strong> = (Last WS Hourly Output × Style SAH) ÷ Manpower × 100</span>
-                <span><strong>Live Line Eff%</strong> = (Last WS Live Output × Style SAH) ÷ (Manpower × Live Hours) × 100</span>
+                <span>${hourlyLineFormula}</span>
+                <span>${liveLineFormula}</span>
                 <span style="color:#6b7280;font-style:italic;">SAM = Cycle Time in seconds &nbsp;|&nbsp; Style SAH = Total SAH for all processes</span>
             </div>
         </div>`;
@@ -9423,6 +9434,7 @@ function _buildEfficiencyTable(data, selectedHour) {
             <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
             <span style="font-size:12px;"><strong>Daily Target:</strong> ${plan.target_units}</span>
+            ${coWsList.length ? `<span style="font-size:12px;"><strong>CO Workstations:</strong> ${coWsList.join(', ')}</span>` : ''}
             <span style="margin-left:auto;"></span>
         </div>`;
 
@@ -9455,7 +9467,7 @@ function _buildEfficiencyTable(data, selectedHour) {
 
         return `<tr>
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
-            <td style="${tcS}font-weight:600;">${ws.workstation_code}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}${ws.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
             <td style="${tdS}">${ws.employee_code ? `${ws.employee_name} (${ws.employee_code})` : '<span style="color:#9ca3af;">Unassigned</span>'}</td>
             <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
             <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
@@ -9482,7 +9494,7 @@ function _buildEfficiencyTable(data, selectedHour) {
                     : '—');
             return `<tr>
                 <td style="${tdS}"><strong>${emp.emp_code}</strong><div style="color:var(--secondary);font-size:11px;">${emp.emp_name}</div></td>
-                <td style="${tcS}">${emp.workstation_code || '—'}</td>
+                <td style="${tcS}">${emp.workstation_code || '—'}${emp.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
                 <td style="${tcS}font-weight:700;">${emp.hourly_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_avg || 0).toFixed(2)}%</td>
@@ -9607,6 +9619,21 @@ function downloadEfficiencyExcel() {
 let _wieData = null;
 let _wieMetric = 'all'; // 'all' | 'efficiency' | 'target' | 'output'
 
+async function loadWieLineOptions() {
+    const select = document.getElementById('wie-line');
+    if (!select) return;
+    try {
+        const r = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await r.json();
+        if (!result.success) return;
+        select.innerHTML = '<option value="">All Lines</option>' +
+            result.data
+                .filter(line => line.is_active)
+                .map(line => `<option value="${line.id}">${line.line_name} (${line.line_code})</option>`)
+                .join('');
+    } catch (_) { /* ignore */ }
+}
+
 async function loadWorkerIndividualEff() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
@@ -9627,6 +9654,16 @@ async function loadWorkerIndividualEff() {
                 <div class="ie-date">
                     <label for="wie-to">To</label>
                     <input type="date" id="wie-to" value="${today}">
+                </div>
+                <div class="ie-date">
+                    <label for="wie-line">Line</label>
+                    <select id="wie-line" class="form-control" style="min-width:180px;">
+                        <option value="">All Lines</option>
+                    </select>
+                </div>
+                <div class="ie-date">
+                    <label for="wie-date">Exact Date</label>
+                    <input type="date" id="wie-date" class="form-control">
                 </div>
                 <button class="btn btn-primary" onclick="refreshWorkerIndividualEff()">Load</button>
                 <button class="btn btn-secondary" onclick="printWorkerIndividualEff()">&#9113; Print</button>
@@ -9668,6 +9705,7 @@ async function loadWorkerIndividualEff() {
     `;
     document.getElementById('wie-from').addEventListener('change', () => {});
     document.getElementById('wie-to').addEventListener('change', () => {});
+    await loadWieLineOptions();
 }
 
 // ============================================================================
@@ -9926,11 +9964,16 @@ function _wieRenderFiltered() {
 async function refreshWorkerIndividualEff() {
     const from = document.getElementById('wie-from')?.value;
     const to   = document.getElementById('wie-to')?.value;
+    const lineId = document.getElementById('wie-line')?.value || '';
+    const exactDate = document.getElementById('wie-date')?.value || '';
     const container = document.getElementById('wie-content');
     if (!container) return;
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
     try {
-        const r = await fetch(`${API_BASE}/worker-individual-efficiency?from_date=${from}&to_date=${to}`, { credentials: 'include' });
+        const params = new URLSearchParams({ from_date: from, to_date: to });
+        if (lineId) params.set('line_id', lineId);
+        if (exactDate) params.set('date', exactDate);
+        const r = await fetch(`${API_BASE}/worker-individual-efficiency?${params.toString()}`, { credentials: 'include' });
         const resp = await r.json();
         if (!resp.success) {
             container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${resp.error || 'Failed to load'}</div></div>`;

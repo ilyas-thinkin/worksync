@@ -421,6 +421,73 @@ async function getShiftWindowDetails() {
     };
 }
 
+async function getEffectiveRegularSourceWorkstations(db, lineId, workDate) {
+    await ensureDailyPlanCarryForwardForLine(lineId, workDate, db);
+
+    const planResult = await db.query(
+        `SELECT product_id, target_units, incoming_product_id, incoming_target_units
+         FROM line_daily_plans
+         WHERE line_id = $1 AND work_date = $2`,
+        [lineId, workDate]
+    );
+    const plan = planResult.rows[0];
+    if (!plan?.product_id) return null;
+
+    const primaryId = parseInt(plan.product_id, 10);
+    const incomingId = plan.incoming_product_id ? parseInt(plan.incoming_product_id, 10) : null;
+
+    const buildWsQuery = (productId) => db.query(
+        `SELECT lpw.id AS workstation_plan_id,
+                lpw.workstation_number,
+                lpw.workstation_code,
+                lpw.group_name,
+                lpw.actual_sam_seconds,
+                lpw.takt_time_seconds,
+                lpw.workload_pct,
+                lpw.product_id,
+                lpw.ws_changeover_active,
+                lpw.ws_changeover_started_at
+         FROM line_plan_workstations lpw
+         WHERE lpw.line_id = $1
+           AND lpw.work_date = $2
+           AND lpw.product_id = $3
+         ORDER BY lpw.workstation_number, lpw.id`,
+        [lineId, workDate, productId]
+    );
+
+    const primaryPlanResult = await buildWsQuery(primaryId);
+    const incomingPlanResult = incomingId ? await buildWsQuery(incomingId) : { rows: [] };
+
+    const incomingByCode = new Map();
+    for (const row of incomingPlanResult.rows) {
+        incomingByCode.set(String(row.workstation_code || ''), row);
+    }
+
+    return {
+        primary_product_id: primaryId,
+        incoming_product_id: incomingId,
+        workstations: primaryPlanResult.rows.map(row => {
+            const incomingRow = incomingByCode.get(String(row.workstation_code || '')) || null;
+            const isChangeover = !!(row.ws_changeover_active && incomingId && incomingRow);
+            const sourceRow = isChangeover ? incomingRow : row;
+            return {
+                primary_workstation_id: parseInt(row.workstation_plan_id, 10),
+                source_line_plan_workstation_id: parseInt(sourceRow.workstation_plan_id, 10),
+                workstation_number: row.workstation_number != null ? parseInt(row.workstation_number, 10) : null,
+                workstation_code: row.workstation_code,
+                group_name: sourceRow.group_name || row.group_name || null,
+                actual_sam_seconds: parseFloat(sourceRow.actual_sam_seconds || 0),
+                takt_time_seconds: parseFloat(sourceRow.takt_time_seconds || 0),
+                workload_pct: parseFloat(sourceRow.workload_pct || 0),
+                source_product_id: isChangeover ? incomingId : primaryId,
+                source_mode: isChangeover ? 'changeover' : 'primary',
+                is_changeover: isChangeover,
+                ws_changeover_started_at: row.ws_changeover_started_at || null
+            };
+        })
+    };
+}
+
 async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
     await ensureDailyPlanCarryForwardForLine(lineId, workDate, db);
 
@@ -827,6 +894,20 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
     const processJoin = useOt
         ? `LEFT JOIN line_ot_workstation_processes wproc ON wproc.ot_workstation_id = a.workstation_id`
         : `LEFT JOIN line_plan_workstation_processes wproc ON wproc.workstation_id = a.workstation_id`;
+    const workstationProductField = useOt ? 'ws.source_product_id' : 'ws.product_id';
+    const lateralProductField = useOt ? 'ws_match.source_product_id' : 'ws_match.product_id';
+    let incomingProductId = null;
+    if (!useOt) {
+        const planResult = await db.query(
+            `SELECT incoming_product_id
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2`,
+            [lineId, workDate]
+        );
+        incomingProductId = planResult.rows[0]?.incoming_product_id
+            ? parseInt(planResult.rows[0].incoming_product_id, 10)
+            : null;
+    }
     const historyHours = getHistoryHours(useOt);
     const defaultWindowEnd = historyHours[historyHours.length - 1] || 23;
     const params = [lineId, workDate];
@@ -861,13 +942,15 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     ws.id AS workstation_id,
                     ws.workstation_number,
                     COALESCE(ws.group_name, '') AS group_name,
-                    COALESCE(ws.actual_sam_seconds, 0) AS actual_sam_seconds
+                    COALESCE(ws.actual_sam_seconds, 0) AS actual_sam_seconds,
+                    ${workstationProductField} AS source_product_id
              FROM employee_workstation_assignment_history hist
              LEFT JOIN LATERAL (
                  SELECT ws_match.id,
                         ws_match.workstation_number,
                         ws_match.group_name,
-                        ws_match.actual_sam_seconds
+                        ws_match.actual_sam_seconds,
+                        ${lateralProductField} AS source_product_id
                  FROM ${workstationTable} ws_match
                  WHERE (
                          hist.line_plan_workstation_id IS NOT NULL
@@ -944,7 +1027,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     workstation_code,
                     workstation_number,
                     group_name,
-                    actual_sam_seconds
+                    actual_sam_seconds,
+                    source_product_id
              FROM assignments
              ORDER BY employee_id, effective_from_hour DESC, history_id DESC
          )
@@ -957,6 +1041,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                 ca.workstation_number,
                 ca.group_name,
                 ca.actual_sam_seconds,
+                ca.source_product_id,
                 COALESCE(et.total_output, 0) AS total_output,
                 COALESCE(et.total_rejection, 0) AS total_rejection,
                 COALESCE(et.total_sah_hours, 0) AS total_sah_hours,
@@ -975,6 +1060,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
         const efficiency = (sahHours > 0 && denom > 0)
             ? Math.round((sahHours / denom) * 10000) / 100
             : 0;
+        const sourceProductId = row.source_product_id != null ? parseInt(row.source_product_id, 10) : null;
+        const isChangeover = !useOt && !!incomingProductId && sourceProductId === incomingProductId;
         return {
             id: row.id,
             emp_code: row.emp_code,
@@ -987,6 +1074,9 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
             actual_sam_seconds: parseFloat(row.actual_sam_seconds || 0),
             operation_code: row.workstation_code,
             operation_name: row.group_name || 'Workstation',
+            source_product_id: sourceProductId,
+            source_mode: isChangeover ? 'changeover' : 'primary',
+            is_changeover: isChangeover,
             total_output: output,
             total_rejection: parseInt(row.total_rejection || 0, 10),
             efficiency_percent: efficiency,
@@ -11888,10 +11978,14 @@ router.get('/efficiency-report', async (req, res) => {
         const lineResult = await pool.query(`
             SELECT pl.id, pl.line_code, pl.line_name,
                    ldp.target_units, ldp.product_id, ldp.ot_enabled,
-                   p.product_code, p.product_name
+                   ldp.incoming_product_id,
+                   p.product_code, p.product_name,
+                   ip.product_code AS incoming_product_code,
+                   ip.product_name AS incoming_product_name
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
             LEFT JOIN products p ON p.id = ldp.product_id
+            LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
             WHERE pl.id = $1
         `, [line_id, date]);
 
@@ -11922,20 +12016,10 @@ router.get('/efficiency-report', async (req, res) => {
         const workingHours = (outH + outM / 60) - (inH + inM / 60) - lunchMinsEffRpt / 60;
         const workingSeconds = workingHours * 3600;
 
-        // 4. Regular workstations with employee assignments
-        const wsResult = await pool.query(`
-            SELECT lpw.id, lpw.workstation_number, lpw.workstation_code, lpw.group_name,
-                   lpw.actual_sam_seconds, lpw.takt_time_seconds, lpw.workload_pct,
-                   ewa.employee_id, e.emp_code, e.emp_name
-            FROM line_plan_workstations lpw
-            LEFT JOIN employee_workstation_assignments ewa
-                ON ewa.line_id = $1 AND ewa.work_date = $2
-                AND ewa.workstation_code = lpw.workstation_code AND ewa.is_overtime = false
-            LEFT JOIN employees e ON e.id = ewa.employee_id
-            WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
-            ORDER BY lpw.workstation_number
-        `, [line_id, date, productId]);
-        const workstations = wsResult.rows;
+        // 4. Effective regular workstations: only the workstations already switched to CO
+        // should use the incoming product plan. Everything else stays on the primary plan.
+        const effectiveWsState = await getEffectiveRegularSourceWorkstations(pool, line_id, date);
+        const workstations = effectiveWsState?.workstations || [];
 
         const reportHour = hourValue;
         const hourLabel = reportHour !== null ? formatHourRangeLabel(reportHour) : null;
@@ -11993,7 +12077,7 @@ router.get('/efficiency-report', async (req, res) => {
         const otMap = {};
         otWorkstations.forEach(w => { otMap[w.workstation_code] = w; });
 
-        const wsIds = workstations.map(w => w.id);
+        const wsIds = workstations.map(w => w.source_line_plan_workstation_id).filter(Number.isFinite);
         const hourlyOutputMap = Number.isFinite(reportHour)
             ? await getWorkstationOutputMap(pool, line_id, date, wsIds, { exactHour: reportHour })
             : {};
@@ -12040,8 +12124,8 @@ router.get('/efficiency-report', async (req, res) => {
             const wsOtHours = (otWs && otWs.is_active && otWs.employee_id)
                 ? (parseInt(otWs.ot_minutes) || parseInt(otWs.global_ot_minutes) || 0) / 60
                 : 0;
-            const hourlyOutput = hourlyOutputMap[ws.id] || 0;
-            const liveOutput = liveOutputMap[ws.id] || 0;
+            const hourlyOutput = hourlyOutputMap[ws.source_line_plan_workstation_id] || 0;
+            const liveOutput = liveOutputMap[ws.source_line_plan_workstation_id] || 0;
             const hourlyEfficiency = (cycleTimeHours > 0)
                 ? Math.round(hourlyOutput * cycleTimeHours * 10000) / 100
                 : null;
@@ -12053,6 +12137,9 @@ router.get('/efficiency-report', async (req, res) => {
                 workstation_number: parseInt(ws.workstation_number),
                 workstation_code: ws.workstation_code,
                 group_name: ws.group_name || '',
+                source_product_id: ws.source_product_id,
+                source_mode: ws.source_mode,
+                is_changeover: !!ws.is_changeover,
                 actual_sam_seconds: parseFloat(ws.actual_sam_seconds || 0),
                 takt_time_seconds: parseFloat(ws.takt_time_seconds || 0),
                 workload_pct: parseFloat(ws.workload_pct || 0),
@@ -12065,18 +12152,44 @@ router.get('/efficiency-report', async (req, res) => {
             };
         });
 
-        // 10. Line Efficiency (uses last WS output as finished-goods count)
-        const lastWs = workstations[workstations.length - 1];
-        const liveLineOutput = lastWs ? (liveOutputMap[lastWs.id] || 0) : 0;
-        const hourlyLineOutput = lastWs ? (hourlyOutputMap[lastWs.id] || 0) : 0;
-        const liveDenomLine = Number.isFinite(reportHour) ? manpower * liveHours : manpower * Math.min(8, workingHours);
-        const liveLineEfficiency = (liveDenomLine > 0 && styleSAH > 0)
-            ? Math.round(liveLineOutput * styleSAH / liveDenomLine * 10000) / 100
-            : null;
-        // Hourly line efficiency: OUTPUT × (Style SAH) × 100 (per 1 hour)
-        const hourlyLineEfficiency = (Number.isFinite(reportHour) && styleSAH > 0)
-            ? Math.round(hourlyLineOutput * styleSAH * 10000) / 100
-            : null;
+        // 10. Line Efficiency
+        // For mixed primary + CO days, combine earned hours from each effective workstation.
+        // For normal days, keep the existing finished-goods style-SAH calculation.
+        const hasActiveChangeoverWs = wsData.some(ws => ws.is_changeover);
+        const hourlyEarnedHours = wsData.reduce((sum, ws) => (
+            sum + ((parseFloat(ws.actual_sam_seconds || 0) / 3600) * (parseInt(ws.hourly_output || 0, 10) || 0))
+        ), 0);
+        const liveEarnedHours = wsData.reduce((sum, ws) => (
+            sum + ((parseFloat(ws.actual_sam_seconds || 0) / 3600) * (parseInt(ws.live_output || 0, 10) || 0))
+        ), 0);
+
+        let liveLineOutput = 0;
+        let hourlyLineOutput = 0;
+        let liveLineEfficiency = null;
+        let hourlyLineEfficiency = null;
+
+        if (hasActiveChangeoverWs) {
+            liveLineOutput = wsData.reduce((sum, ws) => sum + (parseInt(ws.live_output || 0, 10) || 0), 0);
+            hourlyLineOutput = wsData.reduce((sum, ws) => sum + (parseInt(ws.hourly_output || 0, 10) || 0), 0);
+            const liveAvailableHours = manpower * liveHoursDenom;
+            liveLineEfficiency = liveAvailableHours > 0
+                ? Math.round((liveEarnedHours / liveAvailableHours) * 10000) / 100
+                : null;
+            hourlyLineEfficiency = Number.isFinite(reportHour) && manpower > 0
+                ? Math.round((hourlyEarnedHours / manpower) * 10000) / 100
+                : null;
+        } else {
+            const lastWs = workstations[workstations.length - 1];
+            liveLineOutput = lastWs ? (liveOutputMap[lastWs.source_line_plan_workstation_id] || 0) : 0;
+            hourlyLineOutput = lastWs ? (hourlyOutputMap[lastWs.source_line_plan_workstation_id] || 0) : 0;
+            const liveDenomLine = Number.isFinite(reportHour) ? manpower * liveHours : manpower * Math.min(8, workingHours);
+            liveLineEfficiency = (liveDenomLine > 0 && styleSAH > 0)
+                ? Math.round(liveLineOutput * styleSAH / liveDenomLine * 10000) / 100
+                : null;
+            hourlyLineEfficiency = (Number.isFinite(reportHour) && styleSAH > 0)
+                ? Math.round(hourlyLineOutput * styleSAH * 10000) / 100
+                : null;
+        }
 
         // 11. Takt time
         const taktTimeSeconds = targetUnits > 0 ? Math.round(workingSeconds / targetUnits) : 0;
@@ -12097,6 +12210,9 @@ router.get('/efficiency-report', async (req, res) => {
                 workstation_code: emp.workstation_code,
                 workstation_number: emp.workstation_number,
                 group_name: emp.group_name,
+                source_product_id: emp.source_product_id,
+                source_mode: emp.source_mode,
+                is_changeover: !!emp.is_changeover,
                 live_output: emp.total_output || 0,
                 live_rejection: emp.total_rejection || 0,
                 live_efficiency_percent: emp.efficiency_percent || 0,
@@ -12127,14 +12243,16 @@ router.get('/efficiency-report', async (req, res) => {
                         : 0,
                     takt_time_seconds: taktTimeSeconds,
                     in_time: inTime,
-                    out_time: outTime
+                    out_time: outTime,
+                    co_workstations: wsData.filter(ws => ws.is_changeover).map(ws => ws.workstation_code)
                 },
                 summary: {
                     manpower,
                     live_output: liveLineOutput,
                     live_efficiency_pct: liveLineEfficiency,
                     hourly_output: hourlyLineOutput,
-                    hourly_efficiency_pct: hourlyLineEfficiency
+                    hourly_efficiency_pct: hourlyLineEfficiency,
+                    combined_changeover_efficiency: hasActiveChangeoverWs
                 },
                 workstations: wsData,
                 employee_progress: employeeProgress
@@ -12145,15 +12263,22 @@ router.get('/efficiency-report', async (req, res) => {
     }
 });
 
-// GET /api/worker-individual-efficiency?from_date=&to_date=
+// GET /api/worker-individual-efficiency?from_date=&to_date=&line_id=&date=
 // Returns per-workstation per-employee efficiency grid across a date range for ALL active lines,
 // handling mid-day departures (DEP), assign (PRE/POST), and combine (COMB) adjustments.
 router.get('/worker-individual-efficiency', async (req, res) => {
     const { from_date, to_date } = req.query;
+    const exactDate = typeof req.query.date === 'string' && req.query.date ? req.query.date : null;
+    const lineIdFilter = req.query.line_id ? parseInt(req.query.line_id, 10) : null;
     if (!from_date || !to_date) {
         return res.status(400).json({ success: false, error: 'from_date and to_date are required' });
     }
+    if (req.query.line_id && !Number.isFinite(lineIdFilter)) {
+        return res.status(400).json({ success: false, error: 'line_id must be a number' });
+    }
     try {
+        const effectiveFrom = exactDate || from_date;
+        const effectiveTo = exactDate || to_date;
         const buildDateTime = (date, rawTime, fallbackTime) => {
             const timeText = String(rawTime || fallbackTime || '').slice(0, 5) || fallbackTime;
             return new Date(`${date}T${timeText}:00`);
@@ -12169,14 +12294,16 @@ router.get('/worker-individual-efficiency', async (req, res) => {
              FROM line_plan_workstations lpw
              LEFT JOIN production_lines pl ON pl.id = lpw.line_id
              WHERE lpw.work_date BETWEEN $1 AND $2
+               AND ($3::int IS NULL OR lpw.line_id = $3)
              ORDER BY line_code, line_name, work_date, line_id`,
-            [from_date, to_date]
+            [effectiveFrom, effectiveTo, lineIdFilter]
         );
         const planDates = planDatesResult.rows;
-        const employeesResult = await pool.query(
-            `SELECT id, emp_code, emp_name FROM employees WHERE is_active = true ORDER BY emp_code, emp_name`
-        );
-        const activeEmployees = employeesResult.rows;
+        const activeEmployees = (!lineIdFilter && !exactDate)
+            ? (await pool.query(
+                `SELECT id, emp_code, emp_name FROM employees WHERE is_active = true ORDER BY emp_code, emp_name`
+            )).rows
+            : [];
 
         const inTime  = await getSettingValue('default_in_time',  '08:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
@@ -12186,8 +12313,8 @@ router.get('/worker-individual-efficiency', async (req, res) => {
 
         // Build date array (inclusive), use T12:00:00 to avoid UTC offset issues
         const dates = [];
-        let cur = new Date(from_date + 'T12:00:00');
-        const endDate = new Date(to_date + 'T12:00:00');
+        let cur = new Date(effectiveFrom + 'T12:00:00');
+        const endDate = new Date(effectiveTo + 'T12:00:00');
         while (cur <= endDate) {
             const y = cur.getFullYear();
             const m = String(cur.getMonth() + 1).padStart(2, '0');
