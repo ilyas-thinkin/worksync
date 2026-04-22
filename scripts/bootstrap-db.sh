@@ -13,14 +13,16 @@ SCHEMA_FILE="${BACKEND_DIR}/src/schema.base.sql"
 MIGRATION_INDEX_FILE="${BACKEND_DIR}/src/schema.base.migrations"
 RESTORE_FILE=""
 RUN_MIGRATIONS="yes"
+FORCE_RESET="no"
 
 usage() {
     cat <<EOF
-Usage: $0 [--restore FILE] [--skip-migrate]
+Usage: $0 [--restore FILE] [--skip-migrate] [--force-reset]
 
 Options:
   --restore FILE   Restore a database backup (.sql, .sql.gz, or .dump) instead of loading schema.base.sql.
   --skip-migrate   Skip \`npm run migrate\` after bootstrap.
+  --force-reset    Drop and recreate the public schema even if the database already has tables.
 EOF
 }
 
@@ -32,6 +34,10 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-migrate)
             RUN_MIGRATIONS="no"
+            shift
+            ;;
+        --force-reset)
+            FORCE_RESET="yes"
             shift
             ;;
         -h|--help)
@@ -110,6 +116,17 @@ reset_public_schema() {
         -c 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public AUTHORIZATION CURRENT_USER;'
 }
 
+database_has_user_tables() {
+    local table_count
+    table_count="$(
+        PGPASSWORD="$DB_PASSWORD" psql \
+            -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+            -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" \
+            2>/dev/null | xargs
+    )"
+    [ "${table_count:-0}" -gt 0 ]
+}
+
 seed_schema_migrations() {
     PGPASSWORD="$DB_PASSWORD" psql \
         -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
@@ -154,6 +171,9 @@ if [ -n "$RESTORE_FILE" ]; then
             ;;
     esac
     echo "Restore complete. Migrations were not auto-applied after restore."
+elif database_has_user_tables && [ "$FORCE_RESET" != "yes" ]; then
+    echo "Existing tables detected in ${DB_NAME}. Skipping schema reset to preserve current server data."
+    echo "If you want to rebuild the database from the repo snapshot, rerun with --force-reset."
 else
     echo "Loading base schema snapshot..."
     reset_public_schema

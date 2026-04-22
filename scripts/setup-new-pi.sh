@@ -11,6 +11,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="${ROOT_DIR}/backend"
 ENV_TEMPLATE="${BACKEND_DIR}/.env.example"
 ENV_FILE="${BACKEND_DIR}/.env"
+DEPLOY_ENV_FILE="${ROOT_DIR}/deploy/env/backend.env"
 RESTORE_FILE=""
 SKIP_PACKAGES="no"
 RUN_USER="${SUDO_USER:-$(whoami)}"
@@ -75,24 +76,29 @@ if [ "$SKIP_PACKAGES" != "yes" ]; then
 fi
 
 echo "Creating runtime directories..."
-mkdir -p "${ROOT_DIR}/logs" "${ROOT_DIR}/reports" "${ROOT_DIR}/qrcodes" "${ROOT_DIR}/backups"
+mkdir -p "${ROOT_DIR}/logs" "${ROOT_DIR}/reports" "${ROOT_DIR}/qrcodes" "${ROOT_DIR}/backups" "${ROOT_DIR}/backend/logs"
 
 if [ ! -f "$ENV_FILE" ]; then
-    if command -v openssl >/dev/null 2>&1; then
-        DB_PASSWORD="$(openssl rand -hex 16)"
-        APP_SECRET="$(openssl rand -hex 32)"
+    if [ -f "$DEPLOY_ENV_FILE" ]; then
+        cp "$DEPLOY_ENV_FILE" "$ENV_FILE"
+        echo "Created ${ENV_FILE} from tracked deploy env"
     else
-        DB_PASSWORD="$(node -e "console.log(require('crypto').randomBytes(16).toString('hex'))")"
-        APP_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
+        if command -v openssl >/dev/null 2>&1; then
+            DB_PASSWORD="$(openssl rand -hex 16)"
+            APP_SECRET="$(openssl rand -hex 32)"
+        else
+            DB_PASSWORD="$(node -e "console.log(require('crypto').randomBytes(16).toString('hex'))")"
+            APP_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
+        fi
+
+        sed \
+            -e "s|__WORKSYNC_ROOT__|${ROOT_DIR}|g" \
+            -e "s|CHANGE_ME_DB_PASSWORD|${DB_PASSWORD}|g" \
+            -e "s|CHANGE_ME_LONG_RANDOM_SECRET|${APP_SECRET}|g" \
+            "$ENV_TEMPLATE" > "$ENV_FILE"
+
+        echo "Created ${ENV_FILE} from template"
     fi
-
-    sed \
-        -e "s|__WORKSYNC_ROOT__|${ROOT_DIR}|g" \
-        -e "s|CHANGE_ME_DB_PASSWORD|${DB_PASSWORD}|g" \
-        -e "s|CHANGE_ME_LONG_RANDOM_SECRET|${APP_SECRET}|g" \
-        "$ENV_TEMPLATE" > "$ENV_FILE"
-
-    echo "Created ${ENV_FILE}"
 else
     echo "Using existing ${ENV_FILE}"
 fi
@@ -108,6 +114,11 @@ fi
 
 echo "Registering PM2 service..."
 "${ROOT_DIR}/scripts/setup-pm2.sh"
+
+if [ -x "${ROOT_DIR}/deploy/apply-runtime-update.sh" ]; then
+    echo "Applying runtime update hooks..."
+    "${ROOT_DIR}/deploy/apply-runtime-update.sh"
+fi
 
 set -a
 # shellcheck disable=SC1090

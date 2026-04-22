@@ -10796,7 +10796,7 @@ async function loadSystemUpdateSection() {
 }
 
 async function startSystemUpdate() {
-    if (!confirm('This will back up the database, pull the latest code from Git, run pending migrations, and reload the app. Continue?')) {
+    if (!confirm('This will first create a rollback point, then back up the database, pull the latest code from Git, sync tracked env files, run configured server hooks, apply pending migrations, and reload the app. Continue?')) {
         return;
     }
 

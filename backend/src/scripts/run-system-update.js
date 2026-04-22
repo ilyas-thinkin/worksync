@@ -13,6 +13,11 @@ const {
   appendLog,
   clearLog
 } = require('../utils/system-update');
+const {
+  loadSystemUpdatePlan,
+  syncEnvironmentFiles,
+  runHookCommands
+} = require('../utils/system-update-plan');
 
 const jobId = process.argv[2] || process.env.WORKSYNC_UPDATE_JOB_ID;
 const BACKEND_DIR = path.join(ROOT_DIR, 'backend');
@@ -181,6 +186,13 @@ async function run() {
   });
 
   await ensureCleanWorktree();
+  const initialPlan = loadSystemUpdatePlan();
+
+  await runHookCommands('Running pre-pull hooks', initialPlan.update.prePull, {
+    runCommand,
+    updateStatus,
+    appendLog
+  });
 
   updateStatus({
     step: 'Fetching latest code',
@@ -218,11 +230,24 @@ async function run() {
   });
   await runCommand('git', ['merge', '--ff-only', `origin/${initialRepo.branch}`]);
 
+  const updatedPlan = loadSystemUpdatePlan();
+  await syncEnvironmentFiles(updatedPlan, { updateStatus, appendLog });
+  await runHookCommands('Running post-pull hooks', updatedPlan.update.postPull, {
+    runCommand,
+    updateStatus,
+    appendLog
+  });
+
   updateStatus({
     step: 'Installing backend dependencies',
     message: 'Running npm ci in backend.'
   });
   await runCommand('npm', ['ci', '--omit=dev'], { cwd: BACKEND_DIR });
+  await runHookCommands('Running post-dependency hooks', updatedPlan.update.postDependencies, {
+    runCommand,
+    updateStatus,
+    appendLog
+  });
 
   updateStatus({
     step: 'Running database migrations',
@@ -231,6 +256,11 @@ async function run() {
   await runCommand(process.execPath, [path.join(BACKEND_DIR, 'src', 'scripts', 'run-migrations.js')], {
     cwd: BACKEND_DIR
   });
+  await runHookCommands('Running post-migration hooks', updatedPlan.update.postMigrations, {
+    runCommand,
+    updateStatus,
+    appendLog
+  });
 
   updateStatus({
     step: 'Reloading application',
@@ -238,6 +268,11 @@ async function run() {
   });
   await runCommand('pm2', ['reload', path.join(BACKEND_DIR, 'ecosystem.config.js'), '--only', 'worksync', '--update-env'], {
     cwd: BACKEND_DIR
+  });
+  await runHookCommands('Running post-reload hooks', updatedPlan.update.postReload, {
+    runCommand,
+    updateStatus,
+    appendLog
   });
 
   const finalRepo = await getRepoInfo();

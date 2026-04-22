@@ -14,6 +14,11 @@ const {
   appendLog,
   clearLog
 } = require('../utils/system-update');
+const {
+  loadSystemUpdatePlan,
+  syncEnvironmentFiles,
+  runHookCommands
+} = require('../utils/system-update-plan');
 
 const jobId = process.argv[2] || process.env.WORKSYNC_UPDATE_JOB_ID;
 const BACKEND_DIR = path.join(ROOT_DIR, 'backend');
@@ -303,13 +308,31 @@ async function run() {
   await runCommand('git', ['reset', '--hard', targetCommit]);
   await runCommand('git', ['clean', '-fd', '-e', 'backups/', '-e', 'logs/', '-e', 'reports/', '-e', 'qrcodes/', '-e', 'backend/logs/']);
 
+  const restoredPlan = loadSystemUpdatePlan();
+  await syncEnvironmentFiles(restoredPlan, { updateStatus, appendLog });
+  await runHookCommands('Running post-code-restore hooks', restoredPlan.rollback.postCodeRestore, {
+    runCommand,
+    updateStatus,
+    appendLog
+  });
+
   updateStatus({
     step: 'Installing backend dependencies',
     message: 'Running npm ci in backend for restored code.'
   });
   await runCommand('npm', ['ci', '--omit=dev'], { cwd: BACKEND_DIR });
+  await runHookCommands('Running rollback post-dependency hooks', restoredPlan.rollback.postDependencies, {
+    runCommand,
+    updateStatus,
+    appendLog
+  });
 
   await restoreDatabaseFromBackup(targetDbBackup);
+  await runHookCommands('Running rollback post-database hooks', restoredPlan.rollback.postDatabaseRestore, {
+    runCommand,
+    updateStatus,
+    appendLog
+  });
 
   updateStatus({
     step: 'Starting application',
@@ -317,6 +340,11 @@ async function run() {
   });
   await runCommand('pm2', ['start', path.join(BACKEND_DIR, 'ecosystem.config.js'), '--only', 'worksync', '--update-env'], {
     cwd: BACKEND_DIR
+  });
+  await runHookCommands('Running rollback post-start hooks', restoredPlan.rollback.postStart, {
+    runCommand,
+    updateStatus,
+    appendLog
   });
 
   const finalRepo = await getRepoInfo();
