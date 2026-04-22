@@ -2029,6 +2029,8 @@ function renderHourlySummary() {
             }
 
             const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
+            const coProcessList = (ws.co_processes || []).map(p => p.operation_name).join(', ');
+            const showCoProcessList = !!(coProcessList && hasChangeover && (hourlyState.changeoverUiEnabled || hourlyState.changeoverActive || isWsChangeover));
             const workloadColor = ws.workload_pct >= 90 ? '#16a34a' : ws.workload_pct >= 80 ? '#d97706' : '#dc2626';
             const needsReason = output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
 
@@ -2113,6 +2115,11 @@ function renderHourlySummary() {
                         </span>
                     </div>`
                 : '';
+            const changeoverProcessNote = showCoProcessList
+                ? `<div style="width:100%;margin-bottom:8px;padding:8px 10px;border-radius:10px;background:#f5f3ff;color:#5b21b6;font-size:12px;line-height:1.45;border:1px solid #ddd6fe;">
+                        <strong>CO Process:</strong> ${coProcessList}
+                    </div>`
+                : '';
 
             let cardClass = '';
             if (wsStatus === 'vacant' || needsReason || noEmployee) cardClass = 'ws-card--alert';
@@ -2149,6 +2156,7 @@ function renderHourlySummary() {
                         ${reasonLine}
                     </div>
                     <div class="ws-card-footer">
+                        ${changeoverProcessNote}
                         ${enterOutputBtn}
                         ${coBtn}
                     </div>

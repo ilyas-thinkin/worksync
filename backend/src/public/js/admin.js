@@ -4688,7 +4688,7 @@ function closeLineDetailsPage() {
 
 // ── Copy Plan Modal ─────────────────────────────────────────────────────────
 
-function ldOpenCopyPlanModal() {
+async function ldOpenCopyPlanModal() {
     const btn = document.getElementById('ld-copy-plan-btn');
     const lineId    = btn?.dataset.lineId    || (_ldData?.lineId    || '');
     const toDate    = btn?.dataset.toDate    || (_ldData?.date      || '');
@@ -4707,11 +4707,31 @@ function ldOpenCopyPlanModal() {
     _td.setDate(_td.getDate() - 1);
     const defaultSource = `${_td.getFullYear()}-${String(_td.getMonth()+1).padStart(2,'0')}-${String(_td.getDate()).padStart(2,'0')}`;
 
+    let lineOptions = `<option value="${lineId}" selected>Current line</option>`;
+    try {
+        const res = await fetch('/api/lines');
+        const data = await res.json();
+        const lines = data.data || data.lines || [];
+        if (lines.length) {
+            lineOptions = lines.map(line =>
+                `<option value="${line.id}" ${String(line.id) === String(lineId) ? 'selected' : ''}>${line.line_code} — ${line.line_name}</option>`
+            ).join('');
+        }
+    } catch (_) {
+        // Fallback keeps the current line available even if line list loading fails.
+    }
+
     modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:28px 28px 24px;width:min(640px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.18);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
                 <h3 style="margin:0;font-size:1.05rem;font-weight:700;color:#1e293b;">&#128203; Copy Plan from Date</h3>
                 <button onclick="ldCloseCopyPlanModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280;line-height:1;">&#10005;</button>
+            </div>
+            <div style="margin-bottom:14px;">
+                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Copy from line:</label>
+                <select id="ld-cpm-source-line" style="width:100%;font-size:13px;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;background:#fff;">
+                    ${lineOptions}
+                </select>
             </div>
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
                 <label style="font-size:13px;font-weight:600;color:#374151;white-space:nowrap;">Copy from date:</label>
@@ -4723,6 +4743,11 @@ function ldOpenCopyPlanModal() {
                 </button>
             </div>
             <div id="ld-cpm-preview" style="min-height:60px;"></div>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;color:#374151;font-weight:600;">
+                <input type="checkbox" id="ld-cpm-copy-employees" checked>
+                Copy and assign employees
+            </label>
+            <div style="font-size:12px;color:#6b7280;margin-top:4px;">Uncheck this to copy only the workstation layout and process mapping.</div>
             <div id="ld-cpm-actions" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px;"></div>
         </div>`;
     modal.style.display = 'flex';
@@ -4763,7 +4788,10 @@ async function ldDownloadPlanTemplate() {
 }
 
 async function ldPreviewCopyPlan(lineId, toDate, productId) {
+    const sourceLineId = document.getElementById('ld-cpm-source-line')?.value || lineId;
     const sourceDate = document.getElementById('ld-cpm-source-date')?.value;
+    const sourceLineLabel = document.getElementById('ld-cpm-source-line')?.selectedOptions?.[0]?.textContent || '';
+    if (!sourceLineId) { showToast('Select a source line', 'error'); return; }
     if (!sourceDate) { showToast('Select a source date', 'error'); return; }
 
     const previewEl  = document.getElementById('ld-cpm-preview');
@@ -4775,8 +4803,7 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
 
     try {
         const params = new URLSearchParams({ date: sourceDate });
-        if (productId) params.set('product_id', productId);
-        const res  = await fetch(`/api/lines/${lineId}/workstation-plan/preview?${params.toString()}`);
+        const res  = await fetch(`/api/lines/${sourceLineId}/workstation-plan/preview?${params.toString()}`);
         const data = await res.json();
 
         if (!data.success) throw new Error(data.error);
@@ -4792,6 +4819,7 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
         const groups   = [...new Set(data.workstations.map(w => w.group_name).filter(Boolean))];
         const totalProc = data.workstations.reduce((s, w) => s + w.process_count, 0);
         const osmChecked = data.workstations.reduce((s, w) => s + w.osm_checked_count, 0);
+        const previewProductLabel = [data.product_code, data.product_name].filter(Boolean).join(' ') || `Product #${data.product_id}`;
 
         // Build table rows (group by group_name for readability)
         let rows = '';
@@ -4811,11 +4839,17 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                 <td style="font-size:12px;font-weight:600;padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;">${w.workstation_code}</td>
                 ${groupCell}
                 <td style="font-size:12px;padding:5px 8px;border:1px solid #e5e7eb;">${empCell}</td>
+                <td style="font-size:12px;padding:5px 8px;border:1px solid #e5e7eb;color:#6b7280;line-height:1.45;">${w.process_names || '—'}</td>
                 <td style="font-size:12px;padding:5px 8px;border:1px solid #e5e7eb;text-align:center;">${osmCell}</td>
             </tr>`;
         }
 
         previewEl.innerHTML = `
+            <div style="margin-bottom:12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#f8fafc;display:flex;gap:16px;flex-wrap:wrap;">
+                <div style="font-size:12px;color:#475569;">
+                    <strong style="color:#0f172a;">Product:</strong> ${previewProductLabel}
+                </div>
+            </div>
             <div style="margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap;">
                 <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:8px 16px;text-align:center;">
                     <div style="font-size:20px;font-weight:700;color:#166534;">${totalWs}</div>
@@ -4845,6 +4879,7 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                             <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Workstation</th>
                             <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Group</th>
                             <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Employee</th>
+                            <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Process Names</th>
                             <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:center;font-size:11px;color:#374151;">Processes / OSM</th>
                         </tr>
                     </thead>
@@ -4860,10 +4895,10 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
             actionsEl.style.display = 'flex';
             actionsEl.innerHTML = `
                 <span style="font-size:12px;color:#6b7280;align-self:center;flex:1;">
-                    Copying from <strong>${sourceDate}</strong> → <strong>${toDate}</strong>. This will overwrite any existing plan for ${toDate}.
+                    Copying from <strong>${sourceLineLabel || sourceLineId}</strong> on <strong>${sourceDate}</strong> → target date <strong>${toDate}</strong>. This will overwrite any existing plan for ${toDate}.
                 </span>
                 <button onclick="ldCloseCopyPlanModal()" style="padding:7px 18px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
-                <button onclick="ldExecuteCopyPlan('${lineId}','${sourceDate}','${toDate}','${sourcePlanProductId}')"
+                <button onclick="ldExecuteCopyPlan('${lineId}','${sourceLineId}','${sourceDate}','${toDate}','${sourcePlanProductId}')"
                     style="padding:7px 20px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">
                     &#128203; Confirm Copy
                 </button>`;
@@ -4873,17 +4908,34 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
     }
 }
 
-async function ldExecuteCopyPlan(lineId, fromDate, toDate, productId) {
+async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId) {
     try {
-        const res = await fetch(`/api/lines/${lineId}/workstation-plan/copy-from-date`, {
+        const copyEmployees = document.getElementById('ld-cpm-copy-employees')?.checked !== false;
+        let res = await fetch(`/api/lines/${lineId}/workstation-plan/copy-from-date`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId })
+            body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId, copy_employees: copyEmployees })
         });
-        const result = await res.json();
+        let result = await res.json();
+        if (result.requires_confirmation && copyEmployees) {
+            const lines = (result.conflicts || []).map(conflict =>
+                `${conflict.emp_code || conflict.employee_id} - ${conflict.emp_name || ''} is currently in ${conflict.line_code || conflict.line_id}${conflict.line_name ? ` (${conflict.line_name})` : ''}, workstation ${conflict.workstation_code}`
+            );
+            const message = `${lines.join('\n')}\n\nDo you want to unassign them from there and reassign them to this line and workstation?`;
+            if (!confirm(message)) {
+                showToast('Please uncheck "Copy and assign employees" and continue if you do not want to reassign them.', 'error');
+                return;
+            }
+            res = await fetch(`/api/lines/${lineId}/workstation-plan/copy-from-date`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId, copy_employees: copyEmployees, force_reassign: true })
+            });
+            result = await res.json();
+        }
         if (!result.success) { showToast(result.error, 'error'); return; }
         ldCloseCopyPlanModal();
-        showToast(`Plan copied from ${fromDate}`, 'success');
+        showToast(copyEmployees ? `Plan and employees copied from ${fromDate}` : `Plan copied from ${fromDate}`, 'success');
         // Reload line details — use the target plan's product_id (from _ldData) for the reload query
         const reloadProductId = _ldData?.data?.product?.id || productId;
         const content = document.getElementById('ld-overlay-content');
@@ -8646,7 +8698,14 @@ function openCopyPlanModal(fromLineId, fromDate, fromProductId, fromProductLabel
                     <div style="margin-bottom:20px;">
                         <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;text-transform:uppercase;">Target Date</label>
                         <input type="date" id="cpm-target-date" value="${today}" class="form-control" style="width:100%;">
-                        <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Target line must have a daily plan set for this date with the same product. Can be any line including the source line.</div>
+                        <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Target line must have a daily plan set for this date. The source workstation layout will be mapped onto that target product.</div>
+                    </div>
+                    <div style="margin-bottom:20px;">
+                        <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#374151;">
+                            <input type="checkbox" id="cpm-copy-employees" checked>
+                            Copy and assign employees
+                        </label>
+                        <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Uncheck to copy only workstation layout and process mapping.</div>
                     </div>
                     <div id="cpm-error" style="display:none;background:#fee2e2;color:#b91c1c;padding:8px 12px;border-radius:6px;font-size:13px;margin-bottom:14px;"></div>
                     <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -8667,23 +8726,43 @@ function openCopyPlanModal(fromLineId, fromDate, fromProductId, fromProductLabel
 async function executeCopyPlan(fromLineId, fromDate, productId) {
     const toLineId = document.getElementById('cpm-target-line')?.value;
     const toDate = document.getElementById('cpm-target-date')?.value;
+    const copyEmployees = document.getElementById('cpm-copy-employees')?.checked !== false;
     const errEl = document.getElementById('cpm-error');
     if (!toLineId) { if (errEl) { errEl.textContent = 'Please select a target line.'; errEl.style.display = 'block'; } return; }
     if (!toDate) { if (errEl) { errEl.textContent = 'Please select a target date.'; errEl.style.display = 'block'; } return; }
     if (errEl) errEl.style.display = 'none';
     try {
-        const res = await fetch(`/api/lines/${toLineId}/workstation-plan/copy-from-date`, {
+        let res = await fetch(`/api/lines/${toLineId}/workstation-plan/copy-from-date`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId })
+            body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId, copy_employees: copyEmployees })
         });
-        const result = await res.json();
+        let result = await res.json();
+        if (result.requires_confirmation && copyEmployees) {
+            const lines = (result.conflicts || []).map(conflict =>
+                `${conflict.emp_code || conflict.employee_id} - ${conflict.emp_name || ''} is currently in ${conflict.line_code || conflict.line_id}${conflict.line_name ? ` (${conflict.line_name})` : ''}, workstation ${conflict.workstation_code}`
+            );
+            const message = `${lines.join('\n')}\n\nDo you want to unassign them from there and reassign them to this line and workstation?`;
+            if (!confirm(message)) {
+                if (errEl) {
+                    errEl.textContent = 'Please uncheck "Copy and assign employees" and continue if you do not want to reassign them.';
+                    errEl.style.display = 'block';
+                }
+                return;
+            }
+            res = await fetch(`/api/lines/${toLineId}/workstation-plan/copy-from-date`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId, copy_employees: copyEmployees, force_reassign: true })
+            });
+            result = await res.json();
+        }
         if (!result.success) {
             if (errEl) { errEl.textContent = result.error; errEl.style.display = 'block'; }
             return;
         }
         document.getElementById('copy-plan-modal')?.remove();
-        showToast(`Plan copied successfully to target line for ${toDate}`, 'success');
+        showToast(copyEmployees ? `Plan and employees copied successfully for ${toDate}` : `Plan copied successfully for ${toDate}`, 'success');
     } catch (err) {
         if (errEl) { errEl.textContent = err.message; errEl.style.display = 'block'; }
     }

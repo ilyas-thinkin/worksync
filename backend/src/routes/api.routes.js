@@ -332,6 +332,39 @@ async function clearEmployeeAssignmentConflicts(db, employeeId, workDate, isOver
     return result.rows;
 }
 
+async function findEmployeeAssignmentConflicts(db, employeeIds, workDate, isOvertime, keepLineId, keepWorkstationCodes = []) {
+    const normalizedEmployeeIds = (employeeIds || [])
+        .map(id => parseInt(id, 10))
+        .filter(id => Number.isFinite(id));
+    if (!normalizedEmployeeIds.length || !workDate) return [];
+
+    const params = [normalizedEmployeeIds, workDate, !!isOvertime];
+    let sql = `
+        SELECT ewa.employee_id,
+               e.emp_code,
+               e.emp_name,
+               ewa.line_id,
+               pl.line_code,
+               pl.line_name,
+               ewa.workstation_code
+        FROM employee_workstation_assignments ewa
+        LEFT JOIN employees e ON e.id = ewa.employee_id
+        LEFT JOIN production_lines pl ON pl.id = ewa.line_id
+        WHERE ewa.employee_id = ANY($1::int[])
+          AND ewa.work_date = $2
+          AND ewa.is_overtime = $3
+    `;
+
+    if (keepLineId && keepWorkstationCodes.length) {
+        params.push(keepLineId, keepWorkstationCodes);
+        sql += ` AND NOT (ewa.line_id = $4 AND ewa.workstation_code = ANY($5::text[]))`;
+    }
+
+    sql += ` ORDER BY e.emp_code, ewa.line_id, ewa.workstation_code`;
+    const result = await db.query(sql, params);
+    return result.rows;
+}
+
 async function findLatestDailyPlanForLine(db, lineId, beforeDate) {
     if (!lineId || !beforeDate) return null;
     const result = await db.query(
@@ -1623,45 +1656,88 @@ router.patch('/daily-plans/overtime', async (req, res) => {
 // :lineId = target line. from_line_id defaults to :lineId (same-line copy).
 router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) => {
     const toLineId = req.params.lineId;
-    const { from_date, to_date, product_id, from_line_id } = req.body;
+    const { from_date, to_date, product_id, from_line_id, copy_employees, force_reassign } = req.body;
     if (!from_date || !to_date || !product_id) {
         return res.status(400).json({ success: false, error: 'from_date, to_date, product_id required' });
     }
     const fromLineId = from_line_id || toLineId;
-    const isCrossLine = String(fromLineId) !== String(toLineId);
-    const isDifferentDate = from_date !== to_date;
+    const shouldCopyEmployees = !(copy_employees === false || copy_employees === 'false');
+    const client = await pool.connect();
     try {
-        // Validate target daily plan whenever the destination differs (different line OR different date)
-        if (isCrossLine || isDifferentDate) {
-            const targetPlan = await pool.query(
-                `SELECT ldp.product_id, p.product_code, p.product_name
-                 FROM line_daily_plans ldp
-                 JOIN products p ON p.id = ldp.product_id
-                 WHERE ldp.line_id=$1 AND ldp.work_date=$2`,
-                [toLineId, to_date]
+        await client.query('BEGIN');
+        const targetPlan = await client.query(
+            `SELECT ldp.product_id, p.product_code, p.product_name
+             FROM line_daily_plans ldp
+             JOIN products p ON p.id = ldp.product_id
+             WHERE ldp.line_id=$1 AND ldp.work_date=$2`,
+            [toLineId, to_date]
+        );
+        if (!targetPlan.rows[0]) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: `Target line has no daily plan set for ${to_date}. Set a product and target first.` });
+        }
+
+        if (shouldCopyEmployees && !(force_reassign === true || force_reassign === 'true')) {
+            const sourceEmpResult = await client.query(
+                `SELECT workstation_code, employee_id
+                 FROM employee_workstation_assignments
+                 WHERE line_id = $1
+                   AND work_date = $2
+                   AND is_overtime = false
+                   AND employee_id IS NOT NULL`,
+                [fromLineId, from_date]
             );
-            if (!targetPlan.rows[0]) {
-                return res.status(400).json({ success: false, error: `Target line has no daily plan set for ${to_date}. Set a product and target first.` });
-            }
-            if (String(targetPlan.rows[0].product_id) !== String(product_id)) {
-                // Get source product name for a helpful message
-                const srcProd = await pool.query(`SELECT product_code, product_name FROM products WHERE id=$1`, [product_id]);
-                const srcName = srcProd.rows[0] ? `${srcProd.rows[0].product_code} ${srcProd.rows[0].product_name}` : `Product #${product_id}`;
-                const tgtName = `${targetPlan.rows[0].product_code} ${targetPlan.rows[0].product_name}`;
-                return res.status(400).json({
+            const keepCodes = sourceEmpResult.rows.map(row => row.workstation_code).filter(Boolean);
+            const conflicts = await findEmployeeAssignmentConflicts(
+                client,
+                sourceEmpResult.rows.map(row => row.employee_id),
+                to_date,
+                false,
+                toLineId,
+                keepCodes
+            );
+
+            if (conflicts.length) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({
                     success: false,
-                    error: `Cannot copy: source plan runs ${srcName} but the target daily plan for ${to_date} is set to ${tgtName}. Source and target must run the same product.`
+                    requires_confirmation: true,
+                    error: 'Some employees are already assigned on the target date.',
+                    conflicts: conflicts.map(row => ({
+                        employee_id: row.employee_id,
+                        emp_code: row.emp_code,
+                        emp_name: row.emp_name,
+                        line_id: row.line_id,
+                        line_code: row.line_code,
+                        line_name: row.line_name,
+                        workstation_code: row.workstation_code
+                    }))
                 });
             }
         }
-        const copied = await copyWorkstationPlanFromDate(fromLineId, from_date, toLineId, to_date, product_id, null);
+
+        const copied = await copyWorkstationPlanFromDate(fromLineId, from_date, toLineId, to_date, product_id, client, {
+            targetProductId: targetPlan.rows[0].product_id,
+            copyEmployees: shouldCopyEmployees
+        });
         if (!copied) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ success: false, error: `No workstation plan found for ${from_date}` });
         }
+        await client.query('COMMIT');
         realtime.broadcast('data_change', { entity: 'workstations', action: 'copied', line_id: toLineId, work_date: to_date });
-        res.json({ success: true, copied_from: from_date, from_line_id: fromLineId });
+        res.json({
+            success: true,
+            copied_from: from_date,
+            from_line_id: fromLineId,
+            target_product_id: targetPlan.rows[0].product_id,
+            copied_employees: shouldCopyEmployees
+        });
     } catch (err) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
         res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -1720,29 +1796,51 @@ router.get('/lines/:lineId/workstation-plan/preview', async (req, res) => {
             );
         }
 
-        const wsIds = wsRes.rows.map(r => r.id);
+        const filteredWsRows = wsRes.rows.filter(r => String(r.product_id) === String(sourcePlanProductId));
+        const wsIds = filteredWsRows.map(r => r.id);
+        const productRes = await pool.query(
+            `SELECT product_code, product_name
+             FROM products
+             WHERE id = $1`,
+            [sourcePlanProductId]
+        );
         const procRes = await pool.query(
             `SELECT lwp.workstation_id,
                     COUNT(*) AS process_count,
-                    COUNT(*) FILTER (WHERE lwp.osm_checked = true) AS osm_checked_count
+                    COUNT(*) FILTER (WHERE lwp.osm_checked = true) AS osm_checked_count,
+                    STRING_AGG(o.operation_name, ', ' ORDER BY lwp.sequence_in_workstation) AS process_names
              FROM line_plan_workstation_processes lwp
+             JOIN product_processes pp ON pp.id = lwp.product_process_id
+             JOIN operations o ON o.id = pp.operation_id
              WHERE lwp.workstation_id = ANY($1::int[])
              GROUP BY lwp.workstation_id`,
             [wsIds]
         );
         const procMap = {};
         for (const r of procRes.rows) {
-            procMap[r.workstation_id] = { process_count: parseInt(r.process_count,10), osm_checked_count: parseInt(r.osm_checked_count,10) };
+            procMap[r.workstation_id] = {
+                process_count: parseInt(r.process_count,10),
+                osm_checked_count: parseInt(r.osm_checked_count,10),
+                process_names: r.process_names || ''
+            };
         }
-        const workstations = wsRes.rows.map(w => ({
+        const workstations = filteredWsRows.map(w => ({
             workstation_code:   w.workstation_code,
             workstation_number: w.workstation_number,
             group_name:         w.group_name || '',
             employee:           w.emp_code ? `${w.emp_code} – ${w.emp_name}` : null,
             process_count:      procMap[w.id]?.process_count || 0,
             osm_checked_count:  procMap[w.id]?.osm_checked_count || 0,
+            process_names:      procMap[w.id]?.process_names || '',
         }));
-        res.json({ success: true, workstations, date, product_id: sourcePlanProductId });
+        res.json({
+            success: true,
+            workstations,
+            date,
+            product_id: sourcePlanProductId,
+            product_code: productRes.rows[0]?.product_code || '',
+            product_name: productRes.rows[0]?.product_name || ''
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -5270,18 +5368,80 @@ router.delete('/workstation-assignments/:id', async (req, res) => {
 // LINE WORKSTATION PLAN (Line Balancing — per line, per date)
 // ============================================================================
 
-// Helper: copy workstation plan (and employees) from one date to another for the same line+product
+async function syncProductProcessListFromSource(sourceProductId, targetProductId, db) {
+    if (!sourceProductId || !targetProductId || String(sourceProductId) === String(targetProductId)) {
+        return { copied: false, count: 0 };
+    }
+
+    const sourceProcs = await db.query(
+        `SELECT operation_id, sequence_number, operation_sah, cycle_time_seconds,
+                COALESCE(manpower_required, 1) AS manpower_required,
+                COALESCE(osm_checked, false) AS osm_checked
+         FROM product_processes
+         WHERE product_id = $1 AND is_active = true
+         ORDER BY sequence_number`,
+        [sourceProductId]
+    );
+
+    if (!sourceProcs.rows.length) {
+        throw new Error('Source product has no active process list to copy.');
+    }
+
+    await db.query(
+        `UPDATE product_processes
+         SET is_active = false, updated_at = NOW()
+         WHERE product_id = $1 AND is_active = true`,
+        [targetProductId]
+    );
+
+    const insertedIds = [];
+    for (const proc of sourceProcs.rows) {
+        const insertRes = await db.query(
+            `INSERT INTO product_processes
+               (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
+             VALUES ($1, $2, $3, $4, $5, $6, false, $7)
+             RETURNING id`,
+            [
+                targetProductId,
+                proc.operation_id,
+                proc.sequence_number,
+                proc.operation_sah,
+                proc.cycle_time_seconds,
+                proc.manpower_required,
+                proc.osm_checked
+            ]
+        );
+        insertedIds.push(insertRes.rows[0].id);
+    }
+
+    if (insertedIds.length) {
+        await db.query(
+            `UPDATE product_processes
+             SET is_active = true
+             WHERE id = ANY($1::int[])`,
+            [insertedIds]
+        );
+    }
+
+    return { copied: true, count: insertedIds.length };
+}
+
+// Helper: copy a workstation plan from one date to another, optionally carrying employees too.
 // Returns the from_date used, or null if no source plan was found.
 // Pass client for transactional use; if client is null, uses pool (auto-commit).
 // fromLineId/toLineId can differ for cross-line copies
-async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDate, productId, client) {
+async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDate, sourceProductId, client, options = {}) {
+    const {
+        targetProductId = sourceProductId,
+        copyEmployees = true
+    } = options;
     const db = client || pool;
     // Find source workstations
     const srcWs = await db.query(
         `SELECT * FROM line_plan_workstations
          WHERE line_id=$1 AND work_date=$2 AND product_id=$3
          ORDER BY workstation_number`,
-        [fromLineId, fromDate, productId]
+        [fromLineId, fromDate, sourceProductId]
     );
     if (!srcWs.rows.length) return null;
 
@@ -5301,16 +5461,27 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
         [wsIds]
     );
 
-    // Target active processes for this product (map by operation_id + sequence_number)
-    const targetProcs = await db.query(
+    let targetProcs = await db.query(
         `SELECT id, operation_id, sequence_number
          FROM product_processes
          WHERE product_id = $1 AND is_active = true
          ORDER BY sequence_number`,
-        [productId]
+        [targetProductId]
     );
+
+    if (String(targetProductId) !== String(sourceProductId) && targetProcs.rows.length < srcLpwp.rows.length) {
+        await syncProductProcessListFromSource(sourceProductId, targetProductId, db);
+        targetProcs = await db.query(
+            `SELECT id, operation_id, sequence_number
+             FROM product_processes
+             WHERE product_id = $1 AND is_active = true
+             ORDER BY sequence_number`,
+            [targetProductId]
+        );
+    }
     const targetByKey = new Map();
     const targetByOp = new Map();
+    const targetBySequence = new Map();
     const targetIdSet = new Set();
     for (const p of targetProcs.rows) {
         targetIdSet.add(p.id);
@@ -5318,25 +5489,32 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
         if (!targetByKey.has(key)) targetByKey.set(key, p.id);
         if (!targetByOp.has(p.operation_id)) targetByOp.set(p.operation_id, []);
         targetByOp.get(p.operation_id).push(p.id);
+        if (!targetBySequence.has(p.sequence_number)) targetBySequence.set(p.sequence_number, []);
+        targetBySequence.get(p.sequence_number).push(p.id);
     }
+    const usedTargetProcessIds = new Set();
+
+    const takeFirstUnused = (ids = []) => ids.find(id => !usedTargetProcessIds.has(id)) || null;
 
     // Fetch source employee assignments BEFORE deleting anything (cascade would wipe them on self-copy)
-    const srcEmps = await db.query(
-        `SELECT workstation_code, employee_id FROM employee_workstation_assignments
-         WHERE line_id=$1 AND work_date=$2 AND is_overtime=false AND employee_id IS NOT NULL`,
-        [fromLineId, fromDate]
-    );
     const empByWsCode = {};
-    for (const ea of srcEmps.rows) {
-        empByWsCode[ea.workstation_code] = {
-            employee_id: ea.employee_id
-        };
+    if (copyEmployees) {
+        const srcEmps = await db.query(
+            `SELECT workstation_code, employee_id FROM employee_workstation_assignments
+             WHERE line_id=$1 AND work_date=$2 AND is_overtime=false AND employee_id IS NOT NULL`,
+            [fromLineId, fromDate]
+        );
+        for (const ea of srcEmps.rows) {
+            empByWsCode[ea.workstation_code] = {
+                employee_id: ea.employee_id
+            };
+        }
     }
 
     // Delete existing plan for target line+date+product (cascades to employee assignments via FK)
     await db.query(
         `DELETE FROM line_plan_workstations WHERE line_id=$1 AND work_date=$2 AND product_id=$3`,
-        [toLineId, toDate, productId]
+        [toLineId, toDate, targetProductId]
     );
 
     let insertedProcessCount = 0;
@@ -5346,7 +5524,7 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
                (line_id, work_date, product_id, workstation_number, workstation_code,
                 takt_time_seconds, actual_sam_seconds, workload_pct, group_name, co_employee_id)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-            [toLineId, toDate, productId, ws.workstation_number, ws.workstation_code,
+            [toLineId, toDate, targetProductId, ws.workstation_number, ws.workstation_code,
              ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name, ws.co_employee_id || null]
         );
         const newWsId = newWs.rows[0].id;
@@ -5354,11 +5532,14 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
         for (const proc of wsProcs) {
             const key = `${proc.operation_id}:${proc.sequence_number}`;
             let mappedId = targetByKey.get(key);
+            if (mappedId && usedTargetProcessIds.has(mappedId)) mappedId = null;
             if (!mappedId) {
-                const list = targetByOp.get(proc.operation_id);
-                if (list && list.length) mappedId = list[0];
+                mappedId = takeFirstUnused(targetBySequence.get(proc.sequence_number));
             }
-            if (!mappedId && targetIdSet.has(proc.product_process_id)) {
+            if (!mappedId) {
+                mappedId = takeFirstUnused(targetByOp.get(proc.operation_id));
+            }
+            if (!mappedId && targetIdSet.has(proc.product_process_id) && !usedTargetProcessIds.has(proc.product_process_id)) {
                 mappedId = proc.product_process_id;
             }
             if (!mappedId) continue;
@@ -5367,10 +5548,11 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
                  VALUES ($1, $2, $3, $4)`,
                 [newWsId, mappedId, proc.sequence_in_workstation, proc.osm_checked]
             );
+            usedTargetProcessIds.add(mappedId);
             insertedProcessCount += 1;
         }
         // Copy employee assignment with the new workstation ID so the display JOIN works
-        const emp = empByWsCode[ws.workstation_code];
+        const emp = copyEmployees ? empByWsCode[ws.workstation_code] : null;
         if (emp?.employee_id) {
             await clearEmployeeAssignmentConflicts(
                 db,
@@ -8680,7 +8862,8 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         covering_emp_name: row.covering_emp_name || null,
                         covering_from_ws: row.covering_from_ws || null,
                         ws_status: row.coverage_type ? 'covered' : (!row.departure_id ? 'active' : (!row.adjustment_id ? 'vacant' : 'covered')),
-                        processes: []
+                        processes: [],
+                        co_processes: []
                     });
                 }
 
@@ -8716,6 +8899,21 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         });
                     }
                 }
+            }
+
+            // Keep the incoming workstation process list available even before the workstation switches.
+            for (const ws of wsMap.values()) {
+                if (!coWsMap.has(ws.workstation_code)) continue;
+                ws.co_processes = coWsMap.get(ws.workstation_code).rows.map(coRow => ({
+                    id: coRow.process_id,
+                    sequence_number: coRow.sequence_number,
+                    operation_code: coRow.operation_code,
+                    operation_name: coRow.operation_name,
+                    operation_sah: coRow.operation_sah,
+                    product_code: coRow.product_code,
+                    target_qty: coRow.target_qty,
+                    sequence_in_workstation: coRow.sequence_in_workstation
+                }));
             }
 
             const workstations = Array.from(wsMap.values());
