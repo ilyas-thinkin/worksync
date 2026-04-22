@@ -7222,6 +7222,14 @@ async function generateLinePlanTemplate({ prefill = null } = {}) {
             cell.border = borderAll;
             cell.alignment = { horizontal:'center', vertical:'middle' };
         });
+        ws.getCell('E16').note = {
+            texts: [
+                { font: { bold: true }, text: 'Existing process: ' },
+                { text: 'select it from the dropdown so the code fills automatically.\n' },
+                { font: { bold: true }, text: 'New process: ' },
+                { text: 'type the process name manually and leave the code blank. Upload will create a new process code.' }
+            ]
+        };
 
         // ── Config sheet (hidden) — all dropdown source data ─────────────────────
         const opCount  = Math.max(operations.length, 1);
@@ -7951,31 +7959,21 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         );
 
         // Upsert operations + product_processes.
+        // Blank opCode means the process is new and should get a fresh operation code.
         for (const row of dataRows) {
             if (!row.opId) {
                 let resolvedOperation = null;
 
-                const byCode = await client.query(
-                    `SELECT id, operation_code
-                     FROM operations
-                     WHERE UPPER(TRIM(operation_code)) = UPPER(TRIM($1))
-                     LIMIT 1`,
-                    [row.opCode || '']
-                );
-
-                if (byCode.rows[0]) {
-                    resolvedOperation = byCode.rows[0];
-                } else {
-                    const byName = await client.query(
+                if (row.opCode) {
+                    const byCode = await client.query(
                         `SELECT id, operation_code
                          FROM operations
-                         WHERE UPPER(TRIM(operation_name)) = UPPER(TRIM($1))
+                         WHERE UPPER(TRIM(operation_code)) = UPPER(TRIM($1))
                          LIMIT 1`,
-                        [row.opName]
+                        [row.opCode]
                     );
-
-                    if (byName.rows[0]) {
-                        resolvedOperation = byName.rows[0];
+                    if (byCode.rows[0]) {
+                        resolvedOperation = byCode.rows[0];
                     }
                 }
 
