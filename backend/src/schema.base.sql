@@ -1305,6 +1305,18 @@ CREATE TABLE public.production_day_locks (
 
 
 --
+-- Name: line_daily_plan_delete_markers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.line_daily_plan_delete_markers (
+    line_id integer NOT NULL,
+    work_date date NOT NULL,
+    deleted_by integer,
+    deleted_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+
+--
 -- Name: production_lines; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2281,6 +2293,14 @@ ALTER TABLE ONLY public.production_day_locks
 
 
 --
+-- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_daily_plan_delete_markers
+    ADD CONSTRAINT line_daily_plan_delete_markers_pkey PRIMARY KEY (line_id, work_date);
+
+
+--
 -- Name: production_lines production_lines_line_code_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2481,6 +2501,13 @@ CREATE INDEX idx_audit_logs_user ON public.audit_logs USING btree (changed_by);
 --
 
 CREATE INDEX idx_day_locks_date ON public.production_day_locks USING btree (work_date);
+
+
+--
+-- Name: idx_line_daily_plan_delete_markers_work_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_line_daily_plan_delete_markers_work_date ON public.line_daily_plan_delete_markers USING btree (work_date);
 
 
 --
@@ -3513,6 +3540,22 @@ ALTER TABLE ONLY public.production_day_locks
 
 
 --
+-- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_deleted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_daily_plan_delete_markers
+    ADD CONSTRAINT line_daily_plan_delete_markers_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_line_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_daily_plan_delete_markers
+    ADD CONSTRAINT line_daily_plan_delete_markers_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
+
+
+--
 -- Name: worker_adjustments worker_adjustments_departure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3565,4 +3608,3 @@ ALTER TABLE ONLY public.workspaces
 --
 
 \unrestrict uDD8TmQQ0HVgLHNCZHdbJQBrffwDhHsSWDjWpiehYsc5JdTcZRbaBs9bFUGjFtB
-

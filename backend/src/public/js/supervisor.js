@@ -1025,7 +1025,11 @@ const hourlyState = {
     inTime: '08:00',
     outTime: '17:00',
     changeoverUiEnabled: false,
-    changeoverUiEnabledKey: null
+    changeoverUiEnabledKey: null,
+    totalWorkstationCount: 0,
+    changeoverReadyWorkstationCount: 0,
+    canFinalizePrimary: false,
+    finalizePrimaryBusy: false
 };
 
 const SHORTFALL_REASONS = [
@@ -1401,6 +1405,10 @@ async function onHourlyLineChange() {
 
     const container = document.getElementById('hourly-summary');
     if (!lineId) {
+        hourlyState.totalWorkstationCount = 0;
+        hourlyState.changeoverReadyWorkstationCount = 0;
+        hourlyState.canFinalizePrimary = false;
+        hourlyState.finalizePrimaryBusy = false;
         container.innerHTML = '';
         return;
     }
@@ -1427,12 +1435,21 @@ async function onHourlyLineChange() {
         hourlyState.workingHours = result.working_hours || 8;
         hourlyState.inTime = result.in_time || '08:00';
         hourlyState.outTime = result.out_time || '17:00';
+        hourlyState.totalWorkstationCount = result.total_workstation_count || 0;
+        hourlyState.changeoverReadyWorkstationCount = result.changeover_ready_workstation_count || 0;
+        hourlyState.canFinalizePrimary = result.can_finalize_primary === true;
+        hourlyState.finalizePrimaryBusy = false;
         // Restore changeoverUiEnabled from sessionStorage (survives reload, not cross-day)
         const coKey = `co_ui_enabled_${lineId}_${date}`;
         hourlyState.changeoverUiEnabledKey = coKey;
+        const hasUploadedChangeoverPlan = Array.isArray(hourlyState.workstations)
+            && hourlyState.workstations.some(ws => Array.isArray(ws.co_processes) && ws.co_processes.length > 0);
         if (hourlyState.changeoverActive) {
             hourlyState.changeoverUiEnabled = false;
             try { sessionStorage.removeItem(coKey); } catch (_) {}
+        } else if (hourlyState.incomingProductId && hasUploadedChangeoverPlan) {
+            hourlyState.changeoverUiEnabled = true;
+            try { sessionStorage.setItem(coKey, '1'); } catch (_) {}
         } else {
             try { hourlyState.changeoverUiEnabled = sessionStorage.getItem(coKey) === '1'; } catch (_) { hourlyState.changeoverUiEnabled = false; }
         }
@@ -1444,6 +1461,10 @@ async function onHourlyLineChange() {
             : (result.per_hour_target ? Math.round(result.per_hour_target) : (hourlyState.targetQty > 0 ? Math.round(hourlyState.targetQty / (result.working_hours || 8)) : 0));
         await refreshHourlySummary();
     } catch (err) {
+        hourlyState.totalWorkstationCount = 0;
+        hourlyState.changeoverReadyWorkstationCount = 0;
+        hourlyState.canFinalizePrimary = false;
+        hourlyState.finalizePrimaryBusy = false;
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
 }
@@ -1456,13 +1477,18 @@ async function refreshHourlySummary() {
 
     if (!date || !hour) return;
 
-    // Fetch progress data for this line/date
-    try {
-        const response = await fetch(`${API_BASE}/supervisor/progress?line_id=${hourlyState.lineId}&work_date=${date}`);
-        const result = await response.json();
-        hourlyState.progressData = result.data || [];
-    } catch (err) {
-        hourlyState.progressData = [];
+    // Fetch progress + history-based employees for the selected hour in parallel
+    const [progressRes, empRes] = await Promise.allSettled([
+        fetch(`${API_BASE}/supervisor/progress?line_id=${hourlyState.lineId}&work_date=${date}`).then(r => r.json()).catch(() => ({})),
+        fetch(`${API_BASE}/supervisor/ws-employees?line_id=${hourlyState.lineId}&work_date=${date}&hour=${hour}`).then(r => r.json()).catch(() => ({}))
+    ]);
+
+    hourlyState.progressData = progressRes.value?.data || [];
+
+    // Build map: workstation_key → {emp_code, emp_name, employee_id}
+    hourlyState.historyEmployeeMap = new Map();
+    for (const row of (empRes.value?.data || [])) {
+        hourlyState.historyEmployeeMap.set(row.workstation_key, row);
     }
 
     renderHourlySummary();
@@ -1483,15 +1509,49 @@ function getWorkstationEffectiveTarget(ws) {
     return ws.ws_changeover_target != null ? ws.ws_changeover_target : null;
 }
 
-function computeTotalOutput(progressData, workstations) {
-    // Use WS01's first process as the line-output representative (all workstations produce same qty)
-    if (!workstations?.length || !progressData?.length) return 0;
-    const ws1 = workstations[0];
-    const pid = parseInt(ws1.processes?.[0]?.process_id || ws1.processes?.[0]?.id || 0, 10);
-    if (!pid) return 0;
-    return progressData
-        .filter(d => parseInt(d.process_id, 10) === pid)
-        .reduce((s, d) => s + parseInt(d.quantity || 0, 10), 0);
+function getRepresentativeProcessId(processes) {
+    if (!Array.isArray(processes) || !processes.length) return 0;
+    const representative = [...processes].sort((a, b) => {
+        const seqA = parseInt(a.sequence_in_workstation || a.sequence_number || 0, 10) || 0;
+        const seqB = parseInt(b.sequence_in_workstation || b.sequence_number || 0, 10) || 0;
+        if (seqA !== seqB) return seqB - seqA;
+        const idA = parseInt(a.process_id || a.id || 0, 10) || 0;
+        const idB = parseInt(b.process_id || b.id || 0, 10) || 0;
+        return idB - idA;
+    })[0];
+    return parseInt(representative?.process_id || representative?.id || 0, 10) || 0;
+}
+
+function computeProcessCumulativeOutput(progressData, processId) {
+    if (!processId || !Array.isArray(progressData) || !progressData.length) return 0;
+    const perHour = new Map();
+    for (const row of progressData) {
+        if ((parseInt(row.process_id, 10) || 0) !== processId) continue;
+        const hourSlot = parseInt(row.hour_slot, 10) || 0;
+        const qty = parseInt(row.quantity || 0, 10) || 0;
+        perHour.set(hourSlot, Math.max(perHour.get(hourSlot) || 0, qty));
+    }
+    let total = 0;
+    for (const qty of perHour.values()) total += qty;
+    return total;
+}
+
+function computeTotalOutput(progressData, workstations, options = {}) {
+    if (!Array.isArray(workstations) || !workstations.length || !Array.isArray(progressData) || !progressData.length) return 0;
+    const useChangeover = options.useChangeover === true;
+    const lastWorkstation = [...workstations].sort((a, b) => {
+        const wsA = parseInt(a.workstation_number || 0, 10) || 0;
+        const wsB = parseInt(b.workstation_number || 0, 10) || 0;
+        if (wsA !== wsB) return wsA - wsB;
+        return String(a.workstation_code || '').localeCompare(String(b.workstation_code || ''));
+    }).pop();
+    if (!lastWorkstation) return 0;
+
+    const processes = useChangeover && Array.isArray(lastWorkstation.co_processes) && lastWorkstation.co_processes.length
+        ? lastWorkstation.co_processes
+        : lastWorkstation.processes;
+    const representativeProcessId = getRepresentativeProcessId(processes);
+    return computeProcessCumulativeOutput(progressData, representativeProcessId);
 }
 
 async function activateChangeover(lineId, workDate) {
@@ -1502,9 +1562,29 @@ async function activateChangeover(lineId, workDate) {
         const r = await fetch(`${API_BASE}/supervisor/changeover/activate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: lineId, work_date: workDate })
+            body: JSON.stringify({ line_id: lineId, work_date: workDate, force: false })
         });
         const data = await r.json();
+        if (data.target_warning) {
+            const shouldContinue = confirm(`${data.message}\n\nClick OK to continue with changeover anyway.`);
+            if (shouldContinue) {
+                const retry = await fetch(`${API_BASE}/supervisor/changeover/activate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ line_id: lineId, work_date: workDate, force: true })
+                });
+                const retryData = await retry.json();
+                if (!retryData.success) {
+                    alert(retryData.error || 'Failed to activate changeover');
+                    if (btn) { btn.disabled = false; btn.textContent = '\u21ba Start Changeover'; }
+                    return;
+                }
+                await onHourlyLineChange();
+                return;
+            }
+            if (btn) { btn.disabled = false; btn.textContent = '\u21ba Start Changeover'; }
+            return;
+        }
         if (!data.success) {
             alert(data.error);
             if (btn) { btn.disabled = false; btn.textContent = '\u21ba Start Changeover'; }
@@ -1541,6 +1621,29 @@ async function activateWsChangeover(wsCode, date, force) {
         await onHourlyLineChange();
     } catch (err) {
         alert(err.message);
+    }
+}
+
+async function revertWsChangeover(wsCode, date) {
+    const lineId = hourlyState.lineId;
+    if (!lineId || !date || !wsCode) return;
+    if (!confirm(`Switch ${wsCode} back to the primary product? Existing CO output will be preserved.`)) {
+        return;
+    }
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/changeover/revert-workstation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date, workstation_code: wsCode })
+        });
+        const data = await r.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to switch workstation back to primary');
+        }
+        showToast(data.message || `${wsCode} switched back to primary`, 'success');
+        await onHourlyLineChange();
+    } catch (err) {
+        showToast(err.message, 'error');
     }
 }
 
@@ -1915,12 +2018,58 @@ function closeWsChangeoverModal() {
 }
 
 function enableHourlyChangeover() {
+    const totalOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations);
+    const target = hourlyState.targetQty || 0;
+    const targetMet = target > 0 && totalOutput >= target;
+    if (!targetMet) {
+        const remaining = Math.max(0, target - totalOutput);
+        const shouldContinue = confirm(
+            `Primary target is not yet met.\n\nCurrent output: ${totalOutput}\nTarget: ${target}\nRemaining: ${remaining}\n\nEnable changeover for all workstations anyway?`
+        );
+        if (!shouldContinue) return;
+    }
     hourlyState.changeoverUiEnabled = true;
     // Persist so page reload remembers the supervisor already enabled changeover
     if (hourlyState.changeoverUiEnabledKey) {
         try { sessionStorage.setItem(hourlyState.changeoverUiEnabledKey, '1'); } catch (_) {}
     }
     renderHourlySummary();
+}
+
+async function finalizeChangeoverPrimary() {
+    const lineId = hourlyState.lineId;
+    const workDate = document.getElementById('hourly-date')?.value || '';
+    if (!lineId || !workDate || hourlyState.finalizePrimaryBusy) return;
+    if (!hourlyState.canFinalizePrimary) {
+        showToast('All workstations must switch to CO before promotion', 'error');
+        return;
+    }
+    if (!confirm('All workstations are now running the CO product.\n\nConvert CO as the primary product now? The previous primary will be archived safely.')) {
+        return;
+    }
+
+    hourlyState.finalizePrimaryBusy = true;
+    renderHourlySummary();
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/changeover/finalize-primary`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: workDate })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            throw new Error(result.error || 'Failed to convert CO as primary');
+        }
+        if (hourlyState.changeoverUiEnabledKey) {
+            try { sessionStorage.removeItem(hourlyState.changeoverUiEnabledKey); } catch (_) {}
+        }
+        showToast(result.message || 'CO converted as primary product', 'success');
+        await onHourlyLineChange();
+    } catch (err) {
+        hourlyState.finalizePrimaryBusy = false;
+        renderHourlySummary();
+        showToast(err.message, 'error');
+    }
 }
 
 function renderHourlySummary() {
@@ -1932,14 +2081,23 @@ function renderHourlySummary() {
     // Changeover completion banner (shown when changeover is planned)
     let changeoverBanner = '';
     if (hourlyState.incomingProductId) {
+        const totalWs = hourlyState.totalWorkstationCount || (hourlyState.workstations?.length || 0);
+        const readyWs = hourlyState.changeoverReadyWorkstationCount || ((hourlyState.workstations || []).filter(ws => ws.ws_changeover_active).length);
+        const finalizeReady = !!hourlyState.canFinalizePrimary;
         if (hourlyState.changeoverActive) {
             // CO is running — show CO output vs CO target (mirrors the pre-CO primary progress bar)
-            const coOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations);
+            const coOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations, { useChangeover: true });
             const coTarget = hourlyState.incomingEffectiveTarget || hourlyState.incomingTarget || 0;
             const coPct = coTarget > 0 ? Math.min(Math.round(coOutput / coTarget * 100), 999) : 0;
             const coTargetMet = coPct >= 100;
             const coPctColor = coTargetMet ? '#16a34a' : coPct >= 80 ? '#d97706' : '#6b7280';
             const coBarWidth = Math.min(coPct, 100);
+            const finalizeButton = finalizeReady
+                ? `<button class="btn btn-primary btn-sm" style="background:#16a34a;border-color:#16a34a;" onclick="finalizeChangeoverPrimary()" ${hourlyState.finalizePrimaryBusy ? 'disabled' : ''}>${hourlyState.finalizePrimaryBusy ? 'Converting...' : 'Convert CO To Primary'}</button>`
+                : '';
+            const finalizeText = finalizeReady
+                ? 'All workstations are now running CO. Supervisor confirmation is required to convert CO as the primary product.'
+                : `CO workstations switched: ${readyWs}/${totalWs || 0}. CO stays as changeover until every workstation has switched.`;
             changeoverBanner = `
                 <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
                     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
@@ -1957,6 +2115,10 @@ function renderHourlySummary() {
                         ${hourlyState.incomingRemainingHours ? `&nbsp;|&nbsp; Remaining hours: <strong>${hourlyState.incomingRemainingHours}</strong>` : ''}
                         &nbsp;|&nbsp; Full-day CO target: <strong>${hourlyState.incomingTarget || 0}</strong>
                     </div>
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+                        <span style="font-size:12px;color:${finalizeReady ? '#166534' : '#6b7280'};">${finalizeText}</span>
+                        ${finalizeButton ? `<span style="margin-left:auto;">${finalizeButton}</span>` : ''}
+                    </div>
                     <div style="background:#ede9fe;border-radius:4px;height:6px;overflow:hidden;">
                         <div style="background:${coTargetMet ? '#16a34a' : '#7c3aed'};height:100%;width:${coBarWidth}%;transition:width 0.4s;"></div>
                     </div>
@@ -1967,11 +2129,10 @@ function renderHourlySummary() {
             const pct = target > 0 ? Math.min(Math.round(totalOutput / target * 100), 999) : 0;
             const targetMet = pct >= 100;
             const pctColor = pct >= 100 ? '#16a34a' : pct >= 80 ? '#d97706' : '#6b7280';
-            const coEnableBtn = targetMet
-                ? (hourlyState.changeoverUiEnabled
-                    ? `<button class="btn btn-secondary btn-sm" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" disabled>Changeover Enabled</button>`
-                    : `<button class="btn btn-primary btn-sm" style="background:#7c3aed;border-color:#7c3aed;" onclick="enableHourlyChangeover()">Enable Changeover</button>`)
-                : '';
+            const changeoverReadyFromPlan = !!hourlyState.changeoverUiEnabled;
+            const coEnableBtn = hourlyState.changeoverUiEnabled
+                ? `<button class="btn btn-secondary btn-sm" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;" disabled>Changeover Enabled</button>`
+                : `<button class="btn btn-primary btn-sm" style="background:#7c3aed;border-color:#7c3aed;" onclick="enableHourlyChangeover()">Enable Changeover</button>`;
             changeoverBanner = `
                 <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 16px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
                     <span style="font-size:13px;color:#374151;">
@@ -1979,13 +2140,15 @@ function renderHourlySummary() {
                         &nbsp;<span style="color:${pctColor};font-weight:700;">(${pct}%)</span>
                     </span>
                     <span style="font-size:13px;color:${targetMet ? '#6d28d9' : '#6b7280'};font-weight:600;">
-                        ${targetMet
-                            ? (hourlyState.changeoverUiEnabled
+                        ${changeoverReadyFromPlan
+                            ? `Changeover enabled from the uploaded template. Choose the workstation you want to switch.`
+                            : (hourlyState.changeoverUiEnabled
                                 ? `Changeover enabled. Choose the workstation you want to switch.`
-                                : `Primary target reached. Enable changeover to choose workstations.`)
-                            : `Primary target not yet met.`}
+                                : targetMet
+                                    ? `Primary target reached. Enable changeover to choose workstations.`
+                                    : `Primary target not yet met. You can still enable changeover with a warning.`)}
                     </span>
-                    <span style="margin-left:auto;">${coEnableBtn}</span>
+                    <span style="margin-left:auto;">${changeoverReadyFromPlan ? '' : coEnableBtn}</span>
                 </div>`;
         }
     }
@@ -2016,6 +2179,11 @@ function renderHourlySummary() {
             const reason = progress?.shortfall_reason || '';
 
             const wsStatus = ws.ws_status || 'active';
+            // Resolve history-based employee for the selected hour
+            const wsNormKey = String(parseInt(String(ws.workstation_code || '').replace(/[^0-9]/g, ''), 10) || ws.workstation_code);
+            const histEmp = hourlyState.historyEmployeeMap?.get(wsNormKey);
+            const displayEmpCode = histEmp?.emp_code || ws.assigned_emp_code || '';
+            const displayEmpName = histEmp?.emp_name || ws.assigned_emp_name || '';
             let workerHtml = '';
             if (wsStatus === 'vacant') {
                 const deptTime = ws.departure_time ? new Date(ws.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
@@ -2023,8 +2191,8 @@ function renderHourlySummary() {
             } else if (wsStatus === 'covered' && ws.coverage_type === 'combine') {
                 workerHtml = `<span style="color:#7c3aed;font-size:11px;font-weight:700;">COMBINED</span> ${ws.covering_emp_code} – ${ws.covering_emp_name}<br><small style="color:#9ca3af;">also covers ${ws.covering_from_ws}</small>`;
             } else {
-                workerHtml = ws.assigned_emp_name
-                    ? `${ws.assigned_emp_code} – ${ws.assigned_emp_name}`
+                workerHtml = displayEmpName
+                    ? `${displayEmpCode} – ${displayEmpName}`
                     : '<span style="color:#dc2626;">Unassigned</span>';
             }
 
@@ -2077,7 +2245,8 @@ function renderHourlySummary() {
 
             let coBtn = '';
             if (isWsChangeover) {
-                // CO active — no extra button; employee change available via Enter Output flow if needed
+                coBtn = `<button class="btn ws-card-action" style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;"
+                    onclick="revertWsChangeover(${JSON.stringify(ws.workstation_code)}, ${JSON.stringify(date)})">&#8617; Primary</button>`;
             } else if (canStartWorkstationChangeover && hasChangeover) {
                 const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
                 coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"

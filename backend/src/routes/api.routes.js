@@ -39,6 +39,116 @@ const CHANGEOVER_ENABLED = process.env.CHANGEOVER_ENABLED !== 'false';
 const OPERATION_CODE_LOCK_KEY = 32001;
 const REGULAR_HISTORY_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
 const OT_HISTORY_HOURS = [17, 18, 19];
+const ISO_PLAN_MONTH_RE = /^(\d{4})-(\d{2})(?:-\d{2})?$/;
+const SLASH_PLAN_MONTH_RE = /^(\d{4})\/(\d{2})(?:\/\d{2})?$/;
+const ISO_WORK_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const SLASH_WORK_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
+const DASH_WORK_DATE_RE = /^(\d{1,2})-(\d{1,2})-(\d{2,4})$/;
+
+// Normalize workstation codes so W01 / WS01 / ws01 / w01 / 01 / 1 all match.
+// Strips leading letters then parses the numeric part as an integer.
+function normalizeWsCode(code) {
+    const m = String(code || '').match(/(\d+)$/);
+    return m ? parseInt(m[1], 10) : String(code || '').toUpperCase().trim();
+}
+
+function normalizePlanMonth(value) {
+    if (value === null || value === undefined) return null;
+
+    const raw = String(value).trim();
+    if (!raw) return null;
+
+    const isoMatch = raw.match(ISO_PLAN_MONTH_RE);
+    if (isoMatch) {
+        return `${isoMatch[1]}-${isoMatch[2]}`;
+    }
+
+    const slashMatch = raw.match(SLASH_PLAN_MONTH_RE);
+    if (slashMatch) {
+        return `${slashMatch[1]}-${slashMatch[2]}`;
+    }
+
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString().slice(0, 7);
+    }
+
+    const err = new Error('Plan month must be in YYYY-MM format or a valid date');
+    err.statusCode = 400;
+    throw err;
+}
+
+function normalizeWorkDate(value) {
+    if (value === null || value === undefined) return '';
+    const raw = String(value).trim();
+    if (!raw) return '';
+
+    const toDateString = (year, month, day) => {
+        const y = Number(year);
+        const m = Number(month);
+        const d = Number(day);
+        if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return '';
+        if (m < 1 || m > 12 || d < 1 || d > 31) return '';
+        const dt = new Date(y, m - 1, d);
+        if (dt.getFullYear() !== y || dt.getMonth() !== (m - 1) || dt.getDate() !== d) return '';
+        return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    };
+
+    const isoMatch = raw.match(ISO_WORK_DATE_RE);
+    if (isoMatch) {
+        const normalized = toDateString(isoMatch[1], isoMatch[2], isoMatch[3]);
+        if (normalized) return normalized;
+    }
+
+    const slashMatch = raw.match(SLASH_WORK_DATE_RE);
+    if (slashMatch) {
+        const month = Number(slashMatch[1]);
+        const day = Number(slashMatch[2]);
+        let year = Number(slashMatch[3]);
+        if (slashMatch[3].length === 2) {
+            year += year >= 70 ? 1900 : 2000;
+        }
+        const normalized = toDateString(year, month, day);
+        if (normalized) return normalized;
+    }
+
+    const dashMatch = raw.match(DASH_WORK_DATE_RE);
+    if (dashMatch) {
+        const first = Number(dashMatch[1]);
+        const second = Number(dashMatch[2]);
+        let year = Number(dashMatch[3]);
+        if (dashMatch[3].length === 2) {
+            year += year >= 70 ? 1900 : 2000;
+        }
+        // Interpret dashed ambiguous dates as MM-DD-YYYY by default (matches Excel mm-dd-yy display),
+        // but switch to DD-MM-YYYY when first part cannot be a month.
+        const month = first > 12 && second <= 12 ? second : first;
+        const day = first > 12 && second <= 12 ? first : second;
+        const normalized = toDateString(year, month, day);
+        if (normalized) return normalized;
+    }
+
+    if (/^\d+(\.\d+)?$/.test(raw)) {
+        const serial = Number(raw);
+        if (Number.isFinite(serial) && serial > 0) {
+            // Excel serial date system (Windows 1900 date base).
+            const ms = Math.round((serial - 25569) * 86400 * 1000);
+            const dt = new Date(ms);
+            if (!Number.isNaN(dt.getTime())) {
+                return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+            }
+        }
+    }
+
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+    }
+
+    const err = new Error('Date must be in YYYY-MM-DD format or a valid Excel date (row 5)');
+    err.statusCode = 400;
+    throw err;
+}
 
 const getSettingValue = async (key, fallback) => {
     const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -123,7 +233,8 @@ function resolveHistoryEffectiveFromHour(workDate, isOvertime = false, attendanc
     const nowHour = new Date().getHours();
     if (nowHour < firstHour) return firstHour;
     const nextHour = hours.find(h => h > nowHour);
-    return nextHour ?? null;
+    // After the last working hour (e.g. testing at 8 PM), attribute to the last hour
+    return nextHour ?? lastHour;
 }
 
 function resolveHistoryEffectiveToHour(workDate, isOvertime = false) {
@@ -379,8 +490,91 @@ async function findLatestDailyPlanForLine(db, lineId, beforeDate) {
     return result.rows[0] || null;
 }
 
-async function getLineActualOutput(db, lineId, workDate) {
+async function hasDailyPlanDeletionMarker(db, lineId, workDate) {
+    if (!lineId || !workDate) return false;
+    const result = await db.query(
+        `SELECT 1
+         FROM line_daily_plan_delete_markers
+         WHERE line_id = $1
+           AND work_date = $2
+         LIMIT 1`,
+        [lineId, workDate]
+    );
+    return result.rowCount > 0;
+}
+
+async function getLineActualOutput(db, lineId, workDate, productId = null) {
     if (!lineId || !workDate) return 0;
+
+    const normalizedProductId = productId ? parseInt(productId, 10) : null;
+    if (normalizedProductId) {
+        const lastWsResult = await db.query(
+            `SELECT id
+             FROM line_plan_workstations
+             WHERE line_id = $1
+               AND work_date = $2
+               AND product_id = $3
+             ORDER BY workstation_number DESC, id DESC
+             LIMIT 1`,
+            [lineId, workDate, normalizedProductId]
+        );
+        const lastWorkstationId = parseInt(lastWsResult.rows[0]?.id || 0, 10) || null;
+        if (lastWorkstationId) {
+            const outputResult = await db.query(
+                `WITH representative_process AS (
+                     SELECT lpwp.product_process_id
+                     FROM line_plan_workstation_processes lpwp
+                     JOIN product_processes pp ON pp.id = lpwp.product_process_id
+                     WHERE lpwp.workstation_id = $1
+                     ORDER BY lpwp.sequence_in_workstation DESC,
+                              pp.sequence_number DESC,
+                              lpwp.product_process_id DESC
+                     LIMIT 1
+                 ),
+                 per_hour AS (
+                     SELECT lph.hour_slot,
+                            MAX(lph.quantity) AS qty
+                     FROM representative_process rp
+                     JOIN line_process_hourly_progress lph
+                       ON lph.process_id = rp.product_process_id
+                      AND lph.line_id = $2
+                      AND lph.work_date = $3
+                     GROUP BY lph.hour_slot
+                 )
+                 SELECT COALESCE(SUM(qty), 0) AS total
+                 FROM per_hour`,
+                [lastWorkstationId, lineId, workDate]
+            );
+            return parseInt(outputResult.rows[0]?.total || 0, 10);
+        }
+
+        const lastProcessResult = await db.query(
+            `SELECT pp.id
+             FROM product_processes pp
+             WHERE pp.product_id = $1
+               AND pp.is_active = true
+             ORDER BY pp.sequence_number DESC, pp.id DESC
+             LIMIT 1`,
+            [normalizedProductId]
+        );
+        const representativeProcessId = parseInt(lastProcessResult.rows[0]?.id || 0, 10) || 0;
+        if (representativeProcessId > 0) {
+            const outputResult = await db.query(
+                `SELECT COALESCE(SUM(qty), 0) AS total
+                 FROM (
+                     SELECT MAX(quantity) AS qty
+                     FROM line_process_hourly_progress
+                     WHERE line_id = $1
+                       AND work_date = $2
+                       AND process_id = $3
+                     GROUP BY hour_slot
+                 ) sub`,
+                [lineId, workDate, representativeProcessId]
+            );
+            return parseInt(outputResult.rows[0]?.total || 0, 10);
+        }
+    }
+
     const outputResult = await db.query(
         `SELECT COALESCE(SUM(q), 0) AS total
          FROM (
@@ -394,6 +588,73 @@ async function getLineActualOutput(db, lineId, workDate) {
     return parseInt(outputResult.rows[0]?.total || 0, 10);
 }
 
+async function getProductTargetQuantity(db, productId, fallbackTargetUnits = 0) {
+    const normalizedProductId = productId ? parseInt(productId, 10) : null;
+    if (!normalizedProductId) return Math.max(0, parseInt(fallbackTargetUnits || 0, 10) || 0);
+    const result = await db.query(
+        `SELECT target_qty
+         FROM products
+         WHERE id = $1
+         LIMIT 1`,
+        [normalizedProductId]
+    );
+    const productTarget = parseInt(result.rows[0]?.target_qty || 0, 10) || 0;
+    return productTarget > 0
+        ? productTarget
+        : Math.max(0, parseInt(fallbackTargetUnits || 0, 10) || 0);
+}
+
+async function getCumulativeWorkstationOutput(db, {
+    lineId,
+    productId,
+    workstationCode,
+    throughDate
+}) {
+    const normalizedProductId = productId ? parseInt(productId, 10) : null;
+    const normalizedWsCode = String(workstationCode || '').trim();
+    if (!lineId || !normalizedProductId || !normalizedWsCode || !throughDate) return 0;
+
+    const outputResult = await db.query(
+        `WITH workstation_days AS (
+             SELECT lpw.id, lpw.work_date
+             FROM line_plan_workstations lpw
+             WHERE lpw.line_id = $1
+               AND lpw.product_id = $2
+               AND lpw.workstation_code = $3
+               AND lpw.work_date <= $4
+         ),
+         representative_process AS (
+             SELECT DISTINCT ON (wd.id)
+                    wd.id AS workstation_id,
+                    wd.work_date,
+                    lpwp.product_process_id
+             FROM workstation_days wd
+             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = wd.id
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             ORDER BY wd.id,
+                      lpwp.sequence_in_workstation DESC,
+                      pp.sequence_number DESC,
+                      lpwp.product_process_id DESC
+         ),
+         per_hour AS (
+             SELECT rp.work_date,
+                    rp.product_process_id,
+                    lph.hour_slot,
+                    MAX(lph.quantity) AS qty
+             FROM representative_process rp
+             JOIN line_process_hourly_progress lph
+               ON lph.process_id = rp.product_process_id
+              AND lph.line_id = $1
+              AND lph.work_date = rp.work_date
+             GROUP BY rp.work_date, rp.product_process_id, lph.hour_slot
+         )
+         SELECT COALESCE(SUM(qty), 0) AS total
+         FROM per_hour`,
+        [lineId, normalizedProductId, normalizedWsCode, throughDate]
+    );
+    return parseInt(outputResult.rows[0]?.total || 0, 10);
+}
+
 function getRemainingShiftHours(startedAt, inTime, outTime) {
     if (!startedAt || !inTime || !outTime) return 0;
     const start = new Date(startedAt);
@@ -403,6 +664,12 @@ function getRemainingShiftHours(startedAt, inTime, outTime) {
     const startMins = (start.getHours() * 60) + start.getMinutes();
     const remainingMins = Math.max(0, shiftEndMins - startMins);
     return Math.round((remainingMins / 60) * 100) / 100;
+}
+
+function buildShiftStartTimestamp(workDate, inTime = '08:00') {
+    if (!workDate) return null;
+    const safeTime = String(inTime || '08:00').slice(0, 5) || '08:00';
+    return `${workDate} ${safeTime}:00`;
 }
 
 async function getShiftWindowDetails() {
@@ -460,18 +727,22 @@ async function getEffectiveRegularSourceWorkstations(db, lineId, workDate) {
 
     const incomingByCode = new Map();
     for (const row of incomingPlanResult.rows) {
-        incomingByCode.set(String(row.workstation_code || ''), row);
+        incomingByCode.set(normalizeWsCode(row.workstation_code), row);
     }
 
     return {
         primary_product_id: primaryId,
         incoming_product_id: incomingId,
         workstations: primaryPlanResult.rows.map(row => {
-            const incomingRow = incomingByCode.get(String(row.workstation_code || '')) || null;
+            const incomingRow = incomingByCode.get(normalizeWsCode(row.workstation_code)) || null;
             const isChangeover = !!(row.ws_changeover_active && incomingId && incomingRow);
             const sourceRow = isChangeover ? incomingRow : row;
             return {
                 primary_workstation_id: parseInt(row.workstation_plan_id, 10),
+                primary_source_plan_workstation_id: parseInt(row.workstation_plan_id, 10),
+                primary_actual_sam_seconds: parseFloat(row.actual_sam_seconds || 0),
+                primary_takt_time_seconds: parseFloat(row.takt_time_seconds || 0),
+                primary_workload_pct: parseFloat(row.workload_pct || 0),
                 source_line_plan_workstation_id: parseInt(sourceRow.workstation_plan_id, 10),
                 workstation_number: row.workstation_number != null ? parseInt(row.workstation_number, 10) : null,
                 workstation_code: row.workstation_code,
@@ -486,6 +757,55 @@ async function getEffectiveRegularSourceWorkstations(db, lineId, workDate) {
             };
         })
     };
+}
+
+async function getEffectiveRegularSourceProcesses(db, lineId, workDate) {
+    const effectiveWsState = await getEffectiveRegularSourceWorkstations(db, lineId, workDate);
+    const workstations = effectiveWsState?.workstations || [];
+    const wsIds = workstations
+        .map(ws => parseInt(ws.source_line_plan_workstation_id, 10))
+        .filter(id => Number.isFinite(id));
+    if (!wsIds.length) return [];
+
+    const wsMetaById = new Map(
+        workstations.map(ws => [parseInt(ws.source_line_plan_workstation_id, 10), ws])
+    );
+
+    const result = await db.query(
+        `SELECT DISTINCT
+                lpw.id AS source_line_plan_workstation_id,
+                lpw.workstation_code,
+                lpw.workstation_number,
+                pp.id AS process_id,
+                pp.product_id,
+                pp.sequence_number,
+                o.operation_code,
+                o.operation_name
+         FROM line_plan_workstations lpw
+         JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+         JOIN product_processes pp ON pp.id = lpwp.product_process_id
+         JOIN operations o ON o.id = pp.operation_id
+         WHERE lpw.id = ANY($1::int[])
+         ORDER BY lpw.workstation_number, pp.sequence_number, pp.id`,
+        [wsIds]
+    );
+
+    return result.rows.map(row => {
+        const wsMeta = wsMetaById.get(parseInt(row.source_line_plan_workstation_id, 10)) || {};
+        return {
+            process_id: parseInt(row.process_id, 10),
+            product_id: parseInt(row.product_id, 10),
+            sequence_number: parseInt(row.sequence_number, 10),
+            operation_code: row.operation_code,
+            operation_name: row.operation_name,
+            workstation_code: row.workstation_code,
+            workstation_number: row.workstation_number != null ? parseInt(row.workstation_number, 10) : null,
+            source_line_plan_workstation_id: parseInt(row.source_line_plan_workstation_id, 10),
+            source_product_id: wsMeta.source_product_id || null,
+            source_mode: wsMeta.source_mode || 'primary',
+            is_changeover: !!wsMeta.is_changeover
+        };
+    });
 }
 
 async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
@@ -547,10 +867,11 @@ async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
 
     const incomingByCode = new Map();
     for (const row of incomingPlanResult.rows) {
-        if (!incomingByCode.has(row.workstation_code)) {
-            incomingByCode.set(row.workstation_code, []);
+        const nk = normalizeWsCode(row.workstation_code);
+        if (!incomingByCode.has(nk)) {
+            incomingByCode.set(nk, []);
         }
-        incomingByCode.get(row.workstation_code).push(row);
+        incomingByCode.get(nk).push(row);
     }
 
     const groupWipResult = await db.query(
@@ -572,8 +893,8 @@ async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
     const workstations = [];
     for (const rows of primaryByWsId.values()) {
         const firstPrimary = rows[0];
-        const isChangeoverSource = !!(firstPrimary.ws_changeover_active && incomingId && incomingByCode.has(firstPrimary.workstation_code));
-        const activeRows = isChangeoverSource ? incomingByCode.get(firstPrimary.workstation_code) : rows;
+        const isChangeoverSource = !!(firstPrimary.ws_changeover_active && incomingId && incomingByCode.has(normalizeWsCode(firstPrimary.workstation_code)));
+        const activeRows = isChangeoverSource ? incomingByCode.get(normalizeWsCode(firstPrimary.workstation_code)) : rows;
         const firstActive = activeRows[0] || firstPrimary;
         const sourceProductId = isChangeoverSource ? incomingId : primaryId;
         const sourceTargetUnits = isChangeoverSource ? incomingTarget : primaryTarget;
@@ -666,9 +987,9 @@ async function getWorkstationChangeoverSnapshot(db, {
     workDate,
     primaryWorkstationId,
     primaryLineProductId,
-    lineTargetUnits
+    lineTargetUnits,
+    workstationCode = null
 }) {
-    const normalizedTarget = parseInt(lineTargetUnits || 0, 10) || 0;
     if (!lineId || !workDate || !primaryWorkstationId || !primaryLineProductId) {
         return {
             workstationTarget: 0,
@@ -678,37 +999,23 @@ async function getWorkstationChangeoverSnapshot(db, {
         };
     }
 
-    const totalSamResult = await db.query(
-        `SELECT
-             COALESCE(SUM(lpw.actual_sam_seconds), 0) AS total_sam,
-             MAX(CASE WHEN lpw.id = $3 THEN COALESCE(lpw.actual_sam_seconds, 0) ELSE 0 END) AS ws_sam
-         FROM line_plan_workstations lpw
-         JOIN line_daily_plans ldp ON ldp.line_id = lpw.line_id AND ldp.work_date = lpw.work_date
-         WHERE lpw.line_id = $1
-           AND lpw.work_date = $2
-           AND lpw.product_id = ldp.product_id`,
-        [lineId, workDate, primaryWorkstationId]
+    const primaryWsResult = await db.query(
+        `SELECT workstation_code
+         FROM line_plan_workstations
+         WHERE id = $1
+         LIMIT 1`,
+        [primaryWorkstationId]
     );
-    const totalSam = parseFloat(totalSamResult.rows[0]?.total_sam || 0);
-    const wsSam = parseFloat(totalSamResult.rows[0]?.ws_sam || 0);
-    const workstationTarget = (totalSam > 0 && wsSam > 0 && normalizedTarget > 0)
-        ? Math.round((wsSam / totalSam) * normalizedTarget)
-        : 0;
-
-    const outputResult = await db.query(
-        `SELECT COALESCE(SUM(q), 0) AS total
-         FROM (
-             SELECT MAX(lph.quantity) AS q
-             FROM line_process_hourly_progress lph
-             JOIN line_plan_workstation_processes lpwp ON lpwp.product_process_id = lph.process_id
-             WHERE lpwp.workstation_id = $1
-               AND lph.line_id = $2
-               AND lph.work_date = $3
-             GROUP BY lph.process_id
-         ) sub`,
-        [primaryWorkstationId, lineId, workDate]
-    );
-    const workstationOutput = parseInt(outputResult.rows[0]?.total || 0, 10);
+    const resolvedWorkstationCode = String(
+        workstationCode || primaryWsResult.rows[0]?.workstation_code || ''
+    ).trim();
+    const workstationTarget = await getProductTargetQuantity(db, primaryLineProductId, lineTargetUnits);
+    const workstationOutput = await getCumulativeWorkstationOutput(db, {
+        lineId,
+        productId: primaryLineProductId,
+        workstationCode: resolvedWorkstationCode,
+        throughDate: workDate
+    });
 
     const pendingWipResult = await db.query(
         `SELECT COALESCE(SUM(pmw.wip_quantity), 0) AS qty
@@ -729,6 +1036,162 @@ async function getWorkstationChangeoverSnapshot(db, {
     };
 }
 
+async function buildChangeoverPromotionSnapshot(db, {
+    lineId,
+    workDate,
+    previousPrimaryProductId,
+    newPrimaryProductId,
+    beforePlan
+}) {
+    const productIds = [previousPrimaryProductId, newPrimaryProductId]
+        .map(id => parseInt(id, 10))
+        .filter(id => Number.isFinite(id));
+
+    const [
+        primaryWorkstationsResult,
+        incomingWorkstationsResult,
+        assignmentsResult,
+        assignmentHistoryResult,
+        changeoverEventsResult,
+        groupWipResult,
+        productProcessesResult
+    ] = await Promise.all([
+        db.query(
+            `SELECT *
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+             ORDER BY workstation_number, workstation_code`,
+            [lineId, workDate, previousPrimaryProductId]
+        ),
+        db.query(
+            `SELECT *
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+             ORDER BY workstation_number, workstation_code`,
+            [lineId, workDate, newPrimaryProductId]
+        ),
+        db.query(
+            `SELECT *
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND is_overtime = false
+             ORDER BY workstation_code, employee_id`,
+            [lineId, workDate]
+        ),
+        db.query(
+            `SELECT *
+             FROM employee_workstation_assignment_history
+             WHERE line_id = $1 AND work_date = $2 AND is_overtime = false
+             ORDER BY employee_id, effective_from_hour, id`,
+            [lineId, workDate]
+        ),
+        db.query(
+            `SELECT *
+             FROM workstation_changeover_events
+             WHERE line_id = $1 AND work_date = $2
+             ORDER BY workstation_code`,
+            [lineId, workDate]
+        ),
+        db.query(
+            `SELECT *
+             FROM group_wip
+             WHERE line_id = $1 AND work_date = $2
+             ORDER BY group_name`,
+            [lineId, workDate]
+        ),
+        productIds.length
+            ? db.query(
+                `SELECT *
+                 FROM product_processes
+                 WHERE product_id = ANY($1::int[])
+                 ORDER BY product_id, sequence_number, id`,
+                [productIds]
+            )
+            : Promise.resolve({ rows: [] })
+    ]);
+
+    const processIds = productProcessesResult.rows
+        .map(row => parseInt(row.id, 10))
+        .filter(id => Number.isFinite(id));
+
+    const [hourlyProgressResult, materialWipResult] = await Promise.all([
+        processIds.length
+            ? db.query(
+                `SELECT *
+                 FROM line_process_hourly_progress
+                 WHERE line_id = $1 AND work_date = $2 AND process_id = ANY($3::int[])
+                 ORDER BY hour_slot, process_id, id`,
+                [lineId, workDate, processIds]
+            )
+            : Promise.resolve({ rows: [] }),
+        processIds.length
+            ? db.query(
+                `SELECT *
+                 FROM process_material_wip
+                 WHERE line_id = $1 AND work_date = $2 AND process_id = ANY($3::int[])
+                 ORDER BY process_id, id`,
+                [lineId, workDate, processIds]
+            )
+            : Promise.resolve({ rows: [] })
+    ]);
+
+    return {
+        captured_at: new Date().toISOString(),
+        line_id: parseInt(lineId, 10),
+        work_date: workDate,
+        previous_daily_plan: beforePlan,
+        previous_primary_product_id: previousPrimaryProductId,
+        new_primary_product_id: newPrimaryProductId,
+        primary_workstations: primaryWorkstationsResult.rows,
+        incoming_workstations: incomingWorkstationsResult.rows,
+        employee_assignments: assignmentsResult.rows,
+        assignment_history: assignmentHistoryResult.rows,
+        changeover_events: changeoverEventsResult.rows,
+        group_wip: groupWipResult.rows,
+        product_processes: productProcessesResult.rows,
+        line_process_hourly_progress: hourlyProgressResult.rows,
+        process_material_wip: materialWipResult.rows
+    };
+}
+
+async function normalizeRegularAssignmentsToProductWorkstations(db, {
+    lineId,
+    workDate,
+    productId
+}) {
+    await db.query(
+        `UPDATE employee_workstation_assignments ewa
+         SET line_plan_workstation_id = lpw.id,
+             assigned_at = NOW()
+         FROM line_plan_workstations lpw
+         WHERE ewa.line_id = $1
+           AND ewa.work_date = $2
+           AND ewa.is_overtime = false
+           AND lpw.line_id = ewa.line_id
+           AND lpw.work_date = ewa.work_date
+           AND lpw.workstation_code = ewa.workstation_code
+           AND lpw.product_id = $3
+           AND (ewa.line_plan_workstation_id IS DISTINCT FROM lpw.id)`,
+        [lineId, workDate, productId]
+    );
+
+    await db.query(
+        `UPDATE employee_workstation_assignment_history hist
+         SET line_plan_workstation_id = lpw.id,
+             updated_at = NOW()
+         FROM line_plan_workstations lpw
+         WHERE hist.line_id = $1
+           AND hist.work_date = $2
+           AND hist.is_overtime = false
+           AND hist.effective_to_hour IS NULL
+           AND lpw.line_id = hist.line_id
+           AND lpw.work_date = hist.work_date
+           AND lpw.workstation_code = hist.workstation_code
+           AND lpw.product_id = $3
+           AND (hist.line_plan_workstation_id IS DISTINCT FROM lpw.id)`,
+        [lineId, workDate, productId]
+    );
+}
+
 async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = null) {
     if (!lineId || !workDate) return null;
     const db = client || pool;
@@ -740,50 +1203,60 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
         [lineId, workDate]
     );
     if (existing.rowCount > 0) return existing.rows[0];
+    if (await hasDailyPlanDeletionMarker(db, lineId, workDate)) return null;
 
     const sourcePlan = await findLatestDailyPlanForLine(db, lineId, workDate);
     if (!sourcePlan) return null;
-
-    const promotedToIncoming = !!sourcePlan.incoming_product_id;
-    const carryPrimaryId = promotedToIncoming ? sourcePlan.incoming_product_id : sourcePlan.product_id;
-    const carryTargetUnits = promotedToIncoming
-        ? Math.max(
-            0,
-            parseInt(sourcePlan.incoming_target_units || 0, 10) ||
-            parseInt(sourcePlan.target_units || 0, 10) ||
-            0
-        )
-        : parseInt(sourcePlan.target_units || 0, 10) || 0;
 
     const insertResult = await db.query(
         `INSERT INTO line_daily_plans
            (line_id, product_id, work_date, target_units,
             incoming_product_id, incoming_target_units, changeover_sequence,
-            overtime_minutes, overtime_target, ot_enabled,
+            overtime_minutes, overtime_target, ot_enabled, changeover_started_at,
             created_by, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
          ON CONFLICT (line_id, work_date) DO NOTHING
          RETURNING *`,
         [
             lineId,
-            carryPrimaryId,
+            sourcePlan.product_id,
             workDate,
-            carryTargetUnits,
-            promotedToIncoming ? null : (sourcePlan.incoming_product_id || null),
-            promotedToIncoming ? 0 : (sourcePlan.incoming_target_units || 0),
-            promotedToIncoming ? 0 : (sourcePlan.changeover_sequence || 0),
+            parseInt(sourcePlan.target_units || 0, 10) || 0,
+            sourcePlan.incoming_product_id || null,
+            parseInt(sourcePlan.incoming_target_units || 0, 10) || 0,
+            parseInt(sourcePlan.changeover_sequence || 0, 10) || 0,
             sourcePlan.overtime_minutes || 0,
             sourcePlan.overtime_target || 0,
             !!sourcePlan.ot_enabled,
+            null,
             sourcePlan.updated_by || sourcePlan.created_by || null
         ]
     );
+    const insertedPlan = insertResult.rows[0];
+    if (!insertedPlan) {
+        const current = await db.query(
+            `SELECT *
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2
+             LIMIT 1`,
+            [lineId, workDate]
+        );
+        return current.rows[0] || null;
+    }
 
-    return insertResult.rows[0] || existing.rows[0] || {
-        ...sourcePlan,
-        product_id: carryPrimaryId,
-        work_date: workDate
-    };
+    if (sourcePlan.incoming_product_id) {
+        await carryForwardMixedLineState(lineId, sourcePlan.work_date, workDate, sourcePlan, db);
+        const refreshed = await db.query(
+            `SELECT *
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2
+             LIMIT 1`,
+            [lineId, workDate]
+        );
+        return refreshed.rows[0] || insertedPlan;
+    }
+
+    return insertedPlan;
 }
 
 async function ensureDailyPlansCarryForward(workDate, client = null) {
@@ -894,7 +1367,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
     const processJoin = useOt
         ? `LEFT JOIN line_ot_workstation_processes wproc ON wproc.ot_workstation_id = a.workstation_id`
         : `LEFT JOIN line_plan_workstation_processes wproc ON wproc.workstation_id = a.workstation_id`;
-    const workstationProductField = useOt ? 'ws.source_product_id' : 'ws.product_id';
+    const workstationProductField = 'ws.source_product_id';
     const lateralProductField = useOt ? 'ws_match.source_product_id' : 'ws_match.product_id';
     let incomingProductId = null;
     if (!useOt) {
@@ -1366,14 +1839,8 @@ router.get('/daily-plans', async (req, res) => {
                     p.product_code, p.product_name, p.target_qty,
                     ip.product_code as incoming_product_code, ip.product_name as incoming_product_name,
                     ip.target_qty as incoming_target_qty,
-                    (SELECT COALESCE(SUM(slot.max_qty), 0)
-                     FROM (SELECT id FROM product_processes WHERE product_id = p.id AND is_active = true ORDER BY sequence_number ASC LIMIT 1) fp
-                     CROSS JOIN LATERAL (SELECT MAX(quantity) AS max_qty FROM line_process_hourly_progress WHERE process_id = fp.id GROUP BY work_date, hour_slot) slot
-                    ) AS product_cumulative,
-                    (SELECT COALESCE(SUM(slot.max_qty), 0)
-                     FROM (SELECT id FROM product_processes WHERE product_id = ip.id AND is_active = true ORDER BY sequence_number ASC LIMIT 1) fp
-                     CROSS JOIN LATERAL (SELECT MAX(quantity) AS max_qty FROM line_process_hourly_progress WHERE process_id = fp.id GROUP BY work_date, hour_slot) slot
-                    ) AS incoming_cumulative
+                    0 AS product_cumulative,
+                    0 AS incoming_cumulative
              FROM line_daily_plans lp
              JOIN production_lines pl ON lp.line_id = pl.id
              JOIN products p ON lp.product_id = p.id
@@ -1381,6 +1848,15 @@ router.get('/daily-plans', async (req, res) => {
              WHERE lp.work_date = $1
              ORDER BY pl.line_name`,
             [date]
+        );
+        const enrichedPlans = await Promise.all(
+            plansResult.rows.map(async (plan) => ({
+                ...plan,
+                product_cumulative: await getLineActualOutput(pool, plan.line_id, plan.work_date, plan.product_id),
+                incoming_cumulative: plan.incoming_product_id
+                    ? await getLineActualOutput(pool, plan.line_id, plan.work_date, plan.incoming_product_id)
+                    : 0
+            }))
         );
         const linesResult = await pool.query(
             `SELECT pl.id,
@@ -1406,7 +1882,7 @@ router.get('/daily-plans', async (req, res) => {
         res.json({
             success: true,
             data: {
-                plans: plansResult.rows,
+                plans: enrichedPlans,
                 lines: linesResult.rows,
                 products: productsResult.rows,
                 changeover_enabled: CHANGEOVER_ENABLED
@@ -3696,6 +4172,14 @@ router.delete('/daily-plans', async (req, res) => {
                AND product_id = ANY($3::int[])`,
             [line_id, work_date, [plan.product_id, plan.incoming_product_id].filter(Boolean)]
         );
+        await client.query(
+            `INSERT INTO line_daily_plan_delete_markers (line_id, work_date, deleted_by)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (line_id, work_date) DO UPDATE
+               SET deleted_by = EXCLUDED.deleted_by,
+                   deleted_at = CURRENT_TIMESTAMP`,
+            [line_id, work_date, req.user?.id || null]
+        );
         const deleteResult = await client.query(
             `DELETE FROM line_daily_plans WHERE id = $1 RETURNING id`,
             [plan.id]
@@ -4920,11 +5404,12 @@ router.post('/products', validateBody(schemas.product.partial()), async (req, re
         : [];
     const client = await pool.connect();
     try {
+        const normalizedPlanMonth = normalizePlanMonth(plan_month);
         await client.query('BEGIN');
         const result = await client.query(
             `INSERT INTO products (product_code, product_name, product_description, category, buyer_name, target_qty, plan_month, is_active)
              VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`,
-            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, plan_month || null]
+            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, normalizedPlanMonth]
         );
         const productId = result.rows[0].id;
 
@@ -4940,7 +5425,7 @@ router.post('/products', validateBody(schemas.product.partial()), async (req, re
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
         await client.query('ROLLBACK');
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     } finally {
         client.release();
     }
@@ -4955,12 +5440,13 @@ router.put('/products/:id', async (req, res) => {
         : [];
     const client = await pool.connect();
     try {
+        const normalizedPlanMonth = normalizePlanMonth(plan_month);
         await client.query('BEGIN');
         const result = await client.query(
             `UPDATE products
              SET product_code = $1, product_name = $2, product_description = $3, category = $4, buyer_name = $5, target_qty = $6, plan_month = $7, is_active = $8, updated_at = NOW()
              WHERE id = $9 RETURNING *`,
-            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, plan_month || null, is_active, id]
+            [product_code, product_name, product_description, category, buyer_name || null, parseInt(target_qty) || 0, normalizedPlanMonth, is_active, id]
         );
 
         if (hasLineIds) {
@@ -4988,7 +5474,7 @@ router.put('/products/:id', async (req, res) => {
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
         await client.query('ROLLBACK');
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     } finally {
         client.release();
     }
@@ -5292,6 +5778,20 @@ router.post('/workstation-assignments', async (req, res) => {
         }
 
         if (employee_id) {
+            // Read existing EWA to preserve linked state when caller doesn't explicitly link
+            // (e.g. CO employee change sends no is_linked — should inherit existing link)
+            const existingEwaResult = await client.query(
+                `SELECT is_linked, linked_at, attendance_start, late_reason
+                 FROM employee_workstation_assignments
+                 WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
+                [line_id, date, workstation_code]
+            );
+            const existingEwa = existingEwaResult.rows[0];
+            const effectiveLinked = linked || (existingEwa?.is_linked === true);
+            const effectiveLinkedAt = linked ? linkedAt : (existingEwa?.linked_at || null);
+            const effectiveAttendanceStart = linked ? attendanceStart : (existingEwa?.attendance_start || null);
+            const effectiveLateReason = linked ? (late_reason || null) : (existingEwa?.late_reason || null);
+
             await closeHistoryForWorkstationAssignmentIfNeeded(client, {
                 lineId: line_id,
                 workDate: date,
@@ -5317,7 +5817,7 @@ router.post('/workstation-assignments', async (req, res) => {
                                attendance_start       = CASE WHEN EXCLUDED.is_linked THEN EXCLUDED.attendance_start ELSE employee_workstation_assignments.attendance_start END,
                                assigned_at            = NOW()`,
                 [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null,
-                 linked, linkedAt, late_reason || null, attendanceStart]
+                 effectiveLinked, effectiveLinkedAt, effectiveLateReason, effectiveAttendanceStart]
             );
             await syncAssignmentHistoryForCurrentRow(client, {
                 lineId: line_id,
@@ -5326,10 +5826,10 @@ router.post('/workstation-assignments', async (req, res) => {
                 employeeId: employee_id,
                 linePlanWorkstationId: line_plan_workstation_id || null,
                 isOvertime: false,
-                isLinked: linked,
-                linkedAt,
-                attendanceStart,
-                lateReason: late_reason || null,
+                isLinked: effectiveLinked,
+                linkedAt: effectiveLinkedAt,
+                attendanceStart: effectiveAttendanceStart,
+                lateReason: effectiveLateReason,
                 forceCurrentHourStart: displacedWorkstations.length > 0
             });
         } else {
@@ -5523,7 +6023,9 @@ async function syncProductProcessListFromSource(sourceProductId, targetProductId
 async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDate, sourceProductId, client, options = {}) {
     const {
         targetProductId = sourceProductId,
-        copyEmployees = true
+        copyEmployees = true,
+        copyChangeoverState = false,
+        carriedChangeoverStartAt = null
     } = options;
     const db = client || pool;
     // Find source workstations
@@ -5612,10 +6114,15 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
         const newWs = await db.query(
             `INSERT INTO line_plan_workstations
                (line_id, work_date, product_id, workstation_number, workstation_code,
-                takt_time_seconds, actual_sam_seconds, workload_pct, group_name, co_employee_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+                takt_time_seconds, actual_sam_seconds, workload_pct, group_name, co_employee_id,
+                ws_changeover_active, ws_changeover_started_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
             [toLineId, toDate, targetProductId, ws.workstation_number, ws.workstation_code,
-             ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name, ws.co_employee_id || null]
+             ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name, ws.co_employee_id || null,
+             copyChangeoverState ? ws.ws_changeover_active === true : false,
+             copyChangeoverState && ws.ws_changeover_active === true
+                 ? (carriedChangeoverStartAt || ws.ws_changeover_started_at || null)
+                 : null]
         );
         const newWsId = newWs.rows[0].id;
         const wsProcs = srcLpwp.rows.filter(r => r.workstation_id === ws.id);
@@ -5669,6 +6176,361 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
         throw new Error('No matching active processes found for this product. Update the style process list before copying the plan.');
     }
     return fromDate;
+}
+
+async function carryForwardMixedLineState(lineId, sourceDate, targetDate, sourcePlan, client) {
+    if (!lineId || !sourceDate || !targetDate || !sourcePlan?.product_id) return null;
+    const db = client || pool;
+    const shiftWindow = await getShiftWindowDetails();
+    const shiftStartAt = buildShiftStartTimestamp(targetDate, shiftWindow.inTime);
+
+    await copyWorkstationPlanFromDate(lineId, sourceDate, lineId, targetDate, sourcePlan.product_id, db, {
+        copyEmployees: false,
+        copyChangeoverState: true,
+        carriedChangeoverStartAt: shiftStartAt
+    });
+
+    if (sourcePlan.incoming_product_id) {
+        const existingIncomingResult = await db.query(
+            `SELECT 1
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+             LIMIT 1`,
+            [lineId, targetDate, sourcePlan.incoming_product_id]
+        );
+        if (existingIncomingResult.rowCount === 0) {
+            await copyWorkstationPlanFromDate(lineId, sourceDate, lineId, targetDate, sourcePlan.incoming_product_id, db, {
+                copyEmployees: false
+            });
+        }
+    }
+
+    const [
+        sourcePrimaryWsResult,
+        targetPrimaryWsResult,
+        targetIncomingWsResult,
+        sourceAssignmentsResult,
+        sourceGroupWipResult,
+        sourceProcessWipResult
+    ] = await Promise.all([
+        db.query(
+            `SELECT id, workstation_code, workstation_number, group_name, ws_changeover_active
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+             ORDER BY workstation_number, id`,
+            [lineId, sourceDate, sourcePlan.product_id]
+        ),
+        db.query(
+            `SELECT id, workstation_code, workstation_number, group_name
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+             ORDER BY workstation_number, id`,
+            [lineId, targetDate, sourcePlan.product_id]
+        ),
+        sourcePlan.incoming_product_id
+            ? db.query(
+                `SELECT id, workstation_code, workstation_number, group_name
+                 FROM line_plan_workstations
+                 WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+                 ORDER BY workstation_number, id`,
+                [lineId, targetDate, sourcePlan.incoming_product_id]
+            )
+            : Promise.resolve({ rows: [] }),
+        db.query(
+            `SELECT *
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND is_overtime = false
+             ORDER BY workstation_code, assigned_at DESC NULLS LAST, id DESC`,
+            [lineId, sourceDate]
+        ),
+        db.query(
+            `SELECT group_name, materials_in, output_qty, wip_quantity
+             FROM group_wip
+             WHERE line_id = $1 AND work_date = $2
+             ORDER BY group_name`,
+            [lineId, sourceDate]
+        ),
+        db.query(
+            `SELECT process_id, materials_in, materials_out, wip_quantity
+             FROM process_material_wip
+             WHERE line_id = $1 AND work_date = $2
+             ORDER BY process_id`,
+            [lineId, sourceDate]
+        )
+    ]);
+
+    const sourcePrimaryByCode = new Map(
+        sourcePrimaryWsResult.rows.map(row => [String(row.workstation_code || ''), row])
+    );
+    const targetPrimaryByCode = new Map(
+        targetPrimaryWsResult.rows.map(row => [String(row.workstation_code || ''), row])
+    );
+    const targetIncomingByCode = new Map(
+        targetIncomingWsResult.rows.map(row => [String(row.workstation_code || ''), row])
+    );
+    const sourceAssignmentsByCode = new Map();
+    for (const row of sourceAssignmentsResult.rows) {
+        const key = String(row.workstation_code || '');
+        if (!key || sourceAssignmentsByCode.has(key)) continue;
+        sourceAssignmentsByCode.set(key, row);
+    }
+
+    const leaderByGroup = new Map();
+    for (const row of [...targetPrimaryWsResult.rows, ...targetIncomingWsResult.rows]) {
+        const key = String(row.group_name || row.workstation_code || '');
+        if (!leaderByGroup.has(key)) {
+            leaderByGroup.set(key, row);
+        }
+    }
+
+    const previousStateByEmployee = new Map();
+    for (const row of sourceAssignmentsResult.rows) {
+        const employeeId = row.employee_id ? parseInt(row.employee_id, 10) : null;
+        if (!employeeId || previousStateByEmployee.has(employeeId)) continue;
+        previousStateByEmployee.set(employeeId, {
+            is_linked: row.is_linked === true,
+            linked_at: row.is_linked ? shiftStartAt : null,
+            late_reason: row.is_linked ? (row.late_reason || null) : null,
+            attendance_start: row.is_linked ? shiftStartAt : null
+        });
+    }
+
+    await db.query(
+        `DELETE FROM employee_workstation_assignment_history
+         WHERE line_id = $1 AND work_date = $2 AND is_overtime = false`,
+        [lineId, targetDate]
+    );
+
+    let anyActiveChangeover = false;
+    for (const [workstationCode, sourcePrimaryWs] of sourcePrimaryByCode.entries()) {
+        const sourceAssignment = sourceAssignmentsByCode.get(workstationCode);
+        if (!sourceAssignment?.employee_id) continue;
+
+        const isChangeover = !!(
+            sourcePrimaryWs.ws_changeover_active === true
+            && sourcePlan.incoming_product_id
+            && targetIncomingByCode.has(workstationCode)
+        );
+        if (isChangeover) anyActiveChangeover = true;
+
+        const targetWs = isChangeover
+            ? targetIncomingByCode.get(workstationCode)
+            : targetPrimaryByCode.get(workstationCode);
+        if (!targetWs?.id) continue;
+
+        const employeeId = parseInt(sourceAssignment.employee_id, 10);
+        const preservedState = previousStateByEmployee.get(employeeId) || {
+            is_linked: false,
+            linked_at: null,
+            late_reason: null,
+            attendance_start: null
+        };
+
+        await clearEmployeeAssignmentConflicts(
+            db,
+            employeeId,
+            targetDate,
+            false,
+            lineId,
+            workstationCode
+        );
+
+        await db.query(
+            `INSERT INTO employee_workstation_assignments
+               (line_id, work_date, workstation_code, employee_id, is_overtime, line_plan_workstation_id,
+                material_provided, is_linked, linked_at, late_reason, attendance_start)
+             VALUES ($1, $2, $3, $4, false, $5, 0, $6, $7, $8, $9)
+             ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+             DO UPDATE SET employee_id              = EXCLUDED.employee_id,
+                           line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                           material_provided        = EXCLUDED.material_provided,
+                           is_linked                = EXCLUDED.is_linked,
+                           linked_at                = EXCLUDED.linked_at,
+                           late_reason              = EXCLUDED.late_reason,
+                           attendance_start         = EXCLUDED.attendance_start,
+                           assigned_at              = NOW()`,
+            [
+                lineId,
+                targetDate,
+                workstationCode,
+                employeeId,
+                targetWs.id,
+                preservedState.is_linked,
+                preservedState.linked_at,
+                preservedState.late_reason,
+                preservedState.attendance_start
+            ]
+        );
+
+        if (preservedState.is_linked) {
+            await syncAssignmentHistoryForCurrentRow(db, {
+                lineId,
+                workDate: targetDate,
+                workstationCode,
+                employeeId,
+                linePlanWorkstationId: targetWs.id,
+                isOvertime: false,
+                isLinked: preservedState.is_linked,
+                linkedAt: preservedState.linked_at,
+                attendanceStart: preservedState.attendance_start,
+                lateReason: preservedState.late_reason,
+                forceCurrentHourStart: true
+            });
+        }
+    }
+
+    for (const row of sourceGroupWipResult.rows) {
+        const carriedWip = parseInt(row.wip_quantity || 0, 10) || 0;
+        const groupKey = String(row.group_name || '');
+        if (!groupKey || carriedWip <= 0) continue;
+
+        const leader = leaderByGroup.get(groupKey);
+        if (leader?.workstation_code) {
+            await db.query(
+                `UPDATE employee_workstation_assignments
+                 SET material_provided = $4,
+                     assigned_at = NOW()
+                 WHERE line_id = $1
+                   AND work_date = $2
+                   AND workstation_code = $3
+                   AND is_overtime = false`,
+                [lineId, targetDate, leader.workstation_code, carriedWip]
+            );
+        }
+
+        await db.query(
+            `INSERT INTO group_wip (line_id, work_date, group_name, materials_in, output_qty, wip_quantity)
+             VALUES ($1, $2, $3, $4, 0, $4)
+             ON CONFLICT (line_id, work_date, group_name)
+             DO UPDATE SET materials_in = EXCLUDED.materials_in,
+                           output_qty = EXCLUDED.output_qty,
+                           wip_quantity = EXCLUDED.wip_quantity,
+                           updated_at = NOW()`,
+            [lineId, targetDate, groupKey, carriedWip]
+        );
+    }
+
+    for (const row of sourceProcessWipResult.rows) {
+        const carriedWip = parseInt(row.wip_quantity || 0, 10) || 0;
+        if (carriedWip <= 0) continue;
+        await db.query(
+            `INSERT INTO process_material_wip
+               (line_id, process_id, work_date, materials_in, materials_out, wip_quantity)
+             VALUES ($1, $2, $3, $4, 0, $4)
+             ON CONFLICT (line_id, process_id, work_date)
+             DO UPDATE SET materials_in = EXCLUDED.materials_in,
+                           materials_out = EXCLUDED.materials_out,
+                           wip_quantity = EXCLUDED.wip_quantity,
+                           updated_at = NOW()`,
+            [lineId, parseInt(row.process_id, 10), targetDate, carriedWip]
+        );
+    }
+
+    await db.query(
+        `UPDATE line_daily_plans
+         SET changeover_started_at = $3,
+             updated_at = NOW()
+         WHERE line_id = $1 AND work_date = $2`,
+        [lineId, targetDate, anyActiveChangeover ? shiftStartAt : null]
+    );
+
+    return {
+        anyActiveChangeover
+    };
+}
+
+async function remapProcessMaterialWipBetweenWorkstations(db, {
+    lineId,
+    workDate,
+    fromWorkstationId,
+    toWorkstationId
+}) {
+    const normalizedFromWsId = parseInt(fromWorkstationId, 10);
+    const normalizedToWsId = parseInt(toWorkstationId, 10);
+    if (!normalizedFromWsId || !normalizedToWsId) return;
+
+    const [fromProcResult, toProcResult] = await Promise.all([
+        db.query(
+            `SELECT lpwp.product_process_id,
+                    lpwp.sequence_in_workstation,
+                    pp.operation_id,
+                    pp.sequence_number
+             FROM line_plan_workstation_processes lpwp
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             WHERE lpwp.workstation_id = $1
+             ORDER BY lpwp.sequence_in_workstation, lpwp.product_process_id`,
+            [normalizedFromWsId]
+        ),
+        db.query(
+            `SELECT lpwp.product_process_id,
+                    lpwp.sequence_in_workstation,
+                    pp.operation_id,
+                    pp.sequence_number
+             FROM line_plan_workstation_processes lpwp
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             WHERE lpwp.workstation_id = $1
+             ORDER BY lpwp.sequence_in_workstation, lpwp.product_process_id`,
+            [normalizedToWsId]
+        )
+    ]);
+
+    if (!fromProcResult.rows.length || !toProcResult.rows.length) return;
+
+    const toByKey = new Map();
+    const toBySequence = new Map();
+    for (const row of toProcResult.rows) {
+        const key = `${row.operation_id}:${row.sequence_number}`;
+        if (!toByKey.has(key)) toByKey.set(key, row.product_process_id);
+        if (!toBySequence.has(row.sequence_in_workstation)) {
+            toBySequence.set(row.sequence_in_workstation, row.product_process_id);
+        }
+    }
+
+    for (const row of fromProcResult.rows) {
+        const fromProcessId = parseInt(row.product_process_id, 10);
+        if (!fromProcessId) continue;
+        const key = `${row.operation_id}:${row.sequence_number}`;
+        const toProcessId = parseInt(
+            toByKey.get(key) || toBySequence.get(row.sequence_in_workstation) || 0,
+            10
+        ) || null;
+        if (!toProcessId || toProcessId === fromProcessId) continue;
+
+        const wipResult = await db.query(
+            `SELECT materials_in, materials_out, wip_quantity
+             FROM process_material_wip
+             WHERE line_id = $1 AND process_id = $2 AND work_date = $3
+             LIMIT 1`,
+            [lineId, fromProcessId, workDate]
+        );
+        const wipRow = wipResult.rows[0];
+        if (!wipRow) continue;
+
+        await db.query(
+            `INSERT INTO process_material_wip
+               (line_id, process_id, work_date, materials_in, materials_out, wip_quantity)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (line_id, process_id, work_date)
+             DO UPDATE SET materials_in = process_material_wip.materials_in + EXCLUDED.materials_in,
+                           materials_out = process_material_wip.materials_out + EXCLUDED.materials_out,
+                           wip_quantity = process_material_wip.wip_quantity + EXCLUDED.wip_quantity,
+                           updated_at = NOW()`,
+            [
+                lineId,
+                toProcessId,
+                workDate,
+                parseInt(wipRow.materials_in || 0, 10) || 0,
+                parseInt(wipRow.materials_out || 0, 10) || 0,
+                parseInt(wipRow.wip_quantity || 0, 10) || 0
+            ]
+        );
+
+        await db.query(
+            `DELETE FROM process_material_wip
+             WHERE line_id = $1 AND process_id = $2 AND work_date = $3`,
+            [lineId, fromProcessId, workDate]
+        );
+    }
 }
 
 // Helper: find the most recent past date that has a workstation plan for line+product
@@ -7178,6 +8040,7 @@ async function generateLinePlanTemplate({ prefill = null } = {}) {
         hdrRows.forEach(({ row, label, value, note }) => {
             const isLeader = label === 'LINE LEADER';
             const isWTime  = label === 'WORKING TIME (s)';
+            const isDate   = label === 'DATE';
             const lc = ws.getCell(row, 1);
             lc.value = label; lc.font = boldFont; lc.fill = isWTime ? wTimeFill : labelFill;
             lc.border = borderAll; lc.alignment = { horizontal:'left', vertical:'middle' };
@@ -7186,6 +8049,7 @@ async function generateLinePlanTemplate({ prefill = null } = {}) {
             vc.font  = isLeader ? { bold:true, size:11, color:{argb:'FF1D6F42'} } : { size:11 };
             vc.fill  = isLeader ? leaderFill : isWTime ? wTimeFill : { type:'pattern', pattern:'none' };
             vc.border = borderAll; vc.alignment = { horizontal:'left', vertical:'middle' };
+            if (isDate) vc.numFmt = 'yyyy-mm-dd';
             ws.mergeCells(row, 3, row, 12);
             const nc = ws.getCell(row, 3);
             nc.value = note;
@@ -7383,6 +8247,7 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
         return res.status(400).json({ success: false, error: 'line_id and date are required' });
     }
     try {
+        const requestedMode = String(req.query.product_mode || 'primary').trim().toLowerCase();
         const planRes = await pool.query(
             `SELECT ldp.*, pl.line_code, pl.line_name, pl.line_leader,
                     p.product_code, p.product_name, p.buyer_name, p.plan_month
@@ -7396,14 +8261,38 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
             return res.status(404).json({ success: false, error: 'No daily plan found for this line/date' });
         }
         const plan = planRes.rows[0];
+        const isChangeoverMode = requestedMode === 'changeover';
+        if (isChangeoverMode && !plan.incoming_product_id) {
+            return res.status(400).json({ success: false, error: 'No changeover product configured for this line/date' });
+        }
 
         let coProductCode = '';
+        let selectedProduct = {
+            id: plan.product_id,
+            product_code: plan.product_code,
+            product_name: plan.product_name,
+            buyer_name: plan.buyer_name || '',
+            plan_month: plan.plan_month || '',
+            target_units: plan.target_units
+        };
         if (plan.incoming_product_id) {
             const coRes = await pool.query(
-                `SELECT product_code FROM products WHERE id = $1`,
+                `SELECT id, product_code, product_name, buyer_name, plan_month
+                 FROM products
+                 WHERE id = $1`,
                 [plan.incoming_product_id]
             );
             coProductCode = coRes.rows[0]?.product_code || '';
+            if (isChangeoverMode && coRes.rows[0]) {
+                selectedProduct = {
+                    id: coRes.rows[0].id,
+                    product_code: coRes.rows[0].product_code,
+                    product_name: coRes.rows[0].product_name,
+                    buyer_name: coRes.rows[0].buyer_name || '',
+                    plan_month: coRes.rows[0].plan_month || '',
+                    target_units: plan.incoming_target_units || 0
+                };
+            }
         }
 
         const procRes = await pool.query(
@@ -7430,7 +8319,7 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
              LEFT JOIN employees e ON e.id = ewa.employee_id
              WHERE pp.product_id = $3 AND pp.is_active = true
              ORDER BY pp.sequence_number`,
-            [line_id, date, plan.product_id]
+            [line_id, date, selectedProduct.id]
         );
 
         const prefillRows = procRes.rows.map(p => ({
@@ -7441,7 +8330,10 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
             process_time: p.cycle_time_seconds != null && Number(p.cycle_time_seconds) > 0
                 ? Number(p.cycle_time_seconds)
                 : Math.round(parseFloat(p.operation_sah || 0) * 3600 * 100) / 100,
-            employee: (p.emp_code && p.emp_name) ? `${p.emp_code} | ${p.emp_name}` : ''
+            // Changeover templates should stay unassigned so supervisors can decide at runtime.
+            employee: isChangeoverMode
+                ? ''
+                : ((p.emp_code && p.emp_name) ? `${p.emp_code} | ${p.emp_name}` : '')
         }));
 
         const { workbook, ws } = await generateLinePlanTemplate({
@@ -7449,13 +8341,13 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
                 line_code: plan.line_code,
                 line_name: plan.line_name,
                 date,
-                product_code: plan.product_code,
-                product_name: plan.product_name,
-                buyer_name: plan.buyer_name || '',
-                plan_month: plan.plan_month || '',
-                target_units: plan.target_units,
-                co_product_code: coProductCode,
-                co_target_units: plan.incoming_target_units || '',
+                product_code: selectedProduct.product_code,
+                product_name: selectedProduct.product_name,
+                buyer_name: selectedProduct.buyer_name,
+                plan_month: selectedProduct.plan_month,
+                target_units: selectedProduct.target_units,
+                co_product_code: isChangeoverMode ? '' : coProductCode,
+                co_target_units: isChangeoverMode ? '' : (plan.incoming_target_units || ''),
                 line_leader: plan.line_leader || '',
                 working_seconds: null
             }
@@ -7474,7 +8366,8 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
         });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename="line_plan_${plan.line_code || 'line'}_${date}.xlsx"`);
+        const suffix = isChangeoverMode ? 'changeover' : 'primary';
+        res.setHeader('Content-Disposition', `attachment; filename="line_plan_${plan.line_code || 'line'}_${suffix}_${date}.xlsx"`);
         res.setHeader('Cache-Control', 'no-store');
         await workbook.xlsx.write(res);
         res.end();
@@ -7520,6 +8413,12 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             const normalized = String(value || '').trim().toLowerCase();
             return ['1', 'true', 'yes', 'y', 'checked', 'check', 'tick', '☑', '✓'].includes(normalized);
         };
+        const requestedLineId = parseInt(String(req.body?.line_id || '').trim(), 10);
+        const requestedProductMode = String(req.body?.product_mode || 'primary').trim().toLowerCase() === 'changeover'
+            ? 'changeover'
+            : 'primary';
+        const isDetailMode = Number.isFinite(requestedLineId) && requestedLineId > 0;
+        const suppressTemplateEmployeeAssignments = isDetailMode && requestedProductMode === 'changeover';
         const missingEmployeeKey = (empCode, empName) => {
             const code = normalizeCode(empCode);
             const name = normalizeName(empName);
@@ -7530,32 +8429,43 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         // Parse header (value in col B = column index 2)
         const lineCode      = normalizeCode(getCellStr(3, 2));
         const hallName      = getCellStr(4, 2);
-        const excelWorkDate = getCellStr(5, 2);
-        const requestedDate = String(req.body?.work_date || '').trim();
+        const excelWorkDate = normalizeWorkDate(getCellStr(5, 2));
+        const requestedDateRaw = String(req.body?.work_date || '').trim();
+        let requestedDate = '';
+        if (requestedDateRaw) {
+            try {
+                requestedDate = normalizeWorkDate(requestedDateRaw);
+            } catch (_) {
+                requestedDate = '';
+            }
+        }
         const workDate      = requestedDate || excelWorkDate || new Date().toISOString().slice(0, 10);
         const productCode   = normalizeCode(getCellStr(6, 2));
         const productName   = getCellStr(7, 2);
         const buyerName     = getCellStr(8, 2) || null;
-        const planMonth     = getCellStr(9, 2) || null;
+        const planMonth     = normalizePlanMonth(getCellStr(9, 2));
         const targetUnits   = Math.round(getCellNum(10, 2));
         const coProductCode = normalizeCode(getCellStr(11, 2));
         const coTarget      = Math.round(getCellNum(12, 2)) || 0;
         const lineLeader    = getCellStr(13, 2) || null;
 
         if (!lineCode)                         throw new Error('Line Code is required (row 3)');
-        if (!workDate || !/^\d{4}-\d{2}-\d{2}$/.test(workDate)) throw new Error('Date must be in YYYY-MM-DD format (row 5)');
+        if (!workDate || !ISO_WORK_DATE_RE.test(workDate)) throw new Error('Date must be in YYYY-MM-DD format (row 5)');
         if (!productCode)                      throw new Error('Product Code is required (row 6)');
         if (!productName)                      throw new Error('Product Name is required (row 7)');
-        if (!targetUnits || targetUnits <= 0)  throw new Error('Target Units must be > 0 (row 9)');
+        if ((!targetUnits || targetUnits <= 0) && !isDetailMode) throw new Error('Target Units must be > 0 (row 10)');
 
         // Resolve user confirmations from the request body
         const confirmLine    = req.body?.confirm_line === 'true';
         const confirmProduct = req.body?.confirm_product || null; // 'use_existing' | 'replace' | null
         const overrideCode   = req.body?.new_product_code ? normalizeCode(req.body.new_product_code) : null;
         const effectiveProdCode = overrideCode || productCode;
+        let summaryLineCode = lineCode;
+        let summaryProductCode = effectiveProdCode;
+        let effectiveTargetUnits = targetUnits;
 
         // --- Pre-check: line conflict ---
-        if (!confirmLine) {
+        if (!isDetailMode && !confirmLine) {
             const lineCheck = await pool.query(
                 `SELECT id, line_code, line_name FROM production_lines
                  WHERE UPPER(TRIM(line_code)) = $1 ORDER BY is_active DESC LIMIT 1`,
@@ -7572,7 +8482,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         }
 
         // --- Pre-check: product conflict ---
-        if (!confirmProduct) {
+        if (!isDetailMode && !confirmProduct) {
             const prodCheck = await pool.query(
                 `SELECT id, product_code, product_name FROM products WHERE product_code = $1 LIMIT 1`,
                 [effectiveProdCode]
@@ -7591,78 +8501,172 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
         await client.query('BEGIN');
 
-        // Find or create line — if it already exists, use it as-is (no updates to name/hall)
-        let lineId, lineCreated;
-        const existingLine = await client.query(
-            `SELECT id
-             FROM production_lines
-             WHERE UPPER(TRIM(line_code)) = $1
-             ORDER BY is_active DESC, id ASC
-             LIMIT 1`,
-            [lineCode]
-        );
-        if (existingLine.rows[0]) {
-            lineId      = existingLine.rows[0].id;
-            lineCreated = false;
-            await client.query(
-                `UPDATE production_lines
-                 SET line_code = COALESCE(NULLIF(line_code, ''), $1),
-                     line_name = COALESCE($2, line_name),
-                     hall_location = COALESCE($3, hall_location),
-                     line_leader = COALESCE($4, line_leader),
-                     is_active = true,
-                     updated_at = NOW()
-                 WHERE id = $5`,
-                [lineCode, hallName || null, hallName || null, lineLeader || null, lineId]
-            );
-        } else {
-            if (!hallName) throw new Error(`Line "${lineCode}" not found. Provide HALL NAME to auto-create it.`);
-            const ins = await client.query(
-                `INSERT INTO production_lines (line_code, line_name, hall_location, line_leader, is_active)
-                 VALUES ($1, $2, $3, $4, true) RETURNING id`,
-                [lineCode, hallName, hallName, lineLeader]
-            );
-            lineId      = ins.rows[0].id;
-            lineCreated = true;
-        }
-
-        // Find or create primary product
+        // Resolve upload target: either whole daily-plan upload or current line-details product view upload.
+        let lineId;
+        let lineCreated = false;
         let productId;
-        if (confirmProduct === 'use_existing') {
-            // Use the existing product record without modifying it
-            const existProd = await client.query(
-                `SELECT id FROM products WHERE product_code = $1 LIMIT 1`,
-                [effectiveProdCode]
-            );
-            if (!existProd.rows[0]) throw new Error(`Product "${effectiveProdCode}" not found`);
-            productId = existProd.rows[0].id;
-        } else {
-            // Create new or replace existing (ON CONFLICT updates name/buyer/month)
-            const prodResult = await client.query(
-                `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
-                 VALUES ($1, $2, $3, $4, true)
-                 ON CONFLICT (product_code) DO UPDATE
-                   SET product_name = EXCLUDED.product_name,
-                       buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
-                       plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month)
-                 RETURNING id`,
-                [effectiveProdCode, productName, buyerName, planMonth]
-            );
-            productId = prodResult.rows[0].id;
-        }
-
-        // Find or create changeover product (optional)
         let coProductId = null;
-        if (coProductCode) {
-            const coResult = await client.query(
-                `INSERT INTO products (product_code, product_name, is_active)
-                 VALUES ($1, $1, true)
-                 ON CONFLICT (product_code) DO UPDATE
-                   SET product_name = products.product_name
-                 RETURNING id`,
-                [coProductCode]
+        let detailPlan = null;
+        if (isDetailMode) {
+            const detailPlanResult = await client.query(
+                `SELECT ldp.*,
+                        pl.line_code,
+                        p.product_code AS primary_product_code,
+                        ip.product_code AS incoming_product_code
+                 FROM line_daily_plans ldp
+                 JOIN production_lines pl ON pl.id = ldp.line_id
+                 LEFT JOIN products p ON p.id = ldp.product_id
+                 LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
+                 WHERE ldp.line_id = $1
+                   AND ldp.work_date = $2
+                 LIMIT 1`,
+                [requestedLineId, workDate]
             );
-            coProductId = coResult.rows[0]?.id || null;
+            detailPlan = detailPlanResult.rows[0];
+            if (!detailPlan && requestedProductMode === 'changeover') {
+                throw new Error('Daily plan not found for this line/date. Save the line plan first.');
+            }
+
+            lineId = requestedLineId;
+            summaryLineCode = detailPlan?.line_code || summaryLineCode;
+            if (requestedProductMode === 'changeover') {
+                if (!detailPlan.incoming_product_id) {
+                    // First changeover upload from line-details can bootstrap incoming product/target from template.
+                    const incomingProductCode = normalizeCode(productCode);
+                    if (!incomingProductCode) {
+                        throw new Error('Product Code is required (row 6) to enable changeover upload.');
+                    }
+                    const incomingProductName = String(productName || incomingProductCode).trim();
+                    const incomingProductResult = await client.query(
+                        `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
+                         VALUES ($1, $2, $3, $4, true)
+                         ON CONFLICT (product_code) DO UPDATE
+                           SET product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), products.product_name),
+                               buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
+                               plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month),
+                               is_active = true,
+                               updated_at = NOW()
+                         RETURNING id, product_code`,
+                        [incomingProductCode, incomingProductName, buyerName, planMonth]
+                    );
+                    detailPlan.incoming_product_id = incomingProductResult.rows[0]?.id || null;
+                    detailPlan.incoming_product_code = incomingProductResult.rows[0]?.product_code || incomingProductCode;
+                }
+                productId = parseInt(detailPlan.incoming_product_id, 10);
+                if (!productId) {
+                    throw new Error('Unable to resolve changeover product from uploaded template.');
+                }
+                effectiveTargetUnits = targetUnits > 0
+                    ? targetUnits
+                    : (parseInt(detailPlan.incoming_target_units || 0, 10) || 0);
+                summaryProductCode = detailPlan.incoming_product_code || summaryProductCode;
+                if (!effectiveTargetUnits || effectiveTargetUnits <= 0) {
+                    throw new Error('Incoming target units must be greater than 0 before uploading the changeover plan.');
+                }
+                await client.query(
+                    `UPDATE line_daily_plans
+                     SET incoming_product_id = $3,
+                         incoming_target_units = $4,
+                         updated_by = $5,
+                         updated_at = NOW()
+                     WHERE line_id = $1 AND work_date = $2`,
+                    [lineId, workDate, productId, effectiveTargetUnits, req.user?.id || null]
+                );
+            } else {
+                if (detailPlan) {
+                    productId = parseInt(detailPlan.product_id, 10);
+                    effectiveTargetUnits = targetUnits > 0
+                        ? targetUnits
+                        : (parseInt(detailPlan.target_units || 0, 10) || 0);
+                    summaryProductCode = detailPlan.primary_product_code || summaryProductCode;
+                } else {
+                    // No plan yet — resolve/create product from Excel template and create the plan
+                    const prodResult = await client.query(
+                        `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
+                         VALUES ($1, $2, $3, $4, true)
+                         ON CONFLICT (product_code) DO UPDATE
+                           SET product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), products.product_name),
+                               buyer_name   = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
+                               plan_month   = COALESCE(EXCLUDED.plan_month, products.plan_month),
+                               is_active    = true,
+                               updated_at   = NOW()
+                         RETURNING id, product_code`,
+                        [effectiveProdCode, productName || effectiveProdCode, buyerName, planMonth]
+                    );
+                    productId = prodResult.rows[0].id;
+                    effectiveTargetUnits = targetUnits > 0 ? targetUnits : 0;
+                    summaryProductCode = prodResult.rows[0].product_code || summaryProductCode;
+                }
+            }
+        } else {
+            // Find or create line — if it already exists, use it as-is (no updates to name/hall)
+            const existingLine = await client.query(
+                `SELECT id
+                 FROM production_lines
+                 WHERE UPPER(TRIM(line_code)) = $1
+                 ORDER BY is_active DESC, id ASC
+                 LIMIT 1`,
+                [lineCode]
+            );
+            if (existingLine.rows[0]) {
+                lineId      = existingLine.rows[0].id;
+                lineCreated = false;
+                await client.query(
+                    `UPDATE production_lines
+                     SET line_code = COALESCE(NULLIF(line_code, ''), $1),
+                         line_name = COALESCE($2, line_name),
+                         hall_location = COALESCE($3, hall_location),
+                         line_leader = COALESCE($4, line_leader),
+                         is_active = true,
+                         updated_at = NOW()
+                     WHERE id = $5`,
+                    [lineCode, hallName || null, hallName || null, lineLeader || null, lineId]
+                );
+            } else {
+                if (!hallName) throw new Error(`Line "${lineCode}" not found. Provide HALL NAME to auto-create it.`);
+                const ins = await client.query(
+                    `INSERT INTO production_lines (line_code, line_name, hall_location, line_leader, is_active)
+                     VALUES ($1, $2, $3, $4, true) RETURNING id`,
+                    [lineCode, hallName, hallName, lineLeader]
+                );
+                lineId      = ins.rows[0].id;
+                lineCreated = true;
+            }
+
+            // Find or create primary product
+            if (confirmProduct === 'use_existing') {
+                const existProd = await client.query(
+                    `SELECT id FROM products WHERE product_code = $1 LIMIT 1`,
+                    [effectiveProdCode]
+                );
+                if (!existProd.rows[0]) throw new Error(`Product "${effectiveProdCode}" not found`);
+                productId = existProd.rows[0].id;
+            } else {
+                const prodResult = await client.query(
+                    `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
+                     VALUES ($1, $2, $3, $4, true)
+                     ON CONFLICT (product_code) DO UPDATE
+                       SET product_name = EXCLUDED.product_name,
+                           buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
+                           plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month)
+                     RETURNING id`,
+                    [effectiveProdCode, productName, buyerName, planMonth]
+                );
+                productId = prodResult.rows[0].id;
+            }
+
+            // Find or create changeover product (optional)
+            if (coProductCode) {
+                const coResult = await client.query(
+                    `INSERT INTO products (product_code, product_name, is_active)
+                     VALUES ($1, $1, true)
+                     ON CONFLICT (product_code) DO UPDATE
+                       SET product_name = products.product_name
+                     RETURNING id`,
+                    [coProductCode]
+                );
+                coProductId = coResult.rows[0]?.id || null;
+            }
         }
 
         // Get working hours → takt time
@@ -7677,7 +8681,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             const [outH, outM] = sm.default_out_time.split(':').map(Number);
             workingSecs = Math.max(0, ((outH * 60 + outM) - (inH * 60 + inM)) * 60);
         }
-        const taktTimeSecs = targetUnits > 0 ? workingSecs / targetUnits : 0;
+        const taktTimeSecs = effectiveTargetUnits > 0 ? workingSecs / effectiveTargetUnits : 0;
 
         // Parse data rows (start at row 17; stop at first fully empty row)
         // Columns: A=GROUP, B=OSM, C=WORKSTATION, D=OP CODE(formula), E=OPERATION NAME(user input),
@@ -7699,7 +8703,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             if (!sah || sah <= 0) continue;         // skip rows with no process time entered
             // If workstation is blank, auto-assign a sequential one so partially filled templates still upload.
             const wsCode = rawWsCode ? rawWsCode.toUpperCase() : `WS${String(autoSeq).padStart(2, '0')}`;
-            let empName = getCellStr(rowNum, 12);   // L: SELECT EMPLOYEE (combined "CODE | NAME" or plain)
+            let empName = suppressTemplateEmployeeAssignments ? '' : getCellStr(rowNum, 12);   // L: SELECT EMPLOYEE (combined "CODE | NAME" or plain)
             const empPipe = empName.indexOf(' | ');
             if (empPipe !== -1) empName = empName.slice(empPipe + 3).trim();
             dataRows.push({
@@ -7710,7 +8714,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 opCode:     opCode ? opCode.toUpperCase() : '',
                 opName,
                 sah,
-                empCode:    getCellStr(rowNum, 11), // K: EMP CODE (formula result — auto-extracted from L)
+                empCode:    suppressTemplateEmployeeAssignments ? '' : getCellStr(rowNum, 11), // K: EMP CODE (formula result — auto-extracted from L)
                 empName,
                 employeeLookupKey: null,
                 employeeId: null
@@ -7720,6 +8724,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         if (!dataRows.length) throw new Error('No process rows found. Data should start at row 17.');
 
         const providedMissingEmployees = (() => {
+            if (suppressTemplateEmployeeAssignments) return [];
             const raw = req.body?.missing_employees;
             if (!raw) return [];
             try {
@@ -7730,6 +8735,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
         })();
         const providedDuplicateAssignments = (() => {
+            if (suppressTemplateEmployeeAssignments) return [];
             const raw = req.body?.duplicate_assignments;
             if (!raw) return [];
             try {
@@ -7741,7 +8747,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         })();
         const skipMissingEmployees = ['1', 'true', 'yes'].includes(String(req.body?.skip_missing_employees || '').toLowerCase());
 
-        if (providedDuplicateAssignments.length) {
+        if (!suppressTemplateEmployeeAssignments && providedDuplicateAssignments.length) {
             const duplicateOverrideMap = new Map();
             for (const entry of providedDuplicateAssignments) {
                 const key = String(entry?.key || '').trim();
@@ -7759,195 +8765,198 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
         }
 
-        const empCodesRequested = [...new Set(dataRows.map(r => normalizeCode(r.empCode)).filter(Boolean))];
-        const empNamesRequested = [...new Set(dataRows.map(r => normalizeName(r.empName)).filter(Boolean))];
         const employeeCodeMap = new Map();
         const employeeNameMap = new Map();
 
-        if (empCodesRequested.length) {
-            const empByCode = await client.query(
-                `SELECT id, emp_code, emp_name
-                 FROM employees
-                 WHERE UPPER(TRIM(emp_code)) = ANY($1::text[])
-                   AND is_active = true`,
-                [empCodesRequested]
-            );
-            empByCode.rows.forEach(row => {
-                employeeCodeMap.set(normalizeCode(row.emp_code), row);
-                employeeNameMap.set(normalizeName(row.emp_name), row);
-            });
-        }
-        if (empNamesRequested.length) {
-            const empByName = await client.query(
-                `SELECT id, emp_code, emp_name
-                 FROM employees
-                 WHERE UPPER(TRIM(emp_name)) = ANY($1::text[])
-                   AND is_active = true`,
-                [empNamesRequested]
-            );
-            empByName.rows.forEach(row => {
-                employeeNameMap.set(normalizeName(row.emp_name), row);
-                employeeCodeMap.set(normalizeCode(row.emp_code), row);
-            });
-        }
+        if (!suppressTemplateEmployeeAssignments) {
+            const empCodesRequested = [...new Set(dataRows.map(r => normalizeCode(r.empCode)).filter(Boolean))];
+            const empNamesRequested = [...new Set(dataRows.map(r => normalizeName(r.empName)).filter(Boolean))];
 
-        const missingEmployeesMap = new Map();
-        for (const row of dataRows) {
-            const codeKey = normalizeCode(row.empCode);
-            const nameKey = normalizeName(row.empName);
-            if (!codeKey && !nameKey) continue;
-
-            let matchedEmployee = null;
-            if (codeKey && employeeCodeMap.has(codeKey)) {
-                matchedEmployee = employeeCodeMap.get(codeKey);
-            } else if (nameKey && employeeNameMap.has(nameKey)) {
-                matchedEmployee = employeeNameMap.get(nameKey);
-            }
-
-            if (matchedEmployee) {
-                row.employeeId = matchedEmployee.id;
-                row.empCode = matchedEmployee.emp_code;
-                row.empName = matchedEmployee.emp_name;
-                continue;
-            }
-
-            row.employeeLookupKey = missingEmployeeKey(row.empCode, row.empName);
-            if (!missingEmployeesMap.has(row.employeeLookupKey)) {
-                missingEmployeesMap.set(row.employeeLookupKey, {
-                    key: row.employeeLookupKey,
-                    emp_code: row.empCode || '',
-                    emp_name: row.empName || '',
-                    workstation_codes: []
+            if (empCodesRequested.length) {
+                const empByCode = await client.query(
+                    `SELECT id, emp_code, emp_name
+                     FROM employees
+                     WHERE UPPER(TRIM(emp_code)) = ANY($1::text[])
+                       AND is_active = true`,
+                    [empCodesRequested]
+                );
+                empByCode.rows.forEach(row => {
+                    employeeCodeMap.set(normalizeCode(row.emp_code), row);
+                    employeeNameMap.set(normalizeName(row.emp_name), row);
                 });
             }
-            const missingEntry = missingEmployeesMap.get(row.employeeLookupKey);
-            if (!missingEntry.workstation_codes.includes(row.wsCode)) {
-                missingEntry.workstation_codes.push(row.wsCode);
+            if (empNamesRequested.length) {
+                const empByName = await client.query(
+                    `SELECT id, emp_code, emp_name
+                     FROM employees
+                     WHERE UPPER(TRIM(emp_name)) = ANY($1::text[])
+                       AND is_active = true`,
+                    [empNamesRequested]
+                );
+                empByName.rows.forEach(row => {
+                    employeeNameMap.set(normalizeName(row.emp_name), row);
+                    employeeCodeMap.set(normalizeCode(row.emp_code), row);
+                });
             }
-        }
 
-        if (missingEmployeesMap.size) {
-            const providedMap = new Map();
-            for (const entry of providedMissingEmployees) {
-                const originalKey = String(entry?.key || '').trim();
-                const empCode = String(entry?.emp_code || '').trim();
-                const empName = String(entry?.emp_name || '').trim();
-                if (!originalKey || !empCode || !empName) {
-                    throw new Error('Each missing employee entry must include key, emp_code, and emp_name');
+            const missingEmployeesMap = new Map();
+            for (const row of dataRows) {
+                const codeKey = normalizeCode(row.empCode);
+                const nameKey = normalizeName(row.empName);
+                if (!codeKey && !nameKey) continue;
+
+                let matchedEmployee = null;
+                if (codeKey && employeeCodeMap.has(codeKey)) {
+                    matchedEmployee = employeeCodeMap.get(codeKey);
+                } else if (nameKey && employeeNameMap.has(nameKey)) {
+                    matchedEmployee = employeeNameMap.get(nameKey);
                 }
-                providedMap.set(originalKey, { emp_code: empCode, emp_name: empName });
-            }
 
-            const unresolvedMissing = [];
-            for (const missingEntry of missingEmployeesMap.values()) {
-                if (skipMissingEmployees) continue;
-                if (!providedMap.has(missingEntry.key)) {
-                    unresolvedMissing.push(missingEntry);
+                if (matchedEmployee) {
+                    row.employeeId = matchedEmployee.id;
+                    row.empCode = matchedEmployee.emp_code;
+                    row.empName = matchedEmployee.emp_name;
+                    continue;
+                }
+
+                row.employeeLookupKey = missingEmployeeKey(row.empCode, row.empName);
+                if (!missingEmployeesMap.has(row.employeeLookupKey)) {
+                    missingEmployeesMap.set(row.employeeLookupKey, {
+                        key: row.employeeLookupKey,
+                        emp_code: row.empCode || '',
+                        emp_name: row.empName || '',
+                        workstation_codes: []
+                    });
+                }
+                const missingEntry = missingEmployeesMap.get(row.employeeLookupKey);
+                if (!missingEntry.workstation_codes.includes(row.wsCode)) {
+                    missingEntry.workstation_codes.push(row.wsCode);
                 }
             }
 
-            if (unresolvedMissing.length) {
+            if (missingEmployeesMap.size) {
+                const providedMap = new Map();
+                for (const entry of providedMissingEmployees) {
+                    const originalKey = String(entry?.key || '').trim();
+                    const empCode = String(entry?.emp_code || '').trim();
+                    const empName = String(entry?.emp_name || '').trim();
+                    if (!originalKey || !empCode || !empName) {
+                        throw new Error('Each missing employee entry must include key, emp_code, and emp_name');
+                    }
+                    providedMap.set(originalKey, { emp_code: empCode, emp_name: empName });
+                }
+
+                const unresolvedMissing = [];
+                for (const missingEntry of missingEmployeesMap.values()) {
+                    if (skipMissingEmployees) continue;
+                    if (!providedMap.has(missingEntry.key)) {
+                        unresolvedMissing.push(missingEntry);
+                    }
+                }
+
+                if (unresolvedMissing.length) {
+                    await client.query('ROLLBACK');
+                    return res.status(409).json({
+                        success: false,
+                        code: 'MISSING_EMPLOYEES',
+                        message: 'Some employees from the Excel file were not found.',
+                        error: 'Some employees from the Excel file were not found.',
+                        missing_employees: unresolvedMissing
+                    });
+                }
+
+                if (!skipMissingEmployees) {
+                    const seenNewCodes = new Set();
+                    for (const missingEntry of missingEmployeesMap.values()) {
+                        const provided = providedMap.get(missingEntry.key);
+                        if (!provided) continue;
+                        const normalizedProvidedCode = normalizeCode(provided.emp_code);
+                        if (seenNewCodes.has(normalizedProvidedCode)) {
+                            throw new Error(`Duplicate employee code in missing employee form: ${provided.emp_code}`);
+                        }
+                        seenNewCodes.add(normalizedProvidedCode);
+                    }
+
+                    for (const missingEntry of missingEmployeesMap.values()) {
+                        const provided = providedMap.get(missingEntry.key);
+                        if (!provided) continue;
+                        const insertedEmployee = await client.query(
+                            `INSERT INTO employees (emp_code, emp_name, designation, default_line_id, manpower_factor, is_active)
+                             VALUES ($1, $2, $3, $4, $5, true)
+                             ON CONFLICT (emp_code) DO UPDATE
+                               SET emp_name = EXCLUDED.emp_name,
+                                   is_active = true,
+                                   updated_at = NOW()
+                             RETURNING id, emp_code, emp_name`,
+                            [provided.emp_code.trim(), provided.emp_name.trim(), 'Operator', null, 1]
+                        );
+                        const employeeRow = insertedEmployee.rows[0];
+                        employeeCodeMap.set(normalizeCode(employeeRow.emp_code), employeeRow);
+                        employeeNameMap.set(normalizeName(employeeRow.emp_name), employeeRow);
+                    }
+
+                    for (const row of dataRows) {
+                        if (!row.employeeLookupKey) continue;
+                        const provided = providedMap.get(row.employeeLookupKey);
+                        if (!provided) continue;
+                        const matchedEmployee = employeeCodeMap.get(normalizeCode(provided.emp_code.trim()));
+                        row.employeeId = matchedEmployee?.id || null;
+                        row.empCode = provided.emp_code.trim();
+                        row.empName = provided.emp_name.trim();
+                    }
+                } else {
+                    for (const row of dataRows) {
+                        if (!row.employeeLookupKey) continue;
+                        row.empCode = '';
+                        row.empName = '';
+                    }
+                }
+            }
+
+            const employeeToWsMap = new Map();
+            for (const row of dataRows) {
+                const empCodeKey = normalizeCode(row.empCode);
+                if (!empCodeKey) continue;
+                if (!employeeToWsMap.has(empCodeKey)) {
+                    employeeToWsMap.set(empCodeKey, {
+                        emp_code: row.empCode,
+                        emp_name: row.empName || '',
+                        workstations: [],
+                        rows: []
+                    });
+                }
+                const info = employeeToWsMap.get(empCodeKey);
+                if (!info.workstations.includes(row.wsCode)) {
+                    info.workstations.push(row.wsCode);
+                }
+                info.rows.push(row);
+                if (!info.emp_name && row.empName) info.emp_name = row.empName;
+            }
+
+            const duplicateAssignments = [];
+            for (const info of employeeToWsMap.values()) {
+                if (info.workstations.length <= 1) continue;
+                for (const wsCode of info.workstations) {
+                    duplicateAssignments.push({
+                        key: duplicateAssignmentKey(wsCode),
+                        workstation_code: wsCode,
+                        emp_code: info.emp_code,
+                        emp_name: info.emp_name || '',
+                        conflict_workstations: info.workstations
+                    });
+                }
+            }
+
+            if (duplicateAssignments.length) {
                 await client.query('ROLLBACK');
                 return res.status(409).json({
                     success: false,
-                    code: 'MISSING_EMPLOYEES',
-                    message: 'Some employees from the Excel file were not found.',
-                    error: 'Some employees from the Excel file were not found.',
-                    missing_employees: unresolvedMissing
+                    code: 'DUPLICATE_EMPLOYEE_ASSIGNMENTS',
+                    message: 'Same employee is assigned to multiple workstations.',
+                    error: 'Same employee is assigned to multiple workstations.',
+                    duplicate_assignments: duplicateAssignments
                 });
             }
-
-            if (!skipMissingEmployees) {
-                const seenNewCodes = new Set();
-                for (const missingEntry of missingEmployeesMap.values()) {
-                    const provided = providedMap.get(missingEntry.key);
-                    if (!provided) continue;
-                    const normalizedProvidedCode = normalizeCode(provided.emp_code);
-                    if (seenNewCodes.has(normalizedProvidedCode)) {
-                        throw new Error(`Duplicate employee code in missing employee form: ${provided.emp_code}`);
-                    }
-                    seenNewCodes.add(normalizedProvidedCode);
-                }
-
-                for (const missingEntry of missingEmployeesMap.values()) {
-                    const provided = providedMap.get(missingEntry.key);
-                    if (!provided) continue;
-                    const insertedEmployee = await client.query(
-                        `INSERT INTO employees (emp_code, emp_name, designation, default_line_id, manpower_factor, is_active)
-                         VALUES ($1, $2, $3, $4, $5, true)
-                         ON CONFLICT (emp_code) DO UPDATE
-                           SET emp_name = EXCLUDED.emp_name,
-                               is_active = true,
-                               updated_at = NOW()
-                         RETURNING id, emp_code, emp_name`,
-                        [provided.emp_code.trim(), provided.emp_name.trim(), 'Operator', null, 1]
-                    );
-                    const employeeRow = insertedEmployee.rows[0];
-                    employeeCodeMap.set(normalizeCode(employeeRow.emp_code), employeeRow);
-                    employeeNameMap.set(normalizeName(employeeRow.emp_name), employeeRow);
-                }
-
-                for (const row of dataRows) {
-                    if (!row.employeeLookupKey) continue;
-                    const provided = providedMap.get(row.employeeLookupKey);
-                    if (!provided) continue;
-                    const matchedEmployee = employeeCodeMap.get(normalizeCode(provided.emp_code.trim()));
-                    row.employeeId = matchedEmployee?.id || null;
-                    row.empCode = provided.emp_code.trim();
-                    row.empName = provided.emp_name.trim();
-                }
-            } else {
-                for (const row of dataRows) {
-                    if (!row.employeeLookupKey) continue;
-                    row.empCode = '';
-                    row.empName = '';
-                }
-            }
-        }
-
-        const employeeToWsMap = new Map();
-        for (const row of dataRows) {
-            const empCodeKey = normalizeCode(row.empCode);
-            if (!empCodeKey) continue;
-            if (!employeeToWsMap.has(empCodeKey)) {
-                employeeToWsMap.set(empCodeKey, {
-                    emp_code: row.empCode,
-                    emp_name: row.empName || '',
-                    workstations: [],
-                    rows: []
-                });
-            }
-            const info = employeeToWsMap.get(empCodeKey);
-            if (!info.workstations.includes(row.wsCode)) {
-                info.workstations.push(row.wsCode);
-            }
-            info.rows.push(row);
-            if (!info.emp_name && row.empName) info.emp_name = row.empName;
-        }
-
-        const duplicateAssignments = [];
-        for (const info of employeeToWsMap.values()) {
-            if (info.workstations.length <= 1) continue;
-            for (const wsCode of info.workstations) {
-                duplicateAssignments.push({
-                    key: duplicateAssignmentKey(wsCode),
-                    workstation_code: wsCode,
-                    emp_code: info.emp_code,
-                    emp_name: info.emp_name || '',
-                    conflict_workstations: info.workstations
-                });
-            }
-        }
-
-        if (duplicateAssignments.length) {
-            await client.query('ROLLBACK');
-            return res.status(409).json({
-                success: false,
-                code: 'DUPLICATE_EMPLOYEE_ASSIGNMENTS',
-                message: 'Same employee is assigned to multiple workstations.',
-                error: 'Same employee is assigned to multiple workstations.',
-                duplicate_assignments: duplicateAssignments
-            });
         }
 
         // Deactivate all existing product_processes for this product.
@@ -8024,33 +9033,58 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         }
 
         // Upsert daily plan
-        await client.query(
-            `INSERT INTO line_daily_plans
-               (line_id, product_id, work_date, target_units,
-                incoming_product_id, incoming_target_units, changeover_sequence,
-                created_by, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $7)
-             ON CONFLICT (line_id, work_date) DO UPDATE
-               SET product_id            = EXCLUDED.product_id,
-                   target_units          = EXCLUDED.target_units,
-                   incoming_product_id   = EXCLUDED.incoming_product_id,
-                   incoming_target_units = EXCLUDED.incoming_target_units,
-                   changeover_sequence   = EXCLUDED.changeover_sequence,
-                   changeover_started_at = NULL,
-                   updated_by            = EXCLUDED.updated_by,
-                   updated_at            = NOW()`,
-            [lineId, productId, workDate, targetUnits, coProductId, coTarget, req.user?.id || null]
-        );
+        if (isDetailMode) {
+            if (requestedProductMode === 'changeover') {
+                await client.query(
+                    `UPDATE line_daily_plans
+                     SET incoming_target_units = $3,
+                         updated_by = $4,
+                         updated_at = NOW()
+                     WHERE line_id = $1 AND work_date = $2`,
+                    [lineId, workDate, effectiveTargetUnits, req.user?.id || null]
+                );
+            } else {
+                await client.query(
+                    `INSERT INTO line_daily_plans
+                       (line_id, product_id, work_date, target_units, created_by, updated_by)
+                     VALUES ($1, $2, $3, $4, $5, $5)
+                     ON CONFLICT (line_id, work_date) DO UPDATE
+                       SET product_id   = EXCLUDED.product_id,
+                           target_units = EXCLUDED.target_units,
+                           updated_by   = EXCLUDED.updated_by,
+                           updated_at   = NOW()`,
+                    [lineId, productId, workDate, effectiveTargetUnits, req.user?.id || null]
+                );
+            }
+        } else {
+            await client.query(
+                `INSERT INTO line_daily_plans
+                   (line_id, product_id, work_date, target_units,
+                    incoming_product_id, incoming_target_units, changeover_sequence,
+                    created_by, updated_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $7)
+                 ON CONFLICT (line_id, work_date) DO UPDATE
+                   SET product_id            = EXCLUDED.product_id,
+                       target_units          = EXCLUDED.target_units,
+                       incoming_product_id   = EXCLUDED.incoming_product_id,
+                       incoming_target_units = EXCLUDED.incoming_target_units,
+                       changeover_sequence   = EXCLUDED.changeover_sequence,
+                       changeover_started_at = NULL,
+                       updated_by            = EXCLUDED.updated_by,
+                       updated_at            = NOW()`,
+                [lineId, productId, workDate, effectiveTargetUnits, coProductId, coTarget, req.user?.id || null]
+            );
+        }
 
         const todayIso = new Date().toISOString().slice(0, 10);
-        if (workDate === todayIso) {
+        if (workDate === todayIso && (!isDetailMode || requestedProductMode === 'primary')) {
             await client.query(
                 `UPDATE production_lines
                  SET current_product_id = $1,
                      target_units = $2,
                      updated_at = NOW()
                  WHERE id = $3`,
-                [productId, targetUnits, lineId]
+                [productId, effectiveTargetUnits, lineId]
             );
         }
 
@@ -8204,12 +9238,14 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
         res.json({
             success: true,
-            message: 'Line plan uploaded successfully',
+            message: isDetailMode
+                ? `${requestedProductMode === 'changeover' ? 'Changeover' : 'Primary'} line plan uploaded successfully`
+                : 'Line plan uploaded successfully',
             summary: {
-                line: lineCode,
-                product: effectiveProdCode,
+                line: summaryLineCode,
+                product: summaryProductCode,
                 date: workDate,
-                target: targetUnits,
+                target: effectiveTargetUnits,
                 workstations: wsGroupsMap.size,
                 processes: dataRows.length,
                 employees_assigned: employeesAssigned
@@ -8218,7 +9254,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         console.error('[plan-upload-excel] ERROR:', err.message);
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     } finally {
         client.release();
     }
@@ -8793,6 +9829,9 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             incoming_product_id: incomingId,
             incoming_product_code: meta.incoming_product_code || null,
             incoming_product_name: meta.incoming_product_name || null,
+            total_workstation_count: 0,
+            changeover_ready_workstation_count: 0,
+            can_finalize_primary: false,
             changeover_sequence: changeoverSequence,
             incoming_max_sequence: incomingMaxSequence,
             changeover_enabled: CHANGEOVER_ENABLED
@@ -8873,12 +9912,14 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 coPlanRows = coPlanResult.rows;
             }
 
-            // Build changeover WS map keyed by workstation_code
+            // Build changeover WS map keyed by normalized workstation number
+            // so W01 / WS01 / ws01 all resolve to the same entry
             // Captures co_employee_id from the INCOMING product's WS plan (IE pre-assignment)
             const coWsMap = new Map();
             for (const row of coPlanRows) {
-                if (!coWsMap.has(row.workstation_code)) {
-                    coWsMap.set(row.workstation_code, {
+                const nk = normalizeWsCode(row.workstation_code);
+                if (!coWsMap.has(nk)) {
+                    coWsMap.set(nk, {
                         plan_id: row.workstation_plan_id,
                         rows: [],
                         co_emp_id: row.co_employee_id || null,
@@ -8886,7 +9927,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         co_emp_name: row.co_emp_name || null
                     });
                 }
-                coWsMap.get(row.workstation_code).rows.push(row);
+                coWsMap.get(nk).rows.push(row);
             }
 
             // Group primary WS rows; for ws_changeover_active WSes swap in changeover data
@@ -8894,8 +9935,9 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             for (const row of primaryPlanResult.rows) {
                 const primaryWsId = row.workstation_plan_id;
                 if (!wsMap.has(primaryWsId)) {
-                    const isCoActive = row.ws_changeover_active && incomingId && coWsMap.has(row.workstation_code);
-                    const coData = isCoActive ? coWsMap.get(row.workstation_code) : null;
+                    const nwk = normalizeWsCode(row.workstation_code);
+                    const isCoActive = row.ws_changeover_active && incomingId && coWsMap.has(nwk);
+                    const coData = isCoActive ? coWsMap.get(nwk) : null;
                     const firstCoRow = coData ? coData.rows[0] : null;
 
                     // Calculate per-WS changeover target (per_hour_incoming * remaining hours)
@@ -8907,7 +9949,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     }
 
                     // CO employee suggestion — from incoming product's WS plan (IE pre-assignment)
-                    const incomingCoData = coWsMap.has(row.workstation_code) ? coWsMap.get(row.workstation_code) : null;
+                    const incomingCoData = coWsMap.get(nwk) ?? null;
 
                     wsMap.set(primaryWsId, {
                         id: isCoActive ? coData.plan_id : primaryWsId,
@@ -8915,7 +9957,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         workstation_number: row.workstation_number,
                         workstation_code: row.workstation_code,
                         group_name: row.group_name || null,
-                        has_co_plan: coWsMap.has(row.workstation_code),
+                        has_co_plan: coWsMap.has(nwk),
                         co_suggested_emp_id: incomingCoData?.co_emp_id ?? null,
                         co_suggested_emp_code: incomingCoData?.co_emp_code ?? null,
                         co_suggested_emp_name: incomingCoData?.co_emp_name ?? null,
@@ -8973,8 +10015,9 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
 
             // Add changeover processes for ws_changeover_active workstations
             for (const [primaryWsId, ws] of wsMap.entries()) {
-                if (ws.ws_changeover_active && coWsMap.has(ws.workstation_code)) {
-                    for (const coRow of coWsMap.get(ws.workstation_code).rows) {
+                const nwk = normalizeWsCode(ws.workstation_code);
+                if (ws.ws_changeover_active && coWsMap.has(nwk)) {
+                    for (const coRow of coWsMap.get(nwk).rows) {
                         ws.processes.push({
                             id: coRow.process_id,
                             sequence_number: coRow.sequence_number,
@@ -9069,7 +10112,10 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 data: flatProcesses,
                 workstation_plan: workstations,
                 has_plan: true,
-                ...sharedFields
+                ...sharedFields,
+                total_workstation_count: workstations.length,
+                changeover_ready_workstation_count: workstations.filter(ws => ws.ws_changeover_active).length,
+                can_finalize_primary: !!incomingId && workstations.length > 0 && workstations.every(ws => ws.ws_changeover_active)
             });
         }
 
@@ -9237,16 +10283,17 @@ router.post('/supervisor/changeover-set', async (req, res) => {
     }
 });
 
-// Supervisor-triggered changeover activation — only allowed after primary target is met
+// Supervisor-triggered changeover activation — warns when primary target is not yet met,
+// but can proceed if the supervisor explicitly confirms.
 router.post('/supervisor/changeover/activate', async (req, res) => {
-    const { line_id, work_date } = req.body;
+    const { line_id, work_date, force } = req.body;
     if (!line_id || !work_date)
         return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
     if (!CHANGEOVER_ENABLED)
         return res.status(403).json({ success: false, error: 'Changeover is disabled' });
     try {
         const planResult = await pool.query(
-            `SELECT target_units, incoming_product_id, changeover_started_at, is_locked
+            `SELECT product_id, target_units, incoming_product_id, changeover_started_at, is_locked
              FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
             [line_id, work_date]
         );
@@ -9260,24 +10307,15 @@ router.post('/supervisor/changeover/activate', async (req, res) => {
         if (plan.is_locked)
             return res.status(403).json({ success: false, error: 'Daily plan is locked' });
 
-        // Compute actual output: use the highest hourly quantity per process, then sum.
-        // This handles both single-entry and cumulative hourly models.
-        const outputResult = await pool.query(
-            `SELECT COALESCE(SUM(q), 0) AS total
-             FROM (
-                 SELECT MAX(quantity) AS q
-                 FROM line_process_hourly_progress
-                 WHERE line_id = $1 AND work_date = $2
-                 GROUP BY process_id
-             ) sub`,
-            [line_id, work_date]
-        );
-        const actualOutput = parseInt(outputResult.rows[0]?.total || 0, 10);
+        const actualOutput = await getLineActualOutput(pool, line_id, work_date, plan.product_id);
         const targetUnits = parseInt(plan.target_units, 10) || 0;
-        if (actualOutput < targetUnits) {
-            return res.status(400).json({
+        if (actualOutput < targetUnits && !force) {
+            return res.json({
                 success: false,
-                error: `Target not yet met. Current output: ${actualOutput}, Target: ${targetUnits}`
+                target_warning: true,
+                line_output: actualOutput,
+                line_target: targetUnits,
+                message: `Primary target is ${targetUnits}, but current output is ${actualOutput}. Do you want to start changeover anyway?`
             });
         }
 
@@ -9342,7 +10380,7 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
              LEFT JOIN line_plan_workstations incoming_ws
                ON incoming_ws.line_id = primary_ws.line_id
               AND incoming_ws.work_date = primary_ws.work_date
-              AND incoming_ws.workstation_code = primary_ws.workstation_code
+              AND regexp_replace(incoming_ws.workstation_code, '[^0-9]', '', 'g')::int = regexp_replace(primary_ws.workstation_code, '[^0-9]', '', 'g')::int
               AND incoming_ws.product_id = $4
              WHERE primary_ws.line_id = $1
                AND primary_ws.work_date = $2
@@ -9357,15 +10395,21 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         }
         if (ws.ws_changeover_active) return res.status(400).json({ success: false, error: 'Changeover already active for this workstation' });
 
-        const lineOutput = await getLineActualOutput(pool, line_id, work_date);
-        const lineTarget = parseInt(plan.target_units || 0, 10) || 0;
-        if (lineOutput < lineTarget && !force) {
+        const workstationTarget = await getProductTargetQuantity(pool, plan.product_id, plan.target_units);
+        const workstationCumulativeOutput = await getCumulativeWorkstationOutput(pool, {
+            lineId: line_id,
+            productId: plan.product_id,
+            workstationCode: workstation_code,
+            throughDate: work_date
+        });
+        if (workstationCumulativeOutput < workstationTarget && !force) {
+            const remainingQty = Math.max(0, workstationTarget - workstationCumulativeOutput);
             return res.json({
                 success: false,
                 target_warning: true,
-                line_output: lineOutput,
-                line_target: lineTarget,
-                message: `Primary line target is ${lineTarget}, but current output is ${lineOutput}. Do you want to start changeover for ${workstation_code} anyway?`
+                line_output: workstationCumulativeOutput,
+                line_target: workstationTarget,
+                message: `Primary target for ${workstation_code} is ${workstationTarget}, but cumulative primary output is ${workstationCumulativeOutput}. Remaining to target: ${remainingQty}. Do you want to start changeover for ${workstation_code} anyway?`
             });
         }
 
@@ -9403,7 +10447,8 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
             workDate: work_date,
             primaryWorkstationId: ws.primary_workstation_id,
             primaryLineProductId: plan.product_id,
-            lineTargetUnits: plan.target_units
+            lineTargetUnits: plan.target_units,
+            workstationCode: workstation_code
         });
         const groupIdentifier = ws.incoming_group_name || ws.primary_group_name || workstation_code;
 
@@ -9565,6 +10610,462 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
+});
+
+// Revert one workstation from the CO product back to the primary product.
+// Existing CO progress remains under the CO process IDs; only the live assignment
+// pointer and effective workstation source are switched back to primary.
+router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
+    const { line_id, work_date, workstation_code, employee_id } = req.body;
+    if (!line_id || !work_date || !workstation_code) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
+    }
+    if (!CHANGEOVER_ENABLED) {
+        return res.status(403).json({ success: false, error: 'Changeover is disabled' });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    if (await isLineClosed(line_id, work_date)) {
+        return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
+    }
+
+    try {
+        const planResult = await pool.query(
+            `SELECT product_id, incoming_product_id, is_locked
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        const plan = planResult.rows[0];
+        if (!plan) return res.status(404).json({ success: false, error: 'No daily plan found' });
+        if (plan.is_locked) return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        if (!plan.product_id || !plan.incoming_product_id) {
+            return res.status(400).json({ success: false, error: 'No changeover product is configured for this line' });
+        }
+
+        const wsResult = await pool.query(
+            `SELECT
+                 primary_ws.id AS primary_workstation_id,
+                 primary_ws.ws_changeover_active,
+                 primary_ws.group_name AS primary_group_name,
+                 incoming_ws.id AS incoming_workstation_id,
+                 incoming_ws.group_name AS incoming_group_name
+             FROM line_plan_workstations primary_ws
+             LEFT JOIN line_plan_workstations incoming_ws
+               ON incoming_ws.line_id = primary_ws.line_id
+              AND incoming_ws.work_date = primary_ws.work_date
+              AND regexp_replace(incoming_ws.workstation_code, '[^0-9]', '', 'g')::int = regexp_replace(primary_ws.workstation_code, '[^0-9]', '', 'g')::int
+              AND incoming_ws.product_id = $4
+             WHERE primary_ws.line_id = $1
+               AND primary_ws.work_date = $2
+               AND primary_ws.workstation_code = $3
+               AND primary_ws.product_id = $5`,
+            [line_id, work_date, workstation_code, plan.incoming_product_id, plan.product_id]
+        );
+        const ws = wsResult.rows[0];
+        if (!ws) {
+            return res.status(404).json({ success: false, error: `Workstation ${workstation_code} not found in primary product plan` });
+        }
+        if (!ws.incoming_workstation_id) {
+            return res.status(400).json({ success: false, error: `Workstation ${workstation_code} is not available in the changeover product plan` });
+        }
+        if (ws.ws_changeover_active !== true) {
+            return res.status(400).json({ success: false, error: 'This workstation is already on the primary product' });
+        }
+
+        const currentAssignmentResult = await pool.query(
+            `SELECT employee_id, material_provided, is_linked, linked_at, attendance_start, late_reason
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false
+             LIMIT 1`,
+            [line_id, work_date, workstation_code]
+        );
+        const currentAssignment = currentAssignmentResult.rows[0] || null;
+        const currentEmployeeId = currentAssignment?.employee_id ? parseInt(currentAssignment.employee_id, 10) : null;
+        const nextEmployeeId = employee_id
+            ? (parseInt(employee_id, 10) || null)
+            : currentEmployeeId;
+        const preservedState = {
+            is_linked: currentAssignment?.is_linked === true,
+            linked_at: currentAssignment?.linked_at || null,
+            attendance_start: currentAssignment?.attendance_start || null,
+            late_reason: currentAssignment?.late_reason || null
+        };
+        const materialProvided = parseInt(currentAssignment?.material_provided || 0, 10) || 0;
+        const groupIdentifier = ws.primary_group_name || ws.incoming_group_name || workstation_code;
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            await client.query(
+                `UPDATE line_plan_workstations
+                 SET ws_changeover_active = false,
+                     ws_changeover_started_at = NULL,
+                     updated_at = NOW()
+                 WHERE id = $1`,
+                [ws.primary_workstation_id]
+            );
+
+            if (currentEmployeeId && currentEmployeeId !== nextEmployeeId) {
+                await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                    lineId: line_id,
+                    workDate: work_date,
+                    workstationCode: workstation_code,
+                    isOvertime: false,
+                    nextEmployeeId
+                });
+            }
+
+            if (nextEmployeeId) {
+                await clearEmployeeAssignmentConflicts(
+                    client,
+                    nextEmployeeId,
+                    work_date,
+                    false,
+                    line_id,
+                    workstation_code
+                );
+                await client.query(
+                    `INSERT INTO employee_workstation_assignments
+                       (line_id, work_date, workstation_code, employee_id, is_overtime, line_plan_workstation_id,
+                        material_provided, is_linked, linked_at, late_reason, attendance_start)
+                     VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, $10)
+                     ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+                     DO UPDATE SET employee_id = EXCLUDED.employee_id,
+                                   line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                                   material_provided = EXCLUDED.material_provided,
+                                   is_linked = EXCLUDED.is_linked,
+                                   linked_at = COALESCE(EXCLUDED.linked_at, employee_workstation_assignments.linked_at),
+                                   late_reason = COALESCE(EXCLUDED.late_reason, employee_workstation_assignments.late_reason),
+                                   attendance_start = COALESCE(EXCLUDED.attendance_start, employee_workstation_assignments.attendance_start),
+                                   assigned_at = NOW()`,
+                    [
+                        line_id,
+                        work_date,
+                        workstation_code,
+                        nextEmployeeId,
+                        ws.primary_workstation_id,
+                        materialProvided,
+                        preservedState.is_linked,
+                        preservedState.linked_at,
+                        preservedState.late_reason,
+                        preservedState.attendance_start
+                    ]
+                );
+                if (preservedState.is_linked) {
+                    await syncAssignmentHistoryForCurrentRow(client, {
+                        lineId: line_id,
+                        workDate: work_date,
+                        workstationCode: workstation_code,
+                        employeeId: nextEmployeeId,
+                        linePlanWorkstationId: ws.primary_workstation_id,
+                        isOvertime: false,
+                        isLinked: preservedState.is_linked,
+                        linkedAt: preservedState.linked_at,
+                        attendanceStart: preservedState.attendance_start,
+                        lateReason: preservedState.late_reason,
+                        forceCurrentHourStart: true
+                    });
+                }
+            } else {
+                await client.query(
+                    `UPDATE employee_workstation_assignments
+                     SET line_plan_workstation_id = $4,
+                         assigned_at = NOW()
+                     WHERE line_id = $1
+                       AND work_date = $2
+                       AND workstation_code = $3
+                       AND is_overtime = false`,
+                    [line_id, work_date, workstation_code, ws.primary_workstation_id]
+                );
+            }
+
+            const activeResult = await client.query(
+                `SELECT EXISTS(
+                     SELECT 1
+                     FROM line_plan_workstations
+                     WHERE line_id = $1
+                       AND work_date = $2
+                       AND product_id = $3
+                       AND ws_changeover_active = true
+                 ) AS has_active_changeover`,
+                [line_id, work_date, plan.product_id]
+            );
+            const hasActiveChangeover = activeResult.rows[0]?.has_active_changeover === true;
+
+            await client.query(
+                `UPDATE line_daily_plans
+                 SET changeover_started_at = CASE
+                         WHEN $3 THEN COALESCE(changeover_started_at, NOW())
+                         ELSE NULL
+                     END,
+                     updated_at = NOW()
+                 WHERE line_id = $1 AND work_date = $2`,
+                [line_id, work_date, hasActiveChangeover]
+            );
+
+            await remapProcessMaterialWipBetweenWorkstations(client, {
+                lineId: line_id,
+                workDate: work_date,
+                fromWorkstationId: ws.incoming_workstation_id,
+                toWorkstationId: ws.primary_workstation_id
+            });
+
+            await refreshGroupWip(line_id, work_date, groupIdentifier, client);
+
+            await client.query('COMMIT');
+        } catch (txErr) {
+            await client.query('ROLLBACK');
+            throw txErr;
+        } finally {
+            client.release();
+        }
+
+        realtime.broadcast('data_change', {
+            entity: 'changeover', action: 'ws_reverted', line_id, work_date, workstation_code
+        });
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+        realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date });
+        res.json({
+            success: true,
+            message: `Workstation ${workstation_code} switched back to the primary product`,
+            data: {
+                workstation_code,
+                employee_id: nextEmployeeId,
+                material_provided: materialProvided
+            }
+        });
+    } catch (err) {
+        res.status(err.status || 500).json({ success: false, error: err.message });
+    }
+});
+
+// Finalize changeover into the new primary product once every workstation has switched.
+// This preserves the previous primary state in an archive row and then promotes the incoming
+// product to become the line's primary product for the same day.
+router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
+    const { line_id, work_date } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    if (!CHANGEOVER_ENABLED) {
+        return res.status(403).json({ success: false, error: 'Changeover is disabled' });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+
+    let beforePlan = null;
+    let archiveRecord = null;
+    let updatedPlan = null;
+    let promotedProductId = null;
+    let promotedTargetUnits = 0;
+    const fail = (status, message) => {
+        const err = new Error(message);
+        err.status = status;
+        throw err;
+    };
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const planResult = await client.query(
+            `SELECT ldp.*,
+                    p.product_code AS primary_product_code,
+                    p.product_name AS primary_product_name,
+                    ip.product_code AS incoming_product_code,
+                    ip.product_name AS incoming_product_name
+             FROM line_daily_plans ldp
+             LEFT JOIN products p ON p.id = ldp.product_id
+             LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
+             WHERE ldp.line_id = $1 AND ldp.work_date = $2
+             FOR UPDATE OF ldp`,
+            [line_id, work_date]
+        );
+        beforePlan = planResult.rows[0];
+        if (!beforePlan) {
+            fail(404, 'No daily plan found for this line/date');
+        }
+        if (beforePlan.is_locked) {
+            fail(403, 'Daily plan is locked');
+        }
+        if (!beforePlan.product_id || !beforePlan.incoming_product_id) {
+            fail(400, 'No changeover product is available to promote');
+        }
+
+        const previousPrimaryProductId = parseInt(beforePlan.product_id, 10);
+        promotedProductId = parseInt(beforePlan.incoming_product_id, 10);
+        promotedTargetUnits = parseInt(beforePlan.incoming_target_units || 0, 10) || 0;
+        if (promotedTargetUnits <= 0) {
+            fail(400, 'Incoming target must be greater than 0 before promotion');
+        }
+
+        const archiveCheckResult = await client.query(
+            `SELECT id
+             FROM changeover_primary_promotions
+             WHERE line_id = $1 AND work_date = $2
+             LIMIT 1`,
+            [line_id, work_date]
+        );
+        if (archiveCheckResult.rowCount > 0) {
+            fail(409, 'Primary promotion has already been completed for this line/date');
+        }
+
+        const primaryWsResult = await client.query(
+            `SELECT id, workstation_code, ws_changeover_active
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+             ORDER BY workstation_number, workstation_code
+             FOR UPDATE`,
+            [line_id, work_date, previousPrimaryProductId]
+        );
+        if (primaryWsResult.rowCount === 0) {
+            fail(400, 'No primary workstation plan exists for this line/date');
+        }
+
+        const incomingWsResult = await client.query(
+            `SELECT id, workstation_code
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+             ORDER BY workstation_number, workstation_code
+             FOR UPDATE`,
+            [line_id, work_date, promotedProductId]
+        );
+        if (incomingWsResult.rowCount === 0) {
+            fail(400, 'No changeover workstation plan exists for this line/date');
+        }
+
+        const incomingByCode = new Map(
+            incomingWsResult.rows.map(row => [String(row.workstation_code || ''), row])
+        );
+        const missingIncoming = primaryWsResult.rows
+            .filter(row => !incomingByCode.has(String(row.workstation_code || '')))
+            .map(row => row.workstation_code);
+        if (missingIncoming.length > 0) {
+            fail(400, `Missing changeover workstation mapping for: ${missingIncoming.join(', ')}`);
+        }
+
+        const pendingWorkstations = primaryWsResult.rows
+            .filter(row => row.ws_changeover_active !== true)
+            .map(row => row.workstation_code);
+        if (pendingWorkstations.length > 0) {
+            fail(400, `All workstations must switch to CO before promotion. Pending: ${pendingWorkstations.join(', ')}`);
+        }
+
+        const snapshot = await buildChangeoverPromotionSnapshot(client, {
+            lineId: line_id,
+            workDate: work_date,
+            previousPrimaryProductId,
+            newPrimaryProductId: promotedProductId,
+            beforePlan
+        });
+
+        const archiveInsertResult = await client.query(
+            `INSERT INTO changeover_primary_promotions
+               (line_id, work_date, previous_primary_product_id, new_primary_product_id,
+                previous_primary_target_units, new_primary_target_units, promoted_by, snapshot)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING id, line_id, work_date, previous_primary_product_id, new_primary_product_id,
+                       previous_primary_target_units, new_primary_target_units, promoted_at, promoted_by`,
+            [
+                line_id,
+                work_date,
+                previousPrimaryProductId,
+                promotedProductId,
+                parseInt(beforePlan.target_units || 0, 10) || 0,
+                promotedTargetUnits,
+                req.user?.id || null,
+                snapshot
+            ]
+        );
+        archiveRecord = archiveInsertResult.rows[0];
+
+        await normalizeRegularAssignmentsToProductWorkstations(client, {
+            lineId: line_id,
+            workDate: work_date,
+            productId: promotedProductId
+        });
+
+        const updatedPlanResult = await client.query(
+            `UPDATE line_daily_plans
+             SET product_id = $1,
+                 target_units = $2,
+                 incoming_product_id = NULL,
+                 incoming_target_units = 0,
+                 changeover_sequence = 0,
+                 changeover_started_at = NULL,
+                 updated_by = COALESCE($3, updated_by),
+                 updated_at = NOW()
+             WHERE id = $4
+             RETURNING *`,
+            [promotedProductId, promotedTargetUnits, req.user?.id || null, beforePlan.id]
+        );
+        updatedPlan = updatedPlanResult.rows[0];
+
+        if (work_date === new Date().toISOString().slice(0, 10)) {
+            await client.query(
+                `UPDATE production_lines
+                 SET current_product_id = $1,
+                     target_units = $2,
+                     updated_by = COALESCE($3, updated_by),
+                     updated_at = NOW()
+                 WHERE id = $4`,
+                [promotedProductId, promotedTargetUnits, req.user?.id || null, line_id]
+            );
+        }
+
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        return res.status(err.status || 500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+
+    await logAudit(
+        'changeover_primary_promotions',
+        archiveRecord.id,
+        'create',
+        archiveRecord,
+        null,
+        req
+    );
+    await logAudit(
+        'line_daily_plans',
+        updatedPlan.id,
+        'changeover_finalize_primary',
+        {
+            ...updatedPlan,
+            archived_promotion_id: archiveRecord.id
+        },
+        beforePlan,
+        req
+    );
+
+    realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
+    realtime.broadcast('data_change', { entity: 'changeover', action: 'finalized_primary', line_id, work_date });
+    realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, work_date });
+    if (work_date === new Date().toISOString().slice(0, 10)) {
+        realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
+    }
+
+    res.json({
+        success: true,
+        message: `${beforePlan.incoming_product_code || beforePlan.incoming_product_name || 'Changeover product'} is now the primary product`,
+        data: {
+            archived_promotion_id: archiveRecord.id,
+            previous_primary_product_id: beforePlan.product_id,
+            previous_primary_product_code: beforePlan.primary_product_code || null,
+            previous_primary_product_name: beforePlan.primary_product_name || null,
+            new_primary_product_id: promotedProductId,
+            new_primary_product_code: beforePlan.incoming_product_code || null,
+            new_primary_product_name: beforePlan.incoming_product_name || null,
+            new_primary_target_units: promotedTargetUnits
+        }
+    });
 });
 
 router.post('/supervisor/resolve-process', async (req, res) => {
@@ -10661,6 +12162,56 @@ router.post('/supervisor/progress', async (req, res) => {
     }
 });
 
+// GET /supervisor/ws-employees?line_id=&work_date=&hour=
+// Returns the employee active at each workstation for a specific hour (from assignment history).
+router.get('/supervisor/ws-employees', async (req, res) => {
+    const { line_id, work_date, hour } = req.query;
+    if (!line_id || !work_date || hour === undefined) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date and hour are required' });
+    }
+    const hourInt = parseInt(hour, 10);
+    if (!Number.isFinite(hourInt)) {
+        return res.status(400).json({ success: false, error: 'hour must be a number' });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT hist.workstation_code,
+                    hist.effective_from_hour,
+                    hist.id,
+                    e.emp_code,
+                    e.emp_name,
+                    e.id AS employee_id
+             FROM employee_workstation_assignment_history hist
+             LEFT JOIN employees e ON e.id = hist.employee_id
+             WHERE hist.line_id = $1
+               AND hist.work_date = $2
+               AND hist.is_overtime = false
+               AND hist.effective_from_hour <= $3
+               AND COALESCE(hist.effective_to_hour, 999) >= $3
+             ORDER BY hist.effective_from_hour DESC, hist.id DESC`,
+            [line_id, work_date, hourInt]
+        );
+        // Keep most recent per normalized workstation code
+        const seen = new Set();
+        const employees = [];
+        for (const row of result.rows) {
+            const nk = String(parseInt(String(row.workstation_code || '').replace(/[^0-9]/g, ''), 10) || row.workstation_code);
+            if (seen.has(nk)) continue;
+            seen.add(nk);
+            employees.push({
+                workstation_code: row.workstation_code,
+                workstation_key: nk,
+                employee_id: row.employee_id,
+                emp_code: row.emp_code,
+                emp_name: row.emp_name
+            });
+        }
+        res.json({ success: true, data: employees });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 router.get('/supervisor/progress', async (req, res) => {
     const { line_id, work_date } = req.query;
     if (!line_id || !work_date) {
@@ -10985,19 +12536,17 @@ router.get('/supervisor/materials', async (req, res) => {
         return res.status(400).json({ success: false, error: 'line_id and date are required' });
     }
     try {
-        const processesResult = await pool.query(
-            `SELECT pp.id, pp.sequence_number, o.operation_code, o.operation_name
-             FROM product_processes pp
-             JOIN operations o ON pp.operation_id = o.id
-             WHERE pp.product_id = (
-                SELECT COALESCE(ldp.product_id, pl.current_product_id)
-                FROM production_lines pl
-                LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
-                WHERE pl.id = $1
-             ) AND pp.is_active = true
-             ORDER BY pp.sequence_number`,
-            [line_id, date]
-        );
+        const effectiveProcesses = await getEffectiveRegularSourceProcesses(pool, line_id, date);
+        const processMap = new Map();
+        for (const proc of effectiveProcesses) {
+            if (!proc?.process_id || processMap.has(proc.process_id)) continue;
+            processMap.set(proc.process_id, proc);
+        }
+        const processRows = Array.from(processMap.values()).sort((a, b) => {
+            const wsDiff = (a.workstation_number || 0) - (b.workstation_number || 0);
+            if (wsDiff !== 0) return wsDiff;
+            return (a.sequence_number || 0) - (b.sequence_number || 0);
+        });
 
         // Get summary from view
         const summaryResult = await pool.query(`
@@ -11060,14 +12609,17 @@ router.get('/supervisor/materials', async (req, res) => {
                     wip: metrics.remaining_wip || 0
                 },
                 transactions: transactionsResult.rows,
-                wip_by_process: processesResult.rows.map(proc => ({
-                    process_id: proc.id,
+                wip_by_process: processRows.map(proc => ({
+                    process_id: proc.process_id,
                     sequence_number: proc.sequence_number,
                     operation_code: proc.operation_code,
                     operation_name: proc.operation_name,
-                    materials_in: wipMap.get(String(proc.id))?.materials_in || 0,
-                    materials_out: wipMap.get(String(proc.id))?.materials_out || 0,
-                    wip_quantity: wipMap.get(String(proc.id))?.wip_quantity || 0
+                    source_product_id: proc.source_product_id || null,
+                    source_mode: proc.source_mode || 'primary',
+                    is_changeover: !!proc.is_changeover,
+                    materials_in: wipMap.get(String(proc.process_id))?.materials_in || 0,
+                    materials_out: wipMap.get(String(proc.process_id))?.materials_out || 0,
+                    wip_quantity: wipMap.get(String(proc.process_id))?.wip_quantity || 0
                 }))
             }
         });
@@ -11137,31 +12689,22 @@ router.get('/supervisor/materials/processes/:lineId', async (req, res) => {
     const { date } = req.query;
     const workDate = date || new Date().toISOString().slice(0, 10);
     try {
-        // Get product for the line on this date
-        const planResult = await pool.query(
-            `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
-            [lineId, workDate]
-        );
-        let productId = planResult.rows[0]?.product_id;
-        if (!productId) {
-            const lineResult = await pool.query(
-                `SELECT current_product_id FROM production_lines WHERE id = $1`,
-                [lineId]
-            );
-            productId = lineResult.rows[0]?.current_product_id;
+        const effectiveProcesses = await getEffectiveRegularSourceProcesses(pool, lineId, workDate);
+        const processMap = new Map();
+        for (const proc of effectiveProcesses) {
+            if (!proc?.process_id || processMap.has(proc.process_id)) continue;
+            processMap.set(proc.process_id, {
+                id: proc.process_id,
+                sequence_number: proc.sequence_number,
+                operation_code: proc.operation_code,
+                operation_name: proc.operation_name,
+                source_product_id: proc.source_product_id || null,
+                source_mode: proc.source_mode || 'primary',
+                is_changeover: !!proc.is_changeover
+            });
         }
-        if (!productId) {
-            return res.json({ success: true, data: [] });
-        }
-
-        const result = await pool.query(`
-            SELECT pp.id, pp.sequence_number, o.operation_code, o.operation_name
-            FROM product_processes pp
-            JOIN operations o ON pp.operation_id = o.id
-            WHERE pp.product_id = $1 AND pp.is_active = true
-            ORDER BY pp.sequence_number
-        `, [productId]);
-        res.json({ success: true, data: result.rows });
+        const data = Array.from(processMap.values()).sort((a, b) => (a.sequence_number || 0) - (b.sequence_number || 0));
+        res.json({ success: true, data });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -11697,11 +13240,17 @@ router.get('/osm-report', async (req, res) => {
         const lineResult = await pool.query(`
             SELECT pl.line_name, pl.line_code,
                    ldp.target_units, ldp.product_id,
+                   ldp.incoming_target_units, ldp.incoming_product_id,
                    p.product_code, p.product_name, COALESCE(p.target_qty, 0) AS total_target,
-                   COALESCE(p.buyer_name, '') AS buyer_name
+                   COALESCE(p.buyer_name, '') AS buyer_name,
+                   ip.product_code AS incoming_product_code,
+                   ip.product_name AS incoming_product_name,
+                   COALESCE(ip.target_qty, 0) AS incoming_total_target,
+                   COALESCE(ip.buyer_name, '') AS incoming_buyer_name
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
             LEFT JOIN products p ON p.id = ldp.product_id
+            LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
             WHERE pl.id = $1
         `, [line_id, toDate]);
 
@@ -11710,134 +13259,181 @@ router.get('/osm-report', async (req, res) => {
         }
         const line = lineResult.rows[0];
 
-        if (!line.product_id) {
+        if (!line.product_id && !line.incoming_product_id) {
             return res.json({
                 success: true,
                 line_name: line.line_name, line_code: line.line_code,
                 product_code: '', product_name: '', buyer_name: '', to_date: toDate, date: toDate,
                 target_units: 0, total_target: 0, in_time: inTime, out_time: outTime,
-                working_hours: workingHours, osm_points: []
+                working_hours: workingHours, osm_points: [], changeover: null
             });
         }
+        const buildDailyOsmData = async ({
+            productId,
+            productCode,
+            productName,
+            buyerName,
+            targetUnits,
+            totalTarget
+        }) => {
+            if (!productId) return null;
+            const normalizedTarget = parseInt(targetUnits || 0, 10) || 0;
+            const normalizedTotalTarget = parseInt(totalTarget || 0, 10) || 0;
 
-        // Determine from_date: use provided or find the earliest production date for this line+product
-        let fromDate = req.query.from_date || null;
-        if (!fromDate) {
-            const firstDateRes = await pool.query(
-                `SELECT MIN(work_date)::text AS first_date
-                 FROM line_daily_plans
-                 WHERE line_id = $1 AND product_id = $2 AND work_date <= $3`,
-                [line_id, line.product_id, toDate]
-            );
-            fromDate = firstDateRes.rows[0]?.first_date || toDate;
-        }
+            let fromDate = req.query.from_date || null;
+            if (!fromDate) {
+                const firstDateRes = await pool.query(
+                    `SELECT MIN(work_date)::text AS first_date
+                     FROM line_daily_plans
+                     WHERE line_id = $1
+                       AND work_date <= $3
+                       AND (product_id = $2 OR incoming_product_id = $2)`,
+                    [line_id, productId, toDate]
+                );
+                fromDate = firstDateRes.rows[0]?.first_date || toDate;
+            }
 
-        // Fetch OSM-checked processes for this line+product plan on toDate
-        // ordered by sequence so OSM numbering is by process sequence
-        const osmResult = await pool.query(`
-            SELECT lpwp.id AS lpwp_id,
-                   lpwp.osm_checked,
-                   lpw.workstation_code,
-                   lpw.workstation_number,
-                   pp.id AS process_id,
-                   pp.sequence_number,
-                   o.operation_code,
-                   o.operation_name
-            FROM line_plan_workstations lpw
-            JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
-            JOIN product_processes pp ON lpwp.product_process_id = pp.id
-            JOIN operations o ON pp.operation_id = o.id
-            WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
-              AND lpwp.osm_checked = true
-            ORDER BY pp.sequence_number, lpwp.sequence_in_workstation
-        `, [line_id, toDate, line.product_id]);
+            const osmResult = await pool.query(`
+                SELECT lpwp.id AS lpwp_id,
+                       lpw.workstation_code,
+                       lpw.workstation_number,
+                       pp.id AS process_id,
+                       pp.sequence_number,
+                       o.operation_code,
+                       o.operation_name
+                FROM line_plan_workstations lpw
+                JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+                JOIN product_processes pp ON lpwp.product_process_id = pp.id
+                JOIN operations o ON pp.operation_id = o.id
+                WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
+                  AND lpwp.osm_checked = true
+                ORDER BY pp.sequence_number, lpwp.sequence_in_workstation
+            `, [line_id, toDate, productId]);
 
-        if (!osmResult.rows.length) {
-            return res.json({
-                success: true,
-                line_name: line.line_name, line_code: line.line_code,
-                product_code: line.product_code || '', product_name: line.product_name || '',
-                buyer_name: line.buyer_name || '',
-                to_date: toDate, from_date: fromDate, date: toDate,
-                target_units: parseInt(line.target_units || 0),
-                total_target: parseInt(line.total_target || 0),
-                in_time: inTime, out_time: outTime,
-                working_hours: workingHours, osm_points: [],
-                no_osm_points: true
-            });
-        }
+            if (!osmResult.rows.length) {
+                return {
+                    product_id: productId,
+                    product_code: productCode || '',
+                    product_name: productName || '',
+                    buyer_name: buyerName || '',
+                    from_date: fromDate,
+                    to_date: toDate,
+                    target_units: normalizedTarget,
+                    total_target: normalizedTotalTarget,
+                    osm_points: []
+                };
+            }
 
-        const processIds = osmResult.rows.map(r => r.process_id);
+            const processIds = osmResult.rows.map(r => r.process_id);
+            const hourlyResult = await pool.query(`
+                SELECT lph.process_id, lph.hour_slot,
+                       MAX(lph.quantity) as quantity,
+                       string_agg(DISTINCT lph.shortfall_reason, '; ')
+                           FILTER (WHERE lph.shortfall_reason IS NOT NULL AND lph.shortfall_reason <> '')
+                           as shortfall_reason
+                FROM line_process_hourly_progress lph
+                WHERE lph.process_id = ANY($1::int[])
+                  AND lph.line_id = $2 AND lph.work_date = $3
+                GROUP BY lph.process_id, lph.hour_slot
+                ORDER BY lph.process_id, lph.hour_slot
+            `, [processIds, line_id, toDate]);
 
-        // Hourly breakdown for toDate (for the per-hour columns in the report)
-        const hourlyResult = await pool.query(`
-            SELECT lph.process_id, lph.hour_slot,
-                   MAX(lph.quantity) as quantity,
-                   string_agg(DISTINCT lph.shortfall_reason, '; ')
-                       FILTER (WHERE lph.shortfall_reason IS NOT NULL AND lph.shortfall_reason <> '')
-                       as shortfall_reason
-            FROM line_process_hourly_progress lph
-            WHERE lph.process_id = ANY($1::int[])
-              AND lph.line_id = $2 AND lph.work_date = $3
-            GROUP BY lph.process_id, lph.hour_slot
-            ORDER BY lph.process_id, lph.hour_slot
-        `, [processIds, line_id, toDate]);
+            const cumulativeResult = await pool.query(`
+                SELECT process_id,
+                       COALESCE(SUM(max_qty), 0) AS cumulative_output
+                FROM (
+                    SELECT process_id, work_date, hour_slot, MAX(quantity) AS max_qty
+                    FROM line_process_hourly_progress
+                    WHERE process_id = ANY($1::int[])
+                      AND line_id = $2
+                      AND work_date <= $3
+                    GROUP BY process_id, work_date, hour_slot
+                ) per_slot
+                GROUP BY process_id
+            `, [processIds, line_id, toDate]);
 
-        // Cumulative output: sum of all output produced up to (and including) toDate.
-        // MAX per (process, date, hour_slot) handles any duplicate entries, then SUM all slots.
-        const cumulativeResult = await pool.query(`
-            SELECT process_id,
-                   COALESCE(SUM(max_qty), 0) AS cumulative_output
-            FROM (
-                SELECT process_id, work_date, hour_slot, MAX(quantity) AS max_qty
-                FROM line_process_hourly_progress
-                WHERE process_id = ANY($1::int[])
-                  AND line_id = $2
-                  AND work_date <= $3
-                GROUP BY process_id, work_date, hour_slot
-            ) per_slot
-            GROUP BY process_id
-        `, [processIds, line_id, toDate]);
+            const hourlyMap = {};
+            for (const row of hourlyResult.rows) {
+                if (!hourlyMap[row.process_id]) hourlyMap[row.process_id] = {};
+                hourlyMap[row.process_id][row.hour_slot] = {
+                    quantity: parseInt(row.quantity || 0, 10) || 0,
+                    shortfall_reason: row.shortfall_reason || null
+                };
+            }
+            const cumulativeMap = {};
+            for (const row of cumulativeResult.rows) {
+                cumulativeMap[row.process_id] = parseInt(row.cumulative_output || 0, 10) || 0;
+            }
 
-        // Build maps
-        const hourlyMap = {};
-        for (const row of hourlyResult.rows) {
-            if (!hourlyMap[row.process_id]) hourlyMap[row.process_id] = {};
-            hourlyMap[row.process_id][row.hour_slot] = {
-                quantity: parseInt(row.quantity || 0),
-                shortfall_reason: row.shortfall_reason || null
+            const osmPoints = osmResult.rows.map((row, idx) => ({
+                osm_number: idx + 1,
+                osm_label: `OSM${idx + 1}`,
+                lpwp_id: row.lpwp_id,
+                process_id: row.process_id,
+                workstation_code: row.workstation_code,
+                operation_code: row.operation_code,
+                operation_name: row.operation_name,
+                sequence_number: row.sequence_number,
+                hourly: hourlyMap[row.process_id] || {},
+                cumulative_output: cumulativeMap[row.process_id] || 0
+            }));
+
+            return {
+                product_id: productId,
+                product_code: productCode || '',
+                product_name: productName || '',
+                buyer_name: buyerName || '',
+                from_date: fromDate,
+                to_date: toDate,
+                target_units: normalizedTarget,
+                total_target: normalizedTotalTarget,
+                osm_points: osmPoints
             };
-        }
-        const cumulativeMap = {};
-        for (const row of cumulativeResult.rows) {
-            cumulativeMap[row.process_id] = parseInt(row.cumulative_output || 0);
-        }
+        };
 
-        // Build OSM points with numbering
-        const osmPoints = osmResult.rows.map((row, idx) => ({
-            osm_number: idx + 1,
-            osm_label: `OSM${idx + 1}`,
-            lpwp_id: row.lpwp_id,
-            process_id: row.process_id,
-            workstation_code: row.workstation_code,
-            operation_code: row.operation_code,
-            operation_name: row.operation_name,
-            sequence_number: row.sequence_number,
-            hourly: hourlyMap[row.process_id] || {},
-            cumulative_output: cumulativeMap[row.process_id] || 0
-        }));
+        const primaryData = await buildDailyOsmData({
+            productId: line.product_id,
+            productCode: line.product_code,
+            productName: line.product_name,
+            buyerName: line.buyer_name,
+            targetUnits: line.target_units,
+            totalTarget: line.total_target
+        });
+
+        const shouldLoadChangeover = !!line.incoming_product_id && String(line.incoming_product_id) !== String(line.product_id || '');
+        const changeoverData = shouldLoadChangeover
+            ? await buildDailyOsmData({
+                productId: line.incoming_product_id,
+                productCode: line.incoming_product_code,
+                productName: line.incoming_product_name,
+                buyerName: line.incoming_buyer_name,
+                targetUnits: line.incoming_target_units,
+                totalTarget: line.incoming_total_target
+            })
+            : null;
+
+        const primaryPoints = primaryData?.osm_points || [];
+        const changeoverPoints = changeoverData?.osm_points || [];
+        const noOsmPoints = !primaryPoints.length && !changeoverPoints.length;
 
         res.json({
             success: true,
-            line_name: line.line_name, line_code: line.line_code,
-            product_code: line.product_code || '', product_name: line.product_name || '',
-            buyer_name: line.buyer_name || '',
-            to_date: toDate, from_date: fromDate, date: toDate,
-            target_units: parseInt(line.target_units || 0),
-            total_target: parseInt(line.total_target || 0),
-            in_time: inTime, out_time: outTime,
+            line_name: line.line_name,
+            line_code: line.line_code,
+            product_code: primaryData?.product_code || '',
+            product_name: primaryData?.product_name || '',
+            buyer_name: primaryData?.buyer_name || '',
+            to_date: toDate,
+            from_date: primaryData?.from_date || toDate,
+            date: toDate,
+            target_units: primaryData?.target_units || 0,
+            total_target: primaryData?.total_target || 0,
+            in_time: inTime,
+            out_time: outTime,
             working_hours: workingHours,
-            osm_points: osmPoints
+            osm_points: primaryPoints,
+            changeover: changeoverData,
+            no_osm_points: noOsmPoints
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -11854,106 +13450,180 @@ router.get('/osm-report-range', async (req, res) => {
         const lineResult = await pool.query(`
             SELECT pl.line_name, pl.line_code,
                    ldp.target_units, ldp.product_id,
+                   ldp.incoming_target_units, ldp.incoming_product_id,
                    p.product_code, p.product_name,
                    COALESCE(p.buyer_name, '') AS buyer_name,
-                   COALESCE(p.target_qty, 0) AS total_target
+                   COALESCE(p.target_qty, 0) AS total_target,
+                   ip.product_code AS incoming_product_code,
+                   ip.product_name AS incoming_product_name,
+                   COALESCE(ip.buyer_name, '') AS incoming_buyer_name,
+                   COALESCE(ip.target_qty, 0) AS incoming_total_target
             FROM production_lines pl
             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
             LEFT JOIN products p ON p.id = ldp.product_id
+            LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
             WHERE pl.id = $1
         `, [line_id, to_date]);
 
         const line = lineResult.rows[0];
         if (!line) return res.status(404).json({ success: false, error: 'Line not found' });
-        if (!line.product_id) {
+        if (!line.product_id && !line.incoming_product_id) {
             return res.json({ success: true, line_name: line.line_name, line_code: line.line_code, osm_points: [], no_plan: true });
         }
+        const buildRangeOsmData = async ({
+            productId,
+            productCode,
+            productName,
+            buyerName,
+            targetUnits,
+            totalTarget
+        }) => {
+            if (!productId) return null;
+            const normalizedTarget = parseInt(targetUnits || 0, 10) || 0;
+            const normalizedTotalTarget = parseInt(totalTarget || 0, 10) || 0;
 
-        // Count distinct production days in range
-        const daysResult = await pool.query(`
-            SELECT COUNT(DISTINCT work_date) AS day_count
-            FROM line_process_hourly_progress
-            WHERE line_id = $1 AND work_date BETWEEN $2 AND $3
-        `, [line_id, from_date, to_date]);
-        const dayCount = parseInt(daysResult.rows[0]?.day_count || 0);
-        const rangeTarget = dayCount * parseInt(line.target_units || 0);
+            const osmResult = await pool.query(`
+                SELECT lpwp.id AS lpwp_id,
+                       lpw.workstation_code, lpw.workstation_number,
+                       pp.id AS process_id, pp.sequence_number,
+                       o.operation_code, o.operation_name
+                FROM line_plan_workstations lpw
+                JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+                JOIN product_processes pp ON lpwp.product_process_id = pp.id
+                JOIN operations o ON pp.operation_id = o.id
+                WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
+                  AND lpwp.osm_checked = true
+                ORDER BY pp.sequence_number, lpwp.sequence_in_workstation
+            `, [line_id, to_date, productId]);
 
-        // Fetch OSM-checked processes (use to_date for plan reference)
-        const osmResult = await pool.query(`
-            SELECT lpwp.id AS lpwp_id,
-                   lpw.workstation_code, lpw.workstation_number,
-                   pp.id AS process_id, pp.sequence_number,
-                   o.operation_code, o.operation_name
-            FROM line_plan_workstations lpw
-            JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
-            JOIN product_processes pp ON lpwp.product_process_id = pp.id
-            JOIN operations o ON pp.operation_id = o.id
-            WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
-              AND lpwp.osm_checked = true
-            ORDER BY pp.sequence_number, lpwp.sequence_in_workstation
-        `, [line_id, to_date, line.product_id]);
+            if (!osmResult.rows.length) {
+                return {
+                    product_id: productId,
+                    product_code: productCode || '',
+                    product_name: productName || '',
+                    buyer_name: buyerName || '',
+                    from_date,
+                    to_date,
+                    target_units: normalizedTarget,
+                    total_target: normalizedTotalTarget,
+                    day_count: 0,
+                    range_target: 0,
+                    osm_points: []
+                };
+            }
 
-        if (!osmResult.rows.length) {
-            return res.json({ success: true, line_name: line.line_name, line_code: line.line_code, osm_points: [], no_osm_points: true });
-        }
-
-        const processIds = osmResult.rows.map(r => r.process_id);
-
-        // Aggregate output + reasons per process across date range
-        const aggResult = await pool.query(`
-            SELECT process_id,
-                   SUM(ph.qty) AS total_output,
-                   string_agg(
-                       CASE WHEN ph.reason IS NOT NULL AND ph.reason <> ''
-                            THEN TO_CHAR(ph.work_date, 'DD/MM/YY') || ': ' || ph.reason END,
-                       '; ' ORDER BY ph.work_date
-                   ) FILTER (WHERE ph.reason IS NOT NULL AND ph.reason <> '') AS reasons
-            FROM (
-                SELECT process_id, work_date, hour_slot,
-                       MAX(quantity) AS qty,
-                       string_agg(DISTINCT shortfall_reason, '; ')
-                           FILTER (WHERE shortfall_reason IS NOT NULL AND shortfall_reason <> '') AS reason
+            const processIds = osmResult.rows.map(r => r.process_id);
+            const daysResult = await pool.query(`
+                SELECT COUNT(DISTINCT work_date) AS day_count
                 FROM line_process_hourly_progress
-                WHERE process_id = ANY($1::int[]) AND line_id = $2
+                WHERE line_id = $1
+                  AND process_id = ANY($2::int[])
                   AND work_date BETWEEN $3 AND $4
-                GROUP BY process_id, work_date, hour_slot
-            ) ph
-            GROUP BY process_id
-        `, [processIds, line_id, from_date, to_date]);
+            `, [line_id, processIds, from_date, to_date]);
+            const dayCount = parseInt(daysResult.rows[0]?.day_count || 0, 10) || 0;
+            const rangeTarget = dayCount * normalizedTarget;
 
-        const aggMap = {};
-        for (const row of aggResult.rows) {
-            aggMap[row.process_id] = { total_output: parseInt(row.total_output || 0), reasons: row.reasons || '' };
-        }
+            const aggResult = await pool.query(`
+                SELECT process_id,
+                       SUM(ph.qty) AS total_output,
+                       string_agg(
+                           CASE WHEN ph.reason IS NOT NULL AND ph.reason <> ''
+                                THEN TO_CHAR(ph.work_date, 'DD/MM/YY') || ': ' || ph.reason END,
+                           '; ' ORDER BY ph.work_date
+                       ) FILTER (WHERE ph.reason IS NOT NULL AND ph.reason <> '') AS reasons
+                FROM (
+                    SELECT process_id, work_date, hour_slot,
+                           MAX(quantity) AS qty,
+                           string_agg(DISTINCT shortfall_reason, '; ')
+                               FILTER (WHERE shortfall_reason IS NOT NULL AND shortfall_reason <> '') AS reason
+                    FROM line_process_hourly_progress
+                    WHERE process_id = ANY($1::int[]) AND line_id = $2
+                      AND work_date BETWEEN $3 AND $4
+                    GROUP BY process_id, work_date, hour_slot
+                ) ph
+                GROUP BY process_id
+            `, [processIds, line_id, from_date, to_date]);
 
-        const osmPoints = osmResult.rows.map((row, idx) => {
-            const agg = aggMap[row.process_id] || { total_output: 0, reasons: '' };
-            const blog = agg.total_output - rangeTarget;
+            const aggMap = {};
+            for (const row of aggResult.rows) {
+                aggMap[row.process_id] = {
+                    total_output: parseInt(row.total_output || 0, 10) || 0,
+                    reasons: row.reasons || ''
+                };
+            }
+
+            const osmPoints = osmResult.rows.map((row, idx) => {
+                const agg = aggMap[row.process_id] || { total_output: 0, reasons: '' };
+                const blog = agg.total_output - rangeTarget;
+                return {
+                    osm_number: idx + 1,
+                    osm_label: `OSM${idx + 1}`,
+                    workstation_number: row.workstation_number,
+                    workstation_code: row.workstation_code,
+                    operation_code: row.operation_code,
+                    operation_name: row.operation_name,
+                    total_output: agg.total_output,
+                    blog: blog < 0 ? blog : 0,
+                    extra: blog > 0 ? blog : 0,
+                    reasons: agg.reasons
+                };
+            });
+
             return {
-                osm_number: idx + 1,
-                osm_label: `OSM${idx + 1}`,
-                workstation_number: row.workstation_number,
-                workstation_code: row.workstation_code,
-                operation_code: row.operation_code,
-                operation_name: row.operation_name,
-                total_output: agg.total_output,
-                blog: blog < 0 ? blog : 0,
-                extra: blog > 0 ? blog : 0,
-                reasons: agg.reasons
+                product_id: productId,
+                product_code: productCode || '',
+                product_name: productName || '',
+                buyer_name: buyerName || '',
+                from_date,
+                to_date,
+                target_units: normalizedTarget,
+                total_target: normalizedTotalTarget,
+                day_count: dayCount,
+                range_target: rangeTarget,
+                osm_points: osmPoints
             };
+        };
+
+        const primaryData = await buildRangeOsmData({
+            productId: line.product_id,
+            productCode: line.product_code,
+            productName: line.product_name,
+            buyerName: line.buyer_name,
+            targetUnits: line.target_units,
+            totalTarget: line.total_target
         });
+
+        const shouldLoadChangeover = !!line.incoming_product_id && String(line.incoming_product_id) !== String(line.product_id || '');
+        const changeoverData = shouldLoadChangeover
+            ? await buildRangeOsmData({
+                productId: line.incoming_product_id,
+                productCode: line.incoming_product_code,
+                productName: line.incoming_product_name,
+                buyerName: line.incoming_buyer_name,
+                targetUnits: line.incoming_target_units,
+                totalTarget: line.incoming_total_target
+            })
+            : null;
+
+        const primaryPoints = primaryData?.osm_points || [];
+        const changeoverPoints = changeoverData?.osm_points || [];
 
         res.json({
             success: true,
-            line_name: line.line_name, line_code: line.line_code,
-            product_code: line.product_code || '', product_name: line.product_name || '',
-            buyer_name: line.buyer_name || '',
-            from_date, to_date,
-            target_units: parseInt(line.target_units || 0),
-            total_target: parseInt(line.total_target || 0),
-            range_target: rangeTarget,
-            day_count: dayCount,
-            osm_points: osmPoints
+            line_name: line.line_name,
+            line_code: line.line_code,
+            product_code: primaryData?.product_code || '',
+            product_name: primaryData?.product_name || '',
+            buyer_name: primaryData?.buyer_name || '',
+            from_date,
+            to_date,
+            target_units: primaryData?.target_units || 0,
+            total_target: primaryData?.total_target || 0,
+            range_target: primaryData?.range_target || 0,
+            day_count: primaryData?.day_count || 0,
+            osm_points: primaryPoints,
+            changeover: changeoverData,
+            no_osm_points: !primaryPoints.length && !changeoverPoints.length
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -12026,9 +13696,9 @@ router.get('/efficiency-report', async (req, res) => {
             ? reportHour
             : (REPORT_WORK_HOURS[REPORT_WORK_HOURS.length - 1] || 16);
         const activeAssignmentResult = await pool.query(
-            `SELECT DISTINCT ON (hist.employee_id)
-                    hist.employee_id,
+            `SELECT hist.employee_id,
                     hist.workstation_code,
+                    hist.effective_from_hour,
                     e.emp_code,
                     e.emp_name
              FROM employee_workstation_assignment_history hist
@@ -12038,13 +13708,17 @@ router.get('/efficiency-report', async (req, res) => {
                AND hist.is_overtime = false
                AND hist.effective_from_hour <= $3
                AND COALESCE(hist.effective_to_hour, 999) >= $3
-             ORDER BY hist.employee_id, hist.effective_from_hour DESC, hist.id DESC`,
+             ORDER BY hist.effective_from_hour DESC, hist.id DESC`,
             [line_id, date, historyDisplayHour]
         );
-        const activeAssignmentMap = new Map(
-            activeAssignmentResult.rows.map(row => [String(row.workstation_code || ''), row])
-        );
-        const manpower = activeAssignmentResult.rows.length;
+        // Key by normalized WS code; first row wins (most recent effective_from_hour)
+        // so W01→VASANTHI(from 16) beats WS01→FAIZULLAH(from 8) at the same workstation
+        const activeAssignmentMap = new Map();
+        for (const row of activeAssignmentResult.rows) {
+            const nk = normalizeWsCode(row.workstation_code);
+            if (!activeAssignmentMap.has(nk)) activeAssignmentMap.set(nk, row);
+        }
+        const manpower = activeAssignmentMap.size;
 
         // 7. OT workstations (if OT is enabled for this line+date)
         let otWorkstations = [];
@@ -12075,7 +13749,13 @@ router.get('/efficiency-report', async (req, res) => {
         const otMap = {};
         otWorkstations.forEach(w => { otMap[w.workstation_code] = w; });
 
-        const wsIds = workstations.map(w => w.source_line_plan_workstation_id).filter(Number.isFinite);
+        // Include both primary and CO plan WS IDs so output can be looked up for any hour
+        const wsIdSet = new Set();
+        workstations.forEach(w => {
+            if (Number.isFinite(w.source_line_plan_workstation_id)) wsIdSet.add(w.source_line_plan_workstation_id);
+            if (Number.isFinite(w.primary_source_plan_workstation_id)) wsIdSet.add(w.primary_source_plan_workstation_id);
+        });
+        const wsIds = [...wsIdSet];
         const hourlyOutputMap = Number.isFinite(reportHour)
             ? await getWorkstationOutputMap(pool, line_id, date, wsIds, { exactHour: reportHour })
             : {};
@@ -12117,13 +13797,42 @@ router.get('/efficiency-report', async (req, res) => {
         const hourlyEmployeeMap = new Map(hourlyEmployeeProgress.map(emp => [String(emp.id), emp]));
         const liveEmployeeMap = new Map(liveEmployeeProgress.map(emp => [String(emp.id), emp]));
         const wsData = workstations.map(ws => {
-            const cycleTimeHours = parseFloat(ws.actual_sam_seconds || 0) / 3600;
+            // Determine if CO was active during the selected hour
+            // ws_changeover_started_at is the timestamp CO started; map to a REPORT_WORK_HOURS slot
+            let coActiveAtHour = ws.is_changeover; // default: CO active (for no-hour / live view)
+            let coStartHour = null;
+            if (ws.is_changeover && ws.ws_changeover_started_at) {
+                const coH = new Date(ws.ws_changeover_started_at).getHours();
+                coStartHour = REPORT_WORK_HOURS.find(h => h >= coH) ?? REPORT_WORK_HOURS[REPORT_WORK_HOURS.length - 1];
+                if (Number.isFinite(reportHour)) {
+                    coActiveAtHour = reportHour >= coStartHour;
+                }
+            }
+
+            // Pick the right plan WS ID and SAM based on whether CO was active at this hour
+            const effectiveWsId = coActiveAtHour
+                ? ws.source_line_plan_workstation_id
+                : ws.primary_source_plan_workstation_id;
+            const effectiveSam = coActiveAtHour
+                ? parseFloat(ws.actual_sam_seconds || 0)
+                : parseFloat(ws.primary_actual_sam_seconds || 0);
+            const effectiveTakt = coActiveAtHour
+                ? parseFloat(ws.takt_time_seconds || 0)
+                : parseFloat(ws.primary_takt_time_seconds || 0);
+            const effectiveWorkload = coActiveAtHour
+                ? parseFloat(ws.workload_pct || 0)
+                : parseFloat(ws.primary_workload_pct || 0);
+
+            const cycleTimeHours = effectiveSam / 3600;
             const otWs = otMap[ws.workstation_code];
             const wsOtHours = (otWs && otWs.is_active && otWs.employee_id)
                 ? (parseInt(otWs.ot_minutes) || parseInt(otWs.global_ot_minutes) || 0) / 60
                 : 0;
-            const hourlyOutput = hourlyOutputMap[ws.source_line_plan_workstation_id] || 0;
-            const liveOutput = liveOutputMap[ws.source_line_plan_workstation_id] || 0;
+            const hourlyOutput = hourlyOutputMap[effectiveWsId] || 0;
+            // For live output when CO is active: include both primary and CO hours' output
+            const liveOutput = coActiveAtHour && ws.is_changeover
+                ? (liveOutputMap[ws.source_line_plan_workstation_id] || 0) + (liveOutputMap[ws.primary_source_plan_workstation_id] || 0)
+                : (liveOutputMap[effectiveWsId] || 0);
             const hourlyEfficiency = (cycleTimeHours > 0)
                 ? Math.round(hourlyOutput * cycleTimeHours * 10000) / 100
                 : null;
@@ -12135,14 +13844,14 @@ router.get('/efficiency-report', async (req, res) => {
                 workstation_number: parseInt(ws.workstation_number),
                 workstation_code: ws.workstation_code,
                 group_name: ws.group_name || '',
-                source_product_id: ws.source_product_id,
-                source_mode: ws.source_mode,
-                is_changeover: !!ws.is_changeover,
-                actual_sam_seconds: parseFloat(ws.actual_sam_seconds || 0),
-                takt_time_seconds: parseFloat(ws.takt_time_seconds || 0),
-                workload_pct: parseFloat(ws.workload_pct || 0),
-                employee_code: activeAssignmentMap.get(String(ws.workstation_code || ''))?.emp_code || null,
-                employee_name: activeAssignmentMap.get(String(ws.workstation_code || ''))?.emp_name || null,
+                source_product_id: coActiveAtHour ? ws.source_product_id : (effectiveWsState.primary_product_id || ws.source_product_id),
+                source_mode: coActiveAtHour ? 'changeover' : 'primary',
+                is_changeover: coActiveAtHour,
+                actual_sam_seconds: effectiveSam,
+                takt_time_seconds: effectiveTakt,
+                workload_pct: effectiveWorkload,
+                employee_code: activeAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_code || null,
+                employee_name: activeAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_name || null,
                 live_output: liveOutput,
                 hourly_output: hourlyOutput,
                 live_efficiency_pct: liveEfficiency,

@@ -3922,9 +3922,21 @@ function switchDpTab(tab) {
     }
 }
 
-function openPlanUploadModal() {
+function openPlanUploadModal(config = {}) {
     const existing = document.getElementById('plan-upload-modal');
     if (existing) existing.remove();
+
+    const resolveState = typeof config.resolveState === 'function' ? config.resolveState : null;
+    const initialMode = config.modeSelector?.value || '';
+    const resolvedConfig = resolveState ? { ...config, ...resolveState(initialMode) } : { ...config };
+
+    const title = resolvedConfig.title || 'Upload Line Plan from Excel';
+    const subtitle = resolvedConfig.subtitle || 'Fill in the template and upload to auto-create the product, processes, workstation plan, and employee assignments in one step.';
+    const hint = resolvedConfig.hint || 'This upload will be applied to the date currently selected in Daily Plan.';
+    const uploadButtonLabel = resolvedConfig.uploadButtonLabel || 'Upload';
+    const modeOptions = Array.isArray(config.modeSelector?.options) ? config.modeSelector.options : [];
+    const selectedMode = config.modeSelector?.value || modeOptions.find(option => !option.disabled)?.value || '';
+    const selectedModeOption = modeOptions.find(option => option.value === selectedMode) || null;
 
     const modal = document.createElement('div');
     modal.id = 'plan-upload-modal';
@@ -3932,16 +3944,29 @@ function openPlanUploadModal() {
     modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:520px;width:95%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
-                <h3 style="margin:0;font-size:18px;font-weight:700;color:#111827;">Upload Line Plan from Excel</h3>
+                <h3 id="plan-upload-title" style="margin:0;font-size:18px;font-weight:700;color:#111827;">${title}</h3>
                 <button onclick="document.getElementById('plan-upload-modal').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#6b7280;line-height:1;">&times;</button>
             </div>
             <p style="font-size:13px;color:#6b7280;margin:0 0 16px;">
-                Fill in the template and upload to auto-create the product, processes, workstation plan, and employee assignments in one step.
+                <span id="plan-upload-subtitle">${subtitle}</span>
             </p>
-            <p style="font-size:12px;color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:8px 10px;margin:0 0 16px;">
-                This upload will be applied to the date currently selected in Daily Plan.
+            ${modeOptions.length ? `
+            <div style="margin-bottom:16px;">
+                <label for="plan-upload-target-mode" style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Upload Template For</label>
+                <select id="plan-upload-target-mode" style="display:block;width:100%;font-size:13px;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;box-sizing:border-box;background:#fff;">
+                    ${modeOptions.map(option => `
+                        <option value="${option.value}" ${option.value === selectedMode ? 'selected' : ''} ${option.disabled ? 'disabled' : ''}>${option.label}</option>
+                    `).join('')}
+                </select>
+                <div id="plan-upload-mode-description" style="font-size:12px;color:#6b7280;margin-top:6px;">
+                    ${selectedModeOption?.description || ''}
+                </div>
+            </div>
+            ` : ''}
+            <p id="plan-upload-hint" style="font-size:12px;color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:8px 10px;margin:0 0 16px;">
+                ${hint}
             </p>
-            <button onclick="window.location.href='/api/lines/plan-upload-template'"
+            <button id="plan-upload-download-btn"
                style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:20px;">
                 &#8595; Download Template
             </button>
@@ -3955,19 +3980,69 @@ function openPlanUploadModal() {
                 <button onclick="document.getElementById('plan-upload-modal').remove()" style="padding:8px 18px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
                 <button onclick="submitPlanUpload()" id="plan-upload-btn"
                         style="padding:8px 18px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
-                    Upload
+                    <span id="plan-upload-btn-label">${uploadButtonLabel}</span>
                 </button>
             </div>
         </div>
     `;
     document.body.appendChild(modal);
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+    const applyModalState = (state) => {
+        const merged = {
+            ...(window._pendingUploadOptions || {}),
+            ...state
+        };
+        if (state.extraFields) {
+            merged.extraFields = { ...state.extraFields };
+        }
+        if (merged.modeSelector) {
+            merged.modeSelector = {
+                ...merged.modeSelector,
+                value: state.extraFields?.product_mode || merged.modeSelector.value || ''
+            };
+        }
+        window._pendingUploadOptions = merged;
+
+        const titleEl = document.getElementById('plan-upload-title');
+        const subtitleEl = document.getElementById('plan-upload-subtitle');
+        const hintEl = document.getElementById('plan-upload-hint');
+        const btnLabelEl = document.getElementById('plan-upload-btn-label');
+        if (titleEl && merged.title) titleEl.textContent = merged.title;
+        if (subtitleEl) subtitleEl.textContent = merged.subtitle || '';
+        if (hintEl) hintEl.textContent = merged.hint || '';
+        if (btnLabelEl) btnLabelEl.textContent = merged.uploadButtonLabel || 'Upload';
+    };
+
+    const downloadBtn = document.getElementById('plan-upload-download-btn');
+    if (downloadBtn) {
+        downloadBtn.addEventListener('click', () => {
+            const url = window._pendingUploadOptions?.downloadUrl || '/api/lines/plan-upload-template';
+            window.location.href = url;
+        });
+    }
+
+    applyModalState(resolvedConfig);
+
+    const modeSelect = document.getElementById('plan-upload-target-mode');
+    if (modeSelect && resolveState) {
+        modeSelect.addEventListener('change', () => {
+            const nextMode = modeSelect.value;
+            const nextOption = modeOptions.find(option => option.value === nextMode) || null;
+            const descriptionEl = document.getElementById('plan-upload-mode-description');
+            if (descriptionEl) descriptionEl.textContent = nextOption?.description || '';
+            applyModalState(resolveState(nextMode));
+        });
+    }
 }
 
 async function submitPlanUpload(options = {}) {
+    options = { ...(window._pendingUploadOptions || {}), ...options };
     const fileInput = document.getElementById('plan-upload-file');
     const resultDiv = document.getElementById('plan-upload-result');
     const btn = document.getElementById('plan-upload-btn');
+    const uploadButtonLabel = options.uploadButtonLabel || 'Upload';
+    const endpoint = options.endpoint || '/api/lines/plan-upload-excel';
 
     if (!fileInput?.files?.[0]) {
         resultDiv.innerHTML = '<div style="color:#dc2626;font-size:13px;">Please select an Excel file first.</div>';
@@ -3983,8 +4058,15 @@ async function submitPlanUpload(options = {}) {
 
     const fd = new FormData();
     fd.append('file', fileInput.files[0]);
+    const explicitWorkDate = options.extraFields && typeof options.extraFields === 'object'
+        ? String(options.extraFields.work_date || '').trim()
+        : '';
     const selectedDate = document.getElementById('plan-date')?.value;
-    if (selectedDate) fd.append('work_date', selectedDate);
+    if (explicitWorkDate) {
+        fd.append('work_date', explicitWorkDate);
+    } else if (selectedDate) {
+        fd.append('work_date', selectedDate);
+    }
     if (Array.isArray(options.missingEmployees) && options.missingEmployees.length)
         fd.append('missing_employees', JSON.stringify(options.missingEmployees));
     if (Array.isArray(options.duplicateAssignments) && options.duplicateAssignments.length)
@@ -3993,15 +4075,22 @@ async function submitPlanUpload(options = {}) {
     if (options.confirm_line)    fd.append('confirm_line', 'true');
     if (options.confirm_product) fd.append('confirm_product', options.confirm_product);
     if (options.new_product_code) fd.append('new_product_code', options.new_product_code);
+    if (options.extraFields && typeof options.extraFields === 'object') {
+        Object.entries(options.extraFields).forEach(([key, value]) => {
+            if (key === 'work_date') return;
+            if (value === undefined || value === null || value === '') return;
+            fd.append(key, String(value));
+        });
+    }
 
     try {
-        const r = await fetch('/api/lines/plan-upload-excel', { method: 'POST', body: fd });
+        const r = await fetch(endpoint, { method: 'POST', body: fd });
         const data = await r.json();
 
         // --- Line conflict ---
         if (r.status === 409 && data.code === 'LINE_EXISTS') {
             btn.disabled = false;
-            btn.textContent = 'Upload';
+            btn.textContent = uploadButtonLabel;
             resultDiv.innerHTML = `
                 <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
                     <div style="font-weight:600;margin-bottom:6px;">⚠ Line already exists</div>
@@ -4017,7 +4106,7 @@ async function submitPlanUpload(options = {}) {
         // --- Product conflict ---
         if (r.status === 409 && data.code === 'PRODUCT_EXISTS') {
             btn.disabled = false;
-            btn.textContent = 'Upload';
+            btn.textContent = uploadButtonLabel;
             const sameNames = (data.existing_product_name || '').toUpperCase() === (data.uploaded_product_name || '').toUpperCase();
             const nameNote = sameNames
                 ? `<strong>${data.product_code}</strong>`
@@ -4055,7 +4144,7 @@ async function submitPlanUpload(options = {}) {
                     Missing employees found in upload. Complete the details in the next window or skip assignment for them.
                 </div>`;
             btn.disabled = false;
-            btn.textContent = 'Upload';
+            btn.textContent = uploadButtonLabel;
             openMissingEmployeesModal(data.missing_employees);
             return;
         }
@@ -4066,7 +4155,7 @@ async function submitPlanUpload(options = {}) {
                     Same employee is assigned to multiple workstations in this upload. Correct the workstation assignments in the next window.
                 </div>`;
             btn.disabled = false;
-            btn.textContent = 'Upload';
+            btn.textContent = uploadButtonLabel;
             await openDuplicateAssignmentsModal(data.duplicate_assignments);
             return;
         }
@@ -4075,7 +4164,7 @@ async function submitPlanUpload(options = {}) {
             const errorText = data.error || data.message || `Upload failed (HTTP ${r.status})`;
             resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${errorText}</div>`;
             btn.disabled = false;
-            btn.textContent = 'Upload';
+            btn.textContent = uploadButtonLabel;
             return;
         }
 
@@ -4103,13 +4192,17 @@ async function submitPlanUpload(options = {}) {
         }
         closeBtn.style.display = '';
 
-        const planDateEl = document.getElementById('plan-date');
-        if (planDateEl && planDateEl.value === s.date) loadDailyPlanData();
+        if (typeof options.onSuccess === 'function') {
+            await options.onSuccess(data);
+        } else {
+            const planDateEl = document.getElementById('plan-date');
+            if (planDateEl && planDateEl.value === s.date) loadDailyPlanData();
+        }
 
     } catch (err) {
         resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${err.message}</div>`;
         btn.disabled = false;
-        btn.textContent = 'Upload';
+        btn.textContent = uploadButtonLabel;
     }
 }
 
@@ -4138,11 +4231,17 @@ function _planUploadCreateWithNewCode() {
     submitPlanUpload({ ...window._pendingUploadOptions, confirm_product: null, new_product_code: newCode });
 }
 function _planUploadCancel() {
-    window._pendingUploadOptions = {};
+    const uploadButtonLabel = window._pendingUploadOptions?.uploadButtonLabel || 'Upload';
     const resultDiv = document.getElementById('plan-upload-result');
     if (resultDiv) resultDiv.innerHTML = '';
     const btn = document.getElementById('plan-upload-btn');
-    if (btn) { btn.disabled = false; btn.textContent = 'Upload'; }
+    if (btn) btn.disabled = false;
+    const labelEl = document.getElementById('plan-upload-btn-label');
+    if (labelEl) {
+        labelEl.textContent = uploadButtonLabel;
+    } else if (btn) {
+        btn.textContent = uploadButtonLabel;
+    }
 }
 
 function openMissingEmployeesModal(missingEmployees) {
@@ -4420,10 +4519,10 @@ async function loadDailyPlanData() {
                     <tr>
                         <th>Line</th>
                         <th>Line Leader</th>
-                        <th>Style (Primary)</th>
-                        <th>Line Target</th>
-                        <th>Incoming Style</th>
-                        <th>Incoming Line Target</th>
+                        <th>Daily Plan Style</th>
+                        <th>Daily Plan Target</th>
+                        <th>Changeover Plan Style</th>
+                        <th>Changeover Target</th>
                         <th>Changeover Progress</th>
                         <th>Status</th>
                         <th>Action</th>
@@ -4595,6 +4694,7 @@ async function openLineDetailsPage(lineId, date, productId, target) {
             </div>
             <button id="ld-copy-plan-btn" style="font-size:12px;padding:5px 14px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldOpenCopyPlanModal()">&#128203; Copy Plan</button>
             <button id="ld-download-template-btn" style="font-size:12px;padding:5px 14px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldDownloadPlanTemplate()">Download Template</button>
+            <button id="ld-upload-template-btn" style="font-size:12px;padding:5px 14px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldOpenPlanUploadModal()">Upload Template</button>
             <div style="margin-left:auto;display:flex;align-items:center;gap:5px;flex-shrink:0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:5px 10px;">
                 <span style="font-size:11px;color:#6b7280;font-weight:600;white-space:nowrap;">Work Hours:</span>
                 <input type="time" value="${wh.start}" style="font-size:12px;padding:3px 5px;border:1px solid #d1d5db;border-radius:5px;width:88px;"
@@ -4622,6 +4722,15 @@ async function openLineDetailsPage(lineId, date, productId, target) {
         const result = await res.json();
         if (!result.success) throw new Error(result.error);
         _ldData = { lineId, date, data: result.data, otTab: false };
+        if (result.data?.incoming_product_id) {
+            await ldEnsureChangeoverDataLoaded(
+                lineId,
+                date,
+                result.data.incoming_product_id,
+                result.data.incoming_target_units || 0,
+                { silent: true }
+            );
+        }
         // Update header with line name from API
         const titleEl = overlay.querySelector('#ld-overlay-title');
         if (titleEl && result.data.line) {
@@ -4761,13 +4870,53 @@ function ldCloseCopyPlanModal() {
     if (modal) modal.style.display = 'none';
 }
 
+function ldGetCurrentTemplateMode(lineId) {
+    if (window._ldActiveOT?.[lineId]) return null;
+    return window._ldProductMode?.[lineId] === 'changeover' ? 'changeover' : 'primary';
+}
+
+async function ldReloadCurrentPlanView(lineId) {
+    if (!_ldData || _ldData.lineId !== lineId) return;
+    const { date } = _ldData;
+
+    const primaryProductId = _ldData.data?.product?.id || _ldData.data?.product_id || '';
+    const primaryTarget = _ldData.data?.target_units || 0;
+    const primaryParams = new URLSearchParams({ date });
+    if (primaryProductId) primaryParams.set('product_id', primaryProductId);
+    if (primaryTarget) primaryParams.set('target', primaryTarget);
+
+    const primaryRes = await fetch(`/api/lines/${lineId}/line-process-details?${primaryParams}`);
+    const primaryData = await primaryRes.json();
+    if (!primaryData.success) throw new Error(primaryData.error || 'Failed to reload line details');
+
+    _ldData.data = primaryData.data;
+    _ldData.changeoverData = null;
+
+    const activeMode = window._ldProductMode?.[lineId] || 'primary';
+    if (activeMode === 'changeover' && _ldData.data?.incoming_product_id) {
+        const incomingParams = new URLSearchParams({ date });
+        incomingParams.set('product_id', _ldData.data.incoming_product_id);
+        incomingParams.set('target', _ldData.data.incoming_target_units || 0);
+        const incomingRes = await fetch(`/api/lines/${lineId}/line-process-details?${incomingParams}`);
+        const incomingData = await incomingRes.json();
+        if (incomingData.success) {
+            _ldData.changeoverData = incomingData.data;
+        }
+    }
+
+    const content = document.getElementById('ld-overlay-content');
+    if (content) renderLineDetailsContent(content, lineId, date, _ldData.data);
+}
+
 async function ldDownloadPlanTemplate() {
     const btn = document.getElementById('ld-download-template-btn');
     const lineId = btn?.dataset.lineId || _ldData?.lineId;
     const date = btn?.dataset.toDate || _ldData?.date;
+    const mode = ldGetCurrentTemplateMode(lineId);
     if (!lineId || !date) { showToast('Open line details first', 'error'); return; }
+    if (!mode) { showToast('Switch to Regular view to download the plan template', 'error'); return; }
     try {
-        const url = `/api/lines/plan-upload-template/filled?line_id=${encodeURIComponent(lineId)}&date=${encodeURIComponent(date)}`;
+        const url = `/api/lines/plan-upload-template/filled?line_id=${encodeURIComponent(lineId)}&date=${encodeURIComponent(date)}&product_mode=${encodeURIComponent(mode)}`;
         const resp = await fetch(url);
         if (!resp.ok) {
             const j = await resp.json().catch(() => ({}));
@@ -4780,7 +4929,7 @@ async function ldDownloadPlanTemplate() {
         const blob = await resp.blob();
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `line_plan_${lineId}_${date}.xlsx`;
+        link.download = `line_plan_${lineId}_${mode}_${date}.xlsx`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -4788,6 +4937,79 @@ async function ldDownloadPlanTemplate() {
     } catch (err) {
         showToast(err.message, 'error');
     }
+}
+
+function ldOpenPlanUploadModal() {
+    const lineId = _ldData?.lineId;
+    const date = _ldData?.date;
+    const mode = ldGetCurrentTemplateMode(lineId);
+    if (!lineId || !date) { showToast('Open line details first', 'error'); return; }
+    if (!mode) { showToast('Switch to Regular view to upload a plan template', 'error'); return; }
+
+    const lineLabel = _ldData?.data?.line?.line_code || `Line ${lineId}`;
+    const hasChangeover = !!_ldData?.data?.incoming_product_id;
+    const defaultMode = mode === 'changeover' ? 'changeover' : 'primary';
+
+    const buildModeConfig = (selectedMode) => {
+        const requestedChangeoverMode = selectedMode === 'changeover';
+        const normalizedMode = requestedChangeoverMode ? 'changeover' : 'primary';
+        const isChangeoverMode = normalizedMode === 'changeover';
+        const modeLabel = isChangeoverMode ? 'Changeover Plan' : 'Daily Plan';
+        const isEnablingChangeover = isChangeoverMode && !hasChangeover;
+        const downloadUrl = isEnablingChangeover
+            ? '/api/lines/plan-upload-template'
+            : `/api/lines/plan-upload-template/filled?line_id=${encodeURIComponent(lineId)}&date=${encodeURIComponent(date)}&product_mode=${encodeURIComponent(normalizedMode)}`;
+        return {
+            title: `Upload ${modeLabel} from Excel`,
+            subtitle: isEnablingChangeover
+                ? 'Upload a changeover template to enable changeover for this line/date. The template product and target will become the incoming changeover plan.'
+                : (isChangeoverMode
+                ? 'Upload the changeover workstation and process plan for this line and date. Employee assignments are intentionally left blank for supervisor assignment.'
+                : 'Upload the daily plan workstation and process plan for this line and date from the filled template.'),
+            hint: isEnablingChangeover
+                ? `Changeover is not configured yet for ${lineLabel} on ${date}. This upload will enable it from the template (row 6 product + row 10 target). Employee columns are ignored.`
+                : (isChangeoverMode
+                ? `${modeLabel} plan upload for ${lineLabel} on ${date}. Employee columns in the template are ignored so the supervisor can assign operators at the time of changeover.`
+                : `${modeLabel} plan upload for ${lineLabel} on ${date}. This updates the selected product view in line details.`),
+            downloadUrl,
+            uploadButtonLabel: `Upload ${modeLabel}`,
+            extraFields: {
+                line_id: lineId,
+                work_date: date,
+                product_mode: normalizedMode
+            }
+        };
+    };
+
+    openPlanUploadModal({
+        ...buildModeConfig(defaultMode),
+        modeSelector: {
+            value: defaultMode,
+            options: [
+                {
+                    value: 'primary',
+                    label: 'Daily Plan',
+                    description: 'Use this for the main daily plan. Template upload can include employee assignments.'
+                },
+                {
+                    value: 'changeover',
+                    label: 'Changeover Plan',
+                    description: hasChangeover
+                        ? 'Use this for the incoming changeover plan. Employee assignments stay blank and can be assigned later.'
+                        : 'Use this to enable changeover from template upload (incoming product + target will be created/updated).'
+                }
+            ]
+        },
+        resolveState: buildModeConfig,
+        onSuccess: async () => {
+            if (_ldData && _ldData.lineId === lineId) {
+                _ldData.changeoverData = null;
+            }
+            await ldReloadCurrentPlanView(lineId);
+            const planDateEl = document.getElementById('plan-date');
+            if (planDateEl && planDateEl.value === date) loadDailyPlanData();
+        }
+    });
 }
 
 async function ldPreviewCopyPlan(lineId, toDate, productId) {
@@ -5587,6 +5809,31 @@ function renderLineDetailsPanel(panel, lineId, date, data) {
     renderLineDetailsContent(panel, lineId, date, data);
 }
 
+async function ldEnsureChangeoverDataLoaded(lineId, date, incomingProductId, incomingTargetUnits, { silent = false } = {}) {
+    if (!lineId || !_ldData || _ldData.lineId !== lineId || !incomingProductId) return false;
+    if (_ldData.changeoverData) return true;
+    if (!window._ldCoFetchState) window._ldCoFetchState = {};
+    const currentState = window._ldCoFetchState[lineId];
+    if (currentState === 'loading') return false;
+
+    window._ldCoFetchState[lineId] = 'loading';
+    try {
+        const params = new URLSearchParams({ date });
+        params.set('product_id', incomingProductId);
+        params.set('target', incomingTargetUnits || 0);
+        const incomingRes = await fetch(`/api/lines/${lineId}/line-process-details?${params}`);
+        const incomingData = await incomingRes.json();
+        if (!incomingData.success) throw new Error(incomingData.error || 'Failed to load changeover product plan');
+        _ldData.changeoverData = incomingData.data;
+        window._ldCoFetchState[lineId] = 'ready';
+        return true;
+    } catch (err) {
+        window._ldCoFetchState[lineId] = 'error';
+        if (!silent) showToast(err.message, 'error');
+        return false;
+    }
+}
+
 function _ldQrSelectionKey(lineId, date, activeOT, displayIsChangeover) {
     return [lineId, date, activeOT ? 'ot' : 'regular', displayIsChangeover ? 'changeover' : 'primary'].join(':');
 }
@@ -5718,6 +5965,15 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     const displayIsChangeover = activeOT ? isOTChangeover : isChangeover;
     const activeViewData = displayIsChangeover ? (_ldData?.changeoverData || data) : data;
     const processes      = activeViewData.processes || [];
+    if (!activeOT && incoming_product_id && !_ldData?.changeoverData) {
+        ldEnsureChangeoverDataLoaded(lineId, date, incoming_product_id, incoming_target_units, { silent: true }).then((loaded) => {
+            if (!loaded) return;
+            const currentPanel = document.getElementById('ld-overlay-content');
+            if (currentPanel && _ldData && _ldData.lineId === lineId) {
+                renderLineDetailsContent(currentPanel, lineId, date, _ldData.data);
+            }
+        });
+    }
     const target_units   = displayIsChangeover ? incoming_target_units : (data.target_units || 0);
     const workSecs       = _ldGetWorkSecs(lineId);
     const regularTaktSecs = (workSecs > 0 && target_units > 0)
@@ -5798,6 +6054,65 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     const lockedAttr = is_locked ? 'disabled' : '';
 
     const incomingProd = (products || []).find(p => p.id === incoming_product_id);
+    const showChangeoverOsmTable = !activeOT && !!incoming_product_id;
+    const changeoverViewData = _ldData?.changeoverData || (displayIsChangeover ? activeViewData : null);
+    const coProcesses = showChangeoverOsmTable ? (changeoverViewData?.processes || []) : [];
+    const coProductCode = changeoverViewData?.product?.product_code || incomingProd?.product_code || '—';
+    const coProductName = changeoverViewData?.product?.product_name || incomingProd?.product_name || '';
+    const coOsmRows = coProcesses.map((p, idx) => {
+        const seq = p.sequence_number || (idx + 1);
+        const processSecs = (Number(p.cycle_time_seconds || 0) > 0)
+            ? Number(p.cycle_time_seconds || 0)
+            : Math.round((Number(p.operation_sah || 0) * 3600) * 100) / 100;
+        const lpwpId = p.lpwp_id || null;
+        const osmChecked = !!p.osm_checked;
+        return `
+            <tr data-process-id="${p.id}">
+                <td style="text-align:center;font-weight:600;">${seq}</td>
+                <td>${(p.group_name || '').trim() || '—'}</td>
+                <td style="text-align:center;">
+                    <input type="checkbox" class="ld-osm-check" data-process-id="${p.id}"
+                        title="OSM observation point" ${osmChecked ? 'checked' : ''}
+                        style="width:15px;height:15px;cursor:pointer;accent-color:#f59e0b;"
+                        ${lpwpId ? `onchange="toggleOsmCheck(${lpwpId}, this.checked, this)"` : 'disabled'}>
+                    <div class="osm-seq-label" style="font-size:10px;color:#b45309;font-weight:700;margin-top:1px;min-height:12px;line-height:1;"></div>
+                </td>
+                <td>${p.workstation_code || '—'}</td>
+                <td>${p.operation_name}<br><small style="color:#9ca3af;font-size:0.78em;">${p.operation_code || ''}</small></td>
+                <td style="text-align:center;">${processSecs}s</td>
+            </tr>
+        `;
+    }).join('');
+    const coOsmSection = !showChangeoverOsmTable ? '' : `
+        <div style="margin-top:14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
+                <div style="font-size:13px;font-weight:700;color:#92400e;">
+                    Changeover OSM Table
+                    <span style="font-weight:600;color:#b45309;">(${coProductCode}${coProductName ? ` — ${coProductName}` : ''})</span>
+                </div>
+                <div style="font-size:11px;color:#b45309;">Separate OSM table for incoming/changeover product</div>
+            </div>
+            ${changeoverViewData
+                ? (coProcesses.length
+                    ? `<div class="table-container">
+                        <table style="font-size:0.86em;width:100%;">
+                            <thead>
+                                <tr>
+                                    <th style="text-align:center;">Seq</th>
+                                    <th>Group</th>
+                                    <th style="text-align:center;">OSM</th>
+                                    <th>Workstation</th>
+                                    <th>Operation</th>
+                                    <th style="text-align:center;">Process Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ld-body-co-osm-${lineId}">${coOsmRows}</tbody>
+                        </table>
+                    </div>`
+                    : `<div style="font-size:12px;color:#92400e;">No processes found for the changeover product.</div>`)
+                : `<div style="font-size:12px;color:#92400e;">Loading changeover OSM table…</div>`}
+        </div>
+    `;
 
     // Regular product toggle — only visible when NOT in OT mode
     const productToggle = (!activeOT && incoming_product_id) ? `
@@ -5807,7 +6122,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 <button onclick="switchLdProduct(${lineId},'primary')"
                     style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
                            background:${!isChangeover ? '#3b82f6' : 'transparent'};color:${!isChangeover ? '#fff' : '#6b7280'};">
-                    &#9654; Primary: ${product?.product_code || '—'}
+                    &#9654; Daily Plan: ${product?.product_code || '—'}
                 </button>
                 <button onclick="switchLdProduct(${lineId},'changeover')"
                     style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
@@ -5827,7 +6142,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 <button onclick="switchLdOTProduct(${lineId},'primary')"
                     style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
                            background:${!isOTChangeover ? '#7c3aed' : 'transparent'};color:${!isOTChangeover ? '#fff' : '#6b7280'};">
-                    &#9654; Primary: ${product?.product_code || '—'}
+                    &#9654; Daily Plan: ${product?.product_code || '—'}
                 </button>
                 <button onclick="switchLdOTProduct(${lineId},'changeover')"
                     style="border:none;border-radius:16px;padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;
@@ -5843,23 +6158,23 @@ function renderLineDetailsContent(panel, lineId, date, data) {
         <!-- Plan Settings Card -->
         <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
             <div style="flex:1;min-width:200px;">
-                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Style (Primary)</label>
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Daily Plan Style</label>
                 <select id="ld-product-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
                     ${productOpts}
                 </select>
             </div>
             <div style="min-width:90px;">
-                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Target</label>
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Daily Plan Target</label>
                 <input type="number" id="ld-target-${lineId}" class="form-control" style="font-size:0.88em;width:90px;" value="${planPrimaryTarget}" min="0" ${lockedAttr}>
             </div>
             <div style="flex:1;min-width:200px;">
-                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Style</label>
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Plan Style</label>
                 <select id="ld-incoming-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
                     ${incomingOpts}
                 </select>
             </div>
             <div style="min-width:90px;">
-                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Incoming Target</label>
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Target</label>
                 <input type="number" id="ld-incoming-target-${lineId}" class="form-control" style="font-size:0.88em;width:90px;" value="${incoming_target_units||0}" min="0" ${lockedAttr}>
             </div>
             <div style="min-width:80px;">
@@ -5933,9 +6248,12 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 <tbody id="ld-body-${lineId}"></tbody>
             </table>
         </div>
+        ${coOsmSection}
     `;
     _buildLdTbody(document.getElementById(`ld-body-${lineId}`), lineId, wsGroups, employees, activeOT,
         { workSecs, target_units, otMins, otTarget, hasOT });
+    const coOsmTbody = document.getElementById(`ld-body-co-osm-${lineId}`);
+    if (coOsmTbody) refreshOsmLabels(coOsmTbody);
     _ldUpdateQrSelectionUI(lineId, date, activeOT, displayIsChangeover, lineQrEmployees);
     ldLoadDowntimeSummary(lineId, date);
 }
@@ -8938,7 +9256,9 @@ async function refreshOsmReport() {
             container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${data.error || 'Failed to load report'}</div></div>`;
             return;
         }
-        if (data.no_osm_points || !data.osm_points?.length) {
+        const hasPrimary = Array.isArray(data.osm_points) && data.osm_points.length > 0;
+        const hasChangeover = Array.isArray(data.changeover?.osm_points) && data.changeover.osm_points.length > 0;
+        if (data.no_osm_points || (!hasPrimary && !hasChangeover)) {
             container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
                 No OSM points configured for <strong>${data.line_name}</strong> on <strong>${date}</strong>.<br>
                 Open <em>Daily Plans → Details</em> and check the <strong>OSM</strong> checkbox.
@@ -8969,7 +9289,9 @@ async function refreshOsmRangeReport() {
             container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${data.error || 'Failed to load report'}</div></div>`;
             return;
         }
-        if (data.no_osm_points || !data.osm_points?.length) {
+        const hasPrimary = Array.isArray(data.osm_points) && data.osm_points.length > 0;
+        const hasChangeover = Array.isArray(data.changeover?.osm_points) && data.changeover.osm_points.length > 0;
+        if (data.no_osm_points || (!hasPrimary && !hasChangeover)) {
             container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">
                 No OSM points configured for <strong>${data.line_name}</strong>.<br>
                 Open <em>Daily Plans → Details</em> and check the <strong>OSM</strong> checkbox.
@@ -8982,24 +9304,24 @@ async function refreshOsmRangeReport() {
     }
 }
 
-function _buildOsmTable(data) {
-    const { osm_points, target_units, total_target, working_hours, in_time, out_time, to_date, buyer_name, product_code, product_name } = data;
-    const inH  = parseInt((in_time  || '08:00').split(':')[0]);
-    const outH = parseInt((out_time || '17:00').split(':')[0]);
+function _buildSingleOsmDailyCard(lineMeta, section, sectionLabel) {
+    const { osm_points = [], target_units = 0, total_target = 0, working_hours = 0, in_time, out_time, to_date, product_code, product_name } = section;
+    if (!osm_points.length) return '';
 
+    const inH  = parseInt((in_time  || '08:00').split(':')[0], 10);
+    const outH = parseInt((out_time || '17:00').split(':')[0], 10);
     const hours = [];
     for (let h = inH; h < outH; h++) {
-        if (h === 12) continue; // skip lunch hour 12:00-13:00
+        if (h === 12) continue;
         hours.push(h);
     }
 
     const perHourTarget = (working_hours > 0 && target_units > 0)
         ? Math.round(target_units / working_hours) : 0;
 
-    // Elapsed hours: based on highest hour slot that has any data
     let maxDataHour = -1;
     for (const pt of osm_points) {
-        for (const h of Object.keys(pt.hourly)) {
+        for (const h of Object.keys(pt.hourly || {})) {
             const hInt = parseInt(h, 10);
             if (hInt > maxDataHour) maxDataHour = hInt;
         }
@@ -9013,34 +9335,29 @@ function _buildOsmTable(data) {
     const tcS = tdS + 'text-align:center;';
 
     const hourHeaders = hours.map((_, i) =>
-        `<th style="${thS}min-width:52px;">${ordinals[i] || (i+1)+'TH'}<br>HOUR</th>`
+        `<th style="${thS}min-width:52px;">${ordinals[i] || (i + 1) + 'TH'}<br>HOUR</th>`
     ).join('');
-
     const targetRow = hours.map(() =>
         `<td style="${tcS}font-weight:700;">${perHourTarget}</td>`
     ).join('');
 
     const dataRows = osm_points.map(pt => {
+        const hourly = pt.hourly || {};
         const hourCells = hours.map(h => {
-            const d = pt.hourly[h];
+            const d = hourly[h];
             const qty = (d && d.quantity != null) ? d.quantity : '';
             return `<td style="${tcS}">${qty}</td>`;
         }).join('');
 
-        const todayOutput = Object.values(pt.hourly).reduce((s, d) => s + (d.quantity || 0), 0);
-
+        const todayOutput = Object.values(hourly).reduce((s, d) => s + (d.quantity || 0), 0);
         let combinedBacklog = 0;
-        for (const h of hours.filter(h => h <= maxDataHour)) {
-            const qty = pt.hourly[h]?.quantity || 0;
-            if (qty < perHourTarget) combinedBacklog += (qty - perHourTarget);
-        }
-        const backlog = combinedBacklog < 0 ? combinedBacklog : 0;
-
         let combinedExtra = 0;
         for (const h of hours.filter(h => h <= maxDataHour)) {
-            const qty = pt.hourly[h]?.quantity || 0;
+            const qty = hourly[h]?.quantity || 0;
+            if (qty < perHourTarget) combinedBacklog += (qty - perHourTarget);
             if (qty > perHourTarget) combinedExtra += (qty - perHourTarget);
         }
+        const backlog = combinedBacklog < 0 ? combinedBacklog : 0;
         const extra = combinedExtra > 0 ? combinedExtra : 0;
 
         const balToProd = totalTargetSoFar - todayOutput;
@@ -9048,11 +9365,7 @@ function _buildOsmTable(data) {
         const orderComplete = total_target > 0 && orderBalProd <= 0;
         const remainingDays = (target_units > 0 && orderBalProd > 0)
             ? Math.ceil(orderBalProd / target_units) : 0;
-
-        const reasons = [...new Set(
-            Object.values(pt.hourly).map(d => d.shortfall_reason).filter(Boolean)
-        )].join('; ');
-
+        const reasons = [...new Set(Object.values(hourly).map(d => d.shortfall_reason).filter(Boolean))].join('; ');
         const rowBg = orderComplete ? 'background:#f0fdf4;' : '';
 
         return `<tr style="${rowBg}">
@@ -9064,7 +9377,7 @@ function _buildOsmTable(data) {
             <td style="${tcS}font-weight:700;">${totalTargetSoFar}</td>
             <td style="${tcS}font-weight:700;">${todayOutput}</td>
             <td style="${tcS}font-weight:700;color:#dc2626;">${backlog < 0 ? backlog : ''}</td>
-            <td style="${tcS}font-weight:700;color:#16a34a;">${extra > 0 ? '+'+extra : ''}</td>
+            <td style="${tcS}font-weight:700;color:#16a34a;">${extra > 0 ? '+' + extra : ''}</td>
             <td style="${tcS}font-weight:700;color:${balToProd > 0 ? '#dc2626' : '#16a34a'};">${balToProd}</td>
             <td style="${tcS}font-weight:700;color:${orderComplete ? '#16a34a' : '#dc2626'};">${orderComplete ? '✓ COMPLETE' : orderBalProd}</td>
             <td style="${tcS}font-weight:700;color:${remainingDays > 0 ? '#b45309' : '#16a34a'};">${orderComplete ? '—' : remainingDays}</td>
@@ -9072,30 +9385,15 @@ function _buildOsmTable(data) {
         </tr>`;
     }).join('');
 
-    const maxCumulative = total_target > 0 ? Math.max(...osm_points.map(pt => pt.cumulative_output || 0)) : 0;
-    const orderOver = total_target > 0 && maxCumulative > total_target;
-    const orderComplete = total_target > 0 && maxCumulative >= total_target;
-    const completionBanner = orderOver
-        ? `<div style="background:#f59e0b;color:#fff;padding:10px 16px;font-weight:700;font-size:13px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
-               <span style="font-size:18px;">⚠</span> OVER-PRODUCED — ${maxCumulative.toLocaleString()} units produced vs order quantity of ${total_target.toLocaleString()} (+${(maxCumulative - total_target).toLocaleString()} extra).
-           </div>`
-        : orderComplete
-        ? `<div style="background:#16a34a;color:#fff;padding:10px 16px;font-weight:700;font-size:13px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
-               <span style="font-size:18px;">✓</span> ORDER QUANTITY REACHED — This style has met its full order quantity of ${total_target.toLocaleString()} units.
-           </div>` : '';
-
-    return `<div class="card" id="osm-print-area"
-        data-buyer="${(buyer_name||'').replace(/"/g,'&quot;')}"
-        data-style="${(product_code||'').replace(/"/g,'&quot;')}"
-        data-from="${to_date}"
-        data-to="${to_date}">
-        ${completionBanner}
+    return `<div class="card" style="margin-bottom:12px;">
         <div class="card-header">
             <div>
-                <h3 class="card-title">STAGEWISE HOURLY OSM REPORT — DAILY</h3>
+                <h3 class="card-title">STAGEWISE HOURLY OSM REPORT — DAILY
+                    <span style="margin-left:8px;font-size:11px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:999px;padding:2px 8px;">${sectionLabel}</span>
+                </h3>
                 <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
-                    ${data.line_name} (${data.line_code})
-                    &nbsp;&bull;&nbsp; Style: ${product_code} — ${product_name}
+                    ${lineMeta.line_name} (${lineMeta.line_code})
+                    &nbsp;&bull;&nbsp; Style: ${product_code || ''}${product_name ? ` — ${product_name}` : ''}
                     &nbsp;&bull;&nbsp; Date: ${to_date}
                     &nbsp;&bull;&nbsp; Daily Target: ${target_units} &nbsp;&bull;&nbsp; Per Hour: ${perHourTarget}
                     &nbsp;&bull;&nbsp; Elapsed: ${elapsedHours}h &nbsp;&bull;&nbsp; Target as on time: ${totalTargetSoFar}
@@ -9103,7 +9401,7 @@ function _buildOsmTable(data) {
             </div>
         </div>
         <div class="card-body" style="overflow-x:auto;padding:0;">
-            <table style="border-collapse:collapse;white-space:nowrap;width:100%;" id="osm-table">
+            <table style="border-collapse:collapse;white-space:nowrap;width:100%;">
                 <thead>
                     <tr>
                         <th style="${thS}min-width:55px;">OSM #</th>
@@ -9133,8 +9431,56 @@ function _buildOsmTable(data) {
     </div>`;
 }
 
-function _buildOsmRangeTable(data) {
-    const { osm_points, range_target, day_count, from_date, to_date, buyer_name, product_code, product_name, target_units } = data;
+function _buildOsmTable(data) {
+    const primarySection = {
+        osm_points: data.osm_points || [],
+        target_units: data.target_units || 0,
+        total_target: data.total_target || 0,
+        working_hours: data.working_hours || 0,
+        in_time: data.in_time,
+        out_time: data.out_time,
+        to_date: data.to_date,
+        product_code: data.product_code || '',
+        product_name: data.product_name || '',
+        buyer_name: data.buyer_name || ''
+    };
+    const changeoverSection = data.changeover
+        ? {
+            ...data.changeover,
+            working_hours: data.working_hours || 0,
+            in_time: data.in_time,
+            out_time: data.out_time,
+            to_date: data.to_date
+        }
+        : null;
+
+    const cards = [];
+    if (primarySection.osm_points.length) {
+        cards.push(_buildSingleOsmDailyCard(data, primarySection, 'Primary Style'));
+    }
+    if (changeoverSection?.osm_points?.length) {
+        cards.push(_buildSingleOsmDailyCard(data, changeoverSection, 'Changeover Style'));
+    }
+
+    const buyer = primarySection.buyer_name || changeoverSection?.buyer_name || '';
+    const styleParts = [
+        primarySection.product_code || '',
+        changeoverSection?.product_code ? `CO:${changeoverSection.product_code}` : ''
+    ].filter(Boolean);
+    const styleText = styleParts.join(' + ');
+
+    return `<div id="osm-print-area"
+        data-buyer="${String(buyer || '').replace(/"/g, '&quot;')}"
+        data-style="${String(styleText || '').replace(/"/g, '&quot;')}"
+        data-from="${data.to_date}"
+        data-to="${data.to_date}">
+        ${cards.join('')}
+    </div>`;
+}
+
+function _buildSingleOsmRangeCard(lineMeta, section, sectionLabel) {
+    const { osm_points = [], range_target = 0, day_count = 0, from_date, to_date, product_code, product_name, target_units = 0 } = section;
+    if (!osm_points.length) return '';
 
     const thS = 'background:#1e3a5f;color:#fff;padding:5px 6px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;';
     const tdS = 'padding:4px 6px;border:1px solid #d1d5db;font-size:12px;';
@@ -9142,7 +9488,6 @@ function _buildOsmRangeTable(data) {
 
     const dataRows = osm_points.map(pt => {
         const blog = pt.blog;
-        const extra = pt.extra;
         const balToProd = range_target - pt.total_output;
         const orderBalProd = (range_target || 0) - pt.total_output;
         const remainingDays = (target_units > 0 && orderBalProd > 0)
@@ -9162,24 +9507,22 @@ function _buildOsmRangeTable(data) {
         </tr>`;
     }).join('');
 
-    return `<div class="card" id="osm-print-area"
-        data-buyer="${(buyer_name||'').replace(/"/g,'&quot;')}"
-        data-style="${(product_code||'').replace(/"/g,'&quot;')}"
-        data-from="${from_date}"
-        data-to="${to_date}">
+    return `<div class="card" style="margin-bottom:12px;">
         <div class="card-header">
             <div>
-                <h3 class="card-title">STAGEWISE OSM REPORT — DATE TO DATE</h3>
+                <h3 class="card-title">STAGEWISE OSM REPORT — DATE TO DATE
+                    <span style="margin-left:8px;font-size:11px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:999px;padding:2px 8px;">${sectionLabel}</span>
+                </h3>
                 <div style="font-size:12px;color:var(--secondary);margin-top:2px;">
-                    ${data.line_name} (${data.line_code})
-                    &nbsp;&bull;&nbsp; Style: ${product_code} — ${product_name}
+                    ${lineMeta.line_name} (${lineMeta.line_code})
+                    &nbsp;&bull;&nbsp; Style: ${product_code || ''}${product_name ? ` — ${product_name}` : ''}
                     &nbsp;&bull;&nbsp; Period: ${from_date} → ${to_date}
                     &nbsp;&bull;&nbsp; Production Days: ${day_count} &nbsp;&bull;&nbsp; Daily Target: ${target_units} &nbsp;&bull;&nbsp; Range Target: ${range_target}
                 </div>
             </div>
         </div>
         <div class="card-body" style="overflow-x:auto;padding:0;">
-            <table style="border-collapse:collapse;white-space:nowrap;width:100%;" id="osm-table">
+            <table style="border-collapse:collapse;white-space:nowrap;width:100%;">
                 <thead>
                     <tr>
                         <th style="${thS}min-width:60px;">GROUP</th>
@@ -9198,6 +9541,43 @@ function _buildOsmRangeTable(data) {
                 <tbody>${dataRows}</tbody>
             </table>
         </div>
+    </div>`;
+}
+
+function _buildOsmRangeTable(data) {
+    const primarySection = {
+        osm_points: data.osm_points || [],
+        range_target: data.range_target || 0,
+        day_count: data.day_count || 0,
+        from_date: data.from_date,
+        to_date: data.to_date,
+        buyer_name: data.buyer_name || '',
+        product_code: data.product_code || '',
+        product_name: data.product_name || '',
+        target_units: data.target_units || 0
+    };
+    const changeoverSection = data.changeover || null;
+    const cards = [];
+    if (primarySection.osm_points.length) {
+        cards.push(_buildSingleOsmRangeCard(data, primarySection, 'Primary Style'));
+    }
+    if (changeoverSection?.osm_points?.length) {
+        cards.push(_buildSingleOsmRangeCard(data, changeoverSection, 'Changeover Style'));
+    }
+
+    const buyer = primarySection.buyer_name || changeoverSection?.buyer_name || '';
+    const styleParts = [
+        primarySection.product_code || '',
+        changeoverSection?.product_code ? `CO:${changeoverSection.product_code}` : ''
+    ].filter(Boolean);
+    const styleText = styleParts.join(' + ');
+
+    return `<div id="osm-print-area"
+        data-buyer="${String(buyer || '').replace(/"/g, '&quot;')}"
+        data-style="${String(styleText || '').replace(/"/g, '&quot;')}"
+        data-from="${data.from_date}"
+        data-to="${data.to_date}">
+        ${cards.join('')}
     </div>`;
 }
 
