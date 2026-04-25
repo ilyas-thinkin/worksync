@@ -9840,11 +9840,12 @@ function _buildEfficiencyTable(data, selectedHour) {
         if (Array.isArray(emp.flow_segments) && emp.flow_segments.length) return emp.flow_segments;
         return employeeFlowMap.get(String(emp.id)) || [];
     };
+    const hasMetricValue = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
     const formatMetric = (value, digits = 2, suffix = '') => (
-        Number.isFinite(Number(value)) ? `${Number(value).toFixed(digits)}${suffix}` : '—'
+        hasMetricValue(value) ? `${Number(value).toFixed(digits)}${suffix}` : '—'
     );
     const getEffTone = (value) => {
-        if (!Number.isFinite(Number(value))) return { color: '#6b7280', bg: '#f9fafb' };
+        if (!hasMetricValue(value)) return { color: '#6b7280', bg: '#f9fafb' };
         const numeric = Number(value);
         if (numeric >= 90) return { color: '#166534', bg: '#dcfce7' };
         if (numeric >= 80) return { color: '#9a3412', bg: '#fef3c7' };
