@@ -740,9 +740,15 @@ async function getEffectiveRegularSourceWorkstations(db, lineId, workDate) {
             return {
                 primary_workstation_id: parseInt(row.workstation_plan_id, 10),
                 primary_source_plan_workstation_id: parseInt(row.workstation_plan_id, 10),
+                primary_group_name: row.group_name || null,
                 primary_actual_sam_seconds: parseFloat(row.actual_sam_seconds || 0),
                 primary_takt_time_seconds: parseFloat(row.takt_time_seconds || 0),
                 primary_workload_pct: parseFloat(row.workload_pct || 0),
+                co_source_plan_workstation_id: incomingRow ? parseInt(incomingRow.workstation_plan_id, 10) : null,
+                co_group_name: incomingRow?.group_name || null,
+                co_actual_sam_seconds: incomingRow ? parseFloat(incomingRow.actual_sam_seconds || 0) : null,
+                co_takt_time_seconds: incomingRow ? parseFloat(incomingRow.takt_time_seconds || 0) : null,
+                co_workload_pct: incomingRow ? parseFloat(incomingRow.workload_pct || 0) : null,
                 source_line_plan_workstation_id: parseInt(sourceRow.workstation_plan_id, 10),
                 workstation_number: row.workstation_number != null ? parseInt(row.workstation_number, 10) : null,
                 workstation_code: row.workstation_code,
@@ -1564,6 +1570,169 @@ async function getHourlyEmployeeProgress(db, lineId, workDate, hourSlot, isOvert
 
 async function getCumulativeEmployeeProgress(db, lineId, workDate, endHour, isOvertime = false, hoursDenom = 1) {
     return getEmployeeProgressForWindow(db, lineId, workDate, { endHour, isOvertime, hoursDenom });
+}
+
+async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour = null, endHour = null, isOvertime = false, hoursDenom = 1, splitBySource = false } = {}) {
+    const useOt = !!isOvertime;
+    const workstationTable = useOt ? 'line_ot_workstations' : 'line_plan_workstations';
+    const processJoin = useOt
+        ? `LEFT JOIN line_ot_workstation_processes wproc ON wproc.ot_workstation_id = a.workstation_id`
+        : `LEFT JOIN line_plan_workstation_processes wproc ON wproc.workstation_id = a.workstation_id`;
+    const lateralProductField = useOt ? 'ws_match.source_product_id' : 'ws_match.product_id';
+    let incomingProductId = null;
+    if (!useOt) {
+        const planResult = await db.query(
+            `SELECT incoming_product_id
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2`,
+            [lineId, workDate]
+        );
+        incomingProductId = planResult.rows[0]?.incoming_product_id
+            ? parseInt(planResult.rows[0].incoming_product_id, 10)
+            : null;
+    }
+    const historyHours = getHistoryHours(useOt);
+    const defaultWindowEnd = historyHours[historyHours.length - 1] || 23;
+    const params = [lineId, workDate];
+    let windowEndHour = defaultWindowEnd;
+    let hourPredicate = '';
+    let assignmentWindowPredicate = '';
+    const coveredSourceGroup = splitBySource ? `, a.source_product_id` : '';
+    const finalSourceSelect = splitBySource ? `,
+                source_product_id` : '';
+    const finalSourceGroup = splitBySource ? `, source_product_id` : '';
+
+    if (Number.isFinite(exactHour)) {
+        params.push(parseInt(exactHour, 10));
+        windowEndHour = parseInt(exactHour, 10);
+        hourPredicate = `AND lph.hour_slot = $${params.length}`;
+        assignmentWindowPredicate = `AND hist.effective_from_hour <= $${params.length}
+                                     AND COALESCE(hist.effective_to_hour, 999) >= $${params.length}`;
+    } else if (Number.isFinite(endHour)) {
+        params.push(parseInt(endHour, 10));
+        windowEndHour = parseInt(endHour, 10);
+        hourPredicate = `AND lph.hour_slot <= $${params.length}`;
+        assignmentWindowPredicate = `AND hist.effective_from_hour <= $${params.length}`;
+    }
+
+    params.push(useOt);
+    const overtimeIndex = params.length;
+    params.push(windowEndHour);
+    const windowEndIndex = params.length;
+
+    const result = await db.query(
+        `WITH assignments AS (
+             SELECT hist.id AS history_id,
+                    hist.employee_id,
+                    hist.workstation_code,
+                    hist.line_plan_workstation_id,
+                    hist.effective_from_hour,
+                    COALESCE(hist.effective_to_hour, 999) AS effective_to_hour,
+                    ws.id AS workstation_id,
+                    ws.workstation_number,
+                    COALESCE(ws.group_name, '') AS group_name,
+                    COALESCE(ws.actual_sam_seconds, 0) AS actual_sam_seconds,
+                    ws.source_product_id
+             FROM employee_workstation_assignment_history hist
+             LEFT JOIN LATERAL (
+                 SELECT ws_match.id,
+                        ws_match.workstation_number,
+                        ws_match.group_name,
+                        ws_match.actual_sam_seconds,
+                        ${lateralProductField} AS source_product_id
+                 FROM ${workstationTable} ws_match
+                 WHERE (
+                         hist.line_plan_workstation_id IS NOT NULL
+                         AND ws_match.id = hist.line_plan_workstation_id
+                       )
+                    OR (
+                         hist.line_plan_workstation_id IS NULL
+                         AND ws_match.line_id = hist.line_id
+                         AND ws_match.work_date = hist.work_date
+                         AND ws_match.workstation_code = hist.workstation_code
+                       )
+                 ORDER BY
+                     CASE
+                         WHEN hist.line_plan_workstation_id IS NOT NULL
+                          AND ws_match.id = hist.line_plan_workstation_id THEN 0
+                         ELSE 1
+                     END,
+                     ws_match.id DESC
+                 LIMIT 1
+             ) ws ON true
+             WHERE hist.line_id = $1
+               AND hist.work_date = $2
+               AND hist.is_overtime = $${overtimeIndex}
+               AND hist.employee_id IS NOT NULL
+               ${assignmentWindowPredicate}
+         ),
+         ws_hour AS (
+             SELECT a.workstation_id,
+                    lph.hour_slot,
+                    MAX(lph.quantity) AS hour_output,
+                    MAX(lph.qa_rejection) AS hour_rejection,
+                    MAX(lph.updated_at) AS hour_updated
+             FROM assignments a
+             ${processJoin}
+             LEFT JOIN line_process_hourly_progress lph
+               ON lph.process_id = wproc.product_process_id
+              AND lph.line_id = $1
+              AND lph.work_date = $2
+              ${hourPredicate}
+             GROUP BY a.workstation_id, lph.hour_slot
+         ),
+         covered_ws_hours AS (
+             SELECT a.workstation_code,
+                    a.workstation_number,
+                    a.group_name,
+                    ${splitBySource ? 'a.source_product_id,' : ''}
+                    wh.hour_slot,
+                    MAX(COALESCE(wh.hour_output, 0)) AS hour_output,
+                    MAX(COALESCE(wh.hour_rejection, 0)) AS hour_rejection,
+                    MAX(wh.hour_updated) AS hour_updated,
+                    MAX(a.actual_sam_seconds) AS actual_sam_seconds
+             FROM assignments a
+             LEFT JOIN ws_hour wh
+               ON wh.workstation_id = a.workstation_id
+              AND wh.hour_slot >= a.effective_from_hour
+              AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
+             GROUP BY a.workstation_code, a.workstation_number, a.group_name${coveredSourceGroup}, wh.hour_slot
+         )
+         SELECT workstation_code,
+                workstation_number,
+                group_name${finalSourceSelect},
+                COALESCE(SUM(hour_output), 0) AS total_output,
+                COALESCE(SUM(hour_rejection), 0) AS total_rejection,
+                COALESCE(SUM((hour_output * actual_sam_seconds) / 3600.0), 0) AS total_sah_hours,
+                MAX(hour_updated) AS last_updated
+         FROM covered_ws_hours
+         GROUP BY workstation_code, workstation_number, group_name${finalSourceGroup}
+         ORDER BY workstation_number NULLS LAST, workstation_code${finalSourceGroup}`,
+        params
+    );
+
+    return result.rows.map(row => {
+        const sahHours = parseFloat(row.total_sah_hours || 0);
+        const denom = parseFloat(hoursDenom || 0);
+        const efficiency = (sahHours > 0 && denom > 0)
+            ? Math.round((sahHours / denom) * 10000) / 100
+            : 0;
+
+        return {
+            workstation_code: row.workstation_code,
+            workstation_number: row.workstation_number != null ? parseInt(row.workstation_number, 10) : null,
+            group_name: row.group_name || '',
+            source_product_id: row.source_product_id != null ? parseInt(row.source_product_id, 10) : null,
+            source_mode: splitBySource && !useOt && !!incomingProductId && parseInt(row.source_product_id || 0, 10) === incomingProductId
+                ? 'changeover'
+                : 'primary',
+            total_output: parseInt(row.total_output || 0, 10),
+            total_rejection: parseInt(row.total_rejection || 0, 10),
+            total_sah_hours: sahHours,
+            efficiency_percent: efficiency,
+            last_updated: row.last_updated || null
+        };
+    });
 }
 
 async function getWorkstationOutputMap(db, lineId, workDate, workstationIds, { exactHour = null, endHour = null } = {}) {
@@ -13794,8 +13963,26 @@ router.get('/efficiency-report', async (req, res) => {
         const liveEmployeeProgress = Number.isFinite(reportHour)
             ? await getCumulativeEmployeeProgress(pool, line_id, date, reportHour, false, liveHoursDenom)
             : await getCumulativeEmployeeProgress(pool, line_id, date, null, false, liveHoursDenom);
+        const hourlyWorkstationProgress = Number.isFinite(reportHour)
+            ? await getWorkstationProgressForWindow(pool, line_id, date, { exactHour: reportHour, isOvertime: false, hoursDenom: 1 })
+            : [];
+        const liveWorkstationProgress = Number.isFinite(reportHour)
+            ? await getWorkstationProgressForWindow(pool, line_id, date, { endHour: reportHour, isOvertime: false, hoursDenom: liveHoursDenom })
+            : await getWorkstationProgressForWindow(pool, line_id, date, { isOvertime: false, hoursDenom: liveHoursDenom });
+        const hourlyWorkstationProgressBySource = Number.isFinite(reportHour)
+            ? await getWorkstationProgressForWindow(pool, line_id, date, { exactHour: reportHour, isOvertime: false, hoursDenom: 1, splitBySource: true })
+            : [];
+        const liveWorkstationProgressBySource = Number.isFinite(reportHour)
+            ? await getWorkstationProgressForWindow(pool, line_id, date, { endHour: reportHour, isOvertime: false, hoursDenom: liveHoursDenom, splitBySource: true })
+            : await getWorkstationProgressForWindow(pool, line_id, date, { isOvertime: false, hoursDenom: liveHoursDenom, splitBySource: true });
         const hourlyEmployeeMap = new Map(hourlyEmployeeProgress.map(emp => [String(emp.id), emp]));
-        const liveEmployeeMap = new Map(liveEmployeeProgress.map(emp => [String(emp.id), emp]));
+        const makeWorkstationTrackKey = (workstationCode, sourceMode) => `${normalizeWsCode(workstationCode)}::${sourceMode}`;
+        const liveWorkstationTrackMap = new Map(
+            liveWorkstationProgressBySource.map(ws => [makeWorkstationTrackKey(ws.workstation_code, ws.source_mode), ws])
+        );
+        const hourlyWorkstationTrackMap = new Map(
+            hourlyWorkstationProgressBySource.map(ws => [makeWorkstationTrackKey(ws.workstation_code, ws.source_mode), ws])
+        );
         const wsData = workstations.map(ws => {
             // Determine if CO was active during the selected hour
             // ws_changeover_started_at is the timestamp CO started; map to a REPORT_WORK_HOURS slot
@@ -13810,9 +13997,6 @@ router.get('/efficiency-report', async (req, res) => {
             }
 
             // Pick the right plan WS ID and SAM based on whether CO was active at this hour
-            const effectiveWsId = coActiveAtHour
-                ? ws.source_line_plan_workstation_id
-                : ws.primary_source_plan_workstation_id;
             const effectiveSam = coActiveAtHour
                 ? parseFloat(ws.actual_sam_seconds || 0)
                 : parseFloat(ws.primary_actual_sam_seconds || 0);
@@ -13828,17 +14012,50 @@ router.get('/efficiency-report', async (req, res) => {
             const wsOtHours = (otWs && otWs.is_active && otWs.employee_id)
                 ? (parseInt(otWs.ot_minutes) || parseInt(otWs.global_ot_minutes) || 0) / 60
                 : 0;
-            const hourlyOutput = hourlyOutputMap[effectiveWsId] || 0;
-            // For live output when CO is active: include both primary and CO hours' output
-            const liveOutput = coActiveAtHour && ws.is_changeover
-                ? (liveOutputMap[ws.source_line_plan_workstation_id] || 0) + (liveOutputMap[ws.primary_source_plan_workstation_id] || 0)
-                : (liveOutputMap[effectiveWsId] || 0);
-            const hourlyEfficiency = (cycleTimeHours > 0)
-                ? Math.round(hourlyOutput * cycleTimeHours * 10000) / 100
+            const primaryTrackKey = makeWorkstationTrackKey(ws.workstation_code, 'primary');
+            const coTrackKey = makeWorkstationTrackKey(ws.workstation_code, 'changeover');
+            const livePrimaryProgress = liveWorkstationTrackMap.get(primaryTrackKey);
+            const hourlyPrimaryProgress = hourlyWorkstationTrackMap.get(primaryTrackKey);
+            const liveCoProgress = liveWorkstationTrackMap.get(coTrackKey);
+            const hourlyCoProgress = hourlyWorkstationTrackMap.get(coTrackKey);
+            const primaryHourlyOutput = hourlyPrimaryProgress?.total_output ?? (hourlyOutputMap[ws.primary_source_plan_workstation_id] || 0);
+            const primaryLiveOutput = livePrimaryProgress?.total_output ?? (liveOutputMap[ws.primary_source_plan_workstation_id] || 0);
+            const coHourlyOutputValue = ws.co_source_plan_workstation_id
+                ? (hourlyCoProgress?.total_output ?? (hourlyOutputMap[ws.co_source_plan_workstation_id] || 0))
                 : null;
+            const coLiveOutputValue = ws.co_source_plan_workstation_id
+                ? (liveCoProgress?.total_output ?? (liveOutputMap[ws.co_source_plan_workstation_id] || 0))
+                : null;
+            const coHourlyOutput = coHourlyOutputValue ?? 0;
+            const coLiveOutput = coLiveOutputValue ?? 0;
+            const hourlyOutput = primaryHourlyOutput + coHourlyOutput;
+            // For live output when CO is active: include both primary and CO hours' output
+            const liveOutput = primaryLiveOutput + coLiveOutput;
+            const getEfficiency = (progress, output, samSeconds, denom) => {
+                if (progress) return progress.efficiency_percent;
+                const cycleHours = parseFloat(samSeconds || 0) / 3600;
+                if (!(cycleHours > 0) || !(denom > 0)) return null;
+                return Math.round(output * cycleHours / denom * 10000) / 100;
+            };
+            const getEarnedHours = (progress, output, samSeconds) => {
+                if (progress) return parseFloat(progress.total_sah_hours || 0);
+                return (parseFloat(output || 0) * parseFloat(samSeconds || 0)) / 3600;
+            };
+            const hourlyDenominator = 1;
             const liveDenominator = Number.isFinite(reportHour) ? liveHours : Math.min(8, workingHours + wsOtHours);
-            const liveEfficiency = (liveDenominator > 0 && cycleTimeHours > 0)
-                ? Math.round(liveOutput * cycleTimeHours / liveDenominator * 10000) / 100
+            const primaryHourlyEfficiency = getEfficiency(hourlyPrimaryProgress, primaryHourlyOutput, ws.primary_actual_sam_seconds, hourlyDenominator);
+            const primaryLiveEfficiency = getEfficiency(livePrimaryProgress, primaryLiveOutput, ws.primary_actual_sam_seconds, liveDenominator);
+            const coHourlyEfficiency = getEfficiency(hourlyCoProgress, coHourlyOutput, ws.co_actual_sam_seconds, hourlyDenominator);
+            const coLiveEfficiency = getEfficiency(liveCoProgress, coLiveOutput, ws.co_actual_sam_seconds, liveDenominator);
+            const combinedHourlyEarnedHours = getEarnedHours(hourlyPrimaryProgress, primaryHourlyOutput, ws.primary_actual_sam_seconds)
+                + getEarnedHours(hourlyCoProgress, coHourlyOutput, ws.co_actual_sam_seconds);
+            const combinedLiveEarnedHours = getEarnedHours(livePrimaryProgress, primaryLiveOutput, ws.primary_actual_sam_seconds)
+                + getEarnedHours(liveCoProgress, coLiveOutput, ws.co_actual_sam_seconds);
+            const hourlyEfficiency = hourlyDenominator > 0
+                ? Math.round(combinedHourlyEarnedHours / hourlyDenominator * 10000) / 100
+                : null;
+            const liveEfficiency = liveDenominator > 0
+                ? Math.round(combinedLiveEarnedHours / liveDenominator * 10000) / 100
                 : null;
             return {
                 workstation_number: parseInt(ws.workstation_number),
@@ -13850,12 +14067,34 @@ router.get('/efficiency-report', async (req, res) => {
                 actual_sam_seconds: effectiveSam,
                 takt_time_seconds: effectiveTakt,
                 workload_pct: effectiveWorkload,
+                primary_group_name: ws.primary_group_name || ws.group_name || '',
+                primary_actual_sam_seconds: ws.primary_actual_sam_seconds,
+                primary_takt_time_seconds: ws.primary_takt_time_seconds,
+                primary_workload_pct: ws.primary_workload_pct,
+                co_group_name: ws.co_group_name || '',
+                co_actual_sam_seconds: ws.co_actual_sam_seconds,
+                co_takt_time_seconds: ws.co_takt_time_seconds,
+                co_workload_pct: ws.co_workload_pct,
                 employee_code: activeAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_code || null,
                 employee_name: activeAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_name || null,
                 live_output: liveOutput,
                 hourly_output: hourlyOutput,
                 live_efficiency_pct: liveEfficiency,
-                hourly_efficiency_pct: hourlyEfficiency
+                hourly_efficiency_pct: hourlyEfficiency,
+                primary_hourly_output: primaryHourlyOutput,
+                primary_hourly_efficiency_pct: primaryHourlyEfficiency,
+                primary_live_output: primaryLiveOutput,
+                primary_live_efficiency_pct: primaryLiveEfficiency,
+                co_hourly_output: coHourlyOutputValue,
+                co_hourly_efficiency_pct: coHourlyEfficiency,
+                co_live_output: coLiveOutputValue,
+                co_live_efficiency_pct: coLiveEfficiency,
+                combined_hourly_output: hourlyOutput,
+                combined_hourly_efficiency_pct: hourlyEfficiency,
+                combined_live_output: liveOutput,
+                combined_live_efficiency_pct: liveEfficiency,
+                combined_hourly_earned_hours: combinedHourlyEarnedHours,
+                combined_live_earned_hours: combinedLiveEarnedHours
             };
         });
 
@@ -13864,10 +14103,10 @@ router.get('/efficiency-report', async (req, res) => {
         // For normal days, keep the existing finished-goods style-SAH calculation.
         const hasActiveChangeoverWs = wsData.some(ws => ws.is_changeover);
         const hourlyEarnedHours = wsData.reduce((sum, ws) => (
-            sum + ((parseFloat(ws.actual_sam_seconds || 0) / 3600) * (parseInt(ws.hourly_output || 0, 10) || 0))
+            sum + parseFloat(ws.combined_hourly_earned_hours || 0)
         ), 0);
         const liveEarnedHours = wsData.reduce((sum, ws) => (
-            sum + ((parseFloat(ws.actual_sam_seconds || 0) / 3600) * (parseInt(ws.live_output || 0, 10) || 0))
+            sum + parseFloat(ws.combined_live_earned_hours || 0)
         ), 0);
 
         let liveLineOutput = 0;
@@ -13901,9 +14140,57 @@ router.get('/efficiency-report', async (req, res) => {
         // 11. Takt time
         const taktTimeSeconds = targetUnits > 0 ? Math.round(workingSeconds / targetUnits) : 0;
 
+        const flowWindowEndHour = Number.isFinite(reportHour)
+            ? reportHour
+            : (REPORT_WORK_HOURS[REPORT_WORK_HOURS.length - 1] || 16);
+        const employeeFlowResult = await pool.query(
+            `WITH flow_rows AS (
+                 SELECT hist.id,
+                        hist.employee_id,
+                        e.emp_code,
+                        e.emp_name,
+                        hist.workstation_code,
+                        hist.effective_from_hour,
+                        LEAST(COALESCE(hist.effective_to_hour, $3), $3) AS effective_to_hour
+                 FROM employee_workstation_assignment_history hist
+                 LEFT JOIN employees e ON e.id = hist.employee_id
+                 WHERE hist.line_id = $1
+                   AND hist.work_date = $2
+                   AND hist.is_overtime = false
+                   AND hist.employee_id IS NOT NULL
+                   AND hist.effective_from_hour <= $3
+             )
+             SELECT employee_id,
+                    COALESCE(MAX(emp_code), '') AS emp_code,
+                    COALESCE(MAX(emp_name), '') AS emp_name,
+                    COUNT(*)::int AS segments_count,
+                    JSON_AGG(
+                        JSON_BUILD_OBJECT(
+                            'history_id', id,
+                            'workstation_code', workstation_code,
+                            'from_hour', effective_from_hour,
+                            'to_hour', effective_to_hour
+                        )
+                        ORDER BY effective_from_hour, id
+                    ) AS segments
+             FROM flow_rows
+             GROUP BY employee_id
+             ORDER BY MAX(emp_code), employee_id`,
+            [line_id, date, flowWindowEndHour]
+        );
+        const employeeFlow = employeeFlowResult.rows.map(row => ({
+            id: parseInt(row.employee_id, 10),
+            emp_code: row.emp_code || '',
+            emp_name: row.emp_name || '',
+            segments_count: parseInt(row.segments_count || 0, 10),
+            segments: Array.isArray(row.segments) ? row.segments : []
+        }));
+        const employeeFlowMap = new Map(employeeFlow.map(row => [String(row.id), row]));
+
         const employeeProgress = liveEmployeeProgress.map(emp => {
             const hourly = hourlyEmployeeMap.get(String(emp.id));
             const empIdStr = String(emp.id);
+            const flow = employeeFlowMap.get(empIdStr);
             const effSum = hoursForAvg.reduce((sum, h) => {
                 const map = hourlyEffByHour.get(h);
                 const val = map ? (map.get(empIdStr) || 0) : 0;
@@ -13928,6 +14215,8 @@ router.get('/efficiency-report', async (req, res) => {
                 hourly_efficiency_percent: hourly?.efficiency_percent || 0,
                 hourly_efficiency_avg: Math.round(avgEff * 100) / 100,
                 hourly_not_entered: !hourly && Number.isFinite(reportHour),
+                flow_segments_count: flow?.segments_count || 0,
+                flow_segments: flow?.segments || [],
                 last_updated: hourly?.last_updated || emp.last_updated || null
             };
         });
@@ -13962,7 +14251,8 @@ router.get('/efficiency-report', async (req, res) => {
                     combined_changeover_efficiency: hasActiveChangeoverWs
                 },
                 workstations: wsData,
-                employee_progress: employeeProgress
+                employee_progress: employeeProgress,
+                employee_flow: employeeFlow
             }
         });
     } catch (err) {

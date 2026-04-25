@@ -9819,43 +9819,85 @@ function _buildEfficiencyTable(data, selectedHour) {
         </div>`;
 
     const empAvgMap = new Map((employee_progress || []).map(emp => [String(emp.emp_code || ''), emp.hourly_efficiency_avg]));
+    const employeeFlowMap = new Map(
+        (data.employee_flow || []).map(flow => [String(flow.id), Array.isArray(flow.segments) ? flow.segments : []])
+    );
+    const formatFlowHour = (hourVal) => {
+        const hour = parseInt(hourVal, 10);
+        if (!Number.isFinite(hour)) return '--:--';
+        return `${String(hour).padStart(2, '0')}:00`;
+    };
+    const formatFlowSegment = (segment) => {
+        const fromHour = parseInt(segment?.from_hour, 10);
+        const toHour = parseInt(segment?.to_hour, 10);
+        if (!Number.isFinite(fromHour) || !Number.isFinite(toHour)) {
+            return segment?.workstation_code || '-';
+        }
+        const endHour = Math.max(fromHour, toHour) + 1;
+        return `${segment?.workstation_code || '-'} (${formatFlowHour(fromHour)}-${formatFlowHour(endHour)})`;
+    };
+    const getFlowSegments = (emp) => {
+        if (Array.isArray(emp.flow_segments) && emp.flow_segments.length) return emp.flow_segments;
+        return employeeFlowMap.get(String(emp.id)) || [];
+    };
+    const formatMetric = (value, digits = 2, suffix = '') => (
+        Number.isFinite(Number(value)) ? `${Number(value).toFixed(digits)}${suffix}` : '—'
+    );
+    const getEffTone = (value) => {
+        if (!Number.isFinite(Number(value))) return { color: '#6b7280', bg: '#f9fafb' };
+        const numeric = Number(value);
+        if (numeric >= 90) return { color: '#166534', bg: '#dcfce7' };
+        if (numeric >= 80) return { color: '#9a3412', bg: '#fef3c7' };
+        return { color: '#b91c1c', bg: '#fee2e2' };
+    };
+    const renderTrackCell = (tracks, { percent = false, digits = 2 } = {}) => `<div style="display:grid;gap:4px;min-width:110px;">
+        ${tracks.map(track => {
+            const tone = percent ? getEffTone(track.value) : { color: '#0f172a', bg: '#f8fafc' };
+            return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 6px;border-radius:4px;background:${tone.bg};color:${tone.color};">
+                <span style="font-size:10px;font-weight:700;letter-spacing:0.02em;">${track.label}</span>
+                <span style="font-weight:700;">${formatMetric(track.value, digits, percent ? '%' : '')}</span>
+            </div>`;
+        }).join('')}
+    </div>`;
+    const renderPlanCell = (primaryValue, coValue, { digits = 2, suffix = '' } = {}) => `<div style="display:grid;gap:4px;min-width:90px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 6px;border-radius:4px;background:#f8fafc;color:#0f172a;">
+            <span style="font-size:10px;font-weight:700;letter-spacing:0.02em;">P</span>
+            <span style="font-weight:700;">${formatMetric(primaryValue, digits, suffix)}</span>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 6px;border-radius:4px;background:#fff7ed;color:#9a3412;">
+            <span style="font-size:10px;font-weight:700;letter-spacing:0.02em;">CO</span>
+            <span style="font-weight:700;">${formatMetric(coValue, digits, suffix)}</span>
+        </div>
+    </div>`;
 
     const dataRows = workstations.map(ws => {
-        const wl = parseFloat(ws.workload_pct || 0);
-        const wlColor = wl >= 90 ? '#16a34a' : wl >= 80 ? '#d97706' : '#dc2626';
-        const wlBg    = wl >= 90 ? '#dcfce7' : wl >= 80 ? '#fef3c7' : '#fee2e2';
-
-        const liveWe = ws.live_efficiency_pct;
-        let liveWeText, liveWeColor, liveWeBg;
-        if (liveWe === null || !ws.employee_code) {
-            liveWeText = '—'; liveWeColor = '#6b7280'; liveWeBg = '#f9fafb';
-        } else {
-            liveWeText = liveWe.toFixed(2) + '%';
-            liveWeColor = liveWe >= 90 ? '#16a34a' : liveWe >= 80 ? '#d97706' : '#dc2626';
-            liveWeBg    = liveWe >= 90 ? '#dcfce7'  : liveWe >= 80 ? '#fef3c7'  : '#fee2e2';
-        }
-
-        const hourlyWe = ws.hourly_efficiency_pct;
-        let hourlyWeText, hourlyWeColor, hourlyWeBg;
-        if (hourlyWe === null || !ws.employee_code) {
-            hourlyWeText = '—'; hourlyWeColor = '#6b7280'; hourlyWeBg = '#f9fafb';
-        } else {
-            hourlyWeText = hourlyWe.toFixed(2) + '%';
-            hourlyWeColor = hourlyWe >= 90 ? '#16a34a' : hourlyWe >= 80 ? '#d97706' : '#dc2626';
-            hourlyWeBg    = hourlyWe >= 90 ? '#dcfce7'  : hourlyWe >= 80 ? '#fef3c7'  : '#fee2e2';
-        }
-
         return `<tr>
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
             <td style="${tcS}font-weight:600;">${ws.workstation_code}${ws.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
             <td style="${tdS}">${ws.employee_code ? `${ws.employee_name} (${ws.employee_code})` : '<span style="color:#9ca3af;">Unassigned</span>'}</td>
-            <td style="${tcS}">${ws.actual_sam_seconds.toFixed(2)}</td>
-            <td style="${tcS}">${ws.takt_time_seconds.toFixed(0)}</td>
-            <td style="${tcS}font-weight:700;color:${wlColor};background:${wlBg};">${wl.toFixed(1)}%</td>
-            <td style="${tcS}font-weight:700;">${ws.hourly_output ?? 0}</td>
-            <td style="${tcS}font-weight:700;color:${hourlyWeColor};background:${hourlyWeBg};">${hourlyWeText}</td>
-            <td style="${tcS}font-weight:700;">${ws.live_output ?? 0}</td>
-            <td style="${tcS}font-weight:700;color:${liveWeColor};background:${liveWeBg};">${liveWeText}</td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_actual_sam_seconds, ws.co_actual_sam_seconds, { digits: 2 })}</td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_takt_time_seconds, ws.co_takt_time_seconds, { digits: 0 })}</td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_workload_pct, ws.co_workload_pct, { digits: 1, suffix: '%' })}</td>
+            <td style="${tcS}">${renderTrackCell([
+                { label: 'P', value: ws.primary_hourly_output },
+                { label: 'CO', value: ws.co_hourly_output },
+                { label: 'C', value: ws.combined_hourly_output }
+            ], { digits: 0 })}</td>
+            <td style="${tcS}">${renderTrackCell([
+                { label: 'P', value: ws.primary_hourly_efficiency_pct },
+                { label: 'CO', value: ws.co_hourly_efficiency_pct },
+                { label: 'C', value: ws.combined_hourly_efficiency_pct }
+            ], { percent: true, digits: 2 })}</td>
+            <td style="${tcS}">${renderTrackCell([
+                { label: 'P', value: ws.primary_live_output },
+                { label: 'CO', value: ws.co_live_output },
+                { label: 'C', value: ws.combined_live_output }
+            ], { digits: 0 })}</td>
+            <td style="${tcS}">${renderTrackCell([
+                { label: 'P', value: ws.primary_live_efficiency_pct },
+                { label: 'CO', value: ws.co_live_efficiency_pct },
+                { label: 'C', value: ws.combined_live_efficiency_pct }
+            ], { percent: true, digits: 2 })}</td>
             <td style="${tcS}font-weight:700;color:#0f172a;">${
                 ws.employee_code ? ((empAvgMap.get(String(ws.employee_code)) || 0).toFixed(2) + '%') : '—'
             }</td>
@@ -9864,26 +9906,51 @@ function _buildEfficiencyTable(data, selectedHour) {
 
     const employeeRows = employee_progress.length
         ? employee_progress.map(emp => {
+            const flowSegments = getFlowSegments(emp);
+            const flowHtml = flowSegments.length
+                ? flowSegments.map((segment, index) => {
+                    const arrow = index < flowSegments.length - 1
+                        ? '<span style="padding:0 4px;color:#94a3b8;font-weight:700;">→</span>'
+                        : '';
+                    return `<span style="display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;border-radius:999px;padding:2px 8px;margin:1px 0;font-size:11px;">${formatFlowSegment(segment)}</span>${arrow}`;
+                }).join('')
+                : '<span style="color:#9ca3af;font-size:11px;">No movement history</span>';
             const updatedText = emp.last_updated
                 ? new Date(emp.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                 : '—';
             const remarksText = emp.hourly_not_entered
-                ? `<span style="color:#d97706;font-size:11px;">⚠ Output not entered for ${reportHourLabel}</span>`
+                ? `<span style="color:#d97706;font-size:11px;">Output not entered for ${reportHourLabel}</span>`
                 : (emp.hourly_output === 0
                     ? `<span style="color:#dc2626;font-size:11px;">0 pcs entered for ${reportHourLabel}</span>`
-                    : '—');
+                    : '<span style="color:#16a34a;font-size:11px;">Synced</span>');
             return `<tr>
                 <td style="${tdS}"><strong>${emp.emp_code}</strong><div style="color:var(--secondary);font-size:11px;">${emp.emp_name}</div></td>
+                <td style="${tdS}line-height:1.6;">
+                    <div>${flowHtml}</div>
+                    <div style="margin-top:3px;color:#64748b;font-size:10px;">Segments: ${emp.flow_segments_count || flowSegments.length || 0}</div>
+                </td>
                 <td style="${tcS}">${emp.workstation_code || '—'}${emp.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
                 <td style="${tcS}font-weight:700;">${emp.hourly_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_avg || 0).toFixed(2)}%</td>
                 <td style="${tcS}font-weight:700;">${emp.live_output || 0}</td>
-                <td style="${tcS}font-weight:700;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
-                <td style="${tdS}">${remarksText}</td>
+                <td style="${tcS}font-weight:700;color:#0f172a;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
+                <td style="${tdS}">${remarksText}<div style="margin-top:2px;color:#64748b;font-size:10px;">Updated: ${updatedText}</div></td>
             </tr>`;
         }).join('')
-        : `<tr><td colspan="7" style="${tdS}text-align:center;color:#6b7280;">No employee progress recorded for ${reportLabel}.</td></tr>`;
+        : `<tr><td colspan="9" style="${tdS}text-align:center;color:#6b7280;">No employee progress recorded for ${reportLabel}.</td></tr>`;
+    const employeeFlowSummaryHtml = employee_progress.length
+        ? employee_progress.map(emp => {
+            const flowSegments = getFlowSegments(emp);
+            const flowPath = flowSegments.length
+                ? flowSegments.map(segment => formatFlowSegment(segment)).join(' -> ')
+                : 'No movement history';
+            return `<div style="font-size:11px;line-height:1.5;padding:3px 0;border-bottom:1px dashed #dbeafe;">
+                <strong>${emp.emp_code || '-'}</strong>: ${flowPath}
+                <span style="color:#0f766e;font-weight:700;">| Cum Eff: ${(emp.live_efficiency_percent || 0).toFixed(2)}%</span>
+            </div>`;
+        }).join('')
+        : '<span style="color:#9ca3af;font-size:11px;">No employee movement summary available.</span>';
 
     return `<div id="efficiency-print-area">
         <div class="card">
@@ -9900,42 +9967,58 @@ function _buildEfficiencyTable(data, selectedHour) {
             <div class="card-body">
                 ${formulaBox}
                 ${summaryBar}
-                <div style="overflow-x:auto;">
-                    <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
-                        <thead>
-                            <tr>
-                                <th style="${thS}min-width:60px;">GROUP</th>
-                                <th style="${thS}min-width:70px;">WS</th>
-                                <th style="${thS}min-width:160px;white-space:normal;">EMPLOYEE</th>
-                                <th style="${thS}min-width:80px;">CYCLE TIME<br>(s)</th>
-                                <th style="${thS}min-width:75px;">TAKT TIME<br>(s)</th>
-                                <th style="${thS}min-width:70px;">WKLD%</th>
-                                <th style="${thS}min-width:90px;">HOURLY OUTPUT<br>${reportLabel}</th>
-                                <th style="${thS}min-width:90px;">HOURLY EFF%</th>
-                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
-                                <th style="${thS}min-width:90px;">LIVE EFF%</th>
-                                <th style="${thS}min-width:90px;">AVG EFF</th>
-                            </tr>
-                        </thead>
-                        <tbody>${dataRows}</tbody>
-                    </table>
-                </div>
-                <div style="margin-top:16px;overflow-x:auto;">
-                    <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
-                        <thead>
-                            <tr>
-                                <th style="${thS}min-width:150px;">EMPLOYEE</th>
-                                <th style="${thS}min-width:70px;">WS</th>
-                                <th style="${thS}min-width:90px;">HOURLY OUTPUT</th>
-                                <th style="${thS}min-width:100px;">HOURLY EFFICIENCY</th>
-                                <th style="${thS}min-width:90px;">AVG EFF</th>
-                                <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
-                                <th style="${thS}min-width:100px;">LIVE EFFICIENCY</th>
-                                <th style="${thS}min-width:180px;white-space:normal;">REMARKS</th>
-                            </tr>
-                        </thead>
-                        <tbody>${employeeRows}</tbody>
-                    </table>
+                <div style="display:grid;gap:14px;">
+                    <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+                        <div style="background:#eef2ff;border-bottom:1px solid #e2e8f0;padding:8px 12px;font-size:12px;font-weight:700;color:#1e3a8a;">
+                            Workstation Efficiency
+                        </div>
+                        <div style="overflow-x:auto;">
+                            <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
+                                <thead>
+                                    <tr>
+                                        <th style="${thS}min-width:60px;">GROUP</th>
+                                        <th style="${thS}min-width:70px;">WS</th>
+                                        <th style="${thS}min-width:160px;white-space:normal;">EMPLOYEE</th>
+                                        <th style="${thS}min-width:95px;">CYCLE TIME<br>P / CO</th>
+                                        <th style="${thS}min-width:95px;">TAKT TIME<br>P / CO</th>
+                                        <th style="${thS}min-width:95px;">WKLD%<br>P / CO</th>
+                                        <th style="${thS}min-width:130px;">HOURLY OUTPUT<br>P / CO / C</th>
+                                        <th style="${thS}min-width:130px;">HOURLY EFF%<br>P / CO / C</th>
+                                        <th style="${thS}min-width:130px;">LIVE OUTPUT<br>P / CO / C</th>
+                                        <th style="${thS}min-width:130px;">LIVE EFF%<br>P / CO / C</th>
+                                        <th style="${thS}min-width:90px;">AVG EFF</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${dataRows}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+                        <div style="background:#ecfeff;border-bottom:1px solid #e2e8f0;padding:8px 12px;font-size:12px;font-weight:700;color:#155e75;">
+                            Employee Flow And Cumulative Efficiency
+                        </div>
+                        <div style="padding:8px 12px;background:#f8fbff;border-bottom:1px solid #e2e8f0;max-height:130px;overflow:auto;">
+                            ${employeeFlowSummaryHtml}
+                        </div>
+                        <div style="overflow-x:auto;">
+                            <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
+                                <thead>
+                                    <tr>
+                                        <th style="${thS}min-width:150px;">EMPLOYEE</th>
+                                        <th style="${thS}min-width:260px;">FLOW TRACK</th>
+                                        <th style="${thS}min-width:80px;">CURRENT WS</th>
+                                        <th style="${thS}min-width:90px;">HOURLY OUTPUT</th>
+                                        <th style="${thS}min-width:100px;">HOURLY EFFICIENCY</th>
+                                        <th style="${thS}min-width:90px;">AVG EFF</th>
+                                        <th style="${thS}min-width:90px;">LIVE OUTPUT</th>
+                                        <th style="${thS}min-width:120px;">CUMULATIVE EFFICIENCY</th>
+                                        <th style="${thS}min-width:220px;white-space:normal;">SYNC STATUS</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${employeeRows}</tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
