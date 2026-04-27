@@ -476,16 +476,30 @@ async function findEmployeeAssignmentConflicts(db, employeeIds, workDate, isOver
     return result.rows;
 }
 
-async function findLatestDailyPlanForLine(db, lineId, beforeDate) {
-    if (!lineId || !beforeDate) return null;
+function getPreviousWorkDate(workDate) {
+    if (!workDate) return null;
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(workDate));
+    if (!match) return null;
+    const year = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10);
+    const day = parseInt(match[3], 10);
+    const utcDate = new Date(Date.UTC(year, month - 1, day));
+    if (Number.isNaN(utcDate.getTime())) return null;
+    utcDate.setUTCDate(utcDate.getUTCDate() - 1);
+    return utcDate.toISOString().slice(0, 10);
+}
+
+async function findPreviousDayDailyPlanForLine(db, lineId, workDate) {
+    if (!lineId || !workDate) return null;
+    const previousWorkDate = getPreviousWorkDate(workDate);
+    if (!previousWorkDate) return null;
     const result = await db.query(
         `SELECT *
          FROM line_daily_plans
          WHERE line_id = $1
-           AND work_date < $2
-         ORDER BY work_date DESC
+           AND work_date = $2
          LIMIT 1`,
-        [lineId, beforeDate]
+        [lineId, previousWorkDate]
     );
     return result.rows[0] || null;
 }
@@ -1211,7 +1225,7 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
     if (existing.rowCount > 0) return existing.rows[0];
     if (await hasDailyPlanDeletionMarker(db, lineId, workDate)) return null;
 
-    const sourcePlan = await findLatestDailyPlanForLine(db, lineId, workDate);
+    const sourcePlan = await findPreviousDayDailyPlanForLine(db, lineId, workDate);
     if (!sourcePlan) return null;
 
     const insertResult = await db.query(
@@ -5464,6 +5478,7 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
 
         // 2. Process each row - create operations and product_processes
         const newOperations = [];
+        const insertedProcessIds = [];
         const operationCache = {};
         let autoSeq = 1;
 
@@ -5495,22 +5510,27 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
                 operationCache[processNameUpper] = operationId;
             }
 
-            await client.query(
+            const inserted = await client.query(
                 `INSERT INTO product_processes
                  (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds,
                   manpower_required, is_active, created_by)
-                 VALUES ($1, $2, $3, $4, $5, 1, false, $6)`,
+                 VALUES ($1, $2, $3, $4, $5, 1, false, $6)
+                 RETURNING id`,
                 [productId, operationId, sequenceNumber, operationSah, Math.round(row.sam_seconds), req.user?.id || null]
             );
+            insertedProcessIds.push(parseInt(inserted.rows[0].id, 10));
             autoSeq++;
         }
 
-        // Activate all newly inserted rows in one shot (sequences are final, no mid-update conflicts)
-        await client.query(
-            `UPDATE product_processes SET is_active = true
-             WHERE product_id = $1 AND is_active = false`,
-            [productId]
-        );
+        // Activate only the rows inserted by this upload; older rows stay inactive.
+        if (insertedProcessIds.length) {
+            await client.query(
+                `UPDATE product_processes
+                 SET is_active = true
+                 WHERE id = ANY($1::int[])`,
+                [insertedProcessIds]
+            );
+        }
 
         await client.query('COMMIT');
 
@@ -5554,7 +5574,8 @@ router.get('/products/:id', async (req, res) => {
             FROM product_processes pp
             JOIN operations o ON pp.operation_id = o.id
             WHERE pp.product_id = $1
-            ORDER BY pp.sequence_number
+              AND pp.is_active = true
+            ORDER BY pp.sequence_number, pp.id
         `, [id]);
         const workstations = await pool.query(`
             SELECT id, workspace_code, workspace_name, workspace_type, line_id, group_name, worker_input_mapping
@@ -5651,13 +5672,119 @@ router.put('/products/:id', async (req, res) => {
 
 router.delete('/products/:id', async (req, res) => {
     const { id } = req.params;
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Admin or IE access required' });
+    }
+    const client = await pool.connect();
     try {
-        await pool.query(`UPDATE products SET is_active = false WHERE id = $1`, [id]);
-        await pool.query(`UPDATE production_lines SET current_product_id = NULL WHERE current_product_id = $1`, [id]);
+        await client.query('BEGIN');
+        const before = await client.query(
+            `SELECT *
+             FROM products
+             WHERE id = $1
+             LIMIT 1`,
+            [id]
+        );
+        const product = before.rows[0];
+        if (!product) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Product not found' });
+        }
+
+        const dependencyResult = await client.query(
+            `WITH product_process_ids AS (
+                 SELECT id
+                 FROM product_processes
+                 WHERE product_id = $1
+             )
+             SELECT
+                 (SELECT COUNT(*) FROM line_daily_plans WHERE product_id = $1) AS primary_daily_plans,
+                 (SELECT COUNT(*) FROM defect_log WHERE process_id IN (SELECT id FROM product_process_ids)) AS defect_logs`,
+            [id]
+        );
+        const dependencyRow = dependencyResult.rows[0] || {};
+        const blockingDetails = {
+            primary_daily_plans: parseInt(dependencyRow.primary_daily_plans || 0, 10) || 0,
+            defect_logs: parseInt(dependencyRow.defect_logs || 0, 10) || 0
+        };
+        const hasBlockingDependencies = Object.values(blockingDetails).some(count => count > 0);
+        if (hasBlockingDependencies) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: 'This style cannot be deleted because it is still used in production records. Remove its daily plans first.',
+                details: blockingDetails
+            });
+        }
+
+        await client.query(
+            `UPDATE production_lines
+             SET current_product_id = NULL,
+                 updated_at = NOW()
+             WHERE current_product_id = $1`,
+            [id]
+        );
+        await client.query(
+            `UPDATE line_daily_plans
+             SET incoming_product_id = NULL,
+                 incoming_target_units = 0,
+                 changeover_sequence = 0,
+                 updated_at = NOW()
+             WHERE incoming_product_id = $1`,
+            [id]
+        );
+        await client.query(
+            `DELETE FROM line_plan_workstation_processes
+             WHERE product_process_id IN (
+                 SELECT id
+                 FROM product_processes
+                 WHERE product_id = $1
+             )`,
+            [id]
+        );
+        await client.query(
+            `DELETE FROM line_ot_workstation_processes
+             WHERE product_process_id IN (
+                 SELECT id
+                 FROM product_processes
+                 WHERE product_id = $1
+             )`,
+            [id]
+        );
+        await client.query(
+            `DELETE FROM line_plan_workstations
+             WHERE product_id = $1`,
+            [id]
+        );
+        await client.query(
+            `DELETE FROM line_ot_plans
+             WHERE product_id = $1`,
+            [id]
+        );
+        await client.query(
+            `DELETE FROM product_processes
+             WHERE product_id = $1`,
+            [id]
+        );
+        const deleteResult = await client.query(
+            `DELETE FROM products
+             WHERE id = $1
+             RETURNING *`,
+            [id]
+        );
+        if (!deleteResult.rowCount) {
+            throw new Error('Product could not be deleted');
+        }
+        await client.query('COMMIT');
+
+        await logAudit('products', product.id, 'delete', null, product, req);
         realtime.broadcast('data_change', { entity: 'products', action: 'delete', id });
-        res.json({ success: true, message: 'Product deactivated successfully' });
+        res.json({ success: true, message: 'Product deleted successfully', data: deleteResult.rows[0] });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 

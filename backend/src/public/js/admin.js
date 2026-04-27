@@ -2876,13 +2876,13 @@ async function saveProduct(id) {
 }
 
 async function deleteProduct(id) {
-    if (!confirm('Are you sure you want to deactivate this product?')) return;
+    if (!confirm('Are you sure you want to permanently delete this style/product?')) return;
 
     try {
         const response = await fetch(`${API_BASE}/products/${id}`, { method: 'DELETE' });
         const result = await response.json();
         if (result.success) {
-            showToast('Product deactivated', 'success');
+            showToast('Product deleted', 'success');
             loadProducts();
         } else {
             showToast(result.error, 'error');
@@ -2950,6 +2950,12 @@ async function viewProductProcess(productId) {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
                         </svg>
                         Add Operation
+                    </button>
+                    <button class="btn btn-danger" onclick="deleteProduct(${productId})">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0v12m4-12v12m5-12l-1 12a1 1 0 01-1 .917H9a1 1 0 01-1-.917L7 7"/>
+                        </svg>
+                        Delete Style
                     </button>
                 </div>
             </div>
