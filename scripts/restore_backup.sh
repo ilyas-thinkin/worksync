@@ -38,7 +38,11 @@ DB_NAME="${DB_NAME:-worksync_db}"
 DB_USER="${DB_USER:-worksync_user}"
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
-export PGPASSWORD="${DB_PASSWORD:-worksync_secure_2026}"
+export PGPASSWORD="${DB_PASSWORD:-}"
+if [ -z "$PGPASSWORD" ]; then
+    echo "Error: Missing DB_PASSWORD in ${ENV_FILE}"
+    exit 1
+fi
 
 echo "=== WorkSync Restore ==="
 echo "Backup source: $BACKUP_DIR"

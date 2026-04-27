@@ -34,11 +34,18 @@ if (FORCE_HTTPS) {
 
 const AUTH_SECRET = process.env.AUTH_SECRET || process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const AUTH_COOKIE = 'worksync_auth';
+const requireEnv = (name) => {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+};
 const ROLE_PASSWORDS = {
-  admin: 'admin1234',
-  ie: 'ie1234',
-  supervisor: 'sup1234',
-  management: 'manage1234'
+  admin: requireEnv('ADMIN_PASSWORD'),
+  ie: requireEnv('IE_PASSWORD'),
+  supervisor: requireEnv('SUPERVISOR_PASSWORD'),
+  management: requireEnv('MANAGEMENT_PASSWORD')
 };
 
 const parseCookies = (cookieHeader = '') => {

@@ -3,7 +3,20 @@
 # Run: bash install-mcps.sh
 
 set -e
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_ENV="${ROOT_DIR}/backend/.env"
 CLAUDE_BIN=$(which claude 2>/dev/null || ls ~/.nvm/versions/node/*/bin/claude 2>/dev/null | tail -1 || ls /usr/local/bin/claude 2>/dev/null | tail -1 || echo "claude")
+
+if [ -f "$BACKEND_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$BACKEND_ENV"
+  set +a
+fi
+
+if [ -z "${POSTGRES_MCP_URL:-}" ] && [ -n "${DB_PASSWORD:-}" ]; then
+  POSTGRES_MCP_URL="postgresql://${DB_USER:-worksync_user}:${DB_PASSWORD}@${DB_HOST:-127.0.0.1}:${DB_PORT:-5432}/${DB_NAME:-worksync_db}"
+fi
 
 echo "============================================"
 echo "  WorkSync MCP + Skills Installer"
@@ -5605,27 +5618,43 @@ echo "Installing MCP servers..."
 echo "  [1/6] context7..."
 $CLAUDE_BIN mcp add context7 --timeout 60000 --trust -- npx -y @upstash/context7-mcp@latest
 
-echo "  [2/6] postgres..."
-$CLAUDE_BIN mcp add postgres --timeout 60000 --trust -- npx -y @modelcontextprotocol/server-postgres \
-  "postgresql://worksync_user:worksync_secure_2026@127.0.0.1:5432/worksync_db"
+if [ -n "${POSTGRES_MCP_URL:-}" ]; then
+  echo "  [2/6] postgres..."
+  $CLAUDE_BIN mcp add postgres --timeout 60000 --trust -- npx -y @modelcontextprotocol/server-postgres \
+    "$POSTGRES_MCP_URL"
+else
+  echo "  [2/6] postgres skipped (set POSTGRES_MCP_URL or backend/.env DB_* vars)"
+fi
 
 echo "  [3/6] sequential-thinking..."
 $CLAUDE_BIN mcp add sequential-thinking --timeout 60000 --trust -- npx -y @modelcontextprotocol/server-sequential-thinking
 
-echo "  [4/6] nano-banana..."
-$CLAUDE_BIN mcp add nano-banana --timeout 60000 --trust \
-  --env GEMINI_API_KEY=AIzaSyBJHkPBbD8Um-OThyToMN6YpbvCSiAqVxY \
-  -- npx -y -p @lyalindotcom/nano-banana-mcp nano-banana-server
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  echo "  [4/6] nano-banana..."
+  $CLAUDE_BIN mcp add nano-banana --timeout 60000 --trust \
+    --env GEMINI_API_KEY="$GEMINI_API_KEY" \
+    -- npx -y -p @lyalindotcom/nano-banana-mcp nano-banana-server
+else
+  echo "  [4/6] nano-banana skipped (set GEMINI_API_KEY)"
+fi
 
-echo "  [5/6] @21st-dev/magic..."
-$CLAUDE_BIN mcp add @21st-dev/magic -- npx -y @21st-dev/magic@latest \
-  "API_KEY=23480b73724073d243c7f4de181dc29fddd548cc8ba84df34d2a34e79d3d19a8"
+if [ -n "${MAGIC_API_KEY:-}" ]; then
+  echo "  [5/6] @21st-dev/magic..."
+  $CLAUDE_BIN mcp add @21st-dev/magic -- npx -y @21st-dev/magic@latest \
+    "API_KEY=${MAGIC_API_KEY}"
+else
+  echo "  [5/6] @21st-dev/magic skipped (set MAGIC_API_KEY)"
+fi
 
-echo "  [6/6] stitch..."
-$CLAUDE_BIN mcp add stitch --transport http \
-  --header "Accept: application/json" \
-  --header "X-Goog-Api-Key: AQ.Ab8RN6I8dyR4F4q2b_-Gd_Biy1Q1WVZTFUwsx0T7-PGuVEQoGQ" \
-  "https://stitch.googleapis.com/mcp"
+if [ -n "${STITCH_API_KEY:-}" ]; then
+  echo "  [6/6] stitch..."
+  $CLAUDE_BIN mcp add stitch --transport http \
+    --header "Accept: application/json" \
+    --header "X-Goog-Api-Key: ${STITCH_API_KEY}" \
+    "https://stitch.googleapis.com/mcp"
+else
+  echo "  [6/6] stitch skipped (set STITCH_API_KEY)"
+fi
 
 echo ""
 echo "============================================"

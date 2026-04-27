@@ -1,9 +1,23 @@
 // insert_kn754_plan.js
 // Phase 1: Insert all KN754 operations with codes OP-0014+
 // Phase 2: Insert full line plan (line, product, daily plan, workstation plan, employee assignments)
+require('dotenv').config({ path: require('path').join(__dirname, '..', 'backend', '.env') });
 const ExcelJS = require('../backend/node_modules/exceljs');
 const { Pool } = require('../backend/node_modules/pg');
-const pool = new Pool({ host:'127.0.0.1', user:'worksync_user', password:'worksync_secure_2026', database:'worksync_db' });
+const requireEnv = (name) => {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
+};
+const pool = new Pool({
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: process.env.DB_PORT || 5432,
+    user: process.env.DB_USER || 'worksync_user',
+    password: requireEnv('DB_PASSWORD'),
+    database: process.env.DB_NAME || 'worksync_db'
+});
 
 async function run() {
     // ── Read Excel ────────────────────────────────────────────────────────────

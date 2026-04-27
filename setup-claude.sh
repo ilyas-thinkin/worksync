@@ -12,9 +12,23 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_ENV="${ROOT_DIR}/backend/.env"
+
 log()  { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}!${NC} $1"; }
 err()  { echo -e "${RED}✗${NC} $1"; exit 1; }
+
+if [ -f "$BACKEND_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$BACKEND_ENV"
+  set +a
+fi
+
+if [ -z "${WORKSYNC_POSTGRES_MCP_URL:-}" ] && [ -n "${DB_PASSWORD:-}" ]; then
+  export WORKSYNC_POSTGRES_MCP_URL="postgresql://${DB_USER:-worksync_user}:${DB_PASSWORD}@${DB_HOST:-127.0.0.1}:${DB_PORT:-5432}/${DB_NAME:-worksync_db}"
+fi
 
 # ── Prerequisites ─────────────────────────────────────────
 command -v npx  >/dev/null 2>&1 || err "npx not found — install Node.js first"
@@ -107,55 +121,68 @@ else:
 if "mcpServers" not in settings:
     settings["mcpServers"] = {}
 
-mcps = {
-    "stitch": {
+mcps = {}
+
+stitch_api_key = os.environ.get("STITCH_API_KEY")
+if stitch_api_key:
+    mcps["stitch"] = {
         "url": "https://stitch.googleapis.com/mcp",
         "type": "http",
         "headers": {
             "Accept": "application/json",
-            "X-Goog-Api-Key": "AQ.Ab8RN6I8dyR4F4q2b_-Gd_Biy1Q1WVZTFUwsx0T7-PGuVEQoGQ"
+            "X-Goog-Api-Key": stitch_api_key
         }
-    },
-    "nano-banana": {
+    }
+
+gemini_api_key = os.environ.get("GEMINI_API_KEY")
+if gemini_api_key:
+    mcps["nano-banana"] = {
         "command": "npx",
         "args": ["-y", "-p", "@lyalindotcom/nano-banana-mcp", "nano-banana-server"],
         "env": {
-            "GEMINI_API_KEY": "AIzaSyBJHkPBbD8Um-OThyToMN6YpbvCSiAqVxY"
+            "GEMINI_API_KEY": gemini_api_key
         },
         "timeout": 60000,
         "trust": True
-    },
-    "@21st-dev/magic": {
+    }
+
+magic_api_key = os.environ.get("MAGIC_API_KEY")
+if magic_api_key:
+    mcps["@21st-dev/magic"] = {
         "command": "npx",
         "args": [
             "-y",
             "@21st-dev/magic@latest",
-            "API_KEY=23480b73724073d243c7f4de181dc29fddd548cc8ba84df34d2a34e79d3d19a8"
+            f"API_KEY={magic_api_key}"
         ]
-    },
-    "context7": {
+    }
+
+mcps["context7"] = {
         "command": "npx",
         "args": ["-y", "@upstash/context7-mcp@latest"],
         "timeout": 60000,
         "trust": True
-    },
-    "postgres": {
+    }
+
+postgres_mcp_url = os.environ.get("WORKSYNC_POSTGRES_MCP_URL")
+if postgres_mcp_url:
+    mcps["postgres"] = {
         "command": "npx",
         "args": [
             "-y",
             "@modelcontextprotocol/server-postgres",
-            "postgresql://worksync_user:worksync_secure_2026@127.0.0.1:5432/worksync_db"
+            postgres_mcp_url
         ],
         "timeout": 60000,
         "trust": True
-    },
-    "sequential-thinking": {
+    }
+
+mcps["sequential-thinking"] = {
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
         "timeout": 60000,
         "trust": True
     }
-}
 
 # Merge — don't overwrite existing keys unless force
 for name, config in mcps.items():

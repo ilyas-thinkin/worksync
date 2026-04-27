@@ -4,6 +4,14 @@ const qr = require('./utils/qr');
 let dbListenerStarted = false;
 let dbClient = null;
 
+const requireEnv = (name) => {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
+};
+
 function handleEvents(req, res) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -66,7 +74,7 @@ function startDbListener() {
         port: process.env.DB_PORT || 5432,
         database: process.env.DB_NAME || 'worksync_db',
         user: process.env.DB_USER || 'worksync_user',
-        password: process.env.DB_PASSWORD || 'worksync_secure_2026',
+        password: requireEnv('DB_PASSWORD'),
     });
 
     dbClient.on('error', (err) => {

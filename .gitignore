@@ -3,6 +3,8 @@ node_modules/
 
 # Environment
 .env
+backend/.env
+deploy/env/*.env
 
 # Logs
 logs/

@@ -66,7 +66,12 @@ DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-worksync_db}"
 DB_USER="${DB_USER:-worksync_user}"
-DB_PASSWORD="${DB_PASSWORD:-worksync_secure_2026}"
+DB_PASSWORD="${DB_PASSWORD:-}"
+
+if [ -z "$DB_PASSWORD" ]; then
+    echo "Missing DB_PASSWORD in ${ENV_FILE}."
+    exit 1
+fi
 
 if [ -n "$RESTORE_FILE" ] && [ ! -f "$RESTORE_FILE" ]; then
     echo "Restore file not found: $RESTORE_FILE"

@@ -1,8 +1,22 @@
 // convert_kn754.js — reads KN754_line_plan_draft.xlsx and outputs KN754_upload_ready.xlsx
 // in the exact WorkSync upload template format.
+require('dotenv').config({ path: require('path').join(__dirname, '..', 'backend', '.env') });
 const ExcelJS = require('../backend/node_modules/exceljs');
 const { Pool }  = require('../backend/node_modules/pg');
-const pool = new Pool({ host:'127.0.0.1', user:'worksync_user', password:'worksync_secure_2026', database:'worksync_db' });
+const requireEnv = (name) => {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
+};
+const pool = new Pool({
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: process.env.DB_PORT || 5432,
+    user: process.env.DB_USER || 'worksync_user',
+    password: requireEnv('DB_PASSWORD'),
+    database: process.env.DB_NAME || 'worksync_db'
+});
 
 async function run() {
     // ── 1. Load draft ──────────────────────────────────────────────────────────
