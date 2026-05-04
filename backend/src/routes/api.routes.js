@@ -476,30 +476,16 @@ async function findEmployeeAssignmentConflicts(db, employeeIds, workDate, isOver
     return result.rows;
 }
 
-function getPreviousWorkDate(workDate) {
-    if (!workDate) return null;
-    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(workDate));
-    if (!match) return null;
-    const year = parseInt(match[1], 10);
-    const month = parseInt(match[2], 10);
-    const day = parseInt(match[3], 10);
-    const utcDate = new Date(Date.UTC(year, month - 1, day));
-    if (Number.isNaN(utcDate.getTime())) return null;
-    utcDate.setUTCDate(utcDate.getUTCDate() - 1);
-    return utcDate.toISOString().slice(0, 10);
-}
-
-async function findPreviousDayDailyPlanForLine(db, lineId, workDate) {
+async function findLatestPriorDailyPlanForLine(db, lineId, workDate) {
     if (!lineId || !workDate) return null;
-    const previousWorkDate = getPreviousWorkDate(workDate);
-    if (!previousWorkDate) return null;
     const result = await db.query(
         `SELECT *
          FROM line_daily_plans
          WHERE line_id = $1
-           AND work_date = $2
+           AND work_date < $2
+         ORDER BY work_date DESC
          LIMIT 1`,
-        [lineId, previousWorkDate]
+        [lineId, workDate]
     );
     return result.rows[0] || null;
 }
@@ -669,15 +655,40 @@ async function getCumulativeWorkstationOutput(db, {
     return parseInt(outputResult.rows[0]?.total || 0, 10);
 }
 
-function getRemainingShiftHours(startedAt, inTime, outTime) {
+function getRemainingShiftHours(startedAt, inTime, outTime, lunchMins = 0) {
     if (!startedAt || !inTime || !outTime) return 0;
     const start = new Date(startedAt);
     if (Number.isNaN(start.getTime())) return 0;
-    const [outH, outM] = String(outTime).split(':').map(Number);
-    const shiftEndMins = (outH * 60) + outM;
     const startMins = (start.getHours() * 60) + start.getMinutes();
-    const remainingMins = Math.max(0, shiftEndMins - startMins);
+    const remainingMins = getNetWorkingMinutes(inTime, outTime, lunchMins, startMins);
     return Math.round((remainingMins / 60) * 100) / 100;
+}
+
+const DEFAULT_LUNCH_START_HOUR = 12;
+
+function parseClockToMinutes(value, fallback = '00:00') {
+    const [hours, minutes] = String(value || fallback).split(':').map(Number);
+    return ((hours || 0) * 60) + (minutes || 0);
+}
+
+function getLunchOverlapMinutes(startMins, endMins, lunchMins = 0) {
+    const normalizedLunchMins = Math.max(0, parseInt(lunchMins, 10) || 0);
+    if (normalizedLunchMins <= 0) return 0;
+    const lunchStartMins = DEFAULT_LUNCH_START_HOUR * 60;
+    const lunchEndMins = lunchStartMins + normalizedLunchMins;
+    const overlapStart = Math.max(startMins, lunchStartMins);
+    const overlapEnd = Math.min(endMins, lunchEndMins);
+    return Math.max(0, overlapEnd - overlapStart);
+}
+
+function getNetWorkingMinutes(inTime, outTime, lunchMins = 0, startMinsOverride = null) {
+    const shiftStartMins = Number.isFinite(startMinsOverride)
+        ? startMinsOverride
+        : parseClockToMinutes(inTime, '08:00');
+    const shiftEndMins = parseClockToMinutes(outTime, '17:00');
+    const grossMinutes = Math.max(0, shiftEndMins - shiftStartMins);
+    const lunchOverlapMinutes = getLunchOverlapMinutes(shiftStartMins, shiftEndMins, lunchMins);
+    return Math.max(0, grossMinutes - lunchOverlapMinutes);
 }
 
 function buildShiftStartTimestamp(workDate, inTime = '08:00') {
@@ -690,9 +701,7 @@ async function getShiftWindowDetails() {
     const inTime = await getSettingValue('default_in_time', '08:00');
     const outTime = await getSettingValue('default_out_time', '17:00');
     const lunchMins = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10) || 0;
-    const [inH, inM] = inTime.split(':').map(Number);
-    const [outH, outM] = outTime.split(':').map(Number);
-    const totalMinutes = Math.max(0, ((outH * 60 + outM) - (inH * 60 + inM)) - lunchMins);
+    const totalMinutes = getNetWorkingMinutes(inTime, outTime, lunchMins);
     return {
         inTime,
         outTime,
@@ -700,6 +709,33 @@ async function getShiftWindowDetails() {
         workingHours: Math.round((totalMinutes / 60) * 100) / 100,
         workingSeconds: totalMinutes * 60
     };
+}
+
+function roundMetric(value, digits = 2) {
+    const num = parseFloat(value);
+    if (!Number.isFinite(num)) return 0;
+    const factor = 10 ** digits;
+    return Math.round(num * factor) / factor;
+}
+
+function computeTaktTimeFromTarget(targetUnits, workingSeconds) {
+    const target = parseFloat(targetUnits);
+    const seconds = parseFloat(workingSeconds);
+    if (!(target > 0) || !(seconds > 0)) return 0;
+    return seconds / target;
+}
+
+function computeTargetUnitsFromTakt(taktTimeSeconds, workingSeconds) {
+    const takt = parseFloat(taktTimeSeconds);
+    const seconds = parseFloat(workingSeconds);
+    if (!(takt > 0) || !(seconds > 0)) return 0;
+    return seconds / takt;
+}
+
+function computeHourlyTargetFromTakt(taktTimeSeconds) {
+    const takt = parseFloat(taktTimeSeconds);
+    if (!(takt > 0)) return 0;
+    return 3600 / takt;
 }
 
 async function getEffectiveRegularSourceWorkstations(db, lineId, workDate) {
@@ -917,7 +953,13 @@ async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
         const activeRows = isChangeoverSource ? incomingByCode.get(normalizeWsCode(firstPrimary.workstation_code)) : rows;
         const firstActive = activeRows[0] || firstPrimary;
         const sourceProductId = isChangeoverSource ? incomingId : primaryId;
-        const sourceTargetUnits = isChangeoverSource ? incomingTarget : primaryTarget;
+        const sourceTaktTimeSeconds = parseFloat(firstActive.takt_time_seconds || 0) || 0;
+        const sourceTargetUnits = sourceTaktTimeSeconds > 0
+            ? computeTargetUnitsFromTakt(sourceTaktTimeSeconds, shiftWindow.workingSeconds)
+            : (isChangeoverSource ? incomingTarget : primaryTarget);
+        const sourceHourlyTarget = sourceTaktTimeSeconds > 0
+            ? computeHourlyTargetFromTakt(sourceTaktTimeSeconds)
+            : (shiftWindow.workingHours > 0 ? ((sourceTargetUnits / shiftWindow.workingHours) || 0) : 0);
         const groupKey = String(firstPrimary.group_name || firstPrimary.workstation_code || '');
         const groupWip = groupWipMap.get(groupKey);
 
@@ -928,10 +970,8 @@ async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
             source_line_plan_workstation_id: firstActive.workstation_plan_id,
             source_product_id: sourceProductId,
             source_mode: isChangeoverSource ? 'changeover' : 'primary',
-            source_hourly_target: shiftWindow.workingHours > 0
-                ? Math.round(((sourceTargetUnits / shiftWindow.workingHours) || 0) * 100) / 100
-                : 0,
-            source_target_units: sourceTargetUnits,
+            source_hourly_target: roundMetric(sourceHourlyTarget, 2),
+            source_target_units: roundMetric(sourceTargetUnits, 2),
             source_employee_id: firstActive.assigned_employee_id ? parseInt(firstActive.assigned_employee_id, 10) : null,
             source_emp_code: firstActive.assigned_emp_code || null,
             source_emp_name: firstActive.assigned_emp_name || null,
@@ -1214,58 +1254,82 @@ async function normalizeRegularAssignmentsToProductWorkstations(db, {
 
 async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = null) {
     if (!lineId || !workDate) return null;
-    const db = client || pool;
-    const existing = await db.query(
-        `SELECT *
-         FROM line_daily_plans
-         WHERE line_id = $1 AND work_date = $2
-         LIMIT 1`,
-        [lineId, workDate]
-    );
-    if (existing.rowCount > 0) return existing.rows[0];
-    if (await hasDailyPlanDeletionMarker(db, lineId, workDate)) return null;
+    const ownsClient = !client || typeof client.release !== 'function';
+    const db = ownsClient ? await pool.connect() : client;
+    try {
+        if (ownsClient) await db.query('BEGIN');
 
-    const sourcePlan = await findPreviousDayDailyPlanForLine(db, lineId, workDate);
-    if (!sourcePlan) return null;
-
-    const insertResult = await db.query(
-        `INSERT INTO line_daily_plans
-           (line_id, product_id, work_date, target_units,
-            incoming_product_id, incoming_target_units, changeover_sequence,
-            overtime_minutes, overtime_target, ot_enabled, changeover_started_at,
-            created_by, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
-         ON CONFLICT (line_id, work_date) DO NOTHING
-         RETURNING *`,
-        [
-            lineId,
-            sourcePlan.product_id,
-            workDate,
-            parseInt(sourcePlan.target_units || 0, 10) || 0,
-            sourcePlan.incoming_product_id || null,
-            parseInt(sourcePlan.incoming_target_units || 0, 10) || 0,
-            parseInt(sourcePlan.changeover_sequence || 0, 10) || 0,
-            sourcePlan.overtime_minutes || 0,
-            sourcePlan.overtime_target || 0,
-            !!sourcePlan.ot_enabled,
-            null,
-            sourcePlan.updated_by || sourcePlan.created_by || null
-        ]
-    );
-    const insertedPlan = insertResult.rows[0];
-    if (!insertedPlan) {
-        const current = await db.query(
+        const existing = await db.query(
             `SELECT *
              FROM line_daily_plans
              WHERE line_id = $1 AND work_date = $2
              LIMIT 1`,
             [lineId, workDate]
         );
-        return current.rows[0] || null;
-    }
+        if (existing.rowCount > 0) {
+            if (ownsClient) await db.query('COMMIT');
+            return existing.rows[0];
+        }
+        if (await hasDailyPlanDeletionMarker(db, lineId, workDate)) {
+            if (ownsClient) await db.query('COMMIT');
+            return null;
+        }
 
-    if (sourcePlan.incoming_product_id) {
-        await carryForwardMixedLineState(lineId, sourcePlan.work_date, workDate, sourcePlan, db);
+        const sourcePlan = await findLatestPriorDailyPlanForLine(db, lineId, workDate);
+        if (!sourcePlan) {
+            if (ownsClient) await db.query('COMMIT');
+            return null;
+        }
+
+        const insertResult = await db.query(
+            `INSERT INTO line_daily_plans
+               (line_id, product_id, work_date, target_units,
+                incoming_product_id, incoming_target_units, changeover_sequence,
+                overtime_minutes, overtime_target, ot_enabled, changeover_started_at,
+                created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+             ON CONFLICT (line_id, work_date) DO NOTHING
+             RETURNING *`,
+            [
+                lineId,
+                sourcePlan.product_id,
+                workDate,
+                parseInt(sourcePlan.target_units || 0, 10) || 0,
+                sourcePlan.incoming_product_id || null,
+                parseInt(sourcePlan.incoming_target_units || 0, 10) || 0,
+                parseInt(sourcePlan.changeover_sequence || 0, 10) || 0,
+                sourcePlan.overtime_minutes || 0,
+                sourcePlan.overtime_target || 0,
+                !!sourcePlan.ot_enabled,
+                null,
+                sourcePlan.updated_by || sourcePlan.created_by || null
+            ]
+        );
+        const insertedPlan = insertResult.rows[0];
+        if (!insertedPlan) {
+            const current = await db.query(
+                `SELECT *
+                 FROM line_daily_plans
+                 WHERE line_id = $1 AND work_date = $2
+                 LIMIT 1`,
+                [lineId, workDate]
+            );
+            if (ownsClient) await db.query('COMMIT');
+            return current.rows[0] || null;
+        }
+
+        if (sourcePlan.product_id) {
+            await copyWorkstationPlanFromDate(lineId, sourcePlan.work_date, lineId, workDate, sourcePlan.product_id, db, {
+                copyEmployees: true
+            });
+        }
+
+        if (sourcePlan.incoming_product_id) {
+            await copyWorkstationPlanFromDate(lineId, sourcePlan.work_date, lineId, workDate, sourcePlan.incoming_product_id, db, {
+                copyEmployees: false
+            });
+        }
+
         const refreshed = await db.query(
             `SELECT *
              FROM line_daily_plans
@@ -1273,10 +1337,16 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
              LIMIT 1`,
             [lineId, workDate]
         );
+        if (ownsClient) await db.query('COMMIT');
         return refreshed.rows[0] || insertedPlan;
+    } catch (err) {
+        if (ownsClient) {
+            await db.query('ROLLBACK').catch(() => {});
+        }
+        throw err;
+    } finally {
+        if (ownsClient) db.release();
     }
-
-    return insertedPlan;
 }
 
 async function ensureDailyPlansCarryForward(workDate, client = null) {
@@ -2812,12 +2882,19 @@ router.get('/lines/:lineId/ot-plan', async (req, res) => {
             const sourceProductId = ws.source_product_id
                 ? parseInt(ws.source_product_id, 10)
                 : (procRes.rows[0]?.product_id ? parseInt(procRes.rows[0].product_id, 10) : null);
-            const sourceTargetUnits = sourceProductId && sourceProductId === parseInt(dailyPlan.incoming_product_id || 0, 10)
-                ? (parseInt(dailyPlan.incoming_target_units || 0, 10) || 0)
-                : (parseInt(dailyPlan.target_units || 0, 10) || 0);
             const hourlyTarget = (parseFloat(ws.source_hourly_target || 0) || 0) > 0
                 ? (parseFloat(ws.source_hourly_target || 0) || 0)
-                : (shiftWindow.workingHours > 0 ? (sourceTargetUnits / shiftWindow.workingHours) : 0);
+                : (() => {
+                    const fallbackTarget = sourceProductId && sourceProductId === parseInt(dailyPlan.incoming_product_id || 0, 10)
+                        ? (parseInt(dailyPlan.incoming_target_units || 0, 10) || 0)
+                        : (parseInt(dailyPlan.target_units || 0, 10) || 0);
+                    return shiftWindow.workingHours > 0 ? (fallbackTarget / shiftWindow.workingHours) : 0;
+                })();
+            const sourceTargetUnits = hourlyTarget > 0 && shiftWindow.workingHours > 0
+                ? hourlyTarget * shiftWindow.workingHours
+                : (sourceProductId && sourceProductId === parseInt(dailyPlan.incoming_product_id || 0, 10)
+                    ? (parseInt(dailyPlan.incoming_target_units || 0, 10) || 0)
+                    : (parseInt(dailyPlan.target_units || 0, 10) || 0));
             const otMinutes = parseInt(ws.ot_minutes || 0, 10) || 0;
             const otTargetUnits = Math.round((hourlyTarget * otMinutes) / 60);
             workstations.push({
@@ -2826,8 +2903,8 @@ router.get('/lines/:lineId/ot-plan', async (req, res) => {
                 assigned_employee: empRes.rows[0] || null,
                 source_employee: sourceEmpRes.rows[0] || null,
                 source_product_id: sourceProductId,
-                source_target_units: sourceTargetUnits,
-                source_hourly_target: hourlyTarget,
+                source_target_units: roundMetric(sourceTargetUnits, 2),
+                source_hourly_target: roundMetric(hourlyTarget, 2),
                 ot_target_units: otTargetUnits
             });
         }
@@ -3797,9 +3874,7 @@ router.get('/reports/daily', async (req, res) => {
             shift.rows.forEach(row => {
                 let hours = workingHours;
                 if (row.in_time && row.out_time) {
-                    const [inH, inM] = row.in_time.split(':').map(Number);
-                    const [outH, outM] = row.out_time.split(':').map(Number);
-                    const diff = (outH + outM / 60) - (inH + inM / 60);
+                    const diff = getNetWorkingMinutes(row.in_time, row.out_time, lunchMinsEff) / 60;
                     if (diff > 0) hours = diff;
                 }
                 const output = parseInt(row.total_output || 0);
@@ -4061,9 +4136,7 @@ router.get('/reports/range', async (req, res) => {
                 shift.rows.forEach(row => {
                     let hours = workingHours;
                     if (row.in_time && row.out_time) {
-                        const [inH, inM] = row.in_time.split(':').map(Number);
-                        const [outH, outM] = row.out_time.split(':').map(Number);
-                        const diff = (outH + outM / 60) - (inH + inM / 60);
+                        const diff = getNetWorkingMinutes(row.in_time, row.out_time, lunchMinsRange) / 60;
                         if (diff > 0) hours = diff;
                     }
                     const output = parseInt(row.total_output || 0);
@@ -4634,15 +4707,9 @@ router.get('/lines/:id/metrics', async (req, res) => {
         `, [id]);
         const manpower = parseInt(mpResult.rows[0].manpower) || 0;
 
-        // Get working hours from settings
-        const inTime = await getSettingValue('default_in_time', '08:00');
-        const outTime = await getSettingValue('default_out_time', '17:00');
-
-        // Calculate working hours in decimal
-        const [inH, inM] = inTime.split(':').map(Number);
-        const [outH, outM] = outTime.split(':').map(Number);
-        const workingHours = (outH + outM / 60) - (inH + inM / 60);
-        const workingSeconds = workingHours * 3600;
+        const shiftWindow = await getShiftWindowDetails();
+        const workingHours = shiftWindow.workingHours;
+        const workingSeconds = shiftWindow.workingSeconds;
 
         // Get actual output for the day (prefer QA output if provided)
         const outputResult = await pool.query(`
@@ -4720,13 +4787,9 @@ router.get('/lines-metrics', async (req, res) => {
     const workDate = date || new Date().toISOString().split('T')[0];
 
     try {
-        // Get working hours from settings
-        const inTime = await getSettingValue('default_in_time', '08:00');
-        const outTime = await getSettingValue('default_out_time', '17:00');
-        const [inH, inM] = inTime.split(':').map(Number);
-        const [outH, outM] = outTime.split(':').map(Number);
-        const workingHours = (outH + outM / 60) - (inH + inM / 60);
-        const workingSeconds = workingHours * 3600;
+        const shiftWindow = await getShiftWindowDetails();
+        const workingHours = shiftWindow.workingHours;
+        const workingSeconds = shiftWindow.workingSeconds;
 
         const result = await pool.query(`
             SELECT
@@ -5149,8 +5212,8 @@ router.get('/products/export/:id', async (req, res) => {
         const ws = workbook.addWorksheet('Product Process Setup');
 
         ws.columns = [
-            { width: 15 }, { width: 15 }, { width: 22 }, { width: 35 },
-            { width: 20 }, { width: 18 }, { width: 15 }
+            { width: 15 }, { width: 15 }, { width: 22 }, { width: 18 },
+            { width: 35 }, { width: 20 }, { width: 18 }, { width: 15 }
         ];
 
         const boldFont = { bold: true, size: 11 };
@@ -5161,7 +5224,7 @@ router.get('/products/export/:id', async (req, res) => {
         };
 
         // Title
-        ws.mergeCells('A1:G1');
+        ws.mergeCells('A1:H1');
         const titleCell = ws.getCell('A1');
         titleCell.value = 'WORKERS - PROCESSWISE DETAILS';
         titleCell.font = { ...titleFont, color: { argb: 'FFFFFFFF' } };
@@ -5175,13 +5238,13 @@ router.get('/products/export/:id', async (req, res) => {
             ['BUYER', product.buyer_name || '-'],
             ['STYLE NO', product.product_code],
             ['DESCRIPTION', product.product_name],
-            ['TARGET', target],
+            ['TARGET', lineTarget],
             ['TAKT TIME', taktTime]
         ];
         headerFields.forEach(([label, value], idx) => {
             const row = idx + 2;
             ws.mergeCells(`A${row}:D${row}`);
-            ws.mergeCells(`E${row}:G${row}`);
+            ws.mergeCells(`E${row}:H${row}`);
             const lc = ws.getCell(`A${row}`);
             lc.value = label; lc.font = boldFont; lc.alignment = { horizontal: 'center' }; lc.border = borderAll;
             const vc = ws.getCell(`E${row}`);
@@ -5189,7 +5252,7 @@ router.get('/products/export/:id', async (req, res) => {
         });
 
         // Table header (row 8)
-        const tableHeaders = ['GROUP', 'WORK STATION', 'WORKER INPUT MAPPING', 'PROCESS DETAILS', 'PROCESS TIME (SEC)', 'CYCLE TIME (SEC)', 'WORK LOAD %'];
+        const tableHeaders = ['GROUP', 'WORK STATION', 'WORKER INPUT MAPPING', 'PROCESS CODE', 'PROCESS DETAILS', 'PROCESS TIME (SEC)', 'CYCLE TIME (SEC)', 'WORK LOAD %'];
         const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
         const headerRow = ws.getRow(8);
         tableHeaders.forEach((h, i) => {
@@ -5225,13 +5288,13 @@ router.get('/products/export/:id', async (req, res) => {
 
             const values = [
                 proc.group_name || '', proc.workstation_code || '', proc.worker_input_mapping || '',
-                proc.operation_name, procTime, cycleTime
+                proc.operation_code || '', proc.operation_name, procTime, cycleTime
             ];
             values.forEach((val, colIdx) => {
                 const cell = row.getCell(colIdx + 1);
                 cell.value = val; cell.border = borderAll; cell.alignment = { horizontal: 'center' };
             });
-            const loadCell = row.getCell(7);
+            const loadCell = row.getCell(8);
             loadCell.value = workLoad; loadCell.numFmt = '0%';
             loadCell.border = borderAll; loadCell.alignment = { horizontal: 'center' };
         });
@@ -5239,14 +5302,14 @@ router.get('/products/export/:id', async (req, res) => {
         // Total row
         const totalRowNum = dataStartRow + processes.length;
         const totalRow = ws.getRow(totalRowNum);
-        ws.mergeCells(`A${totalRowNum}:D${totalRowNum}`);
+        ws.mergeCells(`A${totalRowNum}:E${totalRowNum}`);
         const tlc = totalRow.getCell(1);
         tlc.value = 'TOTAL TIME IN SECS'; tlc.font = boldFont; tlc.alignment = { horizontal: 'center' }; tlc.border = borderAll;
-        const tpc = totalRow.getCell(5);
+        const tpc = totalRow.getCell(6);
         tpc.value = totalProcessTime; tpc.font = boldFont; tpc.border = borderAll; tpc.alignment = { horizontal: 'center' };
-        const tcc = totalRow.getCell(6);
+        const tcc = totalRow.getCell(7);
         tcc.value = totalProcessTime; tcc.font = boldFont; tcc.border = borderAll; tcc.alignment = { horizontal: 'center' };
-        totalRow.getCell(7).border = borderAll;
+        totalRow.getCell(8).border = borderAll;
 
         const filename = `${product.product_code}_${product.product_name}`.replace(/[^a-zA-Z0-9_-]/g, '_');
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -5261,13 +5324,23 @@ router.get('/products/upload-template', async (req, res) => {
     try {
         const workbook = new ExcelJS.Workbook();
         const ws = workbook.addWorksheet('Product Process Setup');
+        const operationsResult = await pool.query(
+            `SELECT operation_code, operation_name
+             FROM operations
+             WHERE is_active = true
+             ORDER BY operation_code`
+        );
+        const operations = operationsResult.rows;
+        const operationCount = Math.max(operations.length, 1);
 
-        // Columns: SEQ | PROCESS DETAILS | SAM (seconds)
+        // Columns: SEQ | PROCESS CODE (auto) | SELECT OPERATION | SAM (seconds)
         ws.columns = [
-            { width: 12 }, { width: 45 }, { width: 18 }
+            { width: 12 }, { width: 18 }, { width: 45 }, { width: 18 }
         ];
 
         const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+        const inputFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+        const autoFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBEBEB' } };
         const boldFont = { bold: true, size: 11 };
         const titleFont = { bold: true, size: 14 };
         const borderAll = {
@@ -5275,8 +5348,8 @@ router.get('/products/upload-template', async (req, res) => {
             left: { style: 'thin' }, right: { style: 'thin' }
         };
 
-        // Title row (merged A1:C1)
-        ws.mergeCells('A1:C1');
+        // Title row (merged A1:D1)
+        ws.mergeCells('A1:D1');
         const titleCell = ws.getCell('A1');
         titleCell.value = 'PRODUCT PROCESS SETUP';
         titleCell.font = { ...titleFont, color: { argb: 'FFFFFFFF' } };
@@ -5294,7 +5367,7 @@ router.get('/products/upload-template', async (req, res) => {
 
         headerFields.forEach(([label, value], idx) => {
             const row = idx + 2;
-            ws.mergeCells(`A${row}:B${row}`);  // A-B = label (no C needed — use just A label, B-C value)
+            ws.mergeCells(`A${row}:B${row}`);
             const labelCell = ws.getCell(`A${row}`);
             labelCell.value = label;
             labelCell.font = boldFont;
@@ -5305,10 +5378,11 @@ router.get('/products/upload-template', async (req, res) => {
             valCell.font = { size: 11 };
             valCell.alignment = { horizontal: 'left' };
             valCell.border = borderAll;
+            ws.getCell(`D${row}`).border = borderAll;
         });
 
         // Table header (row 6)
-        const tableHeaders = ['SEQ', 'PROCESS DETAILS', 'SAM (seconds)'];
+        const tableHeaders = ['SEQ', 'PROCESS CODE (auto)', 'SELECT OPERATION', 'SAM (seconds)'];
         const headerRow = ws.getRow(6);
         tableHeaders.forEach((h, i) => {
             const cell = headerRow.getCell(i + 1);
@@ -5319,31 +5393,71 @@ router.get('/products/upload-template', async (req, res) => {
             cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
         });
         headerRow.height = 28;
+        ws.getCell('C6').note = {
+            texts: [
+                { font: { bold: true }, text: 'Existing process: ' },
+                { text: 'select it from the dropdown so the code fills automatically.\n' },
+                { font: { bold: true }, text: 'New process: ' },
+                { text: 'type the process name manually and leave the code blank. Upload will create a new process code.' }
+            ]
+        };
 
-        // Example data rows (rows 7+): [SEQ, PROCESS NAME, SAM_seconds]
+        // Hidden config sheet for operation dropdown and code lookup
+        const cfg = workbook.addWorksheet('Config');
+        cfg.state = 'hidden';
+        operations.forEach((op, i) => {
+            cfg.getCell(i + 1, 1).value = op.operation_code;
+            cfg.getCell(i + 1, 2).value = op.operation_name;
+            cfg.getCell(i + 1, 3).value = `${op.operation_code} | ${op.operation_name}`;
+        });
+
+        // Example data rows (rows 7+): [SEQ, combinedOperation, SAM_seconds]
         const exampleData = [
-            [1, 'TOP PASTING', 28],
-            [2, 'KIMLON PASTING', 22],
-            [3, 'ATTACHING TOP & KIMLON', 35],
-            [4, 'GUSSET STITCHING -2NOS', 45],
-            [5, 'GUSSET LAMPING -2NOS', 40],
-            [6, 'GUSSET SHAPING', 30],
-            [7, 'PATTI PROMOTOR', 25],
-            [8, 'PATTI PRIMER 1', 20],
-            [9, 'PATTI PRIMER 2', 20],
-            [10, 'PATTI DYE', 38],
-            [11, 'CLEANING', 15],
+            ['1', 'TOP PASTING', 28],
+            ['2', 'KIMLON PASTING', 22],
+            ['3', 'ATTACHING TOP & KIMLON', 35],
+            ['4', 'GUSSET STITCHING -2NOS', 45],
+            ['5', 'GUSSET LAMPING -2NOS', 40],
+            ['6', 'GUSSET SHAPING', 30],
+            ['7', 'PATTI PROMOTOR', 25],
+            ['8', 'PATTI PRIMER 1', 20],
+            ['9', 'PATTI PRIMER 2', 20],
+            ['10', 'PATTI DYE', 38],
+            ['11', 'CLEANING', 15],
         ];
 
-        exampleData.forEach((rowData, idx) => {
-            const rowNum = 7 + idx;
+        for (let rowNum = 7; rowNum <= 306; rowNum++) {
             const row = ws.getRow(rowNum);
-            rowData.forEach((val, colIdx) => {
-                const cell = row.getCell(colIdx + 1);
-                cell.value = val;
+            for (let col = 1; col <= 4; col++) {
+                const cell = row.getCell(col);
                 cell.border = borderAll;
-                cell.alignment = { horizontal: colIdx === 1 ? 'left' : 'center' };
-            });
+                cell.alignment = { horizontal: col === 3 ? 'left' : 'center', vertical: 'middle' };
+                cell.fill = col === 2 ? autoFill : inputFill;
+            }
+
+            row.getCell(2).value = { formula:
+                `=IF(C${rowNum}="","",IF(ISNUMBER(FIND("|",C${rowNum})),` +
+                `TRIM(LEFT(C${rowNum},FIND("|",C${rowNum})-1)),` +
+                `IF(ISNUMBER(MATCH(C${rowNum},Config!$A$1:$A$${operationCount},0)),C${rowNum},` +
+                `IFERROR(INDEX(Config!$A$1:$A$${operationCount},MATCH(C${rowNum},Config!$B$1:$B$${operationCount},0)),"")` +
+                `)))`
+            };
+
+            row.getCell(3).dataValidation = {
+                type: 'list',
+                allowBlank: true,
+                formulae: [`Config!$C$1:$C$${operationCount}`],
+                showErrorMessage: true,
+                errorTitle: 'Invalid operation',
+                error: 'Choose a process from the dropdown or type a new process name manually.'
+            };
+        }
+
+        exampleData.forEach(([seq, processName, sam], idx) => {
+            const rowNum = 7 + idx;
+            ws.getCell(`A${rowNum}`).value = seq;
+            ws.getCell(`C${rowNum}`).value = processName;
+            ws.getCell(`D${rowNum}`).value = sam;
         });
 
         // Instructions sheet
@@ -5363,9 +5477,10 @@ router.get('/products/upload-template', async (req, res) => {
             '',
             '2. Fill in the PROCESS TABLE (row 7 onwards):',
             '   - SEQ: Sequence number (1, 2, 3...). Optional - will be auto-numbered if blank.',
-            '   - PROCESS DETAILS: Name of the process/operation (REQUIRED)',
-            '     * If this process does not exist in the system, it will be auto-created.',
-            '     * Matched case-insensitively.',
+            '   - PROCESS CODE (auto): Filled automatically when you select an existing process.',
+            '   - SELECT OPERATION: Choose from the dropdown for existing processes or type a new process name manually.',
+            '     * Existing process selection auto-fills the process code.',
+            '     * New typed process names are allowed. Upload will create a new process code for them.',
             '   - SAM (seconds): Standard Allowed Minutes in seconds for this process.',
             '     * Example: 45 means 45 seconds per unit.',
             '     * Leave blank if unknown (can be updated later).',
@@ -5423,17 +5538,39 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
             return res.status(400).json({ success: false, error: 'DESCRIPTION (row 5) is required.' });
         }
 
-        // Parse process rows (row 7 onwards, row 6 is the table header)
-        // Columns: A=SEQ, B=PROCESS DETAILS, C=SAM (seconds)
+        // Parse process rows (row 7 onwards, row 6 is the table header).
+        // Accept both the new auto-code template and older files for backward compatibility.
         const processRows = [];
+        const processCodeHeader = String(sheet.getRow(6).getCell(2).value || '').trim().toUpperCase();
+        const processNameHeader = String(sheet.getRow(6).getCell(3).value || '').trim().toUpperCase();
+        const hasAutoProcessCodeColumn = processCodeHeader === 'PROCESS CODE (AUTO)';
+        const hasManualProcessCodeColumn = processCodeHeader === 'PROCESS CODE';
+        const usesFourColumns = hasAutoProcessCodeColumn || hasManualProcessCodeColumn;
+        const operationNameColumn = usesFourColumns ? 3 : 2;
+        const samColumn = usesFourColumns ? 4 : 3;
         for (let rowNum = 7; rowNum <= sheet.rowCount; rowNum++) {
             const row = sheet.getRow(rowNum);
-            const processName = String(row.getCell(2).value || '').trim();
-            if (!processName) continue;
+            const rawCode = usesFourColumns ? row.getCell(2).value : '';
+            const rawOperation = row.getCell(operationNameColumn).value;
+            const processCode = String(rawCode?.result ?? rawCode ?? '').trim();
+            const operationText = String(rawOperation?.result ?? rawOperation ?? '').trim();
+            let processName = operationText;
+            let derivedCode = '';
+
+            if (operationText.includes('|')) {
+                const [left, ...rest] = operationText.split('|');
+                derivedCode = String(left || '').trim();
+                processName = rest.join('|').trim();
+            }
+
+            const effectiveCode = processCode || derivedCode;
+            const looksLikeHeaderRow = rowNum === 7 && processNameHeader.includes('SELECT OPERATION');
+            if (!processName || looksLikeHeaderRow) continue;
             const seqVal = row.getCell(1).value;
-            const samVal = row.getCell(3).value;
+            const samVal = row.getCell(samColumn).value;
             processRows.push({
                 sequence_override: seqVal ? parseInt(seqVal) : null,
+                process_code: effectiveCode,
                 process_name: processName,
                 sam_seconds: samVal ? parseFloat(samVal) : 0
             });
@@ -5479,36 +5616,71 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
         // 2. Process each row - create operations and product_processes
         const newOperations = [];
         const insertedProcessIds = [];
-        const operationCache = {};
+        const operationCacheByCode = {};
+        const operationCacheByName = {};
         let autoSeq = 1;
 
         for (const row of processRows) {
             const processNameUpper = row.process_name.toUpperCase();
+            const processCodeUpper = String(row.process_code || '').trim().toUpperCase();
             const sequenceNumber = row.sequence_override || autoSeq;
             const operationSah = row.sam_seconds > 0 ? row.sam_seconds / 3600 : 0;
 
-            let operationId;
-            if (operationCache[processNameUpper]) {
-                operationId = operationCache[processNameUpper];
-            } else {
+            let resolvedOperation = processCodeUpper
+                ? operationCacheByCode[processCodeUpper]
+                : operationCacheByName[processNameUpper];
+
+            if (!resolvedOperation && processCodeUpper) {
                 const opResult = await client.query(
-                    'SELECT id FROM operations WHERE UPPER(operation_name) = $1 AND is_active = true',
+                    `SELECT id, operation_code, is_active
+                     FROM operations
+                     WHERE UPPER(TRIM(operation_code)) = $1
+                     LIMIT 1`,
+                    [processCodeUpper]
+                );
+                if (opResult.rows[0]) resolvedOperation = opResult.rows[0];
+            }
+
+            if (!resolvedOperation && !processCodeUpper) {
+                const opResult = await client.query(
+                    `SELECT id, operation_code, is_active
+                     FROM operations
+                     WHERE UPPER(TRIM(operation_name)) = $1
+                     LIMIT 1`,
                     [processNameUpper]
                 );
-                if (opResult.rows.length > 0) {
-                    operationId = opResult.rows[0].id;
-                } else {
-                    const opCode = await generateNextOperationCode(client);
-                    const newOp = await client.query(
-                        `INSERT INTO operations (operation_code, operation_name, is_active, created_by)
-                         VALUES ($1, $2, true, $3) RETURNING id, operation_code`,
-                        [opCode, row.process_name, req.user?.id || null]
-                    );
-                    operationId = newOp.rows[0].id;
-                    newOperations.push({ code: opCode, name: row.process_name });
-                }
-                operationCache[processNameUpper] = operationId;
+                if (opResult.rows[0]) resolvedOperation = opResult.rows[0];
             }
+
+            if (resolvedOperation && resolvedOperation.is_active === false) {
+                await client.query(
+                    `UPDATE operations
+                     SET is_active = true, updated_at = NOW(), updated_by = $1
+                     WHERE id = $2`,
+                    [req.user?.id || null, resolvedOperation.id]
+                );
+                resolvedOperation.is_active = true;
+            }
+
+            let operationId;
+            let operationCode;
+            if (resolvedOperation) {
+                operationId = resolvedOperation.id;
+                operationCode = resolvedOperation.operation_code;
+            } else {
+                const opCode = processCodeUpper || await generateNextOperationCode(client);
+                const newOp = await client.query(
+                    `INSERT INTO operations (operation_code, operation_name, is_active, created_by)
+                     VALUES ($1, $2, true, $3) RETURNING id, operation_code`,
+                    [opCode, row.process_name, req.user?.id || null]
+                );
+                operationId = newOp.rows[0].id;
+                operationCode = newOp.rows[0].operation_code;
+                newOperations.push({ code: operationCode, name: row.process_name });
+            }
+
+            if (operationCode) operationCacheByCode[String(operationCode).trim().toUpperCase()] = { id: operationId, operation_code: operationCode, is_active: true };
+            operationCacheByName[processNameUpper] = { id: operationId, operation_code: operationCode, is_active: true };
 
             const inserted = await client.query(
                 `INSERT INTO product_processes
@@ -7238,6 +7410,65 @@ router.put('/workstation-plan/workstations/:wsId/group', async (req, res) => {
     }
 });
 
+// PUT /workstation-plan/workstations/:wsId/takt — update takt time + recalculate workload for a single workstation
+router.put('/workstation-plan/workstations/:wsId/takt', async (req, res) => {
+    const { wsId } = req.params;
+    try {
+        const wsResult = await pool.query('SELECT * FROM line_plan_workstations WHERE id = $1', [wsId]);
+        const ws = wsResult.rows[0];
+        if (!ws) return res.status(404).json({ success: false, error: 'Workstation not found' });
+        const shiftWindow = await getShiftWindowDetails();
+        const workingSeconds = parseFloat(req.body.working_seconds || 0) > 0
+            ? parseFloat(req.body.working_seconds)
+            : shiftWindow.workingSeconds;
+        const requestedTarget = parseFloat(req.body.target_units);
+        const requestedTakt = parseFloat(req.body.takt_time_seconds);
+        const takt = requestedTarget > 0
+            ? computeTaktTimeFromTarget(requestedTarget, workingSeconds)
+            : requestedTakt;
+        if (!(takt > 0)) {
+            return res.status(400).json({ success: false, error: 'Provide a positive takt_time_seconds or target_units value' });
+        }
+        const sam = parseFloat(ws.actual_sam_seconds || 0);
+        const workload = sam > 0 ? Math.round((sam / takt) * 10000) / 100 : 0;
+        const targetUnits = computeTargetUnitsFromTakt(takt, workingSeconds);
+        const hourlyTargetUnits = computeHourlyTargetFromTakt(takt);
+        await pool.query(
+            'UPDATE line_plan_workstations SET takt_time_seconds = $1, workload_pct = $2, updated_at = NOW() WHERE id = $3',
+            [takt, workload, wsId]
+        );
+        const otUpdateResult = await pool.query(
+            `UPDATE line_ot_workstations
+             SET source_hourly_target = $1,
+                 updated_at = NOW()
+             WHERE source_line_plan_workstation_id = $2`,
+            [roundMetric(hourlyTargetUnits, 2), wsId]
+        );
+        if ((otUpdateResult.rowCount || 0) > 0) {
+            const impactedOtPlans = await pool.query(
+                `SELECT DISTINCT ot_plan_id
+                 FROM line_ot_workstations
+                 WHERE source_line_plan_workstation_id = $1`,
+                [wsId]
+            );
+            for (const row of impactedOtPlans.rows) {
+                await recalculateOtPlanTarget(pool, row.ot_plan_id);
+            }
+            realtime.broadcast('data_change', { entity: 'ot_plan', action: 'update', line_id: ws.line_id, work_date: ws.work_date });
+        }
+        realtime.broadcast('data_change', { entity: 'workstation_plan', action: 'update', line_id: ws.line_id, work_date: ws.work_date });
+        res.json({
+            success: true,
+            takt_time_seconds: roundMetric(takt, 2),
+            target_units: roundMetric(targetUnits, 2),
+            hourly_target_units: roundMetric(hourlyTargetUnits, 2),
+            workload_pct: workload
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // GET /lines/:lineId/line-process-details — flat process list with current WS/group assignments
 router.get('/lines/:lineId/line-process-details', async (req, res) => {
     const { lineId } = req.params;
@@ -7333,6 +7564,7 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
                     o.operation_code, o.operation_name, o.qr_code_path,
                     ws_info.lpw_id, ws_info.lpwp_id, ws_info.osm_checked,
                     ws_info.group_name, ws_info.workstation_code,
+                    ws_info.takt_time_seconds,
                     ws_info.workload_pct, ws_info.actual_sam_seconds,
                     ws_info.is_ot_skipped,
                     ws_info.co_employee_id,
@@ -7349,6 +7581,7 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
                         lpwp.product_process_id,
                         lpwp.id AS lpwp_id, lpwp.osm_checked,
                         lpw.id AS lpw_id, lpw.group_name, lpw.workstation_code,
+                        lpw.takt_time_seconds,
                         lpw.workload_pct, lpw.actual_sam_seconds,
                         lpw.is_ot_skipped, lpw.co_employee_id
                  FROM line_plan_workstations lpw
@@ -7413,6 +7646,7 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
                 employees: empResult.rows,
                 all_assignments: allAssignmentsResult.rows,
                 products: productsResult.rows,
+                global_takt_time_seconds: taktSecs,
                 takt_time_seconds: taktSecs,
                 target_units: queryTarget,
                 overtime_minutes,
@@ -7611,6 +7845,7 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
                     group_name: (row.group_name || '').trim() || null,
                     workstation_code: wsCode,
                     employee_id: row.employee_id ? parseInt(row.employee_id, 10) : null,
+                    takt_time_seconds: (parseFloat(row.takt_time_seconds) || 0) > 0 ? parseFloat(row.takt_time_seconds) : null,
                     processes: []
                 });
             }
@@ -7618,6 +7853,9 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
             ws.processes.push(parseInt(row.process_id, 10));
             if (!ws.employee_id && row.employee_id) ws.employee_id = parseInt(row.employee_id, 10);
             if (!ws.group_name && row.group_name) ws.group_name = (row.group_name || '').trim() || null;
+            if (!ws.takt_time_seconds && (parseFloat(row.takt_time_seconds) || 0) > 0) {
+                ws.takt_time_seconds = parseFloat(row.takt_time_seconds);
+            }
         });
 
         const assignmentStateByEmployee = !isChangeoverSave
@@ -7664,14 +7902,17 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
             // De-duplicate process IDs (guard against frontend sending duplicates)
             ws.processes = [...new Set(ws.processes)];
             const actualSam = ws.processes.reduce((sum, pid) => sum + (samMap.get(pid) || 0) * 3600, 0);
-            const workloadPct = taktSecs > 0 ? (actualSam / taktSecs) * 100 : 0;
+            const workstationTaktSecs = (parseFloat(ws.takt_time_seconds) || 0) > 0
+                ? parseFloat(ws.takt_time_seconds)
+                : taktSecs;
+            const workloadPct = workstationTaktSecs > 0 ? (actualSam / workstationTaktSecs) * 100 : 0;
             const wsResult = await client.query(
                 `INSERT INTO line_plan_workstations
                  (line_id, work_date, product_id, workstation_number, workstation_code, group_name,
                   takt_time_seconds, actual_sam_seconds, workload_pct)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
                 [lineId, work_date, product_id, wsNumber++, ws.workstation_code, ws.group_name,
-                 Math.round(taktSecs * 100) / 100,
+                 Math.round(workstationTaktSecs * 100) / 100,
                  Math.round(actualSam * 100) / 100,
                  Math.round(workloadPct * 100) / 100]
             );
@@ -8356,8 +8597,8 @@ async function generateLinePlanTemplate({ prefill = null } = {}) {
         ws.getRow(15).height = 8; // spacer
 
         // ── Row 16: Table column headers ─────────────────────────────────────────
-        // Blue  = user inputs (A, B, C, E, F, L)
-        // Green = auto-calc  (D, G, H, I, J, K)
+        // Blue  = user inputs (A, B, C, E, F, H, L)
+        // Green = auto-calc  (D, G, I, J, K)
         const colHeaders = [
             { h:'GROUP',              blue:true  }, // A
             { h:'OSM ☑',              blue:true  }, // B
@@ -8366,8 +8607,8 @@ async function generateLinePlanTemplate({ prefill = null } = {}) {
             { h:'SELECT OPERATION ▼', blue:true  }, // E
             { h:'PROCESS TIME (s)',    blue:true  }, // F
             { h:'CYCLE TIME (s)',      blue:false }, // G — SUMIF
-            { h:'TAKT TIME (s)',       blue:false }, // H — working_time / target ← NEW
-            { h:'WORKLOAD',           blue:false }, // I — cycle / takt          ← NEW
+            { h:'TAKT TIME (s)',       blue:true  }, // H — default global takt, editable per workstation
+            { h:'WORKLOAD',           blue:false }, // I — cycle / takt
             { h:'SAH',                blue:false }, // J — F/3600
             { h:'EMP CODE (auto)',     blue:false }, // K — formula from L
             { h:'SELECT EMPLOYEE ▼',  blue:true  }, // L — combined dropdown; WS-linked
@@ -8388,6 +8629,14 @@ async function generateLinePlanTemplate({ prefill = null } = {}) {
                 { text: 'select it from the dropdown so the code fills automatically.\n' },
                 { font: { bold: true }, text: 'New process: ' },
                 { text: 'type the process name manually and leave the code blank. Upload will create a new process code.' }
+            ]
+        };
+        ws.getCell('H16').note = {
+            texts: [
+                { font: { bold: true }, text: 'Default: ' },
+                { text: 'global takt time from Working Time / Target.\n' },
+                { font: { bold: true }, text: 'Optional override: ' },
+                { text: 'type a workstation-specific takt time here if needed.' }
             ]
         };
 
@@ -8444,8 +8693,8 @@ async function generateLinePlanTemplate({ prefill = null } = {}) {
             const ctCell = set(7, autoFill, '0.00');
             ctCell.value = { formula: `=IF(C${rowNum}="",$F${rowNum},SUMIF($C$17:$C$502,C${rowNum},$F$17:$F$502))` };
 
-            // H: TAKT TIME = working_seconds / target  (same for every row, refs header cells)
-            const taktCell = set(8, autoFill, '0.00');
+            // H: TAKT TIME defaults from Working Time / Target, but can be overwritten per workstation
+            const taktCell = set(8, inputFill, '0.00');
             taktCell.value = { formula: `=IFERROR($B$14/$B$10,"")` };
 
             // I: WORKLOAD = cycle_time / takt_time  (formatted as %)
@@ -8590,12 +8839,17 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
                 };
             }
         }
+        const shiftWindow = await getShiftWindowDetails();
+        const globalTaktSeconds = selectedProduct.target_units > 0
+            ? (shiftWindow.workingSeconds / selectedProduct.target_units)
+            : 0;
 
         const procRes = await pool.query(
             `SELECT pp.id, pp.sequence_number, pp.operation_sah, pp.cycle_time_seconds,
                     o.operation_code, o.operation_name,
                     ws_info.group_name, ws_info.workstation_code,
                     COALESCE(ws_info.osm_checked, false) AS osm_checked,
+                    ws_info.takt_time_seconds,
                     e.emp_code, e.emp_name
              FROM product_processes pp
              JOIN operations o ON pp.operation_id = o.id
@@ -8603,7 +8857,7 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
                  SELECT DISTINCT ON (lpwp.product_process_id)
                         lpwp.product_process_id,
                         lpwp.osm_checked,
-                        lpw.group_name, lpw.workstation_code
+                        lpw.group_name, lpw.workstation_code, lpw.takt_time_seconds
                  FROM line_plan_workstations lpw
                  JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
                  WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
@@ -8626,6 +8880,7 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
             process_time: p.cycle_time_seconds != null && Number(p.cycle_time_seconds) > 0
                 ? Number(p.cycle_time_seconds)
                 : Math.round(parseFloat(p.operation_sah || 0) * 3600 * 100) / 100,
+            takt_time_seconds: Number(p.takt_time_seconds || 0) || 0,
             // Changeover templates should stay unassigned so supervisors can decide at runtime.
             employee: isChangeoverMode
                 ? ''
@@ -8658,6 +8913,10 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
             r.getCell(3).value = row.workstation;
             r.getCell(5).value = row.operation;
             r.getCell(6).value = row.process_time;
+            if ((Number(row.takt_time_seconds) || 0) > 0
+                && (!(globalTaktSeconds > 0) || Math.abs(Number(row.takt_time_seconds) - globalTaktSeconds) > 0.01)) {
+                r.getCell(8).value = Math.round(Number(row.takt_time_seconds) * 100) / 100;
+            }
             r.getCell(12).value = row.employee;
         });
 
@@ -8967,7 +9226,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
         // Get working hours → takt time
         const settingsResult = await client.query(
-            `SELECT key, value FROM app_settings WHERE key IN ('default_in_time', 'default_out_time')`
+            `SELECT key, value FROM app_settings WHERE key IN ('default_in_time', 'default_out_time', 'lunch_break_minutes')`
         );
         const sm = {};
         settingsResult.rows.forEach(r => { sm[r.key] = r.value; });
@@ -8975,13 +9234,14 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         if (sm.default_in_time && sm.default_out_time) {
             const [inH, inM]   = sm.default_in_time.split(':').map(Number);
             const [outH, outM] = sm.default_out_time.split(':').map(Number);
-            workingSecs = Math.max(0, ((outH * 60 + outM) - (inH * 60 + inM)) * 60);
+            const lunchMins = parseInt(sm.lunch_break_minutes || '0', 10) || 0;
+            workingSecs = Math.max(0, ((outH * 60 + outM) - (inH * 60 + inM) - lunchMins) * 60);
         }
         const taktTimeSecs = effectiveTargetUnits > 0 ? workingSecs / effectiveTargetUnits : 0;
 
         // Parse data rows (start at row 17; stop at first fully empty row)
         // Columns: A=GROUP, B=OSM, C=WORKSTATION, D=OP CODE(formula), E=OPERATION NAME(user input),
-        //          F=PROCESS TIME, G=CYCLE TIME(formula), H=TAKT TIME(formula), I=WORKLOAD(formula),
+        //          F=PROCESS TIME, G=CYCLE TIME(formula), H=TAKT TIME(user input or default formula), I=WORKLOAD(formula),
         //          J=SAH(formula), K=EMP CODE(formula), L=EMPLOYEE(formula via WS table)
         const dataRows = [];
         let autoSeq = 1;
@@ -8996,6 +9256,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             if (opPipe !== -1) opName = opName.slice(opPipe + 3).trim();
             const osmVal = getCellStr(rowNum, 2);   // B: OSM
             const sah    = getCellNum(rowNum, 10);  // J: SAH (formula result = process_time/3600)
+            const taktTimeSeconds = getCellNum(rowNum, 8); // H: TAKT TIME
             if (!sah || sah <= 0) continue;         // skip rows with no process time entered
             // If workstation is blank, auto-assign a sequential one so partially filled templates still upload.
             const wsCode = rawWsCode ? rawWsCode.toUpperCase() : `WS${String(autoSeq).padStart(2, '0')}`;
@@ -9010,6 +9271,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 opCode:     opCode ? opCode.toUpperCase() : '',
                 opName,
                 sah,
+                taktTimeSeconds: taktTimeSeconds > 0 ? taktTimeSeconds : 0,
                 empCode:    suppressTemplateEmployeeAssignments ? '' : getCellStr(rowNum, 11), // K: EMP CODE (formula result — auto-extracted from L)
                 empName,
                 employeeLookupKey: null,
@@ -9404,7 +9666,11 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         let employeesAssigned = 0;
         for (const [wsCode, processes] of wsGroupsMap) {
             const actualSam   = processes.reduce((s, p) => s + (p.sah * 3600), 0);
-            const workloadPct = taktTimeSecs > 0 ? (actualSam / taktTimeSecs) * 100 : 0;
+            const workstationTaktSecs = (() => {
+                const explicit = processes.find(p => (Number(p.taktTimeSeconds) || 0) > 0);
+                return explicit ? Number(explicit.taktTimeSeconds) : taktTimeSecs;
+            })();
+            const workloadPct = workstationTaktSecs > 0 ? (actualSam / workstationTaktSecs) * 100 : 0;
             const groupName   = processes.find(p => p.group)?.group || null;
 
             const wsInsert = await client.query(
@@ -9414,7 +9680,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                  RETURNING id`,
                 [lineId, workDate, productId, wsNumber, wsCode,
-                 Math.round(taktTimeSecs * 100) / 100,
+                 Math.round(workstationTaktSecs * 100) / 100,
                  Math.round(actualSam * 100) / 100,
                  Math.round(workloadPct * 100) / 100,
                  groupName]
@@ -10003,12 +10269,19 @@ router.get('/supervisor/ot-plan/:lineId', async (req, res) => {
             const sourceProductId = ws.source_product_id
                 ? parseInt(ws.source_product_id, 10)
                 : (procRes.rows[0]?.product_id ? parseInt(procRes.rows[0].product_id, 10) : null);
-            const sourceTargetUnits = sourceProductId && sourceProductId === parseInt(dailyPlanMeta.incoming_product_id || 0, 10)
-                ? (parseInt(dailyPlanMeta.incoming_target_units || 0, 10) || 0)
-                : (parseInt(dailyPlanMeta.target_units || 0, 10) || 0);
             const hourlyTarget = (parseFloat(ws.source_hourly_target || 0) || 0) > 0
                 ? (parseFloat(ws.source_hourly_target || 0) || 0)
-                : (shiftWindow.workingHours > 0 ? (sourceTargetUnits / shiftWindow.workingHours) : 0);
+                : (() => {
+                    const fallbackTarget = sourceProductId && sourceProductId === parseInt(dailyPlanMeta.incoming_product_id || 0, 10)
+                        ? (parseInt(dailyPlanMeta.incoming_target_units || 0, 10) || 0)
+                        : (parseInt(dailyPlanMeta.target_units || 0, 10) || 0);
+                    return shiftWindow.workingHours > 0 ? (fallbackTarget / shiftWindow.workingHours) : 0;
+                })();
+            const sourceTargetUnits = hourlyTarget > 0 && shiftWindow.workingHours > 0
+                ? hourlyTarget * shiftWindow.workingHours
+                : (sourceProductId && sourceProductId === parseInt(dailyPlanMeta.incoming_product_id || 0, 10)
+                    ? (parseInt(dailyPlanMeta.incoming_target_units || 0, 10) || 0)
+                    : (parseInt(dailyPlanMeta.target_units || 0, 10) || 0));
             const otMinutes = parseInt(ws.ot_minutes || 0, 10) || 0;
             const otTargetUnits = Math.round((hourlyTarget * otMinutes) / 60);
             const progress = progRes.rows[0] || null;
@@ -10022,8 +10295,8 @@ router.get('/supervisor/ot-plan/:lineId', async (req, res) => {
                 source_emp_code: sourceEmpRes.rows[0]?.emp_code || null,
                 source_emp_name: sourceEmpRes.rows[0]?.emp_name || null,
                 source_product_id: sourceProductId,
-                source_target_units: sourceTargetUnits,
-                source_hourly_target: hourlyTarget,
+                source_target_units: roundMetric(sourceTargetUnits, 2),
+                source_hourly_target: roundMetric(hourlyTarget, 2),
                 ot_target_units: progress?.ot_target_units != null
                     ? parseInt(progress.ot_target_units || 0, 10)
                     : otTargetUnits,
@@ -10092,14 +10365,13 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
         // Calculate per-hour targets from shift settings
         const inTime  = await getSettingValue('default_in_time',  '08:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
-        const [inH, inM]   = inTime.split(':').map(Number);
-        const [outH, outM] = outTime.split(':').map(Number);
-        const workingHours = ((outH * 60 + outM) - (inH * 60 + inM)) / 60;
-        const shiftEndSecs = outH * 3600 + outM * 60;
+        const lunchMins = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10) || 0;
+        const workingHours = getNetWorkingMinutes(inTime, outTime, lunchMins) / 60;
+        const workingSeconds = workingHours * 3600;
         const perHourTarget         = workingHours > 0 ? primaryTarget / workingHours : 0;
         const perHourIncomingTarget = workingHours > 0 ? incomingTarget / workingHours : 0;
         const incomingRemainingHours = changeoverActive
-            ? getRemainingShiftHours(meta.changeover_started_at, inTime, outTime)
+            ? getRemainingShiftHours(meta.changeover_started_at, inTime, outTime, lunchMins)
             : workingHours;
         const incomingEffectiveTarget = changeoverActive
             ? Math.round(perHourIncomingTarget * incomingRemainingHours)
@@ -10235,13 +10507,29 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     const isCoActive = row.ws_changeover_active && incomingId && coWsMap.has(nwk);
                     const coData = isCoActive ? coWsMap.get(nwk) : null;
                     const firstCoRow = coData ? coData.rows[0] : null;
+                    const primaryTaktTimeSeconds = parseFloat(row.takt_time_seconds || 0) || 0;
+                    const primaryTargetUnits = primaryTaktTimeSeconds > 0
+                        ? computeTargetUnitsFromTakt(primaryTaktTimeSeconds, workingSeconds)
+                        : primaryTarget;
+                    const primaryHourlyTargetUnits = primaryTaktTimeSeconds > 0
+                        ? computeHourlyTargetFromTakt(primaryTaktTimeSeconds)
+                        : perHourTarget;
+                    const coTaktTimeSeconds = parseFloat(firstCoRow?.takt_time_seconds || 0) || 0;
+                    const coTargetUnits = coTaktTimeSeconds > 0
+                        ? computeTargetUnitsFromTakt(coTaktTimeSeconds, workingSeconds)
+                        : incomingTarget;
+                    const coHourlyTargetUnits = coTaktTimeSeconds > 0
+                        ? computeHourlyTargetFromTakt(coTaktTimeSeconds)
+                        : perHourIncomingTarget;
+                    const effectiveTargetUnits = isCoActive ? coTargetUnits : primaryTargetUnits;
+                    const effectiveHourlyTargetUnits = isCoActive ? coHourlyTargetUnits : primaryHourlyTargetUnits;
 
                     // Calculate per-WS changeover target (per_hour_incoming * remaining hours)
                     let wsChangeoverTarget = null;
                     let wsChangeoverRemainingHours = null;
                     if (isCoActive && row.ws_changeover_started_at) {
-                        wsChangeoverRemainingHours = getRemainingShiftHours(row.ws_changeover_started_at, inTime, outTime);
-                        wsChangeoverTarget = Math.round(perHourIncomingTarget * wsChangeoverRemainingHours);
+                        wsChangeoverRemainingHours = getRemainingShiftHours(row.ws_changeover_started_at, inTime, outTime, lunchMins);
+                        wsChangeoverTarget = roundMetric(coHourlyTargetUnits * wsChangeoverRemainingHours, 2);
                     }
 
                     // CO employee suggestion — from incoming product's WS plan (IE pre-assignment)
@@ -10258,13 +10546,19 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         co_suggested_emp_code: incomingCoData?.co_emp_code ?? null,
                         co_suggested_emp_name: incomingCoData?.co_emp_name ?? null,
                         takt_time_seconds: isCoActive ? (firstCoRow?.takt_time_seconds ?? row.takt_time_seconds) : row.takt_time_seconds,
+                        target_units: roundMetric(effectiveTargetUnits, 2),
+                        hourly_target_units: roundMetric(effectiveHourlyTargetUnits, 2),
                         actual_sam_seconds: isCoActive ? (firstCoRow?.actual_sam_seconds ?? row.actual_sam_seconds) : row.actual_sam_seconds,
                         workload_pct: isCoActive ? (firstCoRow?.workload_pct ?? row.workload_pct) : row.workload_pct,
                         ws_changeover_active: !!row.ws_changeover_active,
                         ws_changeover_started_at: row.ws_changeover_started_at || null,
                         ws_changeover_target: wsChangeoverTarget,
                         ws_changeover_remaining_hours: wsChangeoverRemainingHours,
-                        ws_changeover_hourly_target: Math.round(perHourIncomingTarget * 100) / 100,
+                        ws_changeover_hourly_target: roundMetric(coHourlyTargetUnits, 2),
+                        primary_target_units: roundMetric(primaryTargetUnits, 2),
+                        primary_hourly_target_units: roundMetric(primaryHourlyTargetUnits, 2),
+                        co_target_units: roundMetric(coTargetUnits, 2),
+                        co_hourly_target_units: roundMetric(coHourlyTargetUnits, 2),
                         assigned_employee_id: isCoActive ? (firstCoRow?.assigned_employee_id ?? row.assigned_employee_id) : row.assigned_employee_id,
                         assigned_emp_code: isCoActive ? (firstCoRow?.assigned_emp_code ?? row.assigned_emp_code) : row.assigned_emp_code,
                         assigned_emp_name: isCoActive ? (firstCoRow?.assigned_emp_name ?? row.assigned_emp_name) : row.assigned_emp_name,
@@ -13203,9 +13497,8 @@ router.get('/supervisor/shift-summary', async (req, res) => {
         // Get working hours
         const inTime = await getSettingValue('default_in_time', '08:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
-        const [inH, inM] = inTime.split(':').map(Number);
-        const [outH, outM] = outTime.split(':').map(Number);
-        const workingHours = (outH + outM / 60) - (inH + inM / 60);
+        const lunchMins = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10) || 0;
+        const workingHours = getNetWorkingMinutes(inTime, outTime, lunchMins) / 60;
         const workingSeconds = workingHours * 3600;
 
         // Calculate metrics
@@ -13228,9 +13521,7 @@ router.get('/supervisor/shift-summary', async (req, res) => {
             const mp = parseFloat(row.manpower_factor || 1);
             let hours = workingHours;
             if (row.in_time && row.out_time) {
-                const [inH, inM] = row.in_time.split(':').map(Number);
-                const [outH, outM] = row.out_time.split(':').map(Number);
-                const diff = (outH + outM / 60) - (inH + inM / 60);
+                const diff = getNetWorkingMinutes(row.in_time, row.out_time, lunchMins) / 60;
                 if (diff > 0) hours = diff;
             }
             const efficiency = hours > 0 && sah > 0 && mp > 0
@@ -14431,9 +14722,8 @@ router.get('/worker-individual-efficiency', async (req, res) => {
 
         const inTime  = await getSettingValue('default_in_time',  '08:00');
         const outTime = await getSettingValue('default_out_time', '17:00');
-        const [inH, inM]   = inTime.split(':').map(Number);
-        const [outH, outM] = outTime.split(':').map(Number);
-        const shiftHours = (outH + outM / 60) - (inH + inM / 60);
+        const lunchMins = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10) || 0;
+        const shiftHours = getNetWorkingMinutes(inTime, outTime, lunchMins) / 60;
 
         // Build date array (inclusive), use T12:00:00 to avoid UTC offset issues
         const dates = [];

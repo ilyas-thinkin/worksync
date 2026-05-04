@@ -5287,6 +5287,10 @@ function _buildWsGroups(processes, taktSecs, useOT) {
         const g = groups[indexMap.get(key)];
         g.processes.push(p);
         g.sam += parseFloat(p.operation_sah || 0) * 3600;
+        if (!g.takt_time_seconds) {
+            const rowTakt = parseFloat(p.takt_time_seconds || 0);
+            g.takt_time_seconds = rowTakt > 0 ? rowTakt : (taktSecs > 0 ? taktSecs : 0);
+        }
         if (!g.employee_id) {
             // In OT mode: use ot_employee_id when set; fall back to regular employee_id by default
             const hasOTEmp = useOT && p.ot_employee_id != null;
@@ -5306,7 +5310,8 @@ function _buildWsGroups(processes, taktSecs, useOT) {
         if (p.is_ot_skipped) g.is_ot_skipped = true;
     });
     groups.forEach((g, i) => {
-        g.workload_pct = (taktSecs > 0 && g.has_ws) ? (g.sam / taktSecs) * 100 : null;
+        const groupTakt = (parseFloat(g.takt_time_seconds || 0) || 0);
+        g.workload_pct = (groupTakt > 0 && g.has_ws) ? (g.sam / groupTakt) * 100 : null;
         g.color = g.ws ? WS_ROW_COLORS[i % WS_ROW_COLORS.length] : '#fff';
     });
     return groups;
@@ -5347,6 +5352,172 @@ function ldWsToggleOTSkip(btn, lineId) {
             (p.workstation_code || '').trim() === ws ? { ...p, is_ot_skipped: nowSkipped } : p
         );
         if (isOTCo) _ldData.changeoverData = src; else _ldData.data = src;
+    }
+}
+
+function ldRoundMetric(value, digits = 2) {
+    const num = parseFloat(value);
+    if (!Number.isFinite(num)) return 0;
+    const factor = 10 ** digits;
+    return Math.round(num * factor) / factor;
+}
+
+function ldWorkloadColor(value) {
+    return value == null ? '#9ca3af' : value >= 90 ? '#16a34a' : value >= 80 ? '#d97706' : '#dc2626';
+}
+
+function ldComputeWsMetrics({ workSecs = 0, takt = 0, target = 0, changedField = 'takt' } = {}) {
+    let nextTakt = parseFloat(takt) || 0;
+    let nextTarget = parseFloat(target) || 0;
+    const workingSeconds = parseFloat(workSecs) || 0;
+    const workingHours = workingSeconds > 0 ? (workingSeconds / 3600) : 0;
+
+    if (changedField === 'target') {
+        nextTakt = nextTarget > 0 && workingSeconds > 0 ? (workingSeconds / nextTarget) : 0;
+    } else {
+        nextTarget = nextTakt > 0 && workingSeconds > 0 ? (workingSeconds / nextTakt) : 0;
+    }
+
+    const hourlyTarget = nextTarget > 0 && workingHours > 0 ? (nextTarget / workingHours) : 0;
+    return {
+        takt: ldRoundMetric(nextTakt, 2),
+        target: ldRoundMetric(nextTarget, 2),
+        hourlyTarget: ldRoundMetric(hourlyTarget, 2)
+    };
+}
+
+function ldSetWsSaveState(btn, isDirty) {
+    if (!btn) return;
+    btn.style.borderColor = isDirty ? '#16a34a' : '#d1d5db';
+    btn.style.background = isDirty ? '#dcfce7' : '#f9fafb';
+    btn.style.color = isDirty ? '#15803d' : '#374151';
+    btn.style.cursor = 'pointer';
+}
+
+function ldSyncWsMetrics(lineId, wsCode, changedField = 'takt') {
+    const tbody = document.getElementById(`ld-body-${lineId}`);
+    if (!tbody || !wsCode) return;
+    const taktInput = Array.from(tbody.querySelectorAll('.ld-ws-takt')).find(input => (input.dataset.ws || '') === wsCode);
+    const targetInput = Array.from(tbody.querySelectorAll('.ld-ws-target')).find(input => (input.dataset.ws || '') === wsCode);
+    if (!taktInput || !targetInput) return;
+
+    const metrics = ldComputeWsMetrics({
+        workSecs: _ldGetWorkSecs(lineId),
+        takt: parseFloat(taktInput.value || '0') || 0,
+        target: parseFloat(targetInput.value || '0') || 0,
+        changedField
+    });
+
+    taktInput.value = metrics.takt > 0 ? String(metrics.takt) : '';
+    targetInput.value = metrics.target > 0 ? String(metrics.target) : '';
+
+    const hourlyNote = Array.from(tbody.querySelectorAll('.ld-ws-hourly-note')).find(note => (note.dataset.ws || '') === wsCode);
+    if (hourlyNote) {
+        hourlyNote.textContent = metrics.hourlyTarget > 0 ? `${metrics.hourlyTarget}/hr` : '—/hr';
+    }
+
+    const sam = parseFloat(taktInput.dataset.sam || '0') || 0;
+    const workload = metrics.takt > 0 && sam > 0 ? (sam / metrics.takt) * 100 : null;
+    const wlCell = Array.from(tbody.querySelectorAll('.ld-ws-workload')).find(cell => (cell.dataset.ws || '') === wsCode);
+    if (wlCell) {
+        wlCell.textContent = workload != null ? workload.toFixed(1) + '%' : '-';
+        wlCell.style.color = ldWorkloadColor(workload);
+    }
+
+    const saveBtn = Array.from(tbody.querySelectorAll('.ld-ws-save')).find(button => (button.dataset.ws || '') === wsCode);
+    const originalTakt = parseFloat(taktInput.dataset.originalTakt || '0') || 0;
+    const originalTarget = parseFloat(targetInput.dataset.originalTarget || '0') || 0;
+    const isDirty = Math.abs(metrics.takt - originalTakt) >= 0.0001 || Math.abs(metrics.target - originalTarget) >= 0.0001;
+    ldSetWsSaveState(saveBtn, isDirty);
+}
+
+function ldCalcWsTakt(btn, lineId) {
+    const wsCode = btn?.dataset.ws || btn?.closest('td,div')?.querySelector('.ld-ws-takt, .ld-ws-target')?.dataset.ws || '';
+    if (!wsCode) return;
+    ldSyncWsMetrics(lineId, wsCode, 'takt');
+}
+
+function ldHandleWsTaktInput(input, lineId) {
+    if (!input) return;
+    ldSyncWsMetrics(lineId, (input.dataset.ws || '').trim(), 'takt');
+}
+
+function ldHandleWsTargetInput(input, lineId) {
+    if (!input) return;
+    ldSyncWsMetrics(lineId, (input.dataset.ws || '').trim(), 'target');
+}
+
+function ldUpdateCachedWsTakt(lineId, wsCode, takt) {
+    if (!_ldData || _ldData.lineId !== lineId || !wsCode) return;
+    const saveMode = window._ldProductMode?.[lineId] || 'primary';
+    const isOT = !!window._ldActiveOT?.[lineId];
+    const otProdMode = window._ldOTProduct?.[lineId] || 'primary';
+    const isChangeover = isOT
+        ? (otProdMode === 'changeover' && !!_ldData.changeoverData && !!_ldData.data.incoming_product_id)
+        : (saveMode === 'changeover' && !!_ldData.changeoverData && !!_ldData.data.incoming_product_id);
+    const src = isChangeover ? _ldData.changeoverData : _ldData.data;
+    if (!src?.processes) return;
+    src.processes = src.processes.map(p =>
+        (p.workstation_code || '').trim() === wsCode
+            ? { ...p, takt_time_seconds: takt }
+            : p
+    );
+    if (isChangeover) _ldData.changeoverData = src; else _ldData.data = src;
+}
+
+async function ldSaveWsTakt(btn, lineId) {
+    const wsCode = (btn.dataset.ws || '').trim();
+    const tbody = document.getElementById(`ld-body-${lineId}`);
+    if (!tbody || !wsCode) return;
+    const input = Array.from(tbody.querySelectorAll('.ld-ws-takt')).find(el => (el.dataset.ws || '') === wsCode);
+    const targetInput = Array.from(tbody.querySelectorAll('.ld-ws-target')).find(el => (el.dataset.ws || '') === wsCode);
+    if (!input || !targetInput) return;
+    const lpwId = (input.dataset.lpwId || '').trim();
+    if (!lpwId) { showToast('No workstation plan ID — save the plan first', 'error'); return; }
+    const target = parseFloat(targetInput.value || '0') || 0;
+    if (!(target > 0)) { showToast('Enter a valid target', 'error'); return; }
+    const metrics = ldComputeWsMetrics({
+        workSecs: _ldGetWorkSecs(lineId),
+        target,
+        changedField: 'target'
+    });
+    if (!(metrics.takt > 0)) { showToast('Target must produce a valid takt time', 'error'); return; }
+    const originalTakt = parseFloat(input.dataset.originalTakt || '0') || 0;
+    const originalTarget = parseFloat(targetInput.dataset.originalTarget || '0') || 0;
+    if (Math.abs(metrics.takt - originalTakt) < 0.0001 && Math.abs(metrics.target - originalTarget) < 0.0001) {
+        showToast('Same value, no need to save again', 'success');
+        return;
+    }
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+        const resp = await fetch(`${API_BASE}/workstation-plan/workstations/${lpwId}/takt`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                takt_time_seconds: metrics.takt,
+                target_units: metrics.target,
+                working_seconds: _ldGetWorkSecs(lineId)
+            })
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+        const savedTakt = parseFloat(data.takt_time_seconds || metrics.takt) || metrics.takt;
+        const savedTarget = parseFloat(data.target_units || metrics.target) || metrics.target;
+        input.value = savedTakt > 0 ? String(savedTakt) : '';
+        targetInput.value = savedTarget > 0 ? String(savedTarget) : '';
+        input.dataset.originalTakt = String(savedTakt);
+        targetInput.dataset.originalTarget = String(savedTarget);
+        ldUpdateCachedWsTakt(lineId, wsCode, savedTakt);
+        ldSyncWsMetrics(lineId, wsCode, 'takt');
+        showToast('Workstation target saved', 'success');
+        ldSetWsSaveState(btn, false);
+        btn.textContent = 'Save';
+    } catch (e) {
+        showToast('Failed to save: ' + e.message, 'error');
+        btn.textContent = 'Save';
+    } finally {
+        btn.disabled = false;
     }
 }
 
@@ -5621,31 +5792,46 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
             const cycleCell = isFirst
                 ? `<td style="text-align:center;vertical-align:middle;"${rs}>${g.sam.toFixed(1)}s</td>`
                 : '';
-            // Per-workstation efficiency calculations
-            const wsOtMins = (hasOT && g.ws) ? (window._ldWsOtMins?.[lineId]?.[g.ws] ?? otMins) : 0;
-            const wsOtSecs = wsOtMins * 60;
-            const otTakt   = (wsOtSecs > 0 && otTarget > 0) ? wsOtSecs / otTarget : 0;
-            const regEff   = (regTakt > 0 && g.has_ws) ? (g.sam / regTakt) * 100 : null;
-            const otEff    = (hasOT && wsOtSecs > 0 && otTakt > 0 && g.has_ws) ? (g.sam / otTakt) * 100 : null;
-            const totalEff = (regEff != null && otEff != null)
-                ? (g.sam * (target_units + otTarget)) / (workSecs + wsOtSecs) * 100 : null;
-            const regEffCell = isFirst
-                ? `<td style="text-align:center;font-weight:700;color:${effColor(regEff)};vertical-align:middle;"${rs}>${regEff != null ? regEff.toFixed(1)+'%' : '-'}</td>`
+            const wsTakt = (parseFloat(g.takt_time_seconds || 0) || 0) > 0
+                ? (parseFloat(g.takt_time_seconds || 0) || 0)
+                : regTakt;
+            const wsMetrics = ldComputeWsMetrics({ workSecs, takt: wsTakt, changedField: 'takt' });
+            const workload = (wsMetrics.takt > 0 && g.has_ws) ? (g.sam / wsMetrics.takt) * 100 : null;
+            const taktCell = isFirst
+                ? `<td style="text-align:center;vertical-align:middle;"${rs}>${
+                    useOT
+                        ? `<input type="number" class="form-control ld-ws-takt" data-ws="${g.ws || ''}" data-lpw-id="${g.lpw_id || ''}" data-sam="${g.sam.toFixed(4)}" data-original-takt="${wsMetrics.takt > 0 ? wsMetrics.takt : ''}"
+                               value="${wsMetrics.takt > 0 ? wsMetrics.takt : ''}"
+                               min="0" step="0.01" disabled
+                               style="font-size:0.8em;padding:3px 6px;width:84px;text-align:center;background:#f8fafc;color:#6b7280;">`
+                        : `<input type="number" class="form-control ld-ws-takt" data-ws="${g.ws || ''}" data-lpw-id="${g.lpw_id || ''}" data-sam="${g.sam.toFixed(4)}" data-original-takt="${wsMetrics.takt > 0 ? wsMetrics.takt : ''}"
+                               value="${wsMetrics.takt > 0 ? wsMetrics.takt : ''}"
+                               min="0" step="0.01"
+                               oninput="ldHandleWsTaktInput(this,${lineId})"
+                               style="font-size:0.8em;padding:3px 6px;width:84px;text-align:center;">`
+                }</td>`
                 : '';
-            const otEffCell = isFirst
-                ? `<td style="text-align:center;vertical-align:middle;"${rs}>${hasOT
-                    ? `<div style="font-weight:700;color:${effColor(otEff)};">${otEff != null ? otEff.toFixed(1)+'%' : 'N/A'}</div>
-                       ${g.ws ? `<div style="margin-top:3px;display:flex;align-items:center;justify-content:center;gap:3px;">
-                           <input type="number" min="0" max="480" value="${wsOtMins}"
-                               style="width:44px;font-size:10px;padding:1px 3px;border:1px solid #c4b5fd;border-radius:4px;text-align:center;"
-                               title="OT minutes for this workstation"
-                               onchange="ldUpdateWsOt(${lineId},'${g.ws.replace(/'/g,"\\'")}',this.value)">
-                           <span style="font-size:9px;color:#7c3aed;">min</span>
-                       </div>` : ''}`
-                    : '<span style="color:#9ca3af;font-size:11px;">N/A</span>'}</td>`
+            const targetCell = isFirst
+                ? `<td style="text-align:center;vertical-align:middle;"${rs}>${
+                    useOT
+                        ? `<input type="number" class="form-control ld-ws-target" data-ws="${g.ws || ''}" data-original-target="${wsMetrics.target > 0 ? wsMetrics.target : ''}"
+                               value="${wsMetrics.target > 0 ? wsMetrics.target : ''}"
+                               min="0" step="0.01" disabled
+                               style="font-size:0.8em;padding:3px 6px;width:84px;text-align:center;background:#f8fafc;color:#6b7280;">`
+                        : `<input type="number" class="form-control ld-ws-target" data-ws="${g.ws || ''}" data-original-target="${wsMetrics.target > 0 ? wsMetrics.target : ''}"
+                               value="${wsMetrics.target > 0 ? wsMetrics.target : ''}"
+                               min="0" step="0.01"
+                               oninput="ldHandleWsTargetInput(this,${lineId})"
+                               style="font-size:0.8em;padding:3px 6px;width:84px;text-align:center;">
+                           <div class="ld-ws-hourly-note" data-ws="${g.ws || ''}" style="margin-top:4px;font-size:10px;color:#6b7280;text-align:center;">${wsMetrics.hourlyTarget > 0 ? `${wsMetrics.hourlyTarget}/hr` : '—/hr'}</div>
+                           <div style="margin-top:4px;display:flex;gap:3px;justify-content:center;">
+                               <button type="button" data-ws="${g.ws || ''}" onclick="ldCalcWsTakt(this,${lineId})" style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid #6366f1;background:#eef2ff;color:#4338ca;cursor:pointer;font-weight:600;">Sync</button>
+                               <button type="button" class="ld-ws-save" data-ws="${g.ws || ''}" onclick="ldSaveWsTakt(this,${lineId})" style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid #d1d5db;background:#f9fafb;color:#374151;cursor:pointer;font-weight:600;">Save</button>
+                           </div>`
+                }</td>`
                 : '';
-            const totalEffCell = isFirst
-                ? `<td style="text-align:center;font-weight:700;color:${effColor(totalEff)};vertical-align:middle;"${rs}>${totalEff != null ? totalEff.toFixed(1)+'%' : 'N/A'}</td>`
+            const workloadCell = isFirst
+                ? `<td class="ld-ws-workload" data-ws="${g.ws || ''}" style="text-align:center;font-weight:700;color:${effColor(workload)};vertical-align:middle;"${rs}>${workload != null ? workload.toFixed(1) + '%' : '-'}</td>`
                 : '';
             // Workstation QR — rowspan on first row only (same WS = same QR)
             // In OT mode: add a Skip/Active toggle button below the QR image
@@ -5714,7 +5900,9 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
                 <td>${p.operation_name}<br><small style="color:#9ca3af;font-size:0.78em;">${p.operation_code||''}</small></td>
                 <td style="text-align:center;">${samSec}s</td>
                 ${cycleCell}
-                ${regEffCell}
+                ${taktCell}
+                ${targetCell}
+                ${workloadCell}
                 <td style="text-align:center;">${parseFloat(p.operation_sah||0).toFixed(4)}</td>
                 ${empCell}
             </tr>`;
@@ -5984,7 +6172,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     const workSecs       = _ldGetWorkSecs(lineId);
     const regularTaktSecs = (workSecs > 0 && target_units > 0)
         ? workSecs / target_units
-        : (activeViewData.takt_time_seconds || 0);
+        : (activeViewData.global_takt_time_seconds || activeViewData.takt_time_seconds || 0);
 
     if (!processes || processes.length === 0) {
         panel.innerHTML = `<div class="alert alert-info">${displayIsChangeover ? 'No processes found for the changeover product.' : 'No product assigned for this line on ' + date + ', or product has no active processes.'}</div>`;
@@ -5997,6 +6185,8 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     const fmtTakt = s => s > 0 ? `${Math.floor(s/60)}m ${Math.round(s%60)}s` : '-';
     const taktDisplay = fmtTakt(regularTaktSecs);
     const otTaktDisplay = fmtTakt(otTaktSecs);
+    const globalHourlyTarget = workSecs > 0 && target_units > 0 ? (target_units / (workSecs / 3600)) : 0;
+    const globalHourlyTargetDisplay = globalHourlyTarget > 0 ? ldRoundMetric(globalHourlyTarget, 2) : 0;
 
     const wsGroups = _buildWsGroups(processes, activeTakt, activeOT);
     const assignedWs = wsGroups.filter(g => g.ws).length;
@@ -6202,9 +6392,10 @@ function renderLineDetailsContent(panel, lineId, date, data) {
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
             <span style="font-size:0.85em;color:#6b7280;">
                 <strong style="color:${displayIsChangeover?'#92400e':'#1e293b'}">${displayIsChangeover ? (incomingProd?.product_code||'CO') : (product?.product_code||'')} — ${displayIsChangeover ? (incomingProd?.product_name||'') : (product?.product_name||'')}</strong>
-                &nbsp;|&nbsp; Takt: <strong id="ld-takt-display-${lineId}">${activeOT ? otTaktDisplay : taktDisplay}</strong>
+                &nbsp;|&nbsp; Global Takt: <strong id="ld-takt-display-${lineId}">${activeOT ? otTaktDisplay : taktDisplay}</strong>
                 ${otToggleHtml}
                 &nbsp;|&nbsp; Target: <strong>${target_units}</strong>
+                &nbsp;|&nbsp; Hourly Target: <strong>${globalHourlyTargetDisplay || '—'}/hr</strong>
                 &nbsp;|&nbsp; Processes: <strong>${processes.length}</strong>
                 &nbsp;|&nbsp; Workstations: <strong>${assignedWs}</strong>
                 ${hasOT ? `&nbsp;|&nbsp; OT: <strong style="color:#7c3aed;">+${otMins}m / +${otTarget} units</strong>` : ''}
@@ -6232,7 +6423,7 @@ function renderLineDetailsContent(panel, lineId, date, data) {
         </div>` : ''}
         <div style="font-size:0.78em;color:#6b7280;margin-bottom:8px;">
             Enter <strong>Group</strong> (e.g. G1) and <strong>Workstation</strong> (e.g. W1) per process.
-            Processes with the same workstation share one employee assignment. Tab out to regroup.
+            Processes with the same workstation share one employee assignment and one workstation target/takt pair. Editing either field recalculates the other and updates the per-hour target. Tab out to regroup.
         </div>
         <div class="table-container">
             <table id="ld-table-${lineId}" style="font-size:0.88em;width:100%;">
@@ -6246,6 +6437,8 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                         <th>Operation</th>
                         <th style="text-align:center;">Process Time</th>
                         <th style="text-align:center;">Cycle Time</th>
+                        <th style="text-align:center;">Takt Time</th>
+                        <th style="text-align:center;">Target</th>
                         <th style="text-align:center;">Workload%</th>
                         <th style="text-align:center;">SAH</th>
                         <th style="min-width:180px;">Employee</th>
@@ -6640,6 +6833,13 @@ function recolorDetailRows(lineId) {
     tbody.querySelectorAll('.ld-emp-picker').forEach(p => {
         wsEmpMap.set(p.dataset.ws, p.dataset.value || null);
     });
+    const wsTaktMap = new Map();
+    tbody.querySelectorAll('.ld-ws-takt').forEach(input => {
+        const ws = (input.dataset.ws || '').trim();
+        if (!ws) return;
+        const takt = parseFloat(input.value || '0') || 0;
+        wsTaktMap.set(ws, takt > 0 ? takt : null);
+    });
     // In OT mode, also collect skip state per WS from the toggle buttons
     const wsSkipMap = new Map();
     if (isOT) {
@@ -6668,7 +6868,12 @@ function recolorDetailRows(lineId) {
     // Update cached processes in the correct data store
     const updatedProcesses = rSource.processes.map(p => {
         const s = pidState.get(p.id);
-        return s ? { ...p, ...s } : p;
+        if (!s) return p;
+        const wsCode = s.workstation_code || '';
+        const taktTimeSeconds = wsCode
+            ? (wsTaktMap.has(wsCode) ? wsTaktMap.get(wsCode) : (parseFloat(p.takt_time_seconds || 0) || null))
+            : null;
+        return { ...p, ...s, takt_time_seconds: taktTimeSeconds };
     });
     if (isRChangeover) {
         _ldData.changeoverData = { ..._ldData.changeoverData, processes: updatedProcesses };
@@ -6686,7 +6891,9 @@ function recolorDetailRows(lineId) {
     if (isOT && hasOTData) {
         activeTakt = (otMinsR * 60) / otTargetR;
     } else {
-        activeTakt = (workSecsR > 0 && tgt > 0) ? workSecsR / tgt : (rSource.takt_time_seconds || 0);
+        activeTakt = (workSecsR > 0 && tgt > 0)
+            ? workSecsR / tgt
+            : (rSource.global_takt_time_seconds || rSource.takt_time_seconds || 0);
     }
     const wsGroups = _buildWsGroups(updatedProcesses, activeTakt, isOT);
     _buildLdTbody(tbody, lineId, wsGroups, rSource.employees, isOT,
@@ -6841,11 +7048,21 @@ async function saveLineDetails(lineId) {
     tbody.querySelectorAll('.ld-osm-check').forEach(cb => {
         osmMap.set(parseInt(cb.dataset.processId, 10), cb.checked);
     });
+    const wsTaktMap = new Map();
+    tbody.querySelectorAll('.ld-ws-takt').forEach(input => {
+        const ws = (input.dataset.ws || '').trim();
+        if (!ws) return;
+        const takt = parseFloat(input.value || '0') || 0;
+        wsTaktMap.set(ws, takt > 0 ? takt : null);
+    });
     const rows = activeProcesses.map(p => ({
         process_id: p.id,
         group_name: p.group_name || null,
         workstation_code: p.workstation_code || '',
         employee_id: wsEmpMap.get(p.workstation_code) || null,
+        takt_time_seconds: wsTaktMap.has(p.workstation_code)
+            ? wsTaktMap.get(p.workstation_code)
+            : (parseFloat(p.takt_time_seconds || 0) || null),
         osm_checked: osmMap.get(p.id) || false
     }));
     try {
