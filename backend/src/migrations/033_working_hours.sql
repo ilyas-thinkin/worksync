@@ -1,7 +1,7 @@
--- Migration 033: Set working hours to 09:00-17:00 with 60-min lunch break (12:00-13:00)
+-- Migration 033: Set working hours to 08:00-17:00 with 60-min lunch break (12:00-13:00)
 INSERT INTO app_settings (key, value)
-VALUES ('default_in_time', '09:00')
-ON CONFLICT (key) DO UPDATE SET value = '09:00', updated_at = NOW();
+VALUES ('default_in_time', '08:00')
+ON CONFLICT (key) DO UPDATE SET value = '08:00', updated_at = NOW();
 
 INSERT INTO app_settings (key, value)
 VALUES ('default_out_time', '17:00')

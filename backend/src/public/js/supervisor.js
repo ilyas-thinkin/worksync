@@ -1146,12 +1146,13 @@ function getFinalReason() {
 // Returns list of workstation codes (or process names) that have output below
 // target for the given hour but NO shortfall reason recorded.
 function checkHourPendingReasons(hour) {
-    const hourlyTarget = hourlyState.hourlyTarget;
-    if (!hourlyTarget || !hourlyState.lineId) return [];
+    if (!hourlyState.lineId) return [];
     const violations = [];
 
     if (hourlyState.workstations?.length > 0) {
         hourlyState.workstations.forEach(ws => {
+            const hourlyTarget = getWorkstationHourlyTarget(ws);
+            if (!(hourlyTarget > 0)) return;
             const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
             const progress = hourlyState.progressData.find(
                 d => wsProcessIds.includes(parseInt(d.process_id, 10)) && parseInt(d.hour_slot, 10) === hour
@@ -1164,6 +1165,8 @@ function checkHourPendingReasons(hour) {
             }
         });
     } else {
+        const hourlyTarget = hourlyState.hourlyTarget;
+        if (!(hourlyTarget > 0)) return violations;
         hourlyState.processes.forEach(p => {
             const progress = hourlyState.progressData.find(
                 d => parseInt(d.process_id, 10) === p.id && parseInt(d.hour_slot, 10) === hour
@@ -1496,16 +1499,24 @@ async function refreshHourlySummary() {
 
 function getWorkstationHourlyTarget(ws) {
     if (!ws) return hourlyState.hourlyTarget || 0;
+    const effectiveHourlyTarget = parseFloat(ws.hourly_target_units || 0) || 0;
+    if (effectiveHourlyTarget > 0) {
+        return Math.round(effectiveHourlyTarget);
+    }
     if (ws.ws_changeover_active) {
-        return ws.ws_changeover_hourly_target != null
-            ? Math.round(ws.ws_changeover_hourly_target)
+        const coHourlyTarget = parseFloat(ws.co_hourly_target_units || ws.ws_changeover_hourly_target || 0) || 0;
+        return coHourlyTarget > 0
+            ? Math.round(coHourlyTarget)
             : Math.round(hourlyState.perHourIncomingTarget || 0);
     }
     return Math.round(hourlyState.perHourTarget || hourlyState.hourlyTarget || 0);
 }
 
 function getWorkstationEffectiveTarget(ws) {
-    if (!ws || !ws.ws_changeover_active) return null;
+    if (!ws) return null;
+    const effectiveTarget = parseFloat(ws.target_units || 0) || 0;
+    if (effectiveTarget > 0) return Math.round(effectiveTarget * 100) / 100;
+    if (!ws.ws_changeover_active) return null;
     return ws.ws_changeover_target != null ? ws.ws_changeover_target : null;
 }
 
