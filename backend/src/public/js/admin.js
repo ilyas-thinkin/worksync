@@ -5431,12 +5431,6 @@ function ldSyncWsMetrics(lineId, wsCode, changedField = 'takt') {
     ldSetWsSaveState(saveBtn, isDirty);
 }
 
-function ldCalcWsTakt(btn, lineId) {
-    const wsCode = btn?.dataset.ws || btn?.closest('td,div')?.querySelector('.ld-ws-takt, .ld-ws-target')?.dataset.ws || '';
-    if (!wsCode) return;
-    ldSyncWsMetrics(lineId, wsCode, 'takt');
-}
-
 function ldHandleWsTaktInput(input, lineId) {
     if (!input) return;
     ldSyncWsMetrics(lineId, (input.dataset.ws || '').trim(), 'takt');
@@ -5825,7 +5819,6 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
                                style="font-size:0.8em;padding:3px 6px;width:84px;text-align:center;">
                            <div class="ld-ws-hourly-note" data-ws="${g.ws || ''}" style="margin-top:4px;font-size:10px;color:#6b7280;text-align:center;">${wsMetrics.hourlyTarget > 0 ? `${wsMetrics.hourlyTarget}/hr` : '—/hr'}</div>
                            <div style="margin-top:4px;display:flex;gap:3px;justify-content:center;">
-                               <button type="button" data-ws="${g.ws || ''}" onclick="ldCalcWsTakt(this,${lineId})" style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid #6366f1;background:#eef2ff;color:#4338ca;cursor:pointer;font-weight:600;">Sync</button>
                                <button type="button" class="ld-ws-save" data-ws="${g.ws || ''}" onclick="ldSaveWsTakt(this,${lineId})" style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid #d1d5db;background:#f9fafb;color:#374151;cursor:pointer;font-weight:600;">Save</button>
                            </div>`
                 }</td>`
