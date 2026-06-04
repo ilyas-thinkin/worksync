@@ -1,4 +1,6 @@
 const API_BASE = '/api';
+let mgmtCurrentSection = 'dashboard';
+let mgmtMaterialTimer = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     const ok = await requireAuth();
@@ -14,14 +16,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             link.classList.add('active');
             const section = link.dataset.section;
+            mgmtCurrentSection = section;
+            if (section !== 'material-tracking' && mgmtMaterialTimer) {
+                clearInterval(mgmtMaterialTimer);
+                mgmtMaterialTimer = null;
+            }
             if (section === 'osm') loadMgmtOsmReport();
             else if (section === 'efficiency') loadMgmtEfficiencyReport();
             else if (section === 'worker-individual-eff') loadMgmtWorkerIndividualEff();
             else if (section === 'graphs') loadMgmtWorkerEfficiencyGraphs();
+            else if (section === 'material-tracking') loadMgmtMaterialTracking();
             else loadManagementDashboard();
         });
     });
 
+    mgmtCurrentSection = 'dashboard';
     loadManagementDashboard();
 });
 
@@ -146,6 +155,169 @@ function setupMgmtFloatingRefresh() {
         requestAnimationFrame(() => window.scrollTo(0, prevY));
     });
     document.body.appendChild(btn);
+}
+
+async function loadMgmtMaterialTracking() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    setMgmtManualRefresh(() => refreshMgmtMaterialTracking());
+
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Material Tracking</h1>
+                <p class="page-subtitle">Order feed, workstation flow, output, and WIP by group</p>
+            </div>
+            <span class="status-badge" id="mgmt-mt-last-updated"></span>
+        </div>
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+                <div>
+                    <label class="form-label">Line</label>
+                    <select id="mgmt-mt-line" class="form-control" style="min-width:220px;">
+                        <option value="">Select Line</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Date</label>
+                    <input type="date" id="mgmt-mt-date" class="form-control" value="${today}">
+                </div>
+                <button class="btn btn-primary" id="mgmt-mt-load-btn">Load</button>
+                <span id="mgmt-mt-auto-badge" style="font-size:12px;color:var(--text-muted);align-self:center;display:none;">Auto-refreshing every 60s</span>
+            </div>
+        </div>
+        <div id="mgmt-mt-content"></div>
+    `;
+
+    try {
+        const res = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await res.json();
+        const sel = document.getElementById('mgmt-mt-line');
+        (result.data || []).forEach((line) => {
+            const opt = document.createElement('option');
+            opt.value = line.id;
+            opt.textContent = `${line.line_name} (${line.line_code})`;
+            sel.appendChild(opt);
+        });
+        sel.addEventListener('change', refreshMgmtMaterialTracking);
+        document.getElementById('mgmt-mt-date').addEventListener('change', refreshMgmtMaterialTracking);
+        document.getElementById('mgmt-mt-load-btn').addEventListener('click', refreshMgmtMaterialTracking);
+    } catch (err) {
+        document.getElementById('mgmt-mt-content').innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+async function refreshMgmtMaterialTracking() {
+    const lineId = document.getElementById('mgmt-mt-line')?.value;
+    const date = document.getElementById('mgmt-mt-date')?.value;
+    const container = document.getElementById('mgmt-mt-content');
+    if (!container) return;
+    if (!lineId || !date) {
+        container.innerHTML = '';
+        return;
+    }
+
+    if (mgmtMaterialTimer) clearInterval(mgmtMaterialTimer);
+    const badge = document.getElementById('mgmt-mt-auto-badge');
+    if (badge) badge.style.display = 'inline';
+    mgmtMaterialTimer = setInterval(() => {
+        if (mgmtCurrentSection !== 'material-tracking') {
+            clearInterval(mgmtMaterialTimer);
+            mgmtMaterialTimer = null;
+            return;
+        }
+        refreshMgmtMaterialTracking();
+    }, 60_000);
+
+    try {
+        const res = await fetch(`${API_BASE}/material-tracking?line_id=${lineId}&date=${date}`, { credentials: 'include' });
+        const result = await res.json();
+        if (!result.success) throw new Error(result.error || 'Failed to load');
+
+        const { line, groups } = result.data;
+        const updEl = document.getElementById('mgmt-mt-last-updated');
+        if (updEl) updEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+        if (!groups.length) {
+            container.innerHTML = `<div class="alert alert-info">No workstation plan for this line on ${date}.</div>`;
+            return;
+        }
+
+        const allHours = [...new Set(
+            groups.flatMap(group => group.workstations.flatMap(ws => Object.keys(ws.hourly).map(Number)))
+        )].sort((a, b) => a - b);
+        const fmtHour = (hour) => `${String(hour).padStart(2, '0')}:00`;
+
+        container.innerHTML = `
+            <div style="margin-bottom:8px;color:var(--text-muted);font-size:13px;">
+                ${line.line_name} &mdash; ${line.product_name ?? 'No product'} &mdash; Daily Target: <strong>${line.target_units ?? '—'}</strong> pcs
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+                <span style="background:#eef2ff;color:#3730a3;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;">Order Qty: ${line.order_quantity ?? 0}</span>
+                <span style="background:#ecfeff;color:#155e75;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;">Cumulative Feed: ${line.cumulative_feed_qty ?? 0}</span>
+                <span style="background:#fefce8;color:#854d0e;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;">Remaining Order Balance: ${line.remaining_order_qty ?? 0}</span>
+            </div>
+            ${groups.map(group => buildMgmtMaterialGroupCard(group, allHours, fmtHour)).join('')}
+        `;
+    } catch (err) {
+        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function buildMgmtMaterialGroupCard(group, allHours, fmtHour) {
+    const wipColor = group.wip > 0 ? '#d97706' : '#16a34a';
+    const groupLabel = group.group_name ? `Group: ${group.group_name}` : group.group_identifier;
+    const hourHeaders = allHours.map(hour =>
+        `<th style="padding:6px 10px;text-align:center;font-weight:600;white-space:nowrap;">${fmtHour(hour)}</th>`
+    ).join('');
+
+    const rows = group.workstations.map((ws, index) => {
+        const isLast = ws.is_last_workstation === true || index === group.workstations.length - 1;
+        const empLabel = ws.emp_name ? `${ws.emp_code} — ${ws.emp_name}` : '<span style="color:#9ca3af;">Unassigned</span>';
+        const hourCells = allHours.map(hour => {
+            const qty = ws.hourly[hour] ?? null;
+            return `<td style="text-align:center;padding:6px 10px;${isLast ? 'font-weight:600;' : ''}">${qty != null ? qty : '<span style="color:#d1d5db;">—</span>'}</td>`;
+        }).join('');
+        const lastBadge = isLast ? `<span style="background:#dbeafe;color:#1d4ed8;font-size:10px;padding:1px 5px;border-radius:8px;margin-left:4px;">LAST</span>` : '';
+        return `
+            <tr style="${isLast ? 'background:#f0fdf4;' : ''}">
+                <td style="padding:6px 10px;white-space:nowrap;font-weight:${isLast ? '700' : '500'};">${ws.workstation_code}${lastBadge}</td>
+                <td style="padding:6px 10px;font-size:12px;color:#6b7280;white-space:nowrap;">${empLabel}</td>
+                <td style="padding:6px 10px;text-align:center;">${ws.input_quantity ?? 0}</td>
+                <td style="padding:6px 10px;text-align:center;font-weight:600;">${ws.cumulative_output ?? 0}</td>
+                <td style="padding:6px 10px;text-align:center;color:${(ws.wip_quantity ?? 0) > 0 ? '#b45309' : '#166534'};font-weight:700;">${ws.wip_quantity ?? 0}</td>
+                ${hourCells}
+            </tr>
+        `;
+    }).join('');
+
+    return `
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <h3 class="card-title" style="margin:0;">${groupLabel}</h3>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                    <span style="background:#dcfce7;color:#16a34a;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:700;">Feed: ${group.feed} pcs</span>
+                    <span style="background:#dbeafe;color:#1d4ed8;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:700;">Output: ${group.group_output} pcs</span>
+                    <span style="background:#fff7ed;color:${wipColor};padding:4px 10px;border-radius:12px;font-size:12px;font-weight:700;">WIP: ${group.wip} pcs</span>
+                </div>
+            </div>
+            <div class="card-body" style="padding:0;overflow-x:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead>
+                        <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
+                            <th style="padding:6px 10px;text-align:left;font-weight:600;">Workstation</th>
+                            <th style="padding:6px 10px;text-align:left;font-weight:600;">Employee</th>
+                            <th style="padding:6px 10px;text-align:center;font-weight:600;">Input</th>
+                            <th style="padding:6px 10px;text-align:center;font-weight:600;">Cum Out</th>
+                            <th style="padding:6px 10px;text-align:center;font-weight:600;">WIP</th>
+                            ${hourHeaders}
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
 }
 
 async function loadManagementDashboard() {
@@ -293,6 +465,16 @@ async function loadLineOptions() {
 }
 
 const MGMT_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+function getCurrentMgmtWorkHour(hours) {
+    if (!Array.isArray(hours) || !hours.length) return null;
+    const nowHour = new Date().getHours();
+    if (hours.includes(nowHour)) return nowHour;
+    if (nowHour < hours[0]) return hours[0];
+    for (let i = hours.length - 1; i >= 0; i -= 1) {
+        if (hours[i] <= nowHour) return hours[i];
+    }
+    return hours[hours.length - 1];
+}
 const mgmtHourOrdinal = (n) => {
     const mod10 = n % 10;
     const mod100 = n % 100;
@@ -315,10 +497,7 @@ const mgmtHourLabel = (hour) => {
 function loadHourOptions() {
     const select = document.getElementById('mgmt-hour-select');
     if (!select) return;
-    const now = new Date();
-    const defaultHour = MGMT_WORK_HOURS.includes(now.getHours())
-        ? now.getHours()
-        : (now.getHours() < MGMT_WORK_HOURS[0] ? MGMT_WORK_HOURS[0] : MGMT_WORK_HOURS[MGMT_WORK_HOURS.length - 1]);
+    const defaultHour = getCurrentMgmtWorkHour(MGMT_WORK_HOURS);
     select.innerHTML = MGMT_WORK_HOURS.map(value =>
         `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${mgmtHourLabel(value)}</option>`
     ).join('');
@@ -486,10 +665,7 @@ async function loadFinalStatus() {
 // OSM REPORT (Management Panel)
 // ============================================================================
 function mgmtGetDefaultReportHour() {
-    const nowHour = new Date().getHours() - 1;
-    if (MGMT_WORK_HOURS.includes(nowHour)) return nowHour;
-    if (nowHour < MGMT_WORK_HOURS[0]) return MGMT_WORK_HOURS[0];
-    return MGMT_WORK_HOURS[MGMT_WORK_HOURS.length - 1];
+    return getCurrentMgmtWorkHour(MGMT_WORK_HOURS);
 }
 
 function mgmtBuildReportHourOptions(selectedHour) {
@@ -1017,7 +1193,7 @@ function _buildMgmtEfficiencyTable(data, date) {
             <span style="font-size:12px;"><strong>Hourly Efficiency:</strong> ${hourlyLineFormula}</span>
             <span style="font-size:12px;"><strong>Live Window:</strong> Start to ${reportLabel}</span>
             <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
-            <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
+            <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower} / ${summary.total_workstations || summary.manpower} WS${summary.vacant_workstations > 0 ? ` &nbsp;<span style="color:#dc2626;font-weight:700;">(${summary.vacant_workstations} vacant)</span>` : ''}</span>
             <span style="font-size:12px;"><strong>Hour Target:</strong> ${hourlyTarget}</span>
             <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
@@ -1028,7 +1204,6 @@ function _buildMgmtEfficiencyTable(data, date) {
             <span style="margin-left:auto;"></span>
         </div>`;
 
-    const empAvgMap = new Map((employee_progress || []).map(emp => [String(emp.emp_code || ''), emp.hourly_efficiency_avg]));
     const employeeFlowMap = new Map(
         (data.employee_flow || []).map(flow => [String(flow.id), Array.isArray(flow.segments) ? flow.segments : []])
     );
@@ -1061,6 +1236,12 @@ function _buildMgmtEfficiencyTable(data, date) {
         if (numeric >= 80) return { color: '#9a3412', bg: '#fef3c7' };
         return { color: '#b91c1c', bg: '#fee2e2' };
     };
+    const renderEfficiencyMetric = (value, digits = 2) => {
+        const tone = getEffTone(value);
+        return `<div style="display:inline-flex;align-items:center;justify-content:center;padding:2px 8px;border-radius:4px;background:${tone.bg};color:${tone.color};font-weight:700;min-width:72px;">
+            ${formatMetric(value, digits, '%')}
+        </div>`;
+    };
     const renderTrackCell = (tracks, { percent = false, digits = 2 } = {}) => `<div style="display:grid;gap:4px;min-width:110px;">
         ${tracks.map(track => {
             const tone = percent ? getEffTone(track.value) : { color: '#0f172a', bg: '#f8fafc' };
@@ -1081,11 +1262,25 @@ function _buildMgmtEfficiencyTable(data, date) {
         </div>
     </div>`;
 
-    const dataRows = workstations.map(ws => {
-        return `<tr>
+    const wsIdSafe = ws => ws.workstation_code.replace(/[^a-zA-Z0-9]/g, '_');
+    const empCell = ws => ws.employee_code
+        ? `${ws.employee_name} (${ws.employee_code})`
+        : '<span style="color:#9ca3af;">Unassigned</span>';
+    const otEmpCell = ws => ws.ot_employee_code
+        ? `${ws.ot_employee_name} (${ws.ot_employee_code})`
+        : '<span style="color:#9ca3af;">Unassigned</span>';
+
+    const dataRows = workstations.flatMap(ws => {
+        const wid = wsIdSafe(ws);
+        const combineBtn = ws.has_ot
+            ? `<button onclick="toggleEffWsCombine('${wid}')" title="Combine Regular+OT" style="margin-left:5px;padding:1px 5px;border-radius:4px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:10px;cursor:pointer;font-weight:700;line-height:1.4;">⊕</button>`
+            : '';
+        const coTag = ws.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : '';
+
+        const regRow = `<tr id="eff-reg-${wid}" style="background:#fff;">
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
-            <td style="${tcS}font-weight:600;">${ws.workstation_code}${ws.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
-            <td style="${tdS}">${ws.employee_code ? `${ws.employee_name} (${ws.employee_code})` : '<span style="color:#9ca3af;">Unassigned</span>'}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}${coTag}${combineBtn}</td>
+            <td style="${tdS}">${empCell(ws)}</td>
             <td style="${tcS}">${renderPlanCell(ws.primary_actual_sam_seconds, ws.co_actual_sam_seconds, { digits: 2 })}</td>
             <td style="${tcS}">${renderPlanCell(ws.primary_takt_time_seconds, ws.co_takt_time_seconds, { digits: 0 })}</td>
             <td style="${tcS}">${renderPlanCell(ws.primary_workload_pct, ws.co_workload_pct, { digits: 1, suffix: '%' })}</td>
@@ -1109,10 +1304,47 @@ function _buildMgmtEfficiencyTable(data, date) {
                 { label: 'CO', value: ws.co_live_efficiency_pct },
                 { label: 'C', value: ws.combined_live_efficiency_pct }
             ], { percent: true, digits: 2 })}</td>
-            <td style="${tcS}font-weight:700;color:#0f172a;">${
-                ws.employee_code ? ((empAvgMap.get(String(ws.employee_code)) || 0).toFixed(2) + '%') : '—'
-            }</td>
+            <td style="${tcS}">${renderEfficiencyMetric(ws.combined_live_efficiency_pct, 2)}</td>
         </tr>`;
+
+        const otRowHtml = ws.has_ot ? `<tr id="eff-ot-${wid}" style="background:#fff7ed;">
+            <td style="${tcS}font-size:10px;font-weight:700;color:#92400e;">OT</td>
+            <td style="${tcS}font-weight:600;color:#92400e;">${ws.workstation_code}</td>
+            <td style="${tdS}">${otEmpCell(ws)}</td>
+            <td style="${tcS}">${ws.ot_actual_sam_seconds ? ws.ot_actual_sam_seconds.toFixed(2) + 's' : '—'}</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}font-weight:700;">${ws.ot_output}</td>
+            <td style="${tcS}font-weight:700;">${ws.ot_efficiency_pct != null ? ws.ot_efficiency_pct.toFixed(2) + '%' : '—'} <span style="font-size:10px;color:#6b7280;">(${ws.ot_minutes}m)</span></td>
+            <td style="${tcS}">${renderEfficiencyMetric(ws.ot_efficiency_pct, 2)}</td>
+        </tr>` : '';
+
+        const combRowHtml = ws.has_ot ? `<tr id="eff-comb-${wid}" style="display:none;background:#f0fdf4;">
+            <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}<button onclick="toggleEffWsCombine('${wid}')" title="Expand" style="margin-left:5px;padding:1px 5px;border-radius:4px;background:#dcfce7;color:#15803d;border:1px solid #86efac;font-size:10px;cursor:pointer;font-weight:700;line-height:1.4;">⊗</button></td>
+            <td style="${tdS}font-size:11px;">
+                <div><span style="font-size:10px;font-weight:700;color:#1e3a5f;">REG</span> ${empCell(ws)}</div>
+                <div style="margin-top:2px;"><span style="font-size:10px;font-weight:700;color:#92400e;">OT</span> ${otEmpCell(ws)}</div>
+            </td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_actual_sam_seconds, ws.co_actual_sam_seconds, { digits: 2 })}</td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_takt_time_seconds, ws.co_takt_time_seconds, { digits: 0 })}</td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_workload_pct, ws.co_workload_pct, { digits: 1, suffix: '%' })}</td>
+            <td style="${tcS}">${ws.combined_hourly_output + (ws.ot_output || 0)}</td>
+            <td style="${tcS}font-size:11px;">
+                <div style="color:#1d4ed8;">REG: ${ws.combined_hourly_efficiency_pct != null ? ws.combined_hourly_efficiency_pct.toFixed(2) + '%' : '—'}</div>
+                <div style="color:#92400e;">OT: ${ws.ot_efficiency_pct != null ? ws.ot_efficiency_pct.toFixed(2) + '%' : '—'}</div>
+            </td>
+            <td style="${tcS}">${ws.combined_live_output + (ws.ot_output || 0)}</td>
+            <td style="${tcS}font-size:11px;">
+                <div style="color:#1d4ed8;">REG: ${ws.combined_live_efficiency_pct != null ? ws.combined_live_efficiency_pct.toFixed(2) + '%' : '—'}</div>
+                <div style="color:#92400e;">OT: ${ws.ot_efficiency_pct != null ? ws.ot_efficiency_pct.toFixed(2) + '%' : '—'}</div>
+            </td>
+            <td style="${tcS}">${renderEfficiencyMetric(ws.combined_with_ot_efficiency_pct, 2)}</td>
+        </tr>` : '';
+
+        return [regRow, otRowHtml, combRowHtml].filter(Boolean);
     }).join('');
 
     const employeeRows = employee_progress.length
@@ -1174,8 +1406,9 @@ function _buildMgmtEfficiencyTable(data, date) {
                 ${summaryBar}
                 <div style="display:grid;gap:14px;">
                     <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
-                        <div style="background:#eef2ff;border-bottom:1px solid #e2e8f0;padding:8px 12px;font-size:12px;font-weight:700;color:#1e3a8a;">
-                            Workstation Efficiency
+                        <div style="background:#eef2ff;border-bottom:1px solid #e2e8f0;padding:8px 12px;font-size:12px;font-weight:700;color:#1e3a8a;display:flex;align-items:center;justify-content:space-between;">
+                            <span>Workstation Efficiency</span>
+                            ${workstations.some(w => w.has_ot) ? `<button id="eff-global-combine-btn" data-combined="0" onclick="toggleEffAllCombine(this)" style="padding:4px 12px;border-radius:6px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:11px;cursor:pointer;font-weight:700;">Combine All</button>` : ''}
                         </div>
                         <div style="overflow-x:auto;">
                             <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
@@ -1228,6 +1461,41 @@ function _buildMgmtEfficiencyTable(data, date) {
             </div>
         </div>
     </div>`;
+}
+
+function toggleEffWsCombine(wsCode) {
+    const regRow  = document.getElementById('eff-reg-' + wsCode);
+    const otRow   = document.getElementById('eff-ot-' + wsCode);
+    const combRow = document.getElementById('eff-comb-' + wsCode);
+    if (!combRow) return;
+    const expanding = combRow.style.display !== 'none';
+    combRow.style.display = expanding ? 'none' : 'table-row';
+    if (regRow) regRow.style.display = expanding ? 'table-row' : 'none';
+    if (otRow)  otRow.style.display  = expanding ? 'table-row' : 'none';
+    _syncEffGlobalBtn();
+}
+function _syncEffGlobalBtn() {
+    const btn = document.getElementById('eff-global-combine-btn');
+    if (!btn) return;
+    const combRows = document.querySelectorAll('[id^="eff-comb-"]');
+    if (!combRows.length) return;
+    const allCombined = [...combRows].every(r => r.style.display !== 'none');
+    btn.textContent = allCombined ? 'Expand All' : 'Combine All';
+    btn.dataset.combined = allCombined ? '1' : '0';
+}
+function toggleEffAllCombine(btn) {
+    const doCombine = btn.dataset.combined !== '1';
+    document.querySelectorAll('[id^="eff-reg-"]').forEach(regRow => {
+        const ws = regRow.id.replace('eff-reg-', '');
+        const otRow   = document.getElementById('eff-ot-' + ws);
+        const combRow = document.getElementById('eff-comb-' + ws);
+        if (!combRow) return;
+        combRow.style.display = doCombine ? 'table-row' : 'none';
+        regRow.style.display  = doCombine ? 'none' : 'table-row';
+        if (otRow) otRow.style.display = doCombine ? 'none' : 'table-row';
+    });
+    btn.textContent = doCombine ? 'Expand All' : 'Combine All';
+    btn.dataset.combined = doCombine ? '1' : '0';
 }
 
 function printMgmtEfficiencyReport() {
@@ -2037,7 +2305,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
             const wipColor = wip > 0 ? '#dc2626' : '#16a34a';
 
             return [
-                showTarget ? `<td style="${tcS}${tS}">${cell.wip ?? '-'}${tagBadge}</td>` : '',
+                showTarget ? `<td style="${tcS}${tS}">${cell.line_target ?? '-'}${tagBadge}</td>` : '',
                 showWip ? `<td style="${tcS}${tS}font-weight:600;color:${wipColor};">${wip}</td>` : '',
                 showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` : '',
                 showEff ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}</td>` : ''

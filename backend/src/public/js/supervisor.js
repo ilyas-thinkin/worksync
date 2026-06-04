@@ -818,7 +818,13 @@ async function unlinkAllMapping() {
 // ==========================================
 // FEED INPUT
 // ==========================================
-const feedState = { lineId: null, workstations: null };
+const feedState = {
+    lineId: null,
+    workstations: null,
+    orderQty: 0,
+    cumulativeFeedQty: 0,
+    remainingOrderQty: 0
+};
 
 async function loadFeedInput() {
     const content = document.getElementById('supervisor-content');
@@ -833,7 +839,7 @@ async function loadFeedInput() {
             <div class="page-header">
                 <div>
                     <h1 class="page-title">Feed Input</h1>
-                    <p class="page-subtitle">Enter initial material input for each group's first workstation</p>
+                    <p class="page-subtitle">Enter feed only on the first workstation of each group</p>
                 </div>
                 <span class="status-badge">${today}</span>
             </div>
@@ -851,6 +857,9 @@ async function loadFeedInput() {
         document.getElementById('feed-line').addEventListener('change', onFeedLineChange);
         feedState.lineId = null;
         feedState.workstations = null;
+        feedState.orderQty = 0;
+        feedState.cumulativeFeedQty = 0;
+        feedState.remainingOrderQty = 0;
     } catch (err) {
         content.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
@@ -860,13 +869,23 @@ async function onFeedLineChange() {
     const lineId = document.getElementById('feed-line').value;
     feedState.lineId = lineId;
     const container = document.getElementById('feed-assignments');
-    if (!lineId) { container.innerHTML = ''; return; }
+    if (!lineId) {
+        feedState.workstations = null;
+        feedState.orderQty = 0;
+        feedState.cumulativeFeedQty = 0;
+        feedState.remainingOrderQty = 0;
+        container.innerHTML = '';
+        return;
+    }
     container.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
     try {
         const today = new Date().toISOString().slice(0, 10);
         const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${today}`);
         const result = await response.json();
         feedState.workstations = (result.has_plan && result.workstation_plan?.length > 0) ? result.workstation_plan : null;
+        feedState.orderQty = parseInt(result.order_quantity || 0, 10) || 0;
+        feedState.cumulativeFeedQty = parseInt(result.cumulative_feed_qty || 0, 10) || 0;
+        feedState.remainingOrderQty = parseInt(result.remaining_order_qty || 0, 10) || 0;
         renderFeedInput();
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
@@ -964,6 +983,17 @@ function renderFeedInput() {
     }).join('');
 
     const allFed = feedWs.every(ws => ws.material_provided != null);
+    const orderSummary = feedState.orderQty > 0 ? `
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;padding:12px 14px;border-radius:12px;background:#f8fafc;border:1px solid #e5e7eb;">
+            <span style="font-size:13px;color:#374151;">Order Qty: <strong>${feedState.orderQty}</strong></span>
+            <span style="font-size:13px;color:#374151;">Cumulative Feed: <strong>${feedState.cumulativeFeedQty}</strong></span>
+            <span style="font-size:13px;color:${feedState.remainingOrderQty > 0 ? '#374151' : '#b45309'};">Remaining Order Balance: <strong>${feedState.remainingOrderQty}</strong></span>
+        </div>`
+        : '';
+    const feedRuleNote = `
+        <div style="margin-bottom:16px;padding:10px 12px;border-radius:10px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:13px;">
+            Feed entry is allowed only on the first workstation of each group. All other workstations receive material from the previous workstation in that group.
+        </div>`;
     container.innerHTML = `
         <div class="card">
             <div class="card-header">
@@ -974,12 +1004,14 @@ function renderFeedInput() {
                 </span>
             </div>
             <div class="card-body">
+                ${orderSummary}
+                ${feedRuleNote}
                 <div class="ws-cards-grid">${cards}</div>
             </div>
         </div>`;
 }
 
-async function saveFeedInput(wsCode) {
+async function saveFeedInput(wsCode, overrideReason = null) {
     const qty = parseInt(document.getElementById(`feed-qty-${wsCode}`)?.value || '0', 10);
     if (isNaN(qty) || qty < 0) { showToast('Enter a valid quantity', 'error'); return; }
     try {
@@ -987,11 +1019,27 @@ async function saveFeedInput(wsCode) {
         const res = await fetch(`${API_BASE}/workstation-assignments/material`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: feedState.lineId, workstation_code: wsCode, material_provided: qty, work_date: today })
+            body: JSON.stringify({
+                line_id: feedState.lineId,
+                workstation_code: wsCode,
+                material_provided: qty,
+                work_date: today,
+                override_reason: overrideReason
+            })
         });
         const result = await res.json();
+        if (!res.ok && result.feed_warning && result.requires_reason) {
+            const reason = window.prompt(result.message || 'Feed exceeds the order quantity. Enter a reason to continue:', '');
+            if (!reason || !reason.trim()) {
+                showToast('Reason is required to exceed order quantity', 'error');
+                return;
+            }
+            await saveFeedInput(wsCode, reason.trim());
+            return;
+        }
         if (!result.success) { showToast(result.error || 'Failed to save', 'error'); return; }
-        showToast(`Added ${result.data?.added_quantity ?? qty} pcs to ${wsCode}. Total: ${result.data?.material_provided ?? qty} pcs`, 'success');
+        const overrideSuffix = result.data?.exceeds_order_quantity ? ' Override saved.' : '';
+        showToast(`Added ${result.data?.added_quantity ?? qty} pcs to ${wsCode}. Total: ${result.data?.material_provided ?? qty} pcs.${overrideSuffix}`, 'success');
         await onFeedLineChange();
     } catch (err) {
         showToast(err.message, 'error');
@@ -1058,6 +1106,16 @@ const SHORTFALL_REASON_LABELS = {
 };
 
 const SUP_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+function getCurrentSupervisorWorkHour(hours) {
+    if (!Array.isArray(hours) || !hours.length) return null;
+    const nowHour = new Date().getHours();
+    if (hours.includes(nowHour)) return nowHour;
+    if (nowHour < hours[0]) return hours[0];
+    for (let i = hours.length - 1; i >= 0; i -= 1) {
+        if (hours[i] <= nowHour) return hours[i];
+    }
+    return hours[hours.length - 1];
+}
 const supHourOrdinal = (n) => {
     const mod10 = n % 10;
     const mod100 = n % 100;
@@ -1222,12 +1280,7 @@ async function loadHourlyProcedure() {
         const result = await response.json();
         const lines = result.data || [];
         const today = new Date().toISOString().slice(0, 10);
-        const hour = new Date().getHours();
-        // Skip lunch hour (12:00-13:00); clamp default to valid working hours
-        const rawDefault = SUP_WORK_HOURS.includes(hour - 1)
-            ? hour - 1
-            : (hour - 1 < SUP_WORK_HOURS[0] ? SUP_WORK_HOURS[0] : SUP_WORK_HOURS[SUP_WORK_HOURS.length - 1]);
-        const defaultHour = rawDefault;
+        const defaultHour = getCurrentSupervisorWorkHour(SUP_WORK_HOURS);
 
         content.innerHTML = `
             <div class="page-header">
@@ -1248,7 +1301,7 @@ async function loadHourlyProcedure() {
                             <label class="form-label">Line</label>
                             <select class="form-control" id="hourly-line">
                                 <option value="">Select Line</option>
-                                ${lines.map(l => `<option value="${l.id}">${l.line_name} (${l.line_code})${l.product_code ? ' - ' + l.product_code : ''}</option>`).join('')}
+                                ${lines.map(l => `<option value="${l.id}" data-line-name="${String(l.line_name || '').replace(/"/g, '&quot;')}" data-line-code="${String(l.line_code || '').replace(/"/g, '&quot;')}">${l.line_name} (${l.line_code})${l.product_code ? ' - ' + l.product_code : ''}</option>`).join('')}
                             </select>
                         </div>
                         <div class="hc-field" style="min-width:130px;">
@@ -1402,7 +1455,7 @@ async function onHourlyLineChange() {
     hideHourlyPanels();
 
     if (window._hourlyMode === 'ot') {
-        // OT tab shows all lines — line selection in regular tab is irrelevant here
+        loadOtPlanList(document.getElementById('hourly-date')?.value || new Date().toISOString().slice(0, 10));
         return;
     }
 
@@ -1563,6 +1616,54 @@ function computeTotalOutput(progressData, workstations, options = {}) {
         : lastWorkstation.processes;
     const representativeProcessId = getRepresentativeProcessId(processes);
     return computeProcessCumulativeOutput(progressData, representativeProcessId);
+}
+
+function getWorkstationFlowKey(ws) {
+    return String(ws?.primary_ws_id || ws?.id || ws?.workstation_code || '');
+}
+
+function computeWorkstationCumulativeOutput(progressData, ws, options = {}) {
+    if (!ws) return 0;
+    const useChangeover = options.useChangeover === true;
+    const processes = useChangeover && ws.ws_changeover_active && Array.isArray(ws.co_processes) && ws.co_processes.length
+        ? ws.co_processes
+        : ws.processes;
+    const representativeProcessId = getRepresentativeProcessId(processes);
+    return computeProcessCumulativeOutput(progressData, representativeProcessId);
+}
+
+function buildWorkstationFlowMetrics(workstations, progressData, options = {}) {
+    const grouped = new Map();
+    for (const ws of (workstations || [])) {
+        const groupKey = String(ws.group_name || ws.workstation_code || '');
+        if (!grouped.has(groupKey)) grouped.set(groupKey, []);
+        grouped.get(groupKey).push(ws);
+    }
+
+    const metrics = new Map();
+    for (const groupWorkstations of grouped.values()) {
+        const ordered = [...groupWorkstations].sort((a, b) => {
+            const wsA = parseInt(a.workstation_number || 0, 10) || 0;
+            const wsB = parseInt(b.workstation_number || 0, 10) || 0;
+            if (wsA !== wsB) return wsA - wsB;
+            return String(a.workstation_code || '').localeCompare(String(b.workstation_code || ''));
+        });
+
+        let previousOutput = null;
+        for (const ws of ordered) {
+            const availableInput = previousOutput == null
+                ? (parseInt(ws.group_materials_in || 0, 10) || 0)
+                : previousOutput;
+            const cumulativeOutput = computeWorkstationCumulativeOutput(progressData, ws, options);
+            metrics.set(getWorkstationFlowKey(ws), {
+                availableInput,
+                cumulativeOutput,
+                wip: Math.max(0, availableInput - cumulativeOutput)
+            });
+            previousOutput = cumulativeOutput;
+        }
+    }
+    return metrics;
 }
 
 async function activateChangeover(lineId, workDate) {
@@ -1864,7 +1965,7 @@ async function openWsChangeoverModal(warningMessage = '') {
                     ${origEmpId ? `<strong>${origEmpCode} - ${origEmpName}</strong>` : '<strong style="color:#dc2626;">Unassigned</strong>'}
                 </div>
                 <div>
-                    <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:8px;">Feed given for this workstation?</div>
+                    <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:8px;">Feed entry</div>
                     <label style="display:inline-flex;align-items:center;gap:8px;margin-right:16px;font-size:13px;color:#374151;">
                         <input type="radio" name="co-feed-given" value="no" checked onchange="toggleWsChangeoverModalFields()">
                         No
@@ -2003,7 +2104,13 @@ async function submitWsChangeoverStart(force = false) {
 
         if (!data.success) { showToast(data.error || 'Failed to activate changeover', 'error'); return; }
         closeWsChangeoverModal();
-        showToast(`Changeover started for ${wsCode}`, 'success');
+        if (data.auto_finalized) {
+            showToast(data.message || `All workstations on SCO — CO product promoted to primary`, 'success');
+        } else if (data.should_finalize) {
+            showToast(`Changeover started for ${wsCode}. All workstations are now on SCO — set the incoming target and convert to primary.`, 'warning');
+        } else {
+            showToast(`Changeover started for ${wsCode}`, 'success');
+        }
         await onHourlyLineChange();
     } catch (err) {
         showToast(err.message, 'error');
@@ -2176,6 +2283,7 @@ function renderHourlySummary() {
         const perHourIncoming = hourlyState.perHourIncomingTarget || 0;
         const hasChangeover = !!hourlyState.incomingProductId;
         const canStartWorkstationChangeover = !!hourlyState.changeoverActive || !!hourlyState.changeoverUiEnabled;
+        const flowMetrics = buildWorkstationFlowMetrics(workstations, hourlyState.progressData, { useChangeover: hourlyState.changeoverActive });
 
         const cards = workstations.map(ws => {
             const isWsChangeover = !!ws.ws_changeover_active;
@@ -2274,6 +2382,15 @@ function renderHourlySummary() {
             const reasonLine = reason && output > 0 && output < wsHourlyTarget
                 ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
                 : '';
+            const flow = flowMetrics.get(getWorkstationFlowKey(ws)) || { availableInput: 0, cumulativeOutput: 0, wip: 0 };
+            const flowLine = `<div class="ws-card-row">
+                        <span class="ws-card-label">Flow</span>
+                        <span style="font-size:12px;color:#6b7280;">
+                            In: <strong>${flow.availableInput}</strong>
+                            &nbsp;|&nbsp; Cum Out: <strong>${flow.cumulativeOutput}</strong>
+                            &nbsp;|&nbsp; WIP: <strong>${flow.wip}</strong>
+                        </span>
+                    </div>`;
             const changeoverNote = isWsChangeover
                 ? `<div class="ws-card-row">
                         <span class="ws-card-label">CO Saved</span>
@@ -2331,6 +2448,7 @@ function renderHourlySummary() {
                                 <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
                             </div>
                         </div>
+                        ${flowLine}
                         ${changeoverTargetNote}
                         ${changeoverNote}
                         ${reasonLine}
@@ -2685,23 +2803,45 @@ async function saveWorkstationHourlyOutput() {
         return;
     }
 
+    const payload = {
+        line_id: lineId,
+        workstation_plan_id: ws.id,
+        work_date: date,
+        hour_slot: parseInt(hour, 10),
+        quantity: output,
+        forwarded_quantity: output,
+        remaining_quantity: 0,
+        qa_rejection: 0,
+        shortfall_reason: isShortfall ? reason : null
+    };
+
     try {
         const response = await fetch(`${API_BASE}/supervisor/progress`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                line_id: lineId,
-                workstation_plan_id: ws.id,
-                work_date: date,
-                hour_slot: parseInt(hour, 10),
-                quantity: output,
-                forwarded_quantity: output,
-                remaining_quantity: 0,
-                qa_rejection: 0,
-                shortfall_reason: isShortfall ? reason : null
-            })
+            body: JSON.stringify(payload)
         });
         const result = await response.json();
+        if (!response.ok && result.output_warning && result.requires_confirmation) {
+            const shouldContinue = confirm(result.message || 'This output exceeds the current control limits. Do you want to continue?');
+            if (!shouldContinue) return;
+
+            const retryResponse = await fetch(`${API_BASE}/supervisor/progress`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ...payload,
+                    allow_validation_override: true
+                })
+            });
+            const retryResult = await retryResponse.json();
+            if (!retryResult.success) { showToast(retryResult.error || 'Failed to save output', 'error'); return; }
+            showToast('Output saved', 'success');
+            document.getElementById('hourly-entry-panel').style.display = 'none';
+            hourlyState.selectedWorkstation = null;
+            await refreshHourlySummary();
+            return;
+        }
         if (!result.success) { showToast(result.error || 'Failed to save output', 'error'); return; }
 
         showToast('Output saved', 'success');
@@ -2802,87 +2942,53 @@ const otPlanState = {
     selectedWsCode: null,
     detailsLineId: null,
     detailsLineName: null,
-    detailsLineCode: null
+    detailsLineCode: null,
+    inlineSelectionMode: false
 };
 
-// ─── OT Plan List View ────────────────────────────────────────────────────────
+function getSelectedHourlyLineMeta() {
+    const select = document.getElementById('hourly-line');
+    if (!select || !select.value) return null;
+    const option = select.options[select.selectedIndex];
+    return {
+        lineId: select.value,
+        lineName: option?.dataset.lineName || option?.textContent || '',
+        lineCode: option?.dataset.lineCode || ''
+    };
+}
+
+// ─── OT Plan View ─────────────────────────────────────────────────────────────
 
 async function loadOtPlanList(date) {
     const area = document.getElementById('ot-summary-area');
     if (!area) return;
     otPlanState.date = date;
-    otPlanState.detailsLineId = null;
-    area.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
-    try {
-        const r = await fetch(`${API_BASE}/daily-plans?date=${date}`);
-        const result = await r.json();
-        if (!result.success) throw new Error(result.error || 'Failed to load plans');
-        renderOtPlanList(result.plans || [], result.lines || [], date);
-    } catch (err) {
-        area.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
-    }
-}
-
-function renderOtPlanList(plans, allLines, date) {
-    const area = document.getElementById('ot-summary-area');
-    if (!area) return;
-    const planMap = {};
-    plans.forEach(p => { planMap[p.line_id] = p; });
-
-    const rows = allLines.map(line => {
-        const plan = planMap[line.id];
-        const otEnabled = plan?.ot_enabled || false;
-        const product = plan ? `${plan.product_code} - ${plan.product_name}` : '—';
-        const dimStyle = otEnabled ? '' : 'opacity:0.45;';
-        return `<tr>
-            <td>
-                <strong>${line.line_code}</strong>
-                <div style="color:var(--secondary);font-size:12px;">${line.line_name}</div>
-            </td>
-            <td style="${dimStyle}">${product}</td>
-            <td>
-                <span style="font-size:12px;color:${otEnabled ? '#7c3aed' : '#9ca3af'};font-weight:600;">
-                    ${otEnabled ? 'Derived from OT minutes' : 'Enable OT first'}
-                </span>
-            </td>
-            <td>
-                <button onclick="toggleOtEnabled(${line.id}, '${date}', ${otEnabled})"
-                    class="btn btn-sm" style="min-width:110px;background:${otEnabled ? '#dcfce7' : '#f3f4f6'};color:${otEnabled ? '#16a34a' : '#6b7280'};border:1px solid ${otEnabled ? '#bbf7d0' : '#e5e7eb'};">
-                    ${otEnabled ? '● OT Enabled' : '○ Enable OT'}
-                </button>
-            </td>
-            <td>
-                <div class="action-btns">
-                    <button class="btn btn-primary btn-sm"
-                        onclick="openOtPlanDetails(${line.id}, ${JSON.stringify(line.line_name)}, '${date}', ${JSON.stringify(line.line_code)})"
-                        ${!plan ? 'disabled' : ''}>Details</button>
+    otPlanState.inlineSelectionMode = true;
+    setupOtRealtimeListener();
+    const selectedLine = getSelectedHourlyLineMeta();
+    if (!selectedLine?.lineId) {
+        otPlanState.detailsLineId = null;
+        otPlanState.detailsLineName = null;
+        otPlanState.detailsLineCode = null;
+        area.innerHTML = `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">OT Details</h3>
                 </div>
-            </td>
-        </tr>`;
-    }).join('');
-
-    const enabledCount = plans.filter(p => p.ot_enabled).length;
-    area.innerHTML = `
-        <div class="card">
-            <div class="card-header">
-                <h3 class="card-title">OT Plan — ${date}</h3>
-                <span style="font-size:0.85em;color:#6b7280;">${enabledCount} line(s) with OT enabled</span>
-            </div>
-            <div class="card-body table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Line</th>
-                            <th>Current Plan</th>
-                            <th>OT Target</th>
-                            <th>Status</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows || '<tr><td colspan="5" style="text-align:center;padding:24px;color:#9ca3af;">No active lines found.</td></tr>'}</tbody>
-                </table>
-            </div>
-        </div>`;
+                <div class="card-body">
+                    <div class="alert alert-info">Select a line above to view OT details.</div>
+                </div>
+            </div>`;
+        return;
+    }
+    area.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
+    await openOtPlanDetails(
+        selectedLine.lineId,
+        selectedLine.lineName,
+        date,
+        selectedLine.lineCode,
+        { inlineSelectionMode: true }
+    );
 }
 
 async function toggleOtEnabled(lineId, workDate, currentEnabled) {
@@ -2907,7 +3013,7 @@ async function saveOtLineSummary(lineId, date, productId) {
 
 // ─── OT Plan Details View ─────────────────────────────────────────────────────
 
-async function openOtPlanDetails(lineId, lineName, date, lineCode) {
+async function openOtPlanDetails(lineId, lineName, date, lineCode, options = {}) {
     const area = document.getElementById('ot-summary-area');
     if (!area) return;
     otPlanState.lineId = lineId;
@@ -2915,6 +3021,7 @@ async function openOtPlanDetails(lineId, lineName, date, lineCode) {
     otPlanState.detailsLineId = lineId;
     otPlanState.detailsLineName = lineName;
     otPlanState.detailsLineCode = lineCode || '';
+    otPlanState.inlineSelectionMode = options.inlineSelectionMode === true;
     area.innerHTML = '<div class="loading-overlay" style="position:relative;padding:40px 0;"><div class="spinner"></div></div>';
     try {
         const r = await fetch(`${API_BASE}/supervisor/ot-plan/${lineId}?date=${date}`);
@@ -2925,7 +3032,7 @@ async function openOtPlanDetails(lineId, lineName, date, lineCode) {
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">${lineName} — OT Details</h3>
-                        <button class="btn btn-secondary btn-sm" onclick="closeOtPlanDetails()">← Back</button>
+                        ${otPlanState.inlineSelectionMode ? '' : '<button class="btn btn-secondary btn-sm" onclick="closeOtPlanDetails()">← Back</button>'}
                     </div>
                     <div class="card-body"><div class="alert alert-info">OT is not enabled for this line on ${date}.</div></div>
                 </div>`;
@@ -2934,6 +3041,10 @@ async function openOtPlanDetails(lineId, lineName, date, lineCode) {
         otPlanState.otPlan = result.data.ot_plan;
         otPlanState.workstations = result.data.workstations || [];
         otPlanState.employees = result.data.employees || [];
+        // Map: employee_id → workstation_code for regular (non-OT) assignments on this line
+        otPlanState.regularWsMap = new Map(
+            (result.data.regular_assignments || []).map(a => [String(a.employee_id), a.workstation_code])
+        );
         setupOtRealtimeListener();
         renderOtPlanSection();
     } catch (err) {
@@ -2942,6 +3053,10 @@ async function openOtPlanDetails(lineId, lineName, date, lineCode) {
 }
 
 function closeOtPlanDetails() {
+    if (otPlanState.inlineSelectionMode) {
+        loadOtPlanList(otPlanState.date || new Date().toISOString().slice(0, 10));
+        return;
+    }
     otPlanState.detailsLineId = null;
     loadOtPlanList(otPlanState.date || new Date().toISOString().slice(0, 10));
 }
@@ -2979,6 +3094,7 @@ function renderOtPlanSection() {
         const e = employees.find(e => String(e.id) === String(selId));
         return e ? `${e.emp_code} — ${e.emp_name}` : '— Not assigned —';
     };
+    const regularWsMap = otPlanState.regularWsMap || new Map();
     const empPickerOpts = (selId, wsCode) => {
         const selStr = selId ? String(selId) : '';
         const none = `<div class="ot-emp-option" data-emp-id="" data-emp-label="— Not assigned —" data-ws="${wsCode}"
@@ -2987,16 +3103,22 @@ function renderOtPlanSection() {
         return none + employees.map(e => {
             const eStr = String(e.id);
             const isSel = eStr === selStr;
+            // OT-OT conflict: already on another OT workstation on this line
             const takenBy = workstations.find(w => w.workstation_code !== wsCode && String(w.assigned_employee_id) === eStr);
+            // Regular assignment info badge (not blocking)
+            const regularWs = !isSel ? regularWsMap.get(eStr) : null;
             const label = `${e.emp_code} — ${e.emp_name}`;
             return `<div class="ot-emp-option${takenBy ? ' ot-emp-taken' : ''}"
                 data-emp-id="${eStr}" data-emp-label="${label.replace(/"/g,'&quot;')}" data-ws="${wsCode}"
                 onclick="otEmpPickerSelect(this)"
                 style="padding:7px 10px;cursor:${takenBy?'default':'pointer'};font-size:0.82em;
                        background:${isSel?'#eff6ff':''};font-weight:${isSel?'600':'400'};
-                       color:${takenBy?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;">
+                       color:${takenBy?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;gap:4px;">
                 <span>${e.emp_code} — ${e.emp_name}</span>
-                ${takenBy ? '<span style="color:#f87171;font-size:11px;margin-left:6px;">Taken ✗</span>' : ''}
+                <span style="display:flex;align-items:center;gap:3px;flex-shrink:0;">
+                  ${regularWs ? `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;background:#eff6ff;color:#1d4ed8;white-space:nowrap;">Regular ${regularWs}</span>` : ''}
+                  ${takenBy ? `<span style="color:#f87171;font-size:11px;white-space:nowrap;">OT Taken ✗</span>` : ''}
+                </span>
             </div>`;
         }).join('');
     };
@@ -3066,12 +3188,13 @@ function renderOtPlanSection() {
                 }
             </td>` : '';
             const statusCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                ${supAuthorized
-                    ? `<button onclick="toggleOtWsActive(${JSON.stringify(ws.workstation_code)}, ${!isActive})"
-                        class="btn btn-sm" style="min-width:80px;background:${isActive?'#dcfce7':'#fee2e2'};color:${isActive?'#16a34a':'#dc2626'};border:1px solid ${isActive?'#bbf7d0':'#fecaca'};">
-                        ${isActive ? '● Active' : '○ Inactive'}</button>`
-                    : `<span style="font-size:12px;font-weight:600;color:${isActive?'#16a34a':'#dc2626'};">${isActive ? '● Active' : '○ Inactive'}</span>`
-                }
+                <button type="button"
+                    data-ot-toggle="1"
+                    data-ws-code="${String(ws.workstation_code || '').replace(/"/g, '&quot;')}"
+                    data-make-active="${!isActive ? '1' : '0'}"
+                    class="btn btn-sm"
+                    style="min-width:80px;background:${isActive?'#dcfce7':'#fee2e2'};color:${isActive?'#16a34a':'#dc2626'};border:1px solid ${isActive?'#bbf7d0':'#fecaca'};cursor:pointer;pointer-events:auto;touch-action:manipulation;position:relative;z-index:2;">
+                    ${isActive ? '● Active' : '○ Inactive'}</button>
             </td>` : '';
             const otMinCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
                 <input type="number" id="ot-mins-${ws.workstation_code}" min="0" value="${wsMins>0?wsMins:''}"
@@ -3132,7 +3255,7 @@ function renderOtPlanSection() {
         <div class="card">
             <div class="card-header" style="flex-wrap:wrap;gap:8px;">
                 <div style="display:flex;align-items:center;gap:12px;">
-                    <button class="btn btn-secondary btn-sm" onclick="closeOtPlanDetails()">← Back</button>
+                    ${otPlanState.inlineSelectionMode ? '' : '<button class="btn btn-secondary btn-sm" onclick="closeOtPlanDetails()">← Back</button>'}
                     <div>
                         <h3 class="card-title" style="margin:0;">${lineName} — OT Workstations</h3>
                         <div style="font-size:0.82em;color:#6b7280;margin-top:2px;">
@@ -3157,11 +3280,11 @@ function renderOtPlanSection() {
                     <span style="font-size:18px;">⚠️</span>
                     <div>
                         <div style="font-weight:700;color:#92400e;font-size:13px;">Awaiting IE Authorization</div>
-                        <div style="font-size:12px;color:#78350f;">Employee assignment and workstation toggles are locked until the IE authorizes OT for this line.</div>
+                        <div style="font-size:12px;color:#78350f;">Employee assignment is locked until the IE authorizes OT for this line. Workstation active/inactive can still be controlled here.</div>
                     </div>
                 </div>` : ''}
                 <p style="font-size:0.82em;color:#6b7280;padding:8px 16px 4px;margin:0;">
-                    OT inherits the line's shift-end workstation state. Leaving the same employee selected means OT continues with the same person; changing the picker reassigns OT only.
+                    OT workstations start inactive by default. Supervisor or IE can activate only the workstations needed for OT; leaving the same employee selected means OT continues with the same person, and changing the picker reassigns OT only.
                 </p>
                 <table style="width:100%;border-collapse:collapse;">
                     <thead>
@@ -3192,6 +3315,24 @@ function renderOtPlanSection() {
             </div>
         </div>`;
     document.addEventListener('click', otEmpPickerCloseAll);
+    bindOtPlanSectionActions();
+}
+
+function bindOtPlanSectionActions() {
+    const area = document.getElementById('ot-summary-area');
+    if (!area) return;
+    area.querySelectorAll('[data-ot-toggle="1"]').forEach((btn) => {
+        if (btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const wsCode = btn.dataset.wsCode || '';
+            const makeActive = btn.dataset.makeActive === '1';
+            if (!wsCode) return;
+            await toggleOtWsActive(wsCode, makeActive);
+        });
+    });
 }
 
 function otEmpPickerToggle(picker) {
@@ -3479,9 +3620,23 @@ function setupOtRealtimeListener() {
     if (window._otSSEListenerRegistered) return;
     window._otSSEListenerRegistered = true;
     const handler = (payload) => {
-        if (!payload || payload.entity !== 'ot_plan') return;
-        if (otPlanState.detailsLineId && String(payload.line_id) === String(otPlanState.detailsLineId)) {
-            openOtPlanDetails(otPlanState.detailsLineId, otPlanState.detailsLineName, otPlanState.date);
+        if (!payload) return;
+        const isOtPlanUpdate = payload.entity === 'ot_plan';
+        const isOtToggleUpdate = payload.entity === 'daily_plans' && payload.action === 'ot_toggle';
+        const isOtProgressUpdate = payload.entity === 'ot_progress';
+        if (!isOtPlanUpdate && !isOtToggleUpdate && !isOtProgressUpdate) return;
+        if (payload.work_date && otPlanState.date && payload.work_date !== otPlanState.date) return;
+
+        if (
+            otPlanState.detailsLineId &&
+            String(payload.line_id) === String(otPlanState.detailsLineId)
+        ) {
+            openOtPlanDetails(
+                otPlanState.detailsLineId,
+                otPlanState.detailsLineName,
+                otPlanState.date,
+                otPlanState.detailsLineCode
+            );
         } else if (!otPlanState.detailsLineId && otPlanState.date) {
             loadOtPlanList(otPlanState.date);
         }

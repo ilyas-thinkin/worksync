@@ -176,6 +176,16 @@ async function loadSection(section) {
 // ADMIN HOURLY UPDATE
 // ============================================================================
 const ADMIN_HOURLY_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+function getCurrentAdminWorkHour(hours) {
+    if (!Array.isArray(hours) || !hours.length) return null;
+    const nowHour = new Date().getHours();
+    if (hours.includes(nowHour)) return nowHour;
+    if (nowHour < hours[0]) return hours[0];
+    for (let i = hours.length - 1; i >= 0; i -= 1) {
+        if (hours[i] <= nowHour) return hours[i];
+    }
+    return hours[hours.length - 1];
+}
 const ADMIN_SHORTFALL_REASONS = [
     'WORKMANSHIP PROBLEM',
     'MC BREAKDOWN',
@@ -294,10 +304,7 @@ function getAdminFinalReason() {
 async function loadAdminHourlyUpdate() {
     const content = document.getElementById('main-content');
     const today = new Date().toISOString().slice(0, 10);
-    const currentHour = new Date().getHours();
-    const defaultHour = ADMIN_HOURLY_HOURS.includes(currentHour - 1)
-        ? currentHour - 1
-        : (currentHour - 1 < ADMIN_HOURLY_HOURS[0] ? ADMIN_HOURLY_HOURS[0] : ADMIN_HOURLY_HOURS[ADMIN_HOURLY_HOURS.length - 1]);
+    const defaultHour = getCurrentAdminWorkHour(ADMIN_HOURLY_HOURS);
 
     adminHourlyState.lineId = '';
     adminHourlyState.date = today;
@@ -751,6 +758,29 @@ async function saveAdminHourlyOutput() {
             body: JSON.stringify(payload)
         });
         const result = await response.json();
+        if (!response.ok && result.output_warning && result.requires_confirmation) {
+            const shouldContinue = confirm(result.message || 'This output exceeds the current control limits. Do you want to continue?');
+            if (!shouldContinue) return;
+
+            const retryResponse = await fetch(`${API_BASE}/supervisor/progress`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-worksync-admin-override': '1'
+                },
+                body: JSON.stringify({
+                    ...payload,
+                    allow_validation_override: true
+                })
+            });
+            const retryResult = await retryResponse.json();
+            if (!retryResult.success) { showToast(retryResult.error || 'Failed to save output', 'error'); return; }
+            showToast('Hourly output updated', 'success');
+            adminHourlyState.selectedProcess = null;
+            adminHourlyState.selectedWorkstation = null;
+            await loadAdminHourlyLineData();
+            return;
+        }
         if (!result.success) { showToast(result.error || 'Failed to save output', 'error'); return; }
         showToast('Hourly output updated', 'success');
         adminHourlyState.selectedProcess = null;
@@ -1057,10 +1087,7 @@ const adminHourLabel = (hour) => {
 function adminLoadHourOptions() {
     const select = document.getElementById('admin-mgmt-hour-select');
     if (!select) return;
-    const now = new Date();
-    const defaultHour = ADMIN_WORK_HOURS.includes(now.getHours())
-        ? now.getHours()
-        : (now.getHours() < ADMIN_WORK_HOURS[0] ? ADMIN_WORK_HOURS[0] : ADMIN_WORK_HOURS[ADMIN_WORK_HOURS.length - 1]);
+    const defaultHour = getCurrentAdminWorkHour(ADMIN_WORK_HOURS);
     select.innerHTML = ADMIN_WORK_HOURS.map((value, i) =>
         `<option value="${value}" ${value === defaultHour ? 'selected' : ''}>${adminHourLabel(value)}</option>`
     ).join('');
@@ -3093,8 +3120,13 @@ function scheduleRealtimeRefresh(payload) {
             loadAttendanceSection();
             return;
         }
-        if (currentSection === 'daily-plan' && payload.entity === 'daily_plans') {
-            loadDailyPlans();
+        if (currentSection === 'daily-plan' && ['daily_plans', 'ot_plan'].includes(payload.entity)) {
+            const selectedDate = document.getElementById('plan-date')?.value || payload.work_date || new Date().toISOString().slice(0, 10);
+            if (window._dpTab === 'ot') {
+                loadOtPlanSection(selectedDate);
+            } else {
+                loadDailyPlanData();
+            }
             return;
         }
         if (currentSection === 'osm' && payload.entity === 'daily_plans') {
@@ -5282,17 +5314,18 @@ function _buildWsGroups(processes, taktSecs, useOT) {
         const key = hasWs ? ws : `__u_${p.id}`;
         if (!indexMap.has(key)) {
             indexMap.set(key, groups.length);
-            groups.push({ ws, processes: [], sam: 0, employee_id: null, emp_name: '', emp_code: '', group_name: '', is_ot_skipped: false, lpw_id: null, has_ws: hasWs });
+            groups.push({ ws, processes: [], sam: 0, employee_id: null, ot_employee_id: null, emp_name: '', emp_code: '', group_name: '', is_ot_skipped: false, lpw_id: null, has_ws: hasWs });
         }
         const g = groups[indexMap.get(key)];
         g.processes.push(p);
         g.sam += parseFloat(p.operation_sah || 0) * 3600;
         if (!g.takt_time_seconds) {
-            const rowTakt = parseFloat(p.takt_time_seconds || 0);
+            const rowTakt = p.is_custom_takt ? (parseFloat(p.takt_time_seconds || 0) || 0) : 0;
             g.takt_time_seconds = rowTakt > 0 ? rowTakt : (taktSecs > 0 ? taktSecs : 0);
+            g.is_custom_takt = !!p.is_custom_takt;
         }
         if (!g.employee_id) {
-            // In OT mode: use ot_employee_id when set; fall back to regular employee_id by default
+            // In OT mode: use ot_employee_id when set; fall back to regular employee_id for display only
             const hasOTEmp = useOT && p.ot_employee_id != null;
             const empId   = hasOTEmp ? p.ot_employee_id : p.employee_id;
             const empName = hasOTEmp ? (p.ot_emp_name || '') : (p.emp_name || '');
@@ -5302,6 +5335,8 @@ function _buildWsGroups(processes, taktSecs, useOT) {
                 g.emp_name = empName;
                 g.emp_code = empCode;
             }
+            // Track the actual OT employee separately so pageWsEmp can exclude regular fallbacks
+            if (hasOTEmp && p.ot_employee_id) g.ot_employee_id = p.ot_employee_id;
         }
         if (hasWs) g.has_ws = true;
         if (!g.group_name && (p.group_name || '').trim()) g.group_name = (p.group_name || '').trim();
@@ -5453,7 +5488,7 @@ function ldUpdateCachedWsTakt(lineId, wsCode, takt) {
     if (!src?.processes) return;
     src.processes = src.processes.map(p =>
         (p.workstation_code || '').trim() === wsCode
-            ? { ...p, takt_time_seconds: takt }
+            ? { ...p, takt_time_seconds: takt, is_custom_takt: true }
             : p
     );
     if (isChangeover) _ldData.changeoverData = src; else _ldData.data = src;
@@ -5720,7 +5755,7 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
     // Build a set of employee IDs already taken factory-wide for this date.
     // Filter by the current shift mode so regular and OT taken-checks are independent.
     const allAssignments = (_ldData?.data?.all_assignments || []).filter(a => !!a.is_overtime === !!useOT);
-    // Map: empId (string) → { line_id, workstation_code } where they're currently saved
+    // Map: empId (string) → { line_id, workstation_code } where they're currently saved (OT or regular, matching mode)
     const savedAssignMap = new Map();
     allAssignments.forEach(a => {
         savedAssignMap.set(String(a.employee_id), {
@@ -5730,9 +5765,18 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
             line_name: a.line_name || ''
         });
     });
-    // Current page empId → wsCode selections (from wsGroups, not yet saved)
+    // Regular assignment map (for informational badge in OT mode) — empId → workstation_code
+    const regularAssignMap = useOT
+        ? new Map((_ldData?.data?.all_assignments || [])
+            .filter(a => !a.is_overtime && String(a.line_id) === String(lineId))
+            .map(a => [String(a.employee_id), a.workstation_code]))
+        : new Map();
+    // Current page empId → wsCode selections — in OT mode use actual OT employee, NOT regular fallback
     const pageWsEmp = new Map();
-    wsGroups.forEach(g => { if (g.ws && g.employee_id) pageWsEmp.set(String(g.employee_id), g.ws); });
+    wsGroups.forEach(g => {
+        const eid = useOT ? (g.ot_employee_id || null) : (g.employee_id || null);
+        if (g.ws && eid) pageWsEmp.set(String(eid), g.ws);
+    });
 
     // Build searchable picker options
     const empPickerOpts = (selId, wsCode) => {
@@ -5757,6 +5801,11 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
             } : null;
             const takenSuffix = isTaken ? ldTakenAssignmentLabel(pageTakenInfo || savedTo) : '';
             const titleText = `${cleanLabel}${takenSuffix}`;
+            // In OT mode: show informational "Regular WS-XX" badge (not blocking)
+            const regularWs = useOT ? regularAssignMap.get(eStr) : null;
+            const regularBadge = (regularWs && !isSelected)
+                ? `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;background:#eff6ff;color:#1d4ed8;margin-left:4px;white-space:nowrap;">Regular ${regularWs}</span>`
+                : '';
             return `<div class="ld-emp-option${isTaken ? ' ld-emp-taken' : ''}"
                  data-emp-id="${eStr}" data-emp-label="${cleanLabel.replace(/"/g,'&quot;')}"
                  data-taken-text="${(`Taken${takenSuffix}`).replace(/"/g,'&quot;')}"
@@ -5764,9 +5813,12 @@ function _buildLdTbody(tbody, lineId, wsGroups, employees, useOT, opts = {}) {
                  title="${titleText.replace(/"/g,'&quot;')}"
                  style="padding:7px 10px;cursor:pointer;font-size:0.82em;
                         background:${isSelected?'#eff6ff':''};font-weight:${isSelected?'600':'400'};
-                        color:${isTaken?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;">
+                        color:${isTaken?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;gap:4px;">
                  <span>${e.emp_code} — ${e.emp_name}</span>
-                 <span class="ld-taken-badge" style="color:#f87171;font-size:11px;margin-left:6px;${isTaken ? '' : 'display:none;'}">Taken${takenSuffix}</span>
+                 <span style="display:flex;align-items:center;gap:3px;flex-shrink:0;">
+                   ${regularBadge}
+                   <span class="ld-taken-badge" style="color:#f87171;font-size:11px;${isTaken ? '' : 'display:none;'}">Taken${takenSuffix}</span>
+                 </span>
              </div>`;
         }).join('');
     };
@@ -7154,6 +7206,24 @@ async function saveDailyPlan(lineId) {
                 body: JSON.stringify({ line_id: lineId, work_date: date, ...changed })
             });
             const result = await response.json();
+            if (!result.success && result.sco_warning) {
+                const proceed = confirm(
+                    `Warning: ${result.sco_count} workstation${result.sco_count !== 1 ? 's are' : ' is'} currently in SCO (changeover) mode on this line.\n\n` +
+                    `Changing the primary product will reset their changeover state.\n\nContinue anyway?`
+                );
+                if (!proceed) return;
+                const r2 = await fetch('/api/daily-plans', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ line_id: lineId, work_date: date, ...changed, force_sco_override: true })
+                });
+                const result2 = await r2.json();
+                if (!result2.success) { showToast(result2.error, 'error'); return; }
+                if (result2.cap_warning) showToast(`⚠ ${result2.cap_warning}`, 'warning');
+                else showToast(`Updated: ${Object.keys(changed).join(', ').replace(/_/g, ' ')}`, 'success');
+                loadDailyPlanData();
+                return;
+            }
             if (!result.success) { showToast(result.error, 'error'); return; }
             if (result.cap_warning) showToast(`⚠ ${result.cap_warning}`, 'warning');
             else showToast(`Updated: ${Object.keys(changed).join(', ').replace(/_/g, ' ')}`, 'success');
@@ -7464,7 +7534,7 @@ async function loadOtLineCard(lineId, date) {
 function fillOtLineCard(lineId, date, data) {
     const body = document.getElementById(`ot-card-body-${lineId}`);
     if (!body) return;
-    const { ot_plan, workstations, products, employees, all_ot_assignments } = data;
+    const { ot_plan, workstations, products, employees, all_ot_assignments, all_regular_assignments } = data;
     const globalMins     = ot_plan.global_ot_minutes || 60;
     const otTarget       = ot_plan.ot_target_units   || 0;
     const perHourTarget  = data.per_hour_target        || 0;
@@ -7479,6 +7549,12 @@ function fillOtLineCard(lineId, date, data) {
             window._otEmpState[date][String(a.employee_id)] = { line_id: a.line_id, ws_code: a.workstation_code };
         }
     });
+    // Regular assignment map for this line (employee_id → workstation_code) — info badge only
+    const regularAssignMapOtCard = new Map(
+        (all_regular_assignments || [])
+            .filter(a => String(a.line_id) === String(lineId))
+            .map(a => [String(a.employee_id), a.workstation_code])
+    );
 
     const effColor = p => p >= 90 ? '#16a34a' : p >= 80 ? '#d97706' : '#dc2626';
     const idPfx    = `otc-${lineId}`;
@@ -7505,6 +7581,7 @@ function fillOtLineCard(lineId, date, data) {
             const isSel = emp && String(emp.employee_id || emp.id) === eStr;
             const takenEntry = taken[eStr];
             const isTaken = !isSel && takenEntry && takenEntry.ws_code !== ws.workstation_code;
+            const regularWs = !isSel ? regularAssignMapOtCard.get(eStr) : null;
             const lbl = `${e.emp_code} — ${e.emp_name}`;
             return `<div class="ld-emp-option${isTaken ? ' ld-emp-taken' : ''}"
                 data-emp-id="${eStr}" data-emp-label="${lbl.replace(/"/g,'&quot;')}"
@@ -7512,9 +7589,12 @@ function fillOtLineCard(lineId, date, data) {
                 onclick="ldEmpPickerSelect(this,${lineId})"
                 style="padding:7px 10px;cursor:${isTaken?'default':'pointer'};font-size:0.82em;
                        background:${isSel?'#eff6ff':''};font-weight:${isSel?'600':'400'};
-                       color:${isTaken?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;">
+                       color:${isTaken?'#9ca3af':''};display:flex;justify-content:space-between;align-items:center;gap:4px;">
                 <span>${e.emp_code} — ${e.emp_name}</span>
-                ${isTaken ? '<span style="color:#f87171;font-size:11px;margin-left:6px;">Taken ✗</span>' : ''}
+                <span style="display:flex;align-items:center;gap:3px;flex-shrink:0;">
+                  ${regularWs ? `<span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;background:#eff6ff;color:#1d4ed8;white-space:nowrap;">Regular ${regularWs}</span>` : ''}
+                  ${isTaken ? '<span style="color:#f87171;font-size:11px;">OT Taken ✗</span>' : ''}
+                </span>
             </div>`;
         }).join('');
         const empCell = `<div class="ld-emp-picker" data-ws="${ws.workstation_code}" data-value="${emp ? (emp.employee_id || emp.id) : ''}" data-ot-mode="1" style="position:relative;">
@@ -7793,24 +7873,33 @@ function openOtEmpPicker(lineId, date, wsCode, btn) {
     const data      = window._otCardData?.[lineId];
     const employees = data?.employees || [];
     const taken     = window._otEmpState?.[date] || {};
+    const regularMapBtn = new Map(
+        ((data?.all_regular_assignments || []))
+            .filter(a => String(a.line_id) === String(lineId))
+            .map(a => [String(a.employee_id), a.workstation_code])
+    );
 
     const picker = document.createElement('div');
     picker.className = 'ot-emp-picker';
-    picker.style.cssText = 'position:absolute;z-index:2000;background:#fff;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.15);padding:10px;max-height:260px;overflow-y:auto;min-width:200px;';
+    picker.style.cssText = 'position:absolute;z-index:2000;background:#fff;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.15);padding:10px;max-height:300px;overflow-y:auto;min-width:220px;';
 
     picker.innerHTML = `
         <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:6px;text-transform:uppercase;">Select Employee</div>
         <div style="display:flex;flex-wrap:wrap;gap:5px;">
             ${employees.map(e => {
-                const takenEntry = taken[String(e.id)];
+                const eStr = String(e.id);
+                const takenEntry = taken[eStr];
                 const isTaken    = takenEntry && takenEntry.ws_code !== wsCode;
+                const regularWs  = regularMapBtn.get(eStr);
+                const titleText  = isTaken ? 'Already on another OT workstation' : (regularWs ? `Regular: ${regularWs}` : e.emp_name);
                 return `<button
                     onclick="${isTaken ? '' : `assignOtEmployee(${lineId},'${date}','${wsCode}',${e.id},'${e.emp_code}')`}"
                     style="padding:4px 10px;border-radius:16px;font-size:12px;font-weight:600;cursor:${isTaken ? 'not-allowed' : 'pointer'};
                            background:${isTaken ? '#f3f4f6' : '#ede9fe'};color:${isTaken ? '#9ca3af' : '#5b21b6'};
-                           border:1px solid ${isTaken ? '#e5e7eb' : '#c4b5fd'};opacity:${isTaken ? '0.6' : '1'};"
-                    title="${isTaken ? 'Already assigned to OT' : e.emp_name}">
-                    ${e.emp_code}
+                           border:1px solid ${isTaken ? '#e5e7eb' : '#c4b5fd'};opacity:${isTaken ? '0.6' : '1'};
+                           position:relative;"
+                    title="${titleText}">
+                    ${e.emp_code}${regularWs && !isTaken ? `<span style="display:block;font-size:9px;color:#1d4ed8;font-weight:700;line-height:1.1;">Reg ${regularWs}</span>` : ''}
                 </button>`;
             }).join('')}
         </div>`;
@@ -8975,7 +9064,7 @@ function renderOTPlanDetails(panel, lineId, date, data) {
 
 function otToggleWs(checkbox, wsCode) {
     if (!window._otWsState) window._otWsState = {};
-    if (!window._otWsState[wsCode]) window._otWsState[wsCode] = { is_active: true, ot_minutes: 0 };
+    if (!window._otWsState[wsCode]) window._otWsState[wsCode] = { is_active: false, ot_minutes: 0 };
     window._otWsState[wsCode].is_active = checkbox.checked;
     const row = checkbox.closest('tr');
     if (row) row.style.opacity = checkbox.checked ? '1' : '0.45';
@@ -8983,7 +9072,7 @@ function otToggleWs(checkbox, wsCode) {
 
 function otUpdateWsMins(input, wsCode) {
     if (!window._otWsState) window._otWsState = {};
-    if (!window._otWsState[wsCode]) window._otWsState[wsCode] = { is_active: true, ot_minutes: 0 };
+    if (!window._otWsState[wsCode]) window._otWsState[wsCode] = { is_active: false, ot_minutes: 0 };
     window._otWsState[wsCode].ot_minutes = parseInt(input.value, 10) || 0;
 }
 
@@ -9335,10 +9424,7 @@ async function toggleOsmCheck(lpwpId, checked, cbEl) {
 
 // ============================================================================
 function getDefaultReportHour() {
-    const nowHour = new Date().getHours() - 1;
-    if (ADMIN_WORK_HOURS.includes(nowHour)) return nowHour;
-    if (nowHour < ADMIN_WORK_HOURS[0]) return ADMIN_WORK_HOURS[0];
-    return ADMIN_WORK_HOURS[ADMIN_WORK_HOURS.length - 1];
+    return getCurrentAdminWorkHour(ADMIN_WORK_HOURS);
 }
 
 function buildReportHourOptions(selectedHour) {
@@ -10025,7 +10111,7 @@ function _buildEfficiencyTable(data, selectedHour) {
             <span style="font-size:12px;"><strong>Selected Hour:</strong> ${reportLabel}</span>
             <span style="font-size:12px;"><strong>Live Window:</strong> ${liveWindowLabel}</span>
             <span style="font-size:12px;"><strong>Style SAH:</strong> ${plan.style_sah.toFixed(4)} h</span>
-            <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower}</span>
+            <span style="font-size:12px;"><strong>Manpower:</strong> ${summary.manpower} / ${summary.total_workstations || summary.manpower} WS${summary.vacant_workstations > 0 ? ` &nbsp;<span style="color:#dc2626;font-weight:700;">(${summary.vacant_workstations} vacant)</span>` : ''}</span>
             <span style="font-size:12px;"><strong>Hour Target:</strong> ${hourlyTarget}</span>
             <span style="font-size:12px;"><strong>Live Hours:</strong> ${liveHours}</span>
             <span style="font-size:12px;"><strong>Takt Time:</strong> ${plan.takt_time_seconds} s</span>
@@ -10034,7 +10120,6 @@ function _buildEfficiencyTable(data, selectedHour) {
             <span style="margin-left:auto;"></span>
         </div>`;
 
-    const empAvgMap = new Map((employee_progress || []).map(emp => [String(emp.emp_code || ''), emp.hourly_efficiency_avg]));
     const employeeFlowMap = new Map(
         (data.employee_flow || []).map(flow => [String(flow.id), Array.isArray(flow.segments) ? flow.segments : []])
     );
@@ -10067,6 +10152,12 @@ function _buildEfficiencyTable(data, selectedHour) {
         if (numeric >= 80) return { color: '#9a3412', bg: '#fef3c7' };
         return { color: '#b91c1c', bg: '#fee2e2' };
     };
+    const renderEfficiencyMetric = (value, digits = 2) => {
+        const tone = getEffTone(value);
+        return `<div style="display:inline-flex;align-items:center;justify-content:center;padding:2px 8px;border-radius:4px;background:${tone.bg};color:${tone.color};font-weight:700;min-width:72px;">
+            ${formatMetric(value, digits, '%')}
+        </div>`;
+    };
     const renderTrackCell = (tracks, { percent = false, digits = 2 } = {}) => `<div style="display:grid;gap:4px;min-width:110px;">
         ${tracks.map(track => {
             const tone = percent ? getEffTone(track.value) : { color: '#0f172a', bg: '#f8fafc' };
@@ -10087,11 +10178,26 @@ function _buildEfficiencyTable(data, selectedHour) {
         </div>
     </div>`;
 
-    const dataRows = workstations.map(ws => {
-        return `<tr>
+    const wsIdSafe = ws => ws.workstation_code.replace(/[^a-zA-Z0-9]/g, '_');
+    const empCell = ws => ws.employee_code
+        ? `${ws.employee_name} (${ws.employee_code})`
+        : '<span style="color:#9ca3af;">Unassigned</span>';
+    const otEmpCell = ws => ws.ot_employee_code
+        ? `${ws.ot_employee_name} (${ws.ot_employee_code})`
+        : '<span style="color:#9ca3af;">Unassigned</span>';
+
+    const dataRows = workstations.flatMap(ws => {
+        const wid = wsIdSafe(ws);
+        const combineBtn = ws.has_ot
+            ? `<button onclick="toggleEffWsCombine('${wid}')" title="Combine Regular+OT" style="margin-left:5px;padding:1px 5px;border-radius:4px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:10px;cursor:pointer;font-weight:700;line-height:1.4;">⊕</button>`
+            : '';
+        const coTag = ws.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : '';
+
+        // Regular row
+        const regRow = `<tr id="eff-reg-${wid}" style="background:#fff;">
             <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
-            <td style="${tcS}font-weight:600;">${ws.workstation_code}${ws.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
-            <td style="${tdS}">${ws.employee_code ? `${ws.employee_name} (${ws.employee_code})` : '<span style="color:#9ca3af;">Unassigned</span>'}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}${coTag}${combineBtn}</td>
+            <td style="${tdS}">${empCell(ws)}</td>
             <td style="${tcS}">${renderPlanCell(ws.primary_actual_sam_seconds, ws.co_actual_sam_seconds, { digits: 2 })}</td>
             <td style="${tcS}">${renderPlanCell(ws.primary_takt_time_seconds, ws.co_takt_time_seconds, { digits: 0 })}</td>
             <td style="${tcS}">${renderPlanCell(ws.primary_workload_pct, ws.co_workload_pct, { digits: 1, suffix: '%' })}</td>
@@ -10115,10 +10221,49 @@ function _buildEfficiencyTable(data, selectedHour) {
                 { label: 'CO', value: ws.co_live_efficiency_pct },
                 { label: 'C', value: ws.combined_live_efficiency_pct }
             ], { percent: true, digits: 2 })}</td>
-            <td style="${tcS}font-weight:700;color:#0f172a;">${
-                ws.employee_code ? ((empAvgMap.get(String(ws.employee_code)) || 0).toFixed(2) + '%') : '—'
-            }</td>
+            <td style="${tcS}">${renderEfficiencyMetric(ws.combined_live_efficiency_pct, 2)}</td>
         </tr>`;
+
+        // OT row (only if this WS has active OT)
+        const otRowHtml = ws.has_ot ? `<tr id="eff-ot-${wid}" style="background:#fff7ed;">
+            <td style="${tcS}font-size:10px;font-weight:700;color:#92400e;">OT</td>
+            <td style="${tcS}font-weight:600;color:#92400e;">${ws.workstation_code}</td>
+            <td style="${tdS}">${otEmpCell(ws)}</td>
+            <td style="${tcS}">${formatMetric(ws.ot_actual_sam_seconds, 2)}s</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}color:#9ca3af;">—</td>
+            <td style="${tcS}font-weight:700;">${ws.ot_output}</td>
+            <td style="${tcS}font-weight:700;">${formatMetric(ws.ot_efficiency_pct, 2, '%')} <span style="font-size:10px;color:#6b7280;">(${ws.ot_minutes}m)</span></td>
+            <td style="${tcS}">${renderEfficiencyMetric(ws.ot_efficiency_pct, 2)}</td>
+        </tr>` : '';
+
+        // Combined row (hidden by default, shown when ⊕ clicked)
+        const combRowHtml = ws.has_ot ? `<tr id="eff-comb-${wid}" style="display:none;background:#f0fdf4;">
+            <td style="${tcS}font-weight:600;">${ws.group_name || '-'}</td>
+            <td style="${tcS}font-weight:600;">${ws.workstation_code}<button onclick="toggleEffWsCombine('${wid}')" title="Expand" style="margin-left:5px;padding:1px 5px;border-radius:4px;background:#dcfce7;color:#15803d;border:1px solid #86efac;font-size:10px;cursor:pointer;font-weight:700;line-height:1.4;">⊗</button></td>
+            <td style="${tdS}font-size:11px;">
+                <div><span style="font-size:10px;font-weight:700;color:#1e3a5f;">REG</span> ${empCell(ws)}</div>
+                <div style="margin-top:2px;"><span style="font-size:10px;font-weight:700;color:#92400e;">OT</span> ${otEmpCell(ws)}</div>
+            </td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_actual_sam_seconds, ws.co_actual_sam_seconds, { digits: 2 })}</td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_takt_time_seconds, ws.co_takt_time_seconds, { digits: 0 })}</td>
+            <td style="${tcS}">${renderPlanCell(ws.primary_workload_pct, ws.co_workload_pct, { digits: 1, suffix: '%' })}</td>
+            <td style="${tcS}">${ws.combined_hourly_output + (ws.ot_output || 0)}</td>
+            <td style="${tcS}font-size:11px;">
+                <div style="color:#1d4ed8;">REG: ${formatMetric(ws.combined_hourly_efficiency_pct, 2, '%')}</div>
+                <div style="color:#92400e;">OT: ${formatMetric(ws.ot_efficiency_pct, 2, '%')}</div>
+            </td>
+            <td style="${tcS}">${ws.combined_live_output + (ws.ot_output || 0)}</td>
+            <td style="${tcS}font-size:11px;">
+                <div style="color:#1d4ed8;">REG: ${formatMetric(ws.combined_live_efficiency_pct, 2, '%')}</div>
+                <div style="color:#92400e;">OT: ${formatMetric(ws.ot_efficiency_pct, 2, '%')}</div>
+            </td>
+            <td style="${tcS}">${renderEfficiencyMetric(ws.combined_with_ot_efficiency_pct, 2)}</td>
+        </tr>` : '';
+
+        return [regRow, otRowHtml, combRowHtml].filter(Boolean);
     }).join('');
 
     const employeeRows = employee_progress.length
@@ -10149,7 +10294,7 @@ function _buildEfficiencyTable(data, selectedHour) {
                 <td style="${tcS}">${emp.workstation_code || '—'}${emp.is_changeover ? `<div style="margin-top:3px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;">CO</span></div>` : ''}</td>
                 <td style="${tcS}font-weight:700;">${emp.hourly_output || 0}</td>
                 <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_percent || 0).toFixed(2)}%</td>
-                <td style="${tcS}font-weight:700;">${(emp.hourly_efficiency_avg || 0).toFixed(2)}%</td>
+                <td style="${tcS}">${renderEfficiencyMetric(emp.hourly_efficiency_avg || 0, 2)}</td>
                 <td style="${tcS}font-weight:700;">${emp.live_output || 0}</td>
                 <td style="${tcS}font-weight:700;color:#0f172a;">${(emp.live_efficiency_percent || 0).toFixed(2)}%</td>
                 <td style="${tdS}">${remarksText}<div style="margin-top:2px;color:#64748b;font-size:10px;">Updated: ${updatedText}</div></td>
@@ -10186,8 +10331,9 @@ function _buildEfficiencyTable(data, selectedHour) {
                 ${summaryBar}
                 <div style="display:grid;gap:14px;">
                     <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
-                        <div style="background:#eef2ff;border-bottom:1px solid #e2e8f0;padding:8px 12px;font-size:12px;font-weight:700;color:#1e3a8a;">
-                            Workstation Efficiency
+                        <div style="background:#eef2ff;border-bottom:1px solid #e2e8f0;padding:8px 12px;font-size:12px;font-weight:700;color:#1e3a8a;display:flex;align-items:center;justify-content:space-between;">
+                            <span>Workstation Efficiency</span>
+                            ${workstations.some(w => w.has_ot) ? `<button id="eff-global-combine-btn" data-combined="0" onclick="toggleEffAllCombine(this)" style="padding:4px 12px;border-radius:6px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:11px;cursor:pointer;font-weight:700;">Combine All</button>` : ''}
                         </div>
                         <div style="overflow-x:auto;">
                             <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
@@ -10240,6 +10386,41 @@ function _buildEfficiencyTable(data, selectedHour) {
             </div>
         </div>
     </div>`;
+}
+
+function toggleEffWsCombine(wsCode) {
+    const regRow  = document.getElementById('eff-reg-' + wsCode);
+    const otRow   = document.getElementById('eff-ot-' + wsCode);
+    const combRow = document.getElementById('eff-comb-' + wsCode);
+    if (!combRow) return;
+    const expanding = combRow.style.display !== 'none';
+    combRow.style.display = expanding ? 'none' : 'table-row';
+    if (regRow) regRow.style.display = expanding ? 'table-row' : 'none';
+    if (otRow)  otRow.style.display  = expanding ? 'table-row' : 'none';
+    _syncEffGlobalBtn();
+}
+function _syncEffGlobalBtn() {
+    const btn = document.getElementById('eff-global-combine-btn');
+    if (!btn) return;
+    const combRows = document.querySelectorAll('[id^="eff-comb-"]');
+    if (!combRows.length) return;
+    const allCombined = [...combRows].every(r => r.style.display !== 'none');
+    btn.textContent = allCombined ? 'Expand All' : 'Combine All';
+    btn.dataset.combined = allCombined ? '1' : '0';
+}
+function toggleEffAllCombine(btn) {
+    const doCombine = btn.dataset.combined !== '1';
+    document.querySelectorAll('[id^="eff-reg-"]').forEach(regRow => {
+        const ws = regRow.id.replace('eff-reg-', '');
+        const otRow   = document.getElementById('eff-ot-' + ws);
+        const combRow = document.getElementById('eff-comb-' + ws);
+        if (!combRow) return;
+        combRow.style.display = doCombine ? 'table-row' : 'none';
+        regRow.style.display  = doCombine ? 'none' : 'table-row';
+        if (otRow) otRow.style.display = doCombine ? 'none' : 'table-row';
+    });
+    btn.textContent = doCombine ? 'Expand All' : 'Combine All';
+    btn.dataset.combined = doCombine ? '1' : '0';
 }
 
 function printEfficiencyReport() {
@@ -10551,6 +10732,41 @@ function setWieMetric(metric) {
 
 let _wieSelectedEmps = new Set(); // empty = all
 
+function toggleWieCombine(empId) {
+    const regRow  = document.getElementById('wie-reg-' + empId);
+    const otRow   = document.getElementById('wie-ot-' + empId);
+    const combRow = document.getElementById('wie-comb-' + empId);
+    if (!combRow) return;
+    const expanding = combRow.style.display !== 'none';
+    combRow.style.display = expanding ? 'none' : 'table-row';
+    if (regRow) regRow.style.display = expanding ? 'table-row' : 'none';
+    if (otRow)  otRow.style.display  = expanding ? 'table-row' : 'none';
+    _syncWieGlobalBtn();
+}
+function _syncWieGlobalBtn() {
+    const btn = document.getElementById('wie-global-combine-btn');
+    if (!btn) return;
+    const combRows = document.querySelectorAll('[id^="wie-comb-"]');
+    if (!combRows.length) return;
+    const allCombined = [...combRows].every(r => r.style.display !== 'none');
+    btn.textContent = allCombined ? 'Expand All' : 'Combine All';
+    btn.dataset.combined = allCombined ? '1' : '0';
+}
+function toggleWieAllCombine(btn) {
+    const doCombine = btn.dataset.combined !== '1';
+    document.querySelectorAll('[id^="wie-reg-"]').forEach(regRow => {
+        const eid = regRow.id.replace('wie-reg-', '');
+        const otRow   = document.getElementById('wie-ot-' + eid);
+        const combRow = document.getElementById('wie-comb-' + eid);
+        if (!combRow) return;
+        combRow.style.display = doCombine ? 'table-row' : 'none';
+        regRow.style.display  = doCombine ? 'none' : 'table-row';
+        if (otRow) otRow.style.display = doCombine ? 'none' : 'table-row';
+    });
+    btn.textContent = doCombine ? 'Expand All' : 'Combine All';
+    btn.dataset.combined = doCombine ? '1' : '0';
+}
+
 function toggleWieEmpDropdown() {
     const dd = document.getElementById('wie-emp-dropdown');
     if (!dd) return;
@@ -10685,15 +10901,13 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
     const showOutput = metric === 'all' || metric === 'output';
     const showEff    = metric === 'all' || metric === 'efficiency';
 
-    const dateCols = (showTarget?1:0) + (showWip?1:0) + (showOutput?1:0) + (showEff?1:0);
-    const fixedCols = 3; // S.No | WORKER NAME | ID NO
+    const dateCols   = (showTarget?1:0) + (showWip?1:0) + (showOutput?1:0) + (showEff?1:0);
+    const fixedCols  = 3;
     const overallCols = (showOutput?1:0) + (showEff?1:0);
+    const anyHasOt   = rows.some(r => r.has_ot);
 
     const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const fmtDate = d => {
-        const [, m, day] = d.split('-');
-        return `${parseInt(day)}-${months[parseInt(m)]}`;
-    };
+    const fmtDate = d => { const [, m, day] = d.split('-'); return `${parseInt(day)}-${months[parseInt(m)]}`; };
 
     const tagStyle = {
         'DEP':  'background:#fee2e2;color:#991b1b;',
@@ -10706,12 +10920,10 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
         return eff >= 90 ? '#16a34a' : eff >= 80 ? '#d97706' : '#dc2626';
     };
 
-    // Header row 1: DATE label | per-date group headers | OVERALL
     const dateGroupHeaders = dates.map(d =>
         `<th colspan="${dateCols}" style="${thS}">${fmtDate(d)}</th>`
     ).join('');
 
-    // Header row 2: fixed cols | per-date sub-cols | overall sub-cols
     const subHeaders = dates.map(() => [
         showTarget ? `<th style="${thSS}">TARGET</th>` : '',
         showWip    ? `<th style="${thSS}">WIP</th>`    : '',
@@ -10719,58 +10931,139 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
         showEff    ? `<th style="${thSS}">EFF%</th>`   : '',
     ].join('')).join('');
 
-    const dataRows = rows.map((row, idx) => {
-        const dateCells = dates.map(d => {
+    const dataRows = rows.flatMap((row, idx) => {
+        const eid    = String(row.emp_id || idx);
+        const hasOt  = row.has_ot;
+
+        const totalEffVal = Number.isFinite(Number(row.overall_eff)) ? Number(row.overall_eff) : 0;
+        const totalOtEff  = row.overall_ot_eff != null ? row.overall_ot_eff : null;
+        const combBtn = hasOt
+            ? `<button onclick="toggleWieCombine('${eid}')" title="Combine Regular+OT" style="margin-left:5px;padding:1px 5px;border-radius:4px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:10px;cursor:pointer;font-weight:700;vertical-align:middle;">⊕</button>`
+            : '';
+
+        // ── Regular date cells ──────────────────────────────────────────
+        const regDateCells = dates.map(d => {
             const cell = row.dates[d];
-            const hasWorkedHours = Number(cell?.hours_worked || 0) > 0;
-            const tagKey = cell?.tag ? cell.tag.split(' ')[0] : null;
-            const tS = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
+            const hasWorked = Number(cell?.hours_worked || 0) > 0;
+            const tagKey  = cell?.tag ? cell.tag.split(' ')[0] : null;
+            const tS      = tagKey && tagStyle[tagKey] ? tagStyle[tagKey] : '';
             const tagBadge = cell?.tag ? `<br><span style="font-size:8px;font-weight:700;">${cell.tag}</span>` : '';
-            const effVal = Number.isFinite(Number(cell?.eff)) ? Number(cell.eff) : 0;
-            const effTxt = effVal.toFixed(1) + '%';
-            const effC   = effColor(effVal);
-            const blankCell = `<td style="${tcS}">-</td>`;
-
-            if (!cell || !hasWorkedHours) return [
-                showTarget ? blankCell : '',
-                showWip    ? blankCell : '',
-                showOutput ? blankCell : '',
-                showEff    ? `<td style="${tcS}font-weight:600;color:#6b7280;">-</td>` : '',
+            const effVal  = Number.isFinite(Number(cell?.eff)) ? Number(cell.eff) : 0;
+            const effC    = effColor(effVal);
+            const blank   = `<td style="${tcS}">-</td>`;
+            if (!cell || !hasWorked) return [
+                showTarget ? blank : '',
+                showWip    ? blank : '',
+                showOutput ? blank : '',
+                showEff    ? `<td style="${tcS}color:#6b7280;">-</td>` : '',
             ].join('');
-
             const wip      = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
-            const wipColor = wip > 0 ? '#dc2626' : '#16a34a';
-
             return [
-                showTarget ? `<td style="${tcS}${tS}">${cell.wip ?? '-'}${tagBadge}</td>` : '',
-                showWip    ? `<td style="${tcS}${tS}font-weight:600;color:${wipColor};">${wip}</td>` : '',
+                showTarget ? `<td style="${tcS}${tS}">${cell.line_target ?? '-'}${tagBadge}</td>` : '',
+                showWip    ? `<td style="${tcS}${tS}font-weight:600;color:${wip > 0 ? '#dc2626' : '#16a34a'};">${wip}</td>` : '',
                 showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` : '',
-                showEff    ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}</td>` : '',
+                showEff    ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effVal.toFixed(1)}%</td>` : '',
             ].join('');
         }).join('');
 
-        const totalEffVal = Number.isFinite(Number(row.overall_eff)) ? Number(row.overall_eff) : 0;
-        const totalEffTxt = totalEffVal.toFixed(1) + '%';
-        const totalEffC   = effColor(totalEffVal);
+        // ── OT date cells (dashes when no OT that day) ──────────────────
+        const otDateCells = hasOt ? dates.map(d => {
+            const cell    = row.dates[d];
+            const otOut   = cell?.ot_output ?? null;
+            const otAvail = parseFloat(cell?.ot_available_hours || 0);
+            const otEff   = cell?.ot_eff ?? null;
+            const hasOtDay = otAvail > 0 || (otOut != null && otOut > 0);
+            const blank   = `<td style="${tcS}background:#fff7ed;">—</td>`;
+            if (!hasOtDay) return [
+                showTarget ? blank : '',
+                showWip    ? blank : '',
+                showOutput ? blank : '',
+                showEff    ? blank  : '',
+            ].join('');
+            const otEffC  = effColor(otEff);
+            return [
+                showTarget ? `<td style="${tcS}background:#fff7ed;">${cell?.ot_target ?? '—'}</td>` : '',
+                showWip    ? `<td style="${tcS}background:#fff7ed;">—</td>` : '',
+                showOutput ? `<td style="${tcS}background:#fff7ed;font-weight:700;">${otOut ?? 0}</td>` : '',
+                showEff    ? `<td style="${tcS}background:#fff7ed;font-weight:600;color:${otEffC};">${otEff != null ? otEff.toFixed(1) + '%' : '—'}</td>` : '',
+            ].join('');
+        }).join('') : '';
 
-        return `<tr>
+        // ── Combined date cells ─────────────────────────────────────────
+        const combDateCells = hasOt ? dates.map(d => {
+            const cell   = row.dates[d];
+            const regOut = cell?.output ?? 0;
+            const otOut  = cell?.ot_output ?? 0;
+            const regEff = Number.isFinite(Number(cell?.eff)) ? Number(cell.eff) : 0;
+            const otEff  = cell?.ot_eff ?? null;
+            const hasWorked = Number(cell?.hours_worked || 0) > 0;
+            const hasOtDay  = parseFloat(cell?.ot_available_hours || 0) > 0 || otOut > 0;
+            const blank = `<td style="${tcS}background:#f0fdf4;">—</td>`;
+            if (!hasWorked && !hasOtDay) return [
+                showTarget ? blank : '',
+                showWip    ? blank : '',
+                showOutput ? blank : '',
+                showEff    ? blank  : '',
+            ].join('');
+            const combOut = regOut + otOut;
+            return [
+                showTarget ? `<td style="${tcS}background:#f0fdf4;">${cell?.line_target ?? '—'}</td>` : '',
+                showWip    ? `<td style="${tcS}background:#f0fdf4;">—</td>` : '',
+                showOutput ? `<td style="${tcS}background:#f0fdf4;font-weight:700;">Reg:${regOut}<br>OT:${otOut}</td>` : '',
+                showEff    ? `<td style="${tcS}background:#f0fdf4;font-size:10px;"><div style="color:${effColor(regEff)};">Reg:${regEff.toFixed(1)}%</div><div style="color:${effColor(otEff)};">OT:${otEff != null ? otEff.toFixed(1) + '%' : '—'}</div></td>` : '',
+            ].join('');
+        }).join('') : '';
+
+        // ── Regular row ─────────────────────────────────────────────────
+        const regRow = `<tr id="wie-reg-${eid}">
             <td style="${tcS}font-weight:600;">${idx + 1}</td>
-            <td style="${tdS}font-weight:600;">${row.emp_name || '-'}</td>
+            <td style="${tdS}font-weight:600;">${row.emp_name || '-'}${combBtn}</td>
             <td style="${tcS}">${row.emp_code || '-'}</td>
-            ${dateCells}
+            ${regDateCells}
             ${showOutput ? `<td style="${tcS}font-weight:700;">${row.total_output}</td>` : ''}
-            ${showEff    ? `<td style="${tcS}font-weight:700;color:${totalEffC};">${totalEffTxt}</td>` : ''}
+            ${showEff    ? `<td style="${tcS}font-weight:700;color:${effColor(totalEffVal)};">${totalEffVal.toFixed(1)}%</td>` : ''}
         </tr>`;
+
+        // ── OT row ──────────────────────────────────────────────────────
+        const otRow = hasOt ? `<tr id="wie-ot-${eid}" style="background:#fff7ed;">
+            <td style="${tcS}"></td>
+            <td style="${tdS}"><span style="display:inline-block;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;background:#fef3c7;color:#92400e;">OT</span></td>
+            <td style="${tcS}"></td>
+            ${otDateCells}
+            ${showOutput ? `<td style="${tcS}font-weight:700;background:#fff7ed;">${row.total_ot_output || '—'}</td>` : ''}
+            ${showEff    ? `<td style="${tcS}font-weight:700;background:#fff7ed;color:${effColor(totalOtEff)};">${totalOtEff != null ? totalOtEff.toFixed(1) + '%' : '—'}</td>` : ''}
+        </tr>` : '';
+
+        // ── Combined row (hidden by default) ────────────────────────────
+        const combTotalOut = (row.total_output || 0) + (row.total_ot_output || 0);
+        const combRow = hasOt ? `<tr id="wie-comb-${eid}" style="display:none;background:#f0fdf4;">
+            <td style="${tcS}font-weight:600;">${idx + 1}</td>
+            <td style="${tdS}font-weight:600;">${row.emp_name || '-'}<button onclick="toggleWieCombine('${eid}')" title="Expand" style="margin-left:5px;padding:1px 5px;border-radius:4px;background:#dcfce7;color:#15803d;border:1px solid #86efac;font-size:10px;cursor:pointer;font-weight:700;vertical-align:middle;">⊗</button></td>
+            <td style="${tcS}">${row.emp_code || '-'}</td>
+            ${combDateCells}
+            ${showOutput ? `<td style="${tcS}font-weight:700;background:#f0fdf4;">Reg:${row.total_output}<br>OT:${row.total_ot_output || 0}</td>` : ''}
+            ${showEff    ? `<td style="${tcS}font-size:10px;background:#f0fdf4;"><div style="color:${effColor(totalEffVal)};">Reg:${totalEffVal.toFixed(1)}%</div><div style="color:${effColor(totalOtEff)};">OT:${totalOtEff != null ? totalOtEff.toFixed(1) + '%' : '—'}</div></td>` : ''}
+        </tr>` : '';
+
+        return [regRow, otRow, combRow].filter(Boolean);
     }).join('');
+
+    const globalCombineBtn = anyHasOt
+        ? `<button id="wie-global-combine-btn" data-combined="0" onclick="toggleWieAllCombine(this)" style="padding:4px 12px;border-radius:6px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:11px;cursor:pointer;font-weight:700;margin-left:12px;">Combine All</button>`
+        : '';
 
     return `
     <div id="wie-print-area">
-        <div style="text-align:center;font-size:17px;font-weight:700;margin-bottom:10px;letter-spacing:0.5px;">WORKERS INDIVIDUAL EFFICIENCY</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <div style="font-size:17px;font-weight:700;letter-spacing:0.5px;">WORKERS INDIVIDUAL EFFICIENCY</div>
+            ${globalCombineBtn}
+        </div>
         <div style="font-size:10px;margin-bottom:8px;display:flex;gap:14px;flex-wrap:wrap;">
             <span><span style="background:#fee2e2;color:#991b1b;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">DEP HH:MM</span> Departed mid-day</span>
             <span><span style="background:#eff6ff;color:#1d4ed8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">PRE</span> Before reassignment</span>
             <span><span style="background:#f0fdf4;color:#166534;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">POST</span> After reassignment</span>
             <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation</span>
+            <span><span style="background:#fff7ed;color:#92400e;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">OT</span> Overtime row</span>
         </div>
         <div style="overflow-x:auto;">
         <table style="border-collapse:collapse;width:max-content;min-width:100%;">
@@ -11229,7 +11522,12 @@ async function refreshMaterialTracking() {
 
         container.innerHTML = `
             <div style="margin-bottom:8px;color:var(--text-muted);font-size:13px;">
-                ${line.line_name} &mdash; ${line.product_name ?? 'No product'} &mdash; Target: <strong>${line.target_units ?? '—'}</strong> pcs
+                ${line.line_name} &mdash; ${line.product_name ?? 'No product'} &mdash; Daily Target: <strong>${line.target_units ?? '—'}</strong> pcs
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+                <span style="background:#eef2ff;color:#3730a3;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;">Order Qty: ${line.order_quantity ?? 0}</span>
+                <span style="background:#ecfeff;color:#155e75;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;">Cumulative Feed: ${line.cumulative_feed_qty ?? 0}</span>
+                <span style="background:#fefce8;color:#854d0e;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;">Remaining Order Balance: ${line.remaining_order_qty ?? 0}</span>
             </div>
             ${groups.map(g => _buildMtGroupCard(g, allHours, fmtHour)).join('')}
         `;
@@ -11243,7 +11541,7 @@ function _buildMtGroupCard(group, allHours, fmtHour) {
     const groupLabel = group.group_name ? `Group: ${group.group_name}` : group.group_identifier;
 
     const wsRows = group.workstations.map((ws, idx) => {
-        const isLast = idx === group.workstations.length - 1;
+        const isLast = ws.is_last_workstation === true || idx === group.workstations.length - 1;
         const hourCells = allHours.map(h => {
             const qty = ws.hourly[h] ?? null;
             return `<td style="text-align:center;padding:6px 10px;${isLast ? 'font-weight:600;' : ''}">${qty != null ? qty : '<span style="color:#d1d5db;">—</span>'}</td>`;
@@ -11254,7 +11552,9 @@ function _buildMtGroupCard(group, allHours, fmtHour) {
             <tr style="${isLast ? 'background:#f0fdf4;' : ''}">
                 <td style="padding:6px 10px;white-space:nowrap;font-weight:${isLast ? '700' : '500'};">${ws.workstation_code}${lastBadge}</td>
                 <td style="padding:6px 10px;font-size:12px;color:#6b7280;white-space:nowrap;">${empLabel}</td>
+                <td style="padding:6px 10px;text-align:center;">${ws.input_quantity ?? 0}</td>
                 <td style="padding:6px 10px;text-align:center;font-weight:600;">${ws.cumulative_output}</td>
+                <td style="padding:6px 10px;text-align:center;color:${(ws.wip_quantity ?? 0) > 0 ? '#b45309' : '#166534'};font-weight:700;">${ws.wip_quantity ?? 0}</td>
                 ${hourCells}
             </tr>
         `;
@@ -11286,7 +11586,9 @@ function _buildMtGroupCard(group, allHours, fmtHour) {
                         <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
                             <th style="padding:6px 10px;text-align:left;font-weight:600;">Workstation</th>
                             <th style="padding:6px 10px;text-align:left;font-weight:600;">Employee</th>
-                            <th style="padding:6px 10px;text-align:center;font-weight:600;">Total</th>
+                            <th style="padding:6px 10px;text-align:center;font-weight:600;">Input</th>
+                            <th style="padding:6px 10px;text-align:center;font-weight:600;">Cum Out</th>
+                            <th style="padding:6px 10px;text-align:center;font-weight:600;">WIP</th>
                             ${hourHeaders}
                         </tr>
                     </thead>

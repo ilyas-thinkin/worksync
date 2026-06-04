@@ -691,6 +691,25 @@ function getNetWorkingMinutes(inTime, outTime, lunchMins = 0, startMinsOverride 
     return Math.max(0, grossMinutes - lunchOverlapMinutes);
 }
 
+function getEffectiveEmployeeSamSeconds(actualSamSeconds, workloadPct) {
+    const samSeconds = parseFloat(actualSamSeconds || 0);
+    const workload = parseFloat(workloadPct || 0);
+    if (!(samSeconds > 0)) return 0;
+    if (!(workload > 100)) return samSeconds;
+    return samSeconds / (workload / 100);
+}
+
+function getNetHoursBetweenTimestamps(startAt, endAt, lunchMins = 0) {
+    const start = startAt instanceof Date ? startAt : new Date(startAt);
+    const end = endAt instanceof Date ? endAt : new Date(endAt);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+    const rawHours = Math.max(0, (end.getTime() - start.getTime()) / 3600000);
+    const startMins = (start.getHours() * 60) + start.getMinutes() + (start.getSeconds() / 60);
+    const endMins = (end.getHours() * 60) + end.getMinutes() + (end.getSeconds() / 60);
+    const lunchHours = getLunchOverlapMinutes(startMins, endMins, lunchMins) / 60;
+    return Math.max(0, rawHours - lunchHours);
+}
+
 function buildShiftStartTimestamp(workDate, inTime = '08:00') {
     if (!workDate) return null;
     const safeTime = String(inTime || '08:00').slice(0, 5) || '08:00';
@@ -736,6 +755,78 @@ function computeHourlyTargetFromTakt(taktTimeSeconds) {
     const takt = parseFloat(taktTimeSeconds);
     if (!(takt > 0)) return 0;
     return 3600 / takt;
+}
+
+async function syncDailyPlanTargetFromWorkstations(db, { lineId, workDate, productId }) {
+    const normalizedLineId = parseInt(lineId, 10);
+    const normalizedProductId = parseInt(productId, 10);
+    if (!normalizedLineId || !workDate || !normalizedProductId) return null;
+
+    const shiftWindow = await getShiftWindowDetails();
+    if (!(shiftWindow.workingSeconds > 0)) return null;
+
+    const planResult = await db.query(
+        `SELECT product_id, incoming_product_id
+         FROM line_daily_plans
+         WHERE line_id = $1 AND work_date = $2`,
+        [normalizedLineId, workDate]
+    );
+    const plan = planResult.rows[0];
+    if (!plan) return null;
+
+    const targetField = String(plan.product_id) === String(normalizedProductId)
+        ? 'target_units'
+        : (String(plan.incoming_product_id || '') === String(normalizedProductId) ? 'incoming_target_units' : null);
+    if (!targetField) return null;
+
+    const wsResult = await db.query(
+        `SELECT takt_time_seconds
+         FROM line_plan_workstations
+         WHERE line_id = $1
+           AND work_date = $2
+           AND product_id = $3
+           AND takt_time_seconds > 0
+           AND COALESCE(is_custom_takt, false) = false`,
+        [normalizedLineId, workDate, normalizedProductId]
+    );
+    if (!wsResult.rows.length) return null;
+
+    const bottleneckTakt = wsResult.rows.reduce((max, row) => {
+        const takt = parseFloat(row.takt_time_seconds || 0) || 0;
+        return takt > max ? takt : max;
+    }, 0);
+    if (!(bottleneckTakt > 0)) return null;
+
+    const computedTarget = Math.max(0, Math.round(
+        computeTargetUnitsFromTakt(bottleneckTakt, shiftWindow.workingSeconds)
+    ));
+    if (!(computedTarget > 0)) return null;
+
+    await db.query(
+        `UPDATE line_daily_plans
+         SET ${targetField} = $3,
+             updated_at = NOW()
+         WHERE line_id = $1 AND work_date = $2`,
+        [normalizedLineId, workDate, computedTarget]
+    );
+
+    if (targetField === 'target_units' && workDate === new Date().toISOString().slice(0, 10)) {
+        await db.query(
+            `UPDATE production_lines
+             SET target_units = $1,
+                 updated_at = NOW()
+             WHERE id = $2`,
+            [computedTarget, normalizedLineId]
+        );
+    }
+
+    return {
+        line_id: normalizedLineId,
+        work_date: workDate,
+        product_id: normalizedProductId,
+        target_field: targetField,
+        target_units: computedTarget
+    };
 }
 
 async function getEffectiveRegularSourceWorkstations(db, lineId, workDate) {
@@ -1281,6 +1372,21 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
             return null;
         }
 
+        // If any deletion marker exists between the source plan date and the target date,
+        // the line was intentionally removed from the schedule at that point — stop carry-forward.
+        const gapMarker = await db.query(
+            `SELECT 1 FROM line_daily_plan_delete_markers
+             WHERE line_id = $1
+               AND work_date > $2
+               AND work_date < $3
+             LIMIT 1`,
+            [lineId, sourcePlan.work_date, workDate]
+        );
+        if (gapMarker.rowCount > 0) {
+            if (ownsClient) await db.query('COMMIT');
+            return null;
+        }
+
         const insertResult = await db.query(
             `INSERT INTO line_daily_plans
                (line_id, product_id, work_date, target_units,
@@ -1319,15 +1425,15 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
         }
 
         if (sourcePlan.product_id) {
-            await copyWorkstationPlanFromDate(lineId, sourcePlan.work_date, lineId, workDate, sourcePlan.product_id, db, {
-                copyEmployees: true
-            });
-        }
-
-        if (sourcePlan.incoming_product_id) {
-            await copyWorkstationPlanFromDate(lineId, sourcePlan.work_date, lineId, workDate, sourcePlan.incoming_product_id, db, {
-                copyEmployees: false
-            });
+            if (sourcePlan.incoming_product_id) {
+                // Use carryForwardMixedLineState to preserve ws_changeover_active flags
+                // (so any workstation already in SCO mode stays on the SCO product next day)
+                await carryForwardMixedLineState(lineId, sourcePlan.work_date, workDate, sourcePlan, db);
+            } else {
+                await copyWorkstationPlanFromDate(lineId, sourcePlan.work_date, lineId, workDate, sourcePlan.product_id, db, {
+                    copyEmployees: true
+                });
+            }
         }
 
         const refreshed = await db.query(
@@ -1459,6 +1565,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
         : `LEFT JOIN line_plan_workstation_processes wproc ON wproc.workstation_id = a.workstation_id`;
     const workstationProductField = 'ws.source_product_id';
     const lateralProductField = useOt ? 'ws_match.source_product_id' : 'ws_match.product_id';
+    const lateralWorkloadField = useOt ? 'NULL::numeric AS workload_pct' : 'ws_match.workload_pct AS workload_pct';
+    const lateralCustomTaktField = useOt ? 'false' : 'COALESCE(ws_match.is_custom_takt, false)';
     let incomingProductId = null;
     if (!useOt) {
         const planResult = await db.query(
@@ -1505,14 +1613,26 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     ws.id AS workstation_id,
                     ws.workstation_number,
                     COALESCE(ws.group_name, '') AS group_name,
-                    COALESCE(ws.actual_sam_seconds, 0) AS actual_sam_seconds,
+                    COALESCE(ws.takt_time_seconds, 0) AS takt_time_seconds,
+                    COALESCE(ws.is_custom_takt, false) AS is_custom_takt,
+                    COALESCE(
+                        CASE
+                            WHEN COALESCE(ws.workload_pct, 0) > 100 AND COALESCE(ws.actual_sam_seconds, 0) > 0
+                                THEN ws.actual_sam_seconds / NULLIF(ws.workload_pct / 100.0, 0)
+                            ELSE ws.actual_sam_seconds
+                        END,
+                        0
+                    ) AS actual_sam_seconds,
                     ${workstationProductField} AS source_product_id
              FROM employee_workstation_assignment_history hist
              LEFT JOIN LATERAL (
                  SELECT ws_match.id,
                         ws_match.workstation_number,
                         ws_match.group_name,
+                        ws_match.takt_time_seconds,
                         ws_match.actual_sam_seconds,
+                        ${lateralCustomTaktField} AS is_custom_takt,
+                        ${lateralWorkloadField},
                         ${lateralProductField} AS source_product_id
                  FROM ${workstationTable} ws_match
                  WHERE (
@@ -1590,6 +1710,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     workstation_code,
                     workstation_number,
                     group_name,
+                    takt_time_seconds,
+                    is_custom_takt,
                     actual_sam_seconds,
                     source_product_id
              FROM assignments
@@ -1603,6 +1725,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                 ca.workstation_code,
                 ca.workstation_number,
                 ca.group_name,
+                ca.takt_time_seconds,
+                ca.is_custom_takt,
                 ca.actual_sam_seconds,
                 ca.source_product_id,
                 COALESCE(et.total_output, 0) AS total_output,
@@ -1634,6 +1758,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
             workstation_code: row.workstation_code,
             workstation_number: row.workstation_number != null ? parseInt(row.workstation_number, 10) : null,
             group_name: row.group_name || '',
+            takt_time_seconds: parseFloat(row.takt_time_seconds || 0),
+            is_custom_takt: !!row.is_custom_takt,
             actual_sam_seconds: parseFloat(row.actual_sam_seconds || 0),
             operation_code: row.workstation_code,
             operation_name: row.group_name || 'Workstation',
@@ -1663,6 +1789,7 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
         ? `LEFT JOIN line_ot_workstation_processes wproc ON wproc.ot_workstation_id = a.workstation_id`
         : `LEFT JOIN line_plan_workstation_processes wproc ON wproc.workstation_id = a.workstation_id`;
     const lateralProductField = useOt ? 'ws_match.source_product_id' : 'ws_match.product_id';
+    const lateralWorkloadField = useOt ? 'NULL::numeric AS workload_pct' : 'ws_match.workload_pct AS workload_pct';
     let incomingProductId = null;
     if (!useOt) {
         const planResult = await db.query(
@@ -1715,7 +1842,14 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
                     ws.id AS workstation_id,
                     ws.workstation_number,
                     COALESCE(ws.group_name, '') AS group_name,
-                    COALESCE(ws.actual_sam_seconds, 0) AS actual_sam_seconds,
+                    COALESCE(
+                        CASE
+                            WHEN COALESCE(ws.workload_pct, 0) > 100 AND COALESCE(ws.actual_sam_seconds, 0) > 0
+                                THEN ws.actual_sam_seconds / NULLIF(ws.workload_pct / 100.0, 0)
+                            ELSE ws.actual_sam_seconds
+                        END,
+                        0
+                    ) AS actual_sam_seconds,
                     ws.source_product_id
              FROM employee_workstation_assignment_history hist
              LEFT JOIN LATERAL (
@@ -1723,6 +1857,7 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
                         ws_match.workstation_number,
                         ws_match.group_name,
                         ws_match.actual_sam_seconds,
+                        ${lateralWorkloadField},
                         ${lateralProductField} AS source_product_id
                  FROM ${workstationTable} ws_match
                  WHERE (
@@ -1855,6 +1990,56 @@ async function getWorkstationOutputMap(db, lineId, workDate, workstationIds, { e
     return outputMap;
 }
 
+async function getHourlyWorkstationEmployeeFallbackMap(db, lineId, workDate, workstationIds, hourSlot) {
+    if (!Array.isArray(workstationIds) || !workstationIds.length || !Number.isFinite(parseInt(hourSlot, 10))) {
+        return new Map();
+    }
+    const result = await db.query(
+        `SELECT lpw.id AS workstation_id,
+                lpw.workstation_code,
+                lph.employee_id,
+                e.emp_code,
+                e.emp_name,
+                MAX(lph.updated_at) AS last_updated
+         FROM line_plan_workstations lpw
+         JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+         JOIN line_process_hourly_progress lph
+           ON lph.process_id = lpwp.product_process_id
+          AND lph.line_id = $1
+          AND lph.work_date = $2
+          AND lph.hour_slot = $4
+         LEFT JOIN employees e ON e.id = lph.employee_id
+         WHERE lpw.id = ANY($3::int[])
+           AND lph.employee_id IS NOT NULL
+         GROUP BY lpw.id, lpw.workstation_code, lph.employee_id, e.emp_code, e.emp_name
+         ORDER BY lpw.id, lph.employee_id`,
+        [lineId, workDate, workstationIds, parseInt(hourSlot, 10)]
+    );
+
+    const byWorkstation = new Map();
+    for (const row of result.rows) {
+        const wsKey = normalizeWsCode(row.workstation_code);
+        if (!byWorkstation.has(wsKey)) {
+            byWorkstation.set(wsKey, new Map());
+        }
+        byWorkstation.get(wsKey).set(String(row.employee_id), {
+            employee_id: parseInt(row.employee_id, 10),
+            workstation_code: row.workstation_code,
+            emp_code: row.emp_code || null,
+            emp_name: row.emp_name || null,
+            last_updated: row.last_updated || null,
+            assignment_source: 'hourly_progress'
+        });
+    }
+
+    const resolved = new Map();
+    for (const [wsKey, employeeMap] of byWorkstation.entries()) {
+        if (employeeMap.size !== 1) continue;
+        resolved.set(wsKey, [...employeeMap.values()][0]);
+    }
+    return resolved;
+}
+
 // Enhanced audit logging wrapper for backward compatibility
 const logAudit = async (tableName, recordId, action, newValues = null, oldValues = null, req = null) => {
     await enhancedLogAudit({
@@ -1916,7 +2101,7 @@ router.get('/dashboard/stats', async (req, res) => {
         `);
         res.json({ success: true, data: stats.rows[0] });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     }
 });
 
@@ -2352,6 +2537,42 @@ router.patch('/daily-plans', async (req, res) => {
             }
         }
 
+        // Warn if changing primary product while some workstations are still in SCO mode
+        if ('product_id' in fields && !fields.force_sco_override) {
+            const scoCheck = await pool.query(
+                `SELECT COUNT(*) AS sco_count
+                 FROM line_plan_workstations lpw
+                 JOIN line_daily_plans ldp ON ldp.line_id = lpw.line_id AND ldp.work_date = lpw.work_date
+                 WHERE lpw.line_id = $1 AND lpw.work_date = $2
+                   AND lpw.product_id = ldp.product_id
+                   AND lpw.ws_changeover_active = true`,
+                [line_id, work_date]
+            );
+            if (parseInt(scoCheck.rows[0]?.sco_count || 0, 10) > 0) {
+                return res.status(200).json({
+                    success: false,
+                    sco_warning: true,
+                    sco_count: parseInt(scoCheck.rows[0].sco_count, 10),
+                    error: 'Some workstations are currently in SCO mode. Changing the primary product will reset their changeover state.'
+                });
+            }
+        }
+        // When forcing through an SCO override on product change, reset all SCO flags first
+        if ('product_id' in fields && fields.force_sco_override) {
+            await pool.query(
+                `UPDATE line_plan_workstations
+                 SET ws_changeover_active = false, ws_changeover_started_at = NULL, updated_at = NOW()
+                 WHERE line_id = $1 AND work_date = $2 AND ws_changeover_active = true`,
+                [line_id, work_date]
+            );
+            await pool.query(
+                `UPDATE line_daily_plans SET changeover_started_at = NULL, updated_at = NOW()
+                 WHERE line_id = $1 AND work_date = $2`,
+                [line_id, work_date]
+            );
+        }
+        delete fields.force_sco_override;
+
         const allowed = ['target_units', 'incoming_target_units', 'product_id', 'incoming_product_id', 'changeover_sequence'];
         const setClauses = [];
         const values = [line_id, work_date];
@@ -2484,8 +2705,15 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        const sourcePlan = await client.query(
+            `SELECT product_id, target_units
+             FROM line_daily_plans
+             WHERE line_id = $1 AND work_date = $2
+             LIMIT 1`,
+            [fromLineId, from_date]
+        );
         const targetPlan = await client.query(
-            `SELECT ldp.product_id, p.product_code, p.product_name
+            `SELECT ldp.product_id, ldp.id, p.product_code, p.product_name
              FROM line_daily_plans ldp
              JOIN products p ON p.id = ldp.product_id
              WHERE ldp.line_id=$1 AND ldp.work_date=$2`,
@@ -2535,6 +2763,21 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             }
         }
 
+        if (sourcePlan.rows[0] && targetPlan.rows[0]?.id) {
+            await client.query(
+                `UPDATE line_daily_plans
+                 SET target_units = $3,
+                     updated_at = NOW()
+                 WHERE id = $1
+                   AND line_id = $2`,
+                [
+                    targetPlan.rows[0].id,
+                    toLineId,
+                    parseInt(sourcePlan.rows[0].target_units || 0, 10) || 0
+                ]
+            );
+        }
+
         const copied = await copyWorkstationPlanFromDate(fromLineId, from_date, toLineId, to_date, product_id, client, {
             targetProductId: targetPlan.rows[0].product_id,
             copyEmployees: shouldCopyEmployees
@@ -2544,6 +2787,7 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             return res.status(404).json({ success: false, error: `No workstation plan found for ${from_date}` });
         }
         await client.query('COMMIT');
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'copied', line_id: toLineId, work_date: to_date });
         realtime.broadcast('data_change', { entity: 'workstations', action: 'copied', line_id: toLineId, work_date: to_date });
         res.json({
             success: true,
@@ -2704,7 +2948,7 @@ router.patch('/daily-plans/ot-toggle', async (req, res) => {
             const otPlanId = otPlanRes.rows[0].id;
 
             const existingWsResult = await client.query(
-                `SELECT workstation_code, is_active, ot_minutes
+                `SELECT id, workstation_code, is_active, ot_minutes
                  FROM line_ot_workstations
                  WHERE ot_plan_id = $1`,
                 [otPlanId]
@@ -2713,80 +2957,113 @@ router.patch('/daily-plans/ot-toggle', async (req, res) => {
                 existingWsResult.rows.map(row => [String(row.workstation_code), row])
             );
 
-            if (existingWsResult.rows.length === 0) {
+            {
+                // Always sync OT workstations to the current state of the regular plan
+                // (handles primary vs changeover mode at the moment OT is enabled)
                 const sourceState = await getEffectiveOtSourceWorkstations(client, line_id, work_date);
                 if (sourceState?.workstations?.length) {
                     for (const ws of sourceState.workstations) {
                         const preserved = existingByCode.get(String(ws.workstation_code));
-                        const otWsRes = await client.query(
-                            `INSERT INTO line_ot_workstations
-                               (ot_plan_id, workstation_code, workstation_number, group_name, is_active, ot_minutes,
-                                actual_sam_seconds, source_line_plan_workstation_id, source_product_id, source_mode,
-                                source_hourly_target, source_employee_id, regular_shift_output_quantity,
-                                regular_shift_wip_quantity)
-                             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-                             RETURNING id`,
-                            [
-                                otPlanId,
-                                ws.workstation_code,
-                                ws.workstation_number,
-                                ws.group_name,
-                                preserved ? preserved.is_active !== false : true,
-                                preserved ? (parseInt(preserved.ot_minutes || 0, 10) || 0) : 0,
-                                ws.actual_sam_seconds,
-                                ws.source_line_plan_workstation_id,
-                                ws.source_product_id,
-                                ws.source_mode,
-                                ws.source_hourly_target,
-                                ws.source_employee_id,
-                                ws.regular_shift_output_quantity,
-                                ws.regular_shift_wip_quantity
-                            ]
-                        );
-                        const otWsId = otWsRes.rows[0].id;
-
-                        for (let i = 0; i < ws.processes.length; i++) {
+                        if (preserved) {
+                            // Update source info to match current regular WS state (primary or SCO)
+                            // but keep ot_minutes and is_active as the user configured them
                             await client.query(
-                                `INSERT INTO line_ot_workstation_processes
-                                   (ot_workstation_id, product_process_id, sequence_in_workstation)
-                                 VALUES ($1, $2, $3)`,
-                                [otWsId, ws.processes[i].process_id, i + 1]
+                                `UPDATE line_ot_workstations
+                                 SET actual_sam_seconds=$1, source_line_plan_workstation_id=$2,
+                                     source_product_id=$3, source_mode=$4, source_hourly_target=$5,
+                                     source_employee_id=$6, regular_shift_output_quantity=$7,
+                                     regular_shift_wip_quantity=$8, updated_at=NOW()
+                                 WHERE ot_plan_id=$9 AND workstation_code=$10`,
+                                [ws.actual_sam_seconds, ws.source_line_plan_workstation_id,
+                                 ws.source_product_id, ws.source_mode, ws.source_hourly_target,
+                                 ws.source_employee_id, ws.regular_shift_output_quantity,
+                                 ws.regular_shift_wip_quantity, otPlanId, ws.workstation_code]
                             );
-                        }
-
-                        if (ws.source_employee_id) {
-                            await closeHistoryForWorkstationAssignmentIfNeeded(client, {
-                                lineId: line_id,
-                                workDate: work_date,
-                                workstationCode: ws.workstation_code,
-                                isOvertime: true,
-                                nextEmployeeId: ws.source_employee_id
-                            });
-                            await clearEmployeeAssignmentConflicts(
-                                client,
-                                ws.source_employee_id,
-                                work_date,
-                                true,
-                                line_id,
-                                ws.workstation_code
-                            );
+                            // Refresh processes to match current product (primary or changeover)
                             await client.query(
-                                `INSERT INTO employee_workstation_assignments
-                                   (line_id, work_date, workstation_code, employee_id, is_overtime, line_plan_workstation_id)
-                                 VALUES ($1,$2,$3,$4,true,$5)
-                                 ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
-                                 DO UPDATE SET employee_id = EXCLUDED.employee_id,
-                                               line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
-                                               assigned_at = NOW()`,
-                                [line_id, work_date, ws.workstation_code, ws.source_employee_id, null]
+                                `DELETE FROM line_ot_workstation_processes WHERE ot_workstation_id=$1`,
+                                [preserved.id]
                             );
-                            await syncAssignmentHistoryForCurrentRow(client, {
-                                lineId: line_id,
-                                workDate: work_date,
-                                workstationCode: ws.workstation_code,
-                                employeeId: ws.source_employee_id,
-                                isOvertime: true
-                            });
+                            for (let i = 0; i < ws.processes.length; i++) {
+                                await client.query(
+                                    `INSERT INTO line_ot_workstation_processes
+                                       (ot_workstation_id, product_process_id, sequence_in_workstation)
+                                     VALUES ($1, $2, $3)`,
+                                    [preserved.id, ws.processes[i].process_id, i + 1]
+                                );
+                            }
+                        } else {
+                            // New workstation not yet in OT plan — create it
+                            const otWsRes = await client.query(
+                                `INSERT INTO line_ot_workstations
+                                   (ot_plan_id, workstation_code, workstation_number, group_name, is_active, ot_minutes,
+                                    actual_sam_seconds, source_line_plan_workstation_id, source_product_id, source_mode,
+                                    source_hourly_target, source_employee_id, regular_shift_output_quantity,
+                                    regular_shift_wip_quantity)
+                                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                                 RETURNING id`,
+                                [
+                                    otPlanId,
+                                    ws.workstation_code,
+                                    ws.workstation_number,
+                                    ws.group_name,
+                                    false,
+                                    0,
+                                    ws.actual_sam_seconds,
+                                    ws.source_line_plan_workstation_id,
+                                    ws.source_product_id,
+                                    ws.source_mode,
+                                    ws.source_hourly_target,
+                                    ws.source_employee_id,
+                                    ws.regular_shift_output_quantity,
+                                    ws.regular_shift_wip_quantity
+                                ]
+                            );
+                            const otWsId = otWsRes.rows[0].id;
+
+                            for (let i = 0; i < ws.processes.length; i++) {
+                                await client.query(
+                                    `INSERT INTO line_ot_workstation_processes
+                                       (ot_workstation_id, product_process_id, sequence_in_workstation)
+                                     VALUES ($1, $2, $3)`,
+                                    [otWsId, ws.processes[i].process_id, i + 1]
+                                );
+                            }
+
+                            if (ws.source_employee_id) {
+                                await closeHistoryForWorkstationAssignmentIfNeeded(client, {
+                                    lineId: line_id,
+                                    workDate: work_date,
+                                    workstationCode: ws.workstation_code,
+                                    isOvertime: true,
+                                    nextEmployeeId: ws.source_employee_id
+                                });
+                                await clearEmployeeAssignmentConflicts(
+                                    client,
+                                    ws.source_employee_id,
+                                    work_date,
+                                    true,
+                                    line_id,
+                                    ws.workstation_code
+                                );
+                                await client.query(
+                                    `INSERT INTO employee_workstation_assignments
+                                       (line_id, work_date, workstation_code, employee_id, is_overtime, line_plan_workstation_id)
+                                     VALUES ($1,$2,$3,$4,true,$5)
+                                     ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+                                     DO UPDATE SET employee_id = EXCLUDED.employee_id,
+                                                   line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                                                   assigned_at = NOW()`,
+                                    [line_id, work_date, ws.workstation_code, ws.source_employee_id, null]
+                                );
+                                await syncAssignmentHistoryForCurrentRow(client, {
+                                    lineId: line_id,
+                                    workDate: work_date,
+                                    workstationCode: ws.workstation_code,
+                                    employeeId: ws.source_employee_id,
+                                    isOvertime: true
+                                });
+                            }
                         }
                     }
                     await recalculateOtPlanTarget(client, otPlanId);
@@ -2909,14 +3186,21 @@ router.get('/lines/:lineId/ot-plan', async (req, res) => {
             });
         }
 
-        // All products, employees, factory-wide OT assignments, and all processes for layout editor
-        const [prodsRes, empsRes, allOtRes, allProcsRes] = await Promise.all([
+        // All products, employees, factory-wide OT assignments, regular assignments, and all processes for layout editor
+        const [prodsRes, empsRes, allOtRes, allRegularRes, allProcsRes] = await Promise.all([
             pool.query(`SELECT id, product_code, product_name FROM products WHERE is_active=true ORDER BY product_name`),
             pool.query(`SELECT id, emp_code, emp_name FROM employees WHERE is_active=true ORDER BY emp_name`),
             pool.query(
                 `SELECT employee_id, workstation_code, line_id
                  FROM employee_workstation_assignments
                  WHERE work_date=$1 AND is_overtime=true AND employee_id IS NOT NULL`,
+                [date]
+            ),
+            pool.query(
+                `SELECT ewa.employee_id, ewa.workstation_code, ewa.line_id, pl.line_code
+                 FROM employee_workstation_assignments ewa
+                 LEFT JOIN production_lines pl ON pl.id = ewa.line_id
+                 WHERE ewa.work_date=$1 AND ewa.is_overtime=false AND ewa.employee_id IS NOT NULL`,
                 [date]
             ),
             pool.query(
@@ -2953,6 +3237,7 @@ router.get('/lines/:lineId/ot-plan', async (req, res) => {
                 products: prodsRes.rows,
                 employees: empsRes.rows,
                 all_ot_assignments: allOtRes.rows,
+                all_regular_assignments: allRegularRes.rows,
                 all_processes: allProcsRes.rows,
                 per_hour_target: Math.round(perHourTarget * 100) / 100
             }
@@ -3064,7 +3349,7 @@ router.put('/lines/:lineId/ot-plan/workstations', async (req, res) => {
 });
 
 // PUT /lines/:lineId/ot-plan/layout — full workstation layout replace (for OT layout editor)
-// Body: { date, workstations: [{workstation_code, workstation_number, group_name, ot_minutes, processes:[pp_id,...]}] }
+// Body: { date, workstations: [{workstation_code, workstation_number, group_name, is_active?, ot_minutes, processes:[pp_id,...]}] }
 router.put('/lines/:lineId/ot-plan/layout', async (req, res) => {
     const { lineId } = req.params;
     const { date, workstations } = req.body;
@@ -3102,13 +3387,13 @@ router.put('/lines/:lineId/ot-plan/layout', async (req, res) => {
             const wsNum = ws.workstation_number || (i + 1);
             const newWs = await client.query(
                 `INSERT INTO line_ot_workstations
-                   (ot_plan_id, workstation_code, workstation_number, group_name, is_active, ot_minutes, actual_sam_seconds)
-                 VALUES ($1,$2,$3,$4,true,$5,
+                 (ot_plan_id, workstation_code, workstation_number, group_name, is_active, ot_minutes, actual_sam_seconds)
+                 VALUES ($1,$2,$3,$4,$5,$6,
                    (SELECT COALESCE(SUM(pp.operation_sah * 3600), 0)
-                    FROM product_processes pp WHERE pp.id = ANY($6::int[])))
+                    FROM product_processes pp WHERE pp.id = ANY($7::int[])))
                  RETURNING id`,
                 [otPlanId, ws.workstation_code, wsNum, ws.group_name || null,
-                 parseInt(ws.ot_minutes, 10) || 0, ws.processes]
+                 ws.is_active === true, parseInt(ws.ot_minutes, 10) || 0, ws.processes]
             );
             const newWsId = newWs.rows[0].id;
             for (let j = 0; j < ws.processes.length; j++) {
@@ -3277,9 +3562,9 @@ router.get('/plan-history', async (req, res) => {
                      ON ewa.line_id = w.line_id AND ewa.work_date = w.work_date
                      AND ewa.workstation_code = w.workstation_code AND ewa.is_overtime = false
                  LEFT JOIN employees e ON e.id = ewa.employee_id
-                 WHERE w.line_id = $1 AND w.work_date = $2
+                 WHERE w.line_id = $1 AND w.work_date = $2 AND w.product_id = $3
                  ORDER BY w.workstation_number`,
-                [line.line_id, date]
+                [line.line_id, date, line.product_id]
             );
 
             const workstations = [];
@@ -4546,10 +4831,11 @@ router.post('/daily-plans/copy', async (req, res) => {
             const newWs = await client.query(
                 `INSERT INTO line_plan_workstations
                    (line_id, work_date, product_id, workstation_number, workstation_code,
-                    takt_time_seconds, actual_sam_seconds, workload_pct, group_name)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+                    takt_time_seconds, actual_sam_seconds, workload_pct, group_name, is_custom_takt)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
                 [line_id, target_date, ws.product_id, ws.workstation_number, ws.workstation_code,
-                 ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name || null]
+                 ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name || null,
+                 !!ws.is_custom_takt]
             );
             const newWsId = newWs.rows[0].id;
 
@@ -6338,7 +6624,7 @@ router.post('/workstation-assignments', async (req, res) => {
 
 // PATCH /workstation-assignments/material — save material_provided for an existing assignment
 router.patch('/workstation-assignments/material', async (req, res) => {
-    const { line_id, workstation_code, material_provided, work_date } = req.body;
+    const { line_id, workstation_code, material_provided, work_date, override_reason } = req.body;
     if (!line_id || !workstation_code) {
         return res.status(400).json({ success: false, error: 'line_id and workstation_code are required' });
     }
@@ -6347,34 +6633,91 @@ router.patch('/workstation-assignments/material', async (req, res) => {
     if (isNaN(qty) || qty < 0) {
         return res.status(400).json({ success: false, error: 'material_provided must be a non-negative integer' });
     }
+    const normalizedOverrideReason = typeof override_reason === 'string' ? override_reason.trim() : '';
+    if (await isDayLocked(date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    if (await isLineClosed(line_id, date)) {
+        return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
+    }
+
+    const client = await pool.connect();
     try {
-        const result = await pool.query(
+        await client.query('BEGIN');
+
+        const feedContext = await getWorkstationFeedContext(client, line_id, date, workstation_code);
+        if (!feedContext) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Workstation plan not found for this line/date' });
+        }
+        if (feedContext.first_workstation_code !== workstation_code) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: `Feed can only be entered on the first workstation of the group (${feedContext.first_workstation_code}).`
+            });
+        }
+
+        const feedSummary = await getProductFeedSummary(client, feedContext.product_id);
+        const projectedCumulativeFeed = feedSummary.cumulativeFeedQty + qty;
+        const exceedsOrderQty = feedSummary.orderQty > 0 && projectedCumulativeFeed > feedSummary.orderQty;
+        if (exceedsOrderQty && !normalizedOverrideReason) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                success: false,
+                feed_warning: true,
+                requires_reason: true,
+                message: `Cumulative feed would become ${projectedCumulativeFeed}, which exceeds the order quantity ${feedSummary.orderQty}. Enter a reason to continue.`,
+                data: {
+                    order_quantity: feedSummary.orderQty,
+                    cumulative_feed_qty: feedSummary.cumulativeFeedQty,
+                    projected_cumulative_feed_qty: projectedCumulativeFeed,
+                    excess_quantity: projectedCumulativeFeed - feedSummary.orderQty
+                }
+            });
+        }
+
+        const updateResult = await client.query(
             `UPDATE employee_workstation_assignments
              SET material_provided = COALESCE(material_provided, 0) + $1
              WHERE line_id = $2 AND work_date = $3 AND workstation_code = $4 AND is_overtime = false`,
             [qty, line_id, date, workstation_code]
         );
-        if (result.rowCount === 0) {
+        if (updateResult.rowCount === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ success: false, error: 'No employee assigned to this workstation. Assign an employee in the Morning section first.' });
         }
-        // Refresh group WIP — find which group this workstation belongs to
-        const wsGrpResult = await pool.query(
-            `SELECT COALESCE(group_name, workstation_code) AS group_identifier
-             FROM line_plan_workstations
-             WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3
-             LIMIT 1`,
-            [line_id, date, workstation_code]
-        );
-        if (wsGrpResult.rows[0]?.group_identifier) {
-            await refreshGroupWip(line_id, date, wsGrpResult.rows[0].group_identifier);
+
+        if (qty > 0) {
+            await client.query(
+                `INSERT INTO material_feed_events
+                   (product_id, line_id, work_date, group_name, workstation_code, feed_quantity, exceeds_order_quantity, override_reason, created_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                [
+                    parseInt(feedContext.product_id, 10),
+                    line_id,
+                    date,
+                    feedContext.group_identifier,
+                    workstation_code,
+                    qty,
+                    exceedsOrderQty,
+                    exceedsOrderQty ? normalizedOverrideReason : null,
+                    req.user?.id || null
+                ]
+            );
         }
-        const totalResult = await pool.query(
+
+        await refreshGroupWip(line_id, date, feedContext.group_identifier, client);
+
+        const totalResult = await client.query(
             `SELECT COALESCE(material_provided, 0) AS material_provided
              FROM employee_workstation_assignments
              WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
             [line_id, date, workstation_code]
         );
-        const totalQty = parseInt(totalResult.rows[0]?.material_provided || 0, 10);
+        const totalQty = parseInt(totalResult.rows[0]?.material_provided || 0, 10) || 0;
+
+        await client.query('COMMIT');
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date: date });
         res.json({
             success: true,
@@ -6383,11 +6726,19 @@ router.patch('/workstation-assignments/material', async (req, res) => {
                 workstation_code,
                 material_provided: totalQty,
                 added_quantity: qty,
-                work_date: date
+                work_date: date,
+                order_quantity: feedSummary.orderQty,
+                cumulative_feed_qty: projectedCumulativeFeed,
+                remaining_order_qty: feedSummary.orderQty > 0 ? Math.max(0, feedSummary.orderQty - projectedCumulativeFeed) : 0,
+                exceeds_order_quantity: exceedsOrderQty,
+                override_reason: exceedsOrderQty ? normalizedOverrideReason : null
             }
         });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -6583,10 +6934,11 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
             `INSERT INTO line_plan_workstations
                (line_id, work_date, product_id, workstation_number, workstation_code,
                 takt_time_seconds, actual_sam_seconds, workload_pct, group_name, co_employee_id,
-                ws_changeover_active, ws_changeover_started_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+                is_custom_takt, ws_changeover_active, ws_changeover_started_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
             [toLineId, toDate, targetProductId, ws.workstation_number, ws.workstation_code,
              ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name, ws.co_employee_id || null,
+             !!ws.is_custom_takt,
              copyChangeoverState ? ws.ws_changeover_active === true : false,
              copyChangeoverState && ws.ws_changeover_active === true
                  ? (carriedChangeoverStartAt || ws.ws_changeover_started_at || null)
@@ -7180,8 +7532,9 @@ router.get('/lines/:lineId/workstation-plan', async (req, res) => {
              FROM line_plan_workstations lpw
              JOIN products p ON lpw.product_id = p.id
              WHERE lpw.line_id = $1 AND lpw.work_date = $2
+               AND ($3::int IS NULL OR lpw.product_id = $3)
              ORDER BY lpw.workstation_number`,
-            [lineId, date]
+            [lineId, date, planProductId]
         );
         const workstations = wsResult.rows;
         if (!workstations.length) {
@@ -7434,9 +7787,12 @@ router.put('/workstation-plan/workstations/:wsId/takt', async (req, res) => {
         const targetUnits = computeTargetUnitsFromTakt(takt, workingSeconds);
         const hourlyTargetUnits = computeHourlyTargetFromTakt(takt);
         await pool.query(
-            'UPDATE line_plan_workstations SET takt_time_seconds = $1, workload_pct = $2, updated_at = NOW() WHERE id = $3',
+            'UPDATE line_plan_workstations SET takt_time_seconds = $1, workload_pct = $2, is_custom_takt = TRUE, updated_at = NOW() WHERE id = $3',
             [takt, workload, wsId]
         );
+        // Do NOT sync the daily plan target here — this is a per-WS manual override,
+        // not a line-level target change. The line target must be changed explicitly.
+        const syncedTarget = null;
         const otUpdateResult = await pool.query(
             `UPDATE line_ot_workstations
              SET source_hourly_target = $1,
@@ -7455,6 +7811,9 @@ router.put('/workstation-plan/workstations/:wsId/takt', async (req, res) => {
                 await recalculateOtPlanTarget(pool, row.ot_plan_id);
             }
             realtime.broadcast('data_change', { entity: 'ot_plan', action: 'update', line_id: ws.line_id, work_date: ws.work_date });
+        }
+        if (syncedTarget) {
+            realtime.broadcast('data_change', { entity: 'daily_plan', action: 'update', line_id: ws.line_id, work_date: ws.work_date });
         }
         realtime.broadcast('data_change', { entity: 'workstation_plan', action: 'update', line_id: ws.line_id, work_date: ws.work_date });
         res.json({
@@ -7564,7 +7923,7 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
                     o.operation_code, o.operation_name, o.qr_code_path,
                     ws_info.lpw_id, ws_info.lpwp_id, ws_info.osm_checked,
                     ws_info.group_name, ws_info.workstation_code,
-                    ws_info.takt_time_seconds,
+                    ws_info.takt_time_seconds, ws_info.is_custom_takt,
                     ws_info.workload_pct, ws_info.actual_sam_seconds,
                     ws_info.is_ot_skipped,
                     ws_info.co_employee_id,
@@ -7582,6 +7941,7 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
                         lpwp.id AS lpwp_id, lpwp.osm_checked,
                         lpw.id AS lpw_id, lpw.group_name, lpw.workstation_code,
                         lpw.takt_time_seconds,
+                        lpw.is_custom_takt,
                         lpw.workload_pct, lpw.actual_sam_seconds,
                         lpw.is_ot_skipped, lpw.co_employee_id
                  FROM line_plan_workstations lpw
@@ -7906,15 +8266,17 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
                 ? parseFloat(ws.takt_time_seconds)
                 : taktSecs;
             const workloadPct = workstationTaktSecs > 0 ? (actualSam / workstationTaktSecs) * 100 : 0;
+            const isCustomTakt = taktSecs > 0 && Math.abs(workstationTaktSecs - taktSecs) > 0.01;
             const wsResult = await client.query(
                 `INSERT INTO line_plan_workstations
                  (line_id, work_date, product_id, workstation_number, workstation_code, group_name,
-                  takt_time_seconds, actual_sam_seconds, workload_pct)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+                  takt_time_seconds, actual_sam_seconds, workload_pct, is_custom_takt)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
                 [lineId, work_date, product_id, wsNumber++, ws.workstation_code, ws.group_name,
                  Math.round(workstationTaktSecs * 100) / 100,
                  Math.round(actualSam * 100) / 100,
-                 Math.round(workloadPct * 100) / 100]
+                 Math.round(workloadPct * 100) / 100,
+                 isCustomTakt]
             );
             const wsId = wsResult.rows[0].id;
             for (let i = 0; i < ws.processes.length; i++) {
@@ -8002,7 +8364,16 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
             }
         }
 
+        const syncedTarget = await syncDailyPlanTargetFromWorkstations(client, {
+            lineId,
+            workDate: work_date,
+            productId: product_id
+        });
+
         await client.query('COMMIT');
+        if (syncedTarget) {
+            realtime.broadcast('data_change', { entity: 'daily_plan', action: 'update', line_id: lineId, work_date });
+        }
         realtime.broadcast('data_change', { entity: 'workstation_plan', action: 'saved', line_id: lineId, work_date });
         res.json({ success: true, message: `Saved ${wsEntries.length} workstation(s)` });
     } catch (err) {
@@ -10101,16 +10472,16 @@ const refreshGroupWip = async (lineId, workDate, groupIdentifier, client = null)
     const workstationCodes = groupWsResult.rows.map(row => row.workstation_code).filter(Boolean);
     if (!workstationCodes.length) return;
 
-    // During same-day changeover, feed can be given to any workstation in the group.
-    // On a normal day only the first workstation will have input, so summing keeps both flows valid.
+    // Feed is always entered on the first workstation of the group.
+    // All downstream workstations receive material only from the previous workstation's output.
     const matResult = await db.query(
-        `SELECT COALESCE(SUM(material_provided), 0) AS mat
+        `SELECT COALESCE(material_provided, 0) AS mat
          FROM employee_workstation_assignments
          WHERE line_id = $1
            AND work_date = $2
-           AND workstation_code = ANY($3::text[])
+           AND workstation_code = $3
            AND is_overtime = false`,
-        [lineId, workDate, workstationCodes]
+        [lineId, workDate, workstationCodes[0]]
     );
     const materialsIn = parseInt(matResult.rows[0]?.mat || 0, 10);
 
@@ -10148,6 +10519,219 @@ const refreshGroupWip = async (lineId, workDate, groupIdentifier, client = null)
                        updated_at    = NOW()`,
         [lineId, workDate, groupIdentifier, materialsIn, outputQty, wipQty]
     );
+};
+
+const getProductFeedSummary = async (db, productId) => {
+    if (!productId) {
+        return {
+            orderQty: 0,
+            cumulativeFeedQty: 0,
+            remainingOrderQty: 0
+        };
+    }
+
+    const result = await db.query(
+        `SELECT
+            COALESCE(p.target_qty, 0) AS order_qty,
+            COALESCE((
+                SELECT SUM(mfe.feed_quantity)
+                FROM material_feed_events mfe
+                WHERE mfe.product_id = p.id
+            ), 0) AS cumulative_feed_qty
+         FROM products p
+         WHERE p.id = $1`,
+        [productId]
+    );
+    const row = result.rows[0] || {};
+    const orderQty = parseInt(row.order_qty || 0, 10) || 0;
+    const cumulativeFeedQty = parseInt(row.cumulative_feed_qty || 0, 10) || 0;
+    return {
+        orderQty,
+        cumulativeFeedQty,
+        remainingOrderQty: orderQty > 0 ? Math.max(0, orderQty - cumulativeFeedQty) : 0
+    };
+};
+
+const getWorkstationFeedContext = async (db, lineId, workDate, workstationCode) => {
+    const result = await db.query(
+        `WITH ws AS (
+            SELECT
+                lpw.id,
+                lpw.line_id,
+                lpw.work_date,
+                lpw.product_id,
+                lpw.workstation_code,
+                lpw.workstation_number,
+                COALESCE(lpw.group_name, lpw.workstation_code) AS group_identifier,
+                p.target_qty AS order_qty
+            FROM line_plan_workstations lpw
+            JOIN products p ON p.id = lpw.product_id
+            WHERE lpw.line_id = $1
+              AND lpw.work_date = $2
+              AND lpw.workstation_code = $3
+            LIMIT 1
+        )
+        SELECT
+            ws.*,
+            first_ws.workstation_code AS first_workstation_code
+        FROM ws
+        JOIN LATERAL (
+            SELECT lpw2.workstation_code
+            FROM line_plan_workstations lpw2
+            WHERE lpw2.line_id = ws.line_id
+              AND lpw2.work_date = ws.work_date
+              AND COALESCE(lpw2.group_name, lpw2.workstation_code) = ws.group_identifier
+            ORDER BY lpw2.workstation_number ASC, lpw2.id ASC
+            LIMIT 1
+        ) first_ws ON true`,
+        [lineId, workDate, workstationCode]
+    );
+    return result.rows[0] || null;
+};
+
+const validateWorkstationHourlySave = async (db, {
+    lineId,
+    workDate,
+    workstationPlanId,
+    hourSlot,
+    quantity,
+    allowOverride = false
+}) => {
+    const contextResult = await db.query(
+        `SELECT
+            lpw.id,
+            lpw.workstation_code,
+            lpw.workstation_number,
+            COALESCE(lpw.group_name, lpw.workstation_code) AS group_identifier,
+            COALESCE(ldp.target_units, 0) AS line_target
+         FROM line_plan_workstations lpw
+         LEFT JOIN line_daily_plans ldp
+            ON ldp.line_id = lpw.line_id
+           AND ldp.work_date = lpw.work_date
+         WHERE lpw.id = $1
+           AND lpw.line_id = $2
+           AND lpw.work_date = $3
+         LIMIT 1`,
+        [workstationPlanId, lineId, workDate]
+    );
+    const context = contextResult.rows[0];
+    if (!context) return;
+
+    const groupResult = await db.query(
+        `SELECT
+            lpw.id,
+            lpw.workstation_code,
+            lpw.workstation_number,
+            (
+                SELECT lpwp.product_process_id
+                FROM line_plan_workstation_processes lpwp
+                WHERE lpwp.workstation_id = lpw.id
+                ORDER BY lpwp.sequence_in_workstation DESC, lpwp.product_process_id DESC
+                LIMIT 1
+            ) AS representative_process_id
+         FROM line_plan_workstations lpw
+         WHERE lpw.line_id = $1
+           AND lpw.work_date = $2
+           AND COALESCE(lpw.group_name, lpw.workstation_code) = $3
+         ORDER BY lpw.workstation_number ASC, lpw.id ASC`,
+        [lineId, workDate, context.group_identifier]
+    );
+    const groupWorkstations = groupResult.rows
+        .map(row => ({
+            id: parseInt(row.id, 10),
+            workstation_code: row.workstation_code,
+            workstation_number: parseInt(row.workstation_number || 0, 10) || 0,
+            representative_process_id: parseInt(row.representative_process_id || 0, 10) || 0
+        }))
+        .filter(row => row.representative_process_id > 0);
+    if (!groupWorkstations.length) return;
+
+    const representativeProcessIds = groupWorkstations
+        .map(row => row.representative_process_id)
+        .filter(id => Number.isFinite(id) && id > 0);
+    const totalsResult = representativeProcessIds.length
+        ? await db.query(
+            `SELECT
+                process_id,
+                COALESCE(SUM(quantity), 0) AS total_qty,
+                COALESCE(MAX(CASE WHEN hour_slot = $4 THEN quantity END), 0) AS existing_hour_qty
+             FROM line_process_hourly_progress
+             WHERE line_id = $1
+               AND work_date = $2
+               AND process_id = ANY($3::int[])
+             GROUP BY process_id`,
+            [lineId, workDate, representativeProcessIds, hourSlot]
+        )
+        : { rows: [] };
+    const totalsByProcessId = new Map(
+        totalsResult.rows.map(row => [
+            parseInt(row.process_id, 10) || 0,
+            {
+                totalQty: parseInt(row.total_qty || 0, 10) || 0,
+                existingHourQty: parseInt(row.existing_hour_qty || 0, 10) || 0
+            }
+        ])
+    );
+
+    const firstWorkstationCode = groupWorkstations[0]?.workstation_code || '';
+    const materialsResult = await db.query(
+        `SELECT COALESCE(material_provided, 0) AS total_materials
+         FROM employee_workstation_assignments
+         WHERE line_id = $1
+           AND work_date = $2
+           AND workstation_code = $3
+           AND is_overtime = false`,
+        [lineId, workDate, firstWorkstationCode]
+    );
+    const totalMaterialsIn = parseInt(materialsResult.rows[0]?.total_materials || 0, 10) || 0;
+
+    const currentIndex = groupWorkstations.findIndex(row => row.id === parseInt(workstationPlanId, 10));
+    if (currentIndex < 0) return;
+
+    let previousCumulativeOutput = totalMaterialsIn;
+    const warnings = [];
+    for (let i = 0; i <= currentIndex; i += 1) {
+        const row = groupWorkstations[i];
+        const totals = totalsByProcessId.get(row.representative_process_id) || { totalQty: 0, existingHourQty: 0 };
+        const projectedCumulativeOutput = i === currentIndex
+            ? (totals.totalQty - totals.existingHourQty + quantity)
+            : totals.totalQty;
+        const availableInput = i === 0 ? totalMaterialsIn : previousCumulativeOutput;
+
+        if (projectedCumulativeOutput > availableInput) {
+            const sourceLabel = i === 0 ? 'group feed' : `previous workstation ${groupWorkstations[i - 1].workstation_code}`;
+            warnings.push({
+                type: 'available_input_exceeded',
+                message: `${row.workstation_code} output ${projectedCumulativeOutput} is greater than available input ${availableInput} from ${sourceLabel}. Do you want to continue?`,
+                workstation_code: row.workstation_code,
+                projected_cumulative_output: projectedCumulativeOutput,
+                available_input: availableInput,
+                source_label: sourceLabel
+            });
+        }
+
+        if (i === currentIndex && parseInt(context.line_target || 0, 10) > 0 && projectedCumulativeOutput > parseInt(context.line_target || 0, 10)) {
+            warnings.push({
+                type: 'line_target_exceeded',
+                message: `${row.workstation_code} cumulative output ${projectedCumulativeOutput} exceeds the planned target ${context.line_target}. Do you want to continue?`,
+                workstation_code: row.workstation_code,
+                projected_cumulative_output: projectedCumulativeOutput,
+                planned_target: parseInt(context.line_target || 0, 10)
+            });
+        }
+
+        previousCumulativeOutput = projectedCumulativeOutput;
+    }
+
+    if (warnings.length && !allowOverride) {
+        return {
+            requiresConfirmation: true,
+            warnings,
+            message: warnings.map(w => w.message).join('\n')
+        };
+    }
+
+    return null;
 };
 
 router.get('/supervisor/lines', async (req, res) => {
@@ -10318,6 +10902,15 @@ router.get('/supervisor/ot-plan/:lineId', async (req, res) => {
             return sum + (parseInt(ws.ot_target_units || 0, 10) || 0);
         }, 0);
 
+        // Regular assignments on this line for showing info badges in OT picker
+        const regularAssignRes = await pool.query(
+            `SELECT ewa.employee_id, ewa.workstation_code
+             FROM employee_workstation_assignments ewa
+             WHERE ewa.line_id = $1 AND ewa.work_date = $2
+               AND ewa.is_overtime = false AND ewa.employee_id IS NOT NULL`,
+            [lineId, date]
+        );
+
         res.json({
             success: true,
             ot_enabled: true,
@@ -10327,7 +10920,8 @@ router.get('/supervisor/ot-plan/:lineId', async (req, res) => {
                     computed_ot_target_units: computedOtTarget
                 },
                 workstations,
-                employees: empsRes.rows
+                employees: empsRes.rows,
+                regular_assignments: regularAssignRes.rows
             }
         });
     } catch (err) {
@@ -10359,6 +10953,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
         const changeoverActive = !!meta.changeover_started_at;
         const primaryTarget = parseInt(meta.target_units, 10) || 0;
         const incomingTarget = parseInt(meta.incoming_target_units, 10) || 0;
+        const feedSummary = await getProductFeedSummary(pool, primaryId);
         // Keep legacy active_target (used by non-per-WS code paths)
         const activeTarget = changeoverActive ? incomingTarget : primaryTarget;
 
@@ -10397,6 +10992,9 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             incoming_product_id: incomingId,
             incoming_product_code: meta.incoming_product_code || null,
             incoming_product_name: meta.incoming_product_name || null,
+            order_quantity: feedSummary.orderQty,
+            cumulative_feed_qty: feedSummary.cumulativeFeedQty,
+            remaining_order_qty: feedSummary.remainingOrderQty,
             total_workstation_count: 0,
             changeover_ready_workstation_count: 0,
             can_finalize_primary: false,
@@ -10924,8 +11522,8 @@ router.post('/supervisor/changeover/activate', async (req, res) => {
 });
 
 // Per-workstation changeover activation — supervisor can start changeover on individual workstations.
-// Feed can be given to any workstation during same-day changeover; the workstation then runs the
-// incoming product plan while preserving a snapshot of the primary-product state at switch time.
+// Feed still belongs only to the first workstation of the group; downstream workstations continue
+// to receive material from the previous workstation's output.
 router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
     const {
         line_id,
@@ -10947,6 +11545,12 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         const normalizedFeedQty = feedGiven ? Math.max(0, parseInt(feed_quantity || 0, 10) || 0) : 0;
         if (feedGiven && normalizedFeedQty <= 0) {
             return res.status(400).json({ success: false, error: 'Feed quantity must be greater than 0 when feed is given' });
+        }
+        if (feedGiven) {
+            const feedContext = await getWorkstationFeedContext(pool, line_id, work_date, workstation_code);
+            if (!feedContext) {
+                return res.status(404).json({ success: false, error: 'Workstation plan not found for this line/date' });
+            }
         }
 
         const planResult = await pool.query(
@@ -11178,14 +11782,63 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
             client.release();
         }
 
+        // Auto-promote SCO product to primary when ALL workstations have switched to SCO
+        let autoFinalized = false;
+        let shouldFinalize = false;
+        try {
+            const [allWsRes, planCheckRes] = await Promise.all([
+                pool.query(
+                    `SELECT COUNT(*) FILTER (WHERE ws_changeover_active = true) AS co_count,
+                            COUNT(*) AS total
+                     FROM line_plan_workstations
+                     WHERE line_id = $1 AND work_date = $2 AND product_id = (
+                         SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2
+                     )`,
+                    [line_id, work_date]
+                ),
+                pool.query(
+                    `SELECT incoming_target_units FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+                    [line_id, work_date]
+                )
+            ]);
+            const total = parseInt(allWsRes.rows[0]?.total || 0, 10);
+            const coCount = parseInt(allWsRes.rows[0]?.co_count || 0, 10);
+            const incomingTarget = parseInt(planCheckRes.rows[0]?.incoming_target_units || 0, 10);
+            if (total > 0 && coCount === total) {
+                if (incomingTarget > 0) {
+                    try {
+                        await performChangeoverPromotion(line_id, work_date, req.user?.id || null);
+                        autoFinalized = true;
+                    } catch (promoteErr) {
+                        // Already promoted or other non-fatal reason
+                        console.warn('[auto-promote] skipped:', promoteErr.message);
+                    }
+                } else {
+                    shouldFinalize = true;
+                }
+            }
+        } catch (checkErr) {
+            console.warn('[auto-promote check] error:', checkErr.message);
+        }
+
         realtime.broadcast('data_change', {
             entity: 'changeover', action: 'ws_activated', line_id, work_date, workstation_code
         });
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date });
+        if (autoFinalized) {
+            realtime.broadcast('data_change', { entity: 'changeover', action: 'finalized_primary', line_id, work_date });
+            if (work_date === new Date().toISOString().slice(0, 10)) {
+                realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
+            }
+        }
         res.json({
             success: true,
-            message: `Changeover activated for workstation ${workstation_code}`,
+            message: autoFinalized
+                ? `Changeover activated for ${workstation_code} — all workstations on SCO, promoted to primary`
+                : `Changeover activated for workstation ${workstation_code}`,
+            auto_finalized: autoFinalized,
+            should_finalize: shouldFinalize,
             data: {
                 workstation_code,
                 same_employee: sameEmployeeMode,
@@ -11432,31 +12085,21 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
     }
 });
 
-// Finalize changeover into the new primary product once every workstation has switched.
-// This preserves the previous primary state in an archive row and then promotes the incoming
-// product to become the line's primary product for the same day.
-router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
-    const { line_id, work_date } = req.body;
-    if (!line_id || !work_date) {
-        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
-    }
-    if (!CHANGEOVER_ENABLED) {
-        return res.status(403).json({ success: false, error: 'Changeover is disabled' });
-    }
-    if (await isDayLocked(work_date)) {
-        return res.status(403).json({ success: false, error: 'Production day is locked' });
-    }
+// Helper: runs the full changeover promotion (used by both the route and auto-promote).
+// Returns { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits }
+// Throws on any validation or DB error (with err.status set for HTTP codes).
+async function performChangeoverPromotion(lineId, workDate, userId) {
+    const fail = (status, message) => {
+        const err = new Error(message);
+        err.status = status;
+        throw err;
+    };
 
     let beforePlan = null;
     let archiveRecord = null;
     let updatedPlan = null;
     let promotedProductId = null;
     let promotedTargetUnits = 0;
-    const fail = (status, message) => {
-        const err = new Error(message);
-        err.status = status;
-        throw err;
-    };
 
     const client = await pool.connect();
     try {
@@ -11473,60 +12116,45 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
              LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
              WHERE ldp.line_id = $1 AND ldp.work_date = $2
              FOR UPDATE OF ldp`,
-            [line_id, work_date]
+            [lineId, workDate]
         );
         beforePlan = planResult.rows[0];
-        if (!beforePlan) {
-            fail(404, 'No daily plan found for this line/date');
-        }
-        if (beforePlan.is_locked) {
-            fail(403, 'Daily plan is locked');
-        }
-        if (!beforePlan.product_id || !beforePlan.incoming_product_id) {
+        if (!beforePlan) fail(404, 'No daily plan found for this line/date');
+        if (beforePlan.is_locked) fail(403, 'Daily plan is locked');
+        if (!beforePlan.product_id || !beforePlan.incoming_product_id)
             fail(400, 'No changeover product is available to promote');
-        }
 
         const previousPrimaryProductId = parseInt(beforePlan.product_id, 10);
         promotedProductId = parseInt(beforePlan.incoming_product_id, 10);
         promotedTargetUnits = parseInt(beforePlan.incoming_target_units || 0, 10) || 0;
-        if (promotedTargetUnits <= 0) {
+        if (promotedTargetUnits <= 0)
             fail(400, 'Incoming target must be greater than 0 before promotion');
-        }
 
         const archiveCheckResult = await client.query(
-            `SELECT id
-             FROM changeover_primary_promotions
-             WHERE line_id = $1 AND work_date = $2
-             LIMIT 1`,
-            [line_id, work_date]
+            `SELECT id FROM changeover_primary_promotions
+             WHERE line_id = $1 AND work_date = $2 LIMIT 1`,
+            [lineId, workDate]
         );
-        if (archiveCheckResult.rowCount > 0) {
+        if (archiveCheckResult.rowCount > 0)
             fail(409, 'Primary promotion has already been completed for this line/date');
-        }
 
         const primaryWsResult = await client.query(
             `SELECT id, workstation_code, ws_changeover_active
              FROM line_plan_workstations
              WHERE line_id = $1 AND work_date = $2 AND product_id = $3
-             ORDER BY workstation_number, workstation_code
-             FOR UPDATE`,
-            [line_id, work_date, previousPrimaryProductId]
+             ORDER BY workstation_number, workstation_code FOR UPDATE`,
+            [lineId, workDate, previousPrimaryProductId]
         );
-        if (primaryWsResult.rowCount === 0) {
-            fail(400, 'No primary workstation plan exists for this line/date');
-        }
+        if (primaryWsResult.rowCount === 0) fail(400, 'No primary workstation plan exists for this line/date');
 
         const incomingWsResult = await client.query(
             `SELECT id, workstation_code
              FROM line_plan_workstations
              WHERE line_id = $1 AND work_date = $2 AND product_id = $3
-             ORDER BY workstation_number, workstation_code
-             FOR UPDATE`,
-            [line_id, work_date, promotedProductId]
+             ORDER BY workstation_number, workstation_code FOR UPDATE`,
+            [lineId, workDate, promotedProductId]
         );
-        if (incomingWsResult.rowCount === 0) {
-            fail(400, 'No changeover workstation plan exists for this line/date');
-        }
+        if (incomingWsResult.rowCount === 0) fail(400, 'No changeover workstation plan exists for this line/date');
 
         const incomingByCode = new Map(
             incomingWsResult.rows.map(row => [String(row.workstation_code || ''), row])
@@ -11534,20 +12162,18 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
         const missingIncoming = primaryWsResult.rows
             .filter(row => !incomingByCode.has(String(row.workstation_code || '')))
             .map(row => row.workstation_code);
-        if (missingIncoming.length > 0) {
+        if (missingIncoming.length > 0)
             fail(400, `Missing changeover workstation mapping for: ${missingIncoming.join(', ')}`);
-        }
 
         const pendingWorkstations = primaryWsResult.rows
             .filter(row => row.ws_changeover_active !== true)
             .map(row => row.workstation_code);
-        if (pendingWorkstations.length > 0) {
+        if (pendingWorkstations.length > 0)
             fail(400, `All workstations must switch to CO before promotion. Pending: ${pendingWorkstations.join(', ')}`);
-        }
 
         const snapshot = await buildChangeoverPromotionSnapshot(client, {
-            lineId: line_id,
-            workDate: work_date,
+            lineId,
+            workDate,
             previousPrimaryProductId,
             newPrimaryProductId: promotedProductId,
             beforePlan
@@ -11561,22 +12187,16 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
              RETURNING id, line_id, work_date, previous_primary_product_id, new_primary_product_id,
                        previous_primary_target_units, new_primary_target_units, promoted_at, promoted_by`,
             [
-                line_id,
-                work_date,
-                previousPrimaryProductId,
-                promotedProductId,
-                parseInt(beforePlan.target_units || 0, 10) || 0,
-                promotedTargetUnits,
-                req.user?.id || null,
-                snapshot
+                lineId, workDate,
+                previousPrimaryProductId, promotedProductId,
+                parseInt(beforePlan.target_units || 0, 10) || 0, promotedTargetUnits,
+                userId || null, snapshot
             ]
         );
         archiveRecord = archiveInsertResult.rows[0];
 
         await normalizeRegularAssignmentsToProductWorkstations(client, {
-            lineId: line_id,
-            workDate: work_date,
-            productId: promotedProductId
+            lineId, workDate, productId: promotedProductId
         });
 
         const updatedPlanResult = await client.query(
@@ -11591,49 +12211,58 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
                  updated_at = NOW()
              WHERE id = $4
              RETURNING *`,
-            [promotedProductId, promotedTargetUnits, req.user?.id || null, beforePlan.id]
+            [promotedProductId, promotedTargetUnits, userId || null, beforePlan.id]
         );
         updatedPlan = updatedPlanResult.rows[0];
 
-        if (work_date === new Date().toISOString().slice(0, 10)) {
+        if (workDate === new Date().toISOString().slice(0, 10)) {
             await client.query(
                 `UPDATE production_lines
-                 SET current_product_id = $1,
-                     target_units = $2,
-                     updated_by = COALESCE($3, updated_by),
-                     updated_at = NOW()
+                 SET current_product_id = $1, target_units = $2,
+                     updated_by = COALESCE($3, updated_by), updated_at = NOW()
                  WHERE id = $4`,
-                [promotedProductId, promotedTargetUnits, req.user?.id || null, line_id]
+                [promotedProductId, promotedTargetUnits, userId || null, lineId]
             );
         }
 
         await client.query('COMMIT');
     } catch (err) {
         await client.query('ROLLBACK');
-        return res.status(err.status || 500).json({ success: false, error: err.message });
+        throw err;
     } finally {
         client.release();
     }
 
-    await logAudit(
-        'changeover_primary_promotions',
-        archiveRecord.id,
-        'create',
-        archiveRecord,
-        null,
-        req
-    );
-    await logAudit(
-        'line_daily_plans',
-        updatedPlan.id,
-        'changeover_finalize_primary',
-        {
-            ...updatedPlan,
-            archived_promotion_id: archiveRecord.id
-        },
-        beforePlan,
-        req
-    );
+    return { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits };
+}
+
+// Finalize changeover into the new primary product once every workstation has switched.
+// This preserves the previous primary state in an archive row and then promotes the incoming
+// product to become the line's primary product for the same day.
+router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
+    const { line_id, work_date } = req.body;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    if (!CHANGEOVER_ENABLED) {
+        return res.status(403).json({ success: false, error: 'Changeover is disabled' });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+
+    let result;
+    try {
+        result = await performChangeoverPromotion(line_id, work_date, req.user?.id || null);
+    } catch (err) {
+        return res.status(err.status || 500).json({ success: false, error: err.message });
+    }
+
+    const { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits } = result;
+
+    await logAudit('changeover_primary_promotions', archiveRecord.id, 'create', archiveRecord, null, req);
+    await logAudit('line_daily_plans', updatedPlan.id, 'changeover_finalize_primary',
+        { ...updatedPlan, archived_promotion_id: archiveRecord.id }, beforePlan, req);
 
     realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
     realtime.broadcast('data_change', { entity: 'changeover', action: 'finalized_primary', line_id, work_date });
@@ -12510,7 +13139,7 @@ router.post('/supervisor/mapping/unlink-all', async (req, res) => {
 router.post('/supervisor/progress', async (req, res) => {
     const { line_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks, shortfall_reason } = req.body;
     // Support both: workstation_plan_id (new model) or process_id (legacy)
-    const { workstation_plan_id, process_id } = req.body;
+    const { workstation_plan_id, process_id, allow_validation_override } = req.body;
     if (!line_id || !work_date || hour_slot === undefined || (!process_id && !workstation_plan_id)) {
         return res.status(400).json({ success: false, error: 'line_id, work_date, hour_slot, and either process_id or workstation_plan_id are required' });
     }
@@ -12551,6 +13180,32 @@ router.post('/supervisor/progress', async (req, res) => {
             const forwarded = parseInt(forwarded_quantity || completed, 10);
             const remaining = parseInt(remaining_quantity || 0, 10);
             const rejected = parseInt(qa_rejection || 0, 10);
+            if (completed < 0 || forwarded < 0 || remaining < 0) {
+                return res.status(400).json({ success: false, error: 'Output quantities must be non-negative' });
+            }
+            if (rejected < 0 || rejected > completed) {
+                return res.status(400).json({ success: false, error: 'QA Rejection must be between 0 and Completed' });
+            }
+            if (completed !== forwarded + remaining) {
+                return res.status(400).json({ success: false, error: 'Completed must equal Forwarded + Remaining' });
+            }
+            const validationWarning = await validateWorkstationHourlySave(pool, {
+                lineId: line_id,
+                workDate: work_date,
+                workstationPlanId: workstation_plan_id,
+                hourSlot: hourValue,
+                quantity: completed,
+                allowOverride: allow_validation_override === true || allow_validation_override === 'true'
+            });
+            if (validationWarning?.requiresConfirmation) {
+                return res.status(409).json({
+                    success: false,
+                    output_warning: true,
+                    requires_confirmation: true,
+                    message: validationWarning.message,
+                    warnings: validationWarning.warnings
+                });
+            }
             // Fan out: save same quantity for all processes in this workstation
             const savedProcessIds = [];
             for (const pid of ws.process_ids) {
@@ -12909,7 +13564,7 @@ router.post('/supervisor/ot-progress', async (req, res) => {
              parseInt(qa_rejection || 0, 10), remarks || null, employeeId,
              openingWipQty, otTargetUnits, balanceQty, closingWipQty]
         );
-        realtime.broadcast('line_' + line_id, { entity: 'ot_progress', action: 'update', work_date, line_id });
+        realtime.broadcast('data_change', { entity: 'ot_progress', action: 'update', work_date, line_id });
         res.json({
             success: true,
             data: {
@@ -14305,7 +14960,6 @@ router.get('/efficiency-report', async (req, res) => {
             const nk = normalizeWsCode(row.workstation_code);
             if (!activeAssignmentMap.has(nk)) activeAssignmentMap.set(nk, row);
         }
-        const manpower = activeAssignmentMap.size;
 
         // 7. OT workstations (if OT is enabled for this line+date)
         let otWorkstations = [];
@@ -14349,6 +15003,16 @@ router.get('/efficiency-report', async (req, res) => {
         const liveOutputMap = Number.isFinite(reportHour)
             ? await getWorkstationOutputMap(pool, line_id, date, wsIds, { endHour: reportHour })
             : await getWorkstationOutputMap(pool, line_id, date, wsIds, {});
+        const hourlyFallbackAssignmentMap = Number.isFinite(reportHour)
+            ? await getHourlyWorkstationEmployeeFallbackMap(pool, line_id, date, wsIds, reportHour)
+            : new Map();
+        const resolvedAssignmentMap = new Map(activeAssignmentMap);
+        for (const [wsKey, fallbackRow] of hourlyFallbackAssignmentMap.entries()) {
+            if (!resolvedAssignmentMap.has(wsKey)) {
+                resolvedAssignmentMap.set(wsKey, fallbackRow);
+            }
+        }
+        const manpower = resolvedAssignmentMap.size;
 
         const hourlyEmployeeProgress = Number.isFinite(reportHour)
             ? await getHourlyEmployeeProgress(pool, line_id, date, reportHour, false)
@@ -14427,8 +15091,19 @@ router.get('/efficiency-report', async (req, res) => {
 
             const cycleTimeHours = effectiveSam / 3600;
             const otWs = otMap[ws.workstation_code];
-            const wsOtHours = (otWs && otWs.is_active && otWs.employee_id)
+            const hasOt = !!(otWs && otWs.is_active && otWs.employee_id);
+            const wsOtHours = hasOt
                 ? (parseInt(otWs.ot_minutes) || parseInt(otWs.global_ot_minutes) || 0) / 60
+                : 0;
+            const otOutput = hasOt ? (parseInt(otWs.ot_output || 0, 10) || 0) : 0;
+            const otSamSeconds = hasOt ? parseFloat(otWs.actual_sam_seconds || 0) : 0;
+            const otAvailableHours = wsOtHours;
+            const otEarnedHours = otOutput * otSamSeconds / 3600;
+            const otEfficiencyPct = otAvailableHours > 0
+                ? Math.round(otEarnedHours / otAvailableHours * 10000) / 100
+                : null;
+            const otTarget = hasOt
+                ? (parseInt(otWs.ot_target_units || 0, 10) || 0)
                 : 0;
             const primaryTrackKey = makeWorkstationTrackKey(ws.workstation_code, 'primary');
             const coTrackKey = makeWorkstationTrackKey(ws.workstation_code, 'changeover');
@@ -14493,8 +15168,8 @@ router.get('/efficiency-report', async (req, res) => {
                 co_actual_sam_seconds: ws.co_actual_sam_seconds,
                 co_takt_time_seconds: ws.co_takt_time_seconds,
                 co_workload_pct: ws.co_workload_pct,
-                employee_code: activeAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_code || null,
-                employee_name: activeAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_name || null,
+                employee_code: resolvedAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_code || null,
+                employee_name: resolvedAssignmentMap.get(normalizeWsCode(ws.workstation_code))?.emp_name || null,
                 live_output: liveOutput,
                 hourly_output: hourlyOutput,
                 live_efficiency_pct: liveEfficiency,
@@ -14512,7 +15187,22 @@ router.get('/efficiency-report', async (req, res) => {
                 combined_live_output: liveOutput,
                 combined_live_efficiency_pct: liveEfficiency,
                 combined_hourly_earned_hours: combinedHourlyEarnedHours,
-                combined_live_earned_hours: combinedLiveEarnedHours
+                combined_live_earned_hours: combinedLiveEarnedHours,
+                has_ot: hasOt,
+                ot_employee_code: hasOt ? (otWs.ot_emp_code || null) : null,
+                ot_employee_name: hasOt ? (otWs.ot_emp_name || null) : null,
+                ot_output: otOutput,
+                ot_target: otTarget,
+                ot_minutes: hasOt ? (parseInt(otWs.ot_minutes, 10) || parseInt(otWs.global_ot_minutes, 10) || 0) : 0,
+                ot_available_hours: otAvailableHours,
+                ot_actual_sam_seconds: otSamSeconds,
+                ot_earned_hours: otEarnedHours,
+                ot_efficiency_pct: otEfficiencyPct,
+                combined_with_ot_earned_hours: combinedLiveEarnedHours + otEarnedHours,
+                combined_with_ot_available_hours: liveHoursDenom + otAvailableHours,
+                combined_with_ot_efficiency_pct: (liveHoursDenom + otAvailableHours) > 0
+                    ? Math.round((combinedLiveEarnedHours + otEarnedHours) / (liveHoursDenom + otAvailableHours) * 10000) / 100
+                    : null
             };
         });
 
@@ -14662,6 +15352,8 @@ router.get('/efficiency-report', async (req, res) => {
                 },
                 summary: {
                     manpower,
+                    total_workstations: wsData.length,
+                    vacant_workstations: wsData.length - manpower,
                     live_output: liveLineOutput,
                     live_efficiency_pct: liveLineEfficiency,
                     hourly_output: hourlyLineOutput,
@@ -14724,6 +15416,8 @@ router.get('/worker-individual-efficiency', async (req, res) => {
         const outTime = await getSettingValue('default_out_time', '17:00');
         const lunchMins = parseInt(await getSettingValue('lunch_break_minutes', '60'), 10) || 0;
         const shiftHours = getNetWorkingMinutes(inTime, outTime, lunchMins) / 60;
+        const shiftWorkingSeconds = getNetWorkingMinutes(inTime, outTime, lunchMins) * 60;
+        const todayStr = new Date().toISOString().slice(0, 10);
 
         // Build date array (inclusive), use T12:00:00 to avoid UTC offset issues
         const dates = [];
@@ -14738,255 +15432,146 @@ router.get('/worker-individual-efficiency', async (req, res) => {
             if (dates.length > 365) break;
         }
 
-        // rowMap key = `${line_id}|${workstation_code}|${employee_id}`
-        const rowMap = {};
-        function getRow(lineId, lineCode, lineName, wsCode, wsNum, grp, samSec, empId, empCode, empName) {
-            const key = `${lineId}|${wsCode}|${empId}`;
-            if (!rowMap[key]) {
-                rowMap[key] = {
-                    line_id: lineId,
-                    line_code: lineCode,
-                    line_name: lineName,
-                    workstation_code: wsCode,
-                    workstation_number: parseInt(wsNum),
-                    group_name: grp || '',
-                    actual_sam_seconds: parseFloat(samSec || 0),
-                    employee_id: empId,
-                    emp_code: empCode,
-                    emp_name: empName,
-                    dates: {}
-                };
+        const empMap = {};
+        function getEmpEntry(empId, empCode, empName) {
+            const key = String(empId);
+            if (!empMap[key]) {
+                empMap[key] = { emp_id: empId, emp_code: empCode, emp_name: empName, dates: {} };
             }
-            return rowMap[key];
+            return empMap[key];
         }
 
         for (const plan of planDates) {
             const lid = parseInt(plan.line_id, 10);
             const date = plan.work_date;
-                const planRes = await pool.query(`
-                    SELECT
-                        lpw.id            AS ws_id,
-                        lpw.workstation_number,
-                        lpw.workstation_code,
-                        lpw.group_name,
-                        lpw.actual_sam_seconds,
-                        COALESCE(ldp.target_units, 0) AS target_units,
-                        ewa.employee_id,
-                        ewa.linked_at,
-                        ewa.attendance_start,
-                        e.emp_code,
-                        e.emp_name,
-                        wd.id             AS dep_id,
-                        wd.departure_time,
-                        wa.id             AS wa_id,
-                        wa.adjustment_type,
-                        wa.reassignment_time,
-                        wa.vacant_workstation_code,
-                        lpw_vac.workstation_number  AS vac_ws_number,
-                        lpw_vac.group_name          AS vac_group_name,
-                        lpw_vac.actual_sam_seconds  AS vac_sam_seconds,
-                        att.status                  AS attendance_status,
-                        att.in_time                 AS attendance_in_time,
-                        att.out_time                AS attendance_out_time
-                    FROM line_plan_workstations lpw
-                    LEFT JOIN line_daily_plans ldp
-                        ON ldp.line_id = lpw.line_id AND ldp.work_date = lpw.work_date
-                    LEFT JOIN employee_workstation_assignments ewa
-                        ON ewa.line_id = $1 AND ewa.work_date = $2
-                        AND ewa.workstation_code = lpw.workstation_code
-                        AND ewa.is_overtime = false
-                    LEFT JOIN employees e ON e.id = ewa.employee_id
-                    LEFT JOIN employee_attendance att
-                        ON att.employee_id = ewa.employee_id
-                        AND att.attendance_date = $2
-                    LEFT JOIN worker_departures wd
-                        ON wd.line_id = $1 AND wd.work_date = $2
-                        AND wd.employee_id = ewa.employee_id
-                        AND wd.workstation_code = lpw.workstation_code
-                    LEFT JOIN worker_adjustments wa
-                        ON wa.line_id = $1 AND wa.work_date = $2
-                        AND wa.from_employee_id = ewa.employee_id
-                        AND wa.from_workstation_code = lpw.workstation_code
-                    LEFT JOIN line_plan_workstations lpw_vac
-                        ON lpw_vac.line_id = $1 AND lpw_vac.work_date = $2
-                        AND lpw_vac.workstation_code = wa.vacant_workstation_code
-                    WHERE lpw.line_id = $1 AND lpw.work_date = $2
-                    ORDER BY lpw.workstation_number
-                `, [lid, date]);
+            const isToday = (date === todayStr);
+            const liveHoursForDate = isToday
+                ? Math.max(1, REGULAR_HISTORY_HOURS.filter(h => h <= new Date().getHours()).length)
+                : Math.min(8, shiftHours);
 
-                const wsRows = planRes.rows;
-                if (wsRows.length === 0) continue;
+            const targetRes = await pool.query(
+                `SELECT COALESCE(ldp.target_units, p.target_qty, 0) AS target_units
+                 FROM line_plan_workstations lpw
+                 LEFT JOIN line_daily_plans ldp ON ldp.line_id = lpw.line_id AND ldp.work_date = lpw.work_date
+                 LEFT JOIN products p ON p.id = COALESCE(ldp.product_id, lpw.product_id)
+                 WHERE lpw.line_id = $1 AND lpw.work_date = $2
+                   AND (ldp.product_id IS NULL OR lpw.product_id = ldp.product_id)
+                 LIMIT 1`,
+                [lid, date]
+            );
+            const targetUnits = parseInt(targetRes.rows[0]?.target_units || 0, 10) || 0;
 
-                const targetUnits = parseInt(wsRows[0]?.target_units || 0);
-                const wsIds = wsRows.map(r => r.ws_id).filter(Boolean);
+            const empProgress = await getCumulativeEmployeeProgress(pool, lid, date, null, false, liveHoursForDate);
+            for (const emp of empProgress) {
+                const workstationTarget = (emp.is_custom_takt && parseFloat(emp.takt_time_seconds || 0) > 0 && shiftWorkingSeconds > 0)
+                    ? Math.max(0, Math.round(computeTargetUnitsFromTakt(emp.takt_time_seconds, shiftWorkingSeconds)))
+                    : targetUnits;
+                const entry = getEmpEntry(emp.id, emp.emp_code, emp.emp_name);
+                entry.dates[date] = {
+                    line_target: workstationTarget,
+                    wip: workstationTarget,
+                    output: emp.total_output,
+                    eff: emp.efficiency_percent,
+                    tag: null,
+                    hours_worked: liveHoursForDate,
+                    _earned_hours: (emp.efficiency_percent * liveHoursForDate) / 100
+                };
+            }
 
-                const hourlyMap = {};
-                if (wsIds.length > 0) {
-                    const hourRes = await pool.query(`
-                        SELECT lpwp.workstation_id, lph.hour_slot, MAX(lph.quantity) AS qty
-                        FROM line_plan_workstation_processes lpwp
-                        JOIN line_process_hourly_progress lph
-                            ON lph.process_id = lpwp.product_process_id
-                            AND lph.line_id = $1 AND lph.work_date = $2
-                        WHERE lpwp.workstation_id = ANY($3::int[])
-                        GROUP BY lpwp.workstation_id, lph.hour_slot
-                    `, [lid, date, wsIds]);
-                    hourRes.rows.forEach(r => {
-                        if (!hourlyMap[r.workstation_id]) hourlyMap[r.workstation_id] = {};
-                        hourlyMap[r.workstation_id][r.hour_slot] = parseInt(r.qty || 0);
-                    });
+            // OT data: one row per OT-assigned employee for this line+date
+            // LEFT JOIN on progress so employees with no output still appear (ot_output = 0)
+            const otProgressRes = await pool.query(
+                `SELECT ewa.employee_id,
+                        COALESCE(SUM(lotp.ot_target_units), 0)               AS ot_target,
+                        COALESCE(SUM(lotp.quantity), 0)                       AS ot_output,
+                        COALESCE(SUM(lotp.quantity * low.actual_sam_seconds) / 3600.0, 0) AS ot_earned_hours,
+                        COALESCE(SUM(low.ot_minutes) / 60.0, 0)              AS ot_available_hours
+                 FROM employee_workstation_assignments ewa
+                 JOIN line_ot_workstations low
+                   ON low.workstation_code = ewa.workstation_code
+                  AND low.ot_plan_id IN (
+                      SELECT id FROM line_ot_plans WHERE line_id = $1 AND work_date = $2
+                  )
+                 LEFT JOIN line_ot_progress lotp
+                   ON lotp.ot_workstation_id = low.id
+                  AND lotp.work_date = $2
+                 WHERE ewa.line_id = $1
+                   AND ewa.work_date = $2
+                   AND ewa.is_overtime = true
+                   AND ewa.employee_id IS NOT NULL
+                 GROUP BY ewa.employee_id`,
+                [lid, date]
+            );
+            for (const otRow of otProgressRes.rows) {
+                const empId = parseInt(otRow.employee_id, 10);
+                const key = String(empId);
+                // If employee not in regular progress, create an entry so OT shows in report
+                if (!empMap[key]) {
+                    // Try to get employee info from existing regular progress or leave placeholder
+                    empMap[key] = { emp_id: empId, emp_code: '', emp_name: '', dates: {} };
                 }
-
-                const wsIdByCode = {};
-                wsRows.forEach(r => { if (r.workstation_code) wsIdByCode[r.workstation_code] = r.ws_id; });
-
-                for (const ws of wsRows) {
-                    if (!ws.employee_id) continue;
-                    // Absent if: explicit attendance record says absent, OR never linked by supervisor
-                    if (String(ws.attendance_status || '').toLowerCase() === 'absent') continue;
-                    if (!ws.linked_at) continue; // not linked = absent, no efficiency entry
-
-                    const samH    = parseFloat(ws.actual_sam_seconds || 0) / 3600;
-                    const wsHours = hourlyMap[ws.ws_id] || {};
-                    // attendance_start from link rules takes precedence over legacy attendance record
-                    const shiftStart = ws.attendance_start
-                        ? new Date(ws.attendance_start)
-                        : buildDateTime(date, ws.attendance_in_time, inTime);
-                    const shiftEnd = buildDateTime(date, ws.attendance_out_time, outTime);
-                    const attendedHours = Math.max(0, (shiftEnd - shiftStart) / 3600000);
-                    const effectiveShiftHours = attendedHours > 0 ? attendedHours : shiftHours;
-                    // Only count output from hours the employee was actually present
-                    const startHour = shiftStart.getHours();
-
-                    if (ws.dep_id) {
-                        const depTime    = new Date(ws.departure_time);
-                        const hoursWorked = Math.max(0.001, (depTime - shiftStart) / 3600000);
-                        const depHour    = depTime.getHours();
-                        const depHHMM    = depTime.toTimeString().slice(0, 5);
-                        const output = Object.entries(wsHours)
-                            .filter(([h]) => parseInt(h) >= startHour && parseInt(h) <= depHour)
-                            .reduce((s, [, q]) => s + q, 0);
-                        const wip = Math.round(targetUnits * hoursWorked / shiftHours);
-                        const eff = samH > 0 ? Math.round(output * samH / hoursWorked * 10000) / 100 : null;
-                        const row = getRow(lid, plan.line_code, plan.line_name,
-                            ws.workstation_code, ws.workstation_number, ws.group_name,
-                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
-                        row.dates[date] = { wip, output, eff, tag: `DEP ${depHHMM}`, hours_worked: hoursWorked };
-
-                    } else if (ws.wa_id && ws.adjustment_type === 'assign') {
-                        const reassignTime = new Date(ws.reassignment_time);
-                        const reassignHour = reassignTime.getHours();
-                        const preHours  = Math.max(0.001, (reassignTime - shiftStart) / 3600000);
-                        const postHours = Math.max(0.001, (shiftEnd - reassignTime) / 3600000);
-
-                        const preOutput = Object.entries(wsHours)
-                            .filter(([h]) => parseInt(h) >= startHour && parseInt(h) <= reassignHour)
-                            .reduce((s, [, q]) => s + q, 0);
-                        const preWip = Math.round(targetUnits * preHours / shiftHours);
-                        const preEff = samH > 0 ? Math.round(preOutput * samH / preHours * 10000) / 100 : null;
-                        const rowPre = getRow(lid, plan.line_code, plan.line_name,
-                            ws.workstation_code, ws.workstation_number, ws.group_name,
-                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
-                        rowPre.dates[date] = { wip: preWip, output: preOutput, eff: preEff, tag: 'PRE', hours_worked: preHours };
-
-                        const vacWsId  = wsIdByCode[ws.vacant_workstation_code];
-                        const vacHours = vacWsId ? (hourlyMap[vacWsId] || {}) : {};
-                        const vacSamH  = parseFloat(ws.vac_sam_seconds || 0) / 3600;
-                        const postOutput = Object.entries(vacHours)
-                            .filter(([h]) => parseInt(h) > reassignHour)
-                            .reduce((s, [, q]) => s + q, 0);
-                        const postWip = Math.round(targetUnits * postHours / shiftHours);
-                        const postEff = vacSamH > 0 ? Math.round(postOutput * vacSamH / postHours * 10000) / 100 : null;
-                        const rowPost = getRow(lid, plan.line_code, plan.line_name,
-                            ws.vacant_workstation_code, ws.vac_ws_number, ws.vac_group_name,
-                            ws.vac_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
-                        rowPost.dates[date] = { wip: postWip, output: postOutput, eff: postEff, tag: 'POST', hours_worked: postHours };
-
-                    } else if (ws.wa_id && ws.adjustment_type === 'combine') {
-                        const reassignTime = new Date(ws.reassignment_time);
-                        const reassignHour = reassignTime.getHours();
-                        const vacSamH      = parseFloat(ws.vac_sam_seconds || 0) / 3600;
-                        const preOutput = Object.entries(wsHours)
-                            .filter(([h]) => parseInt(h) <= reassignHour)
-                            .reduce((s, [, q]) => s + q, 0);
-                        const postOutput = Object.entries(wsHours)
-                            .filter(([h]) => parseInt(h) > reassignHour)
-                            .reduce((s, [, q]) => s + q, 0);
-                        const totalSAHEarned = preOutput * samH + postOutput * (samH + vacSamH);
-                        const eff = effectiveShiftHours > 0 ? Math.round(totalSAHEarned / effectiveShiftHours * 10000) / 100 : null;
-                        const row = getRow(lid, plan.line_code, plan.line_name,
-                            ws.workstation_code, ws.workstation_number, ws.group_name,
-                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
-                        row.dates[date] = { wip: targetUnits, output: preOutput + postOutput, eff, tag: 'COMB', hours_worked: effectiveShiftHours, vac_ws_code: ws.vacant_workstation_code };
-
-                    } else {
-                        const totalOutput = Object.entries(wsHours)
-                            .filter(([h]) => parseInt(h) >= startHour)
-                            .reduce((s, [, q]) => s + q, 0);
-                        const eff = (effectiveShiftHours > 0 && samH > 0)
-                            ? Math.round(totalOutput * samH / effectiveShiftHours * 10000) / 100 : null;
-                        const row = getRow(lid, plan.line_code, plan.line_name,
-                            ws.workstation_code, ws.workstation_number, ws.group_name,
-                            ws.actual_sam_seconds, ws.employee_id, ws.emp_code, ws.emp_name);
-                        row.dates[date] = { wip: targetUnits, output: totalOutput, eff, tag: null, hours_worked: effectiveShiftHours };
-                    }
+                if (!empMap[key].dates[date]) {
+                    empMap[key].dates[date] = { line_target: 0, wip: 0, output: 0, eff: 0, tag: null, hours_worked: 0 };
                 }
+                const otAvailHours = parseFloat(otRow.ot_available_hours || 0);
+                const otEarnedHours = parseFloat(otRow.ot_earned_hours || 0);
+                empMap[key].dates[date].ot_target = parseInt(otRow.ot_target || 0, 10) || 0;
+                empMap[key].dates[date].ot_output = parseInt(otRow.ot_output || 0, 10) || 0;
+                empMap[key].dates[date].ot_earned_hours = otEarnedHours;
+                empMap[key].dates[date].ot_available_hours = otAvailHours;
+            }
+
         }
 
-        const existingEmployeeIds = new Set(
-            Object.values(rowMap)
-                .map(row => parseInt(row.employee_id, 10))
-                .filter(Number.isFinite)
-        );
+        const existingIds = new Set(Object.keys(empMap).map(Number).filter(Number.isFinite));
         for (const emp of activeEmployees) {
             const empId = parseInt(emp.id, 10);
-            if (existingEmployeeIds.has(empId)) continue;
-            rowMap[`emp|${empId}`] = {
-                line_id: null,
-                line_code: '',
-                line_name: '',
-                workstation_code: '',
-                workstation_number: Number.MAX_SAFE_INTEGER,
-                group_name: '',
-                actual_sam_seconds: 0,
-                employee_id: empId,
-                emp_code: emp.emp_code,
-                emp_name: emp.emp_name,
-                dates: {}
-            };
+            if (!existingIds.has(empId)) {
+                empMap[String(empId)] = { emp_id: empId, emp_code: emp.emp_code, emp_name: emp.emp_name, dates: {} };
+            }
         }
 
-        // Sort: emp_code → emp_name → line_code → workstation_number
-        const rows = Object.values(rowMap).sort((a, b) => {
+        const rows = Object.values(empMap).sort((a, b) => {
             const ec = (a.emp_code || '').localeCompare(b.emp_code || '');
             if (ec !== 0) return ec;
-            const en = (a.emp_name || '').localeCompare(b.emp_name || '');
-            if (en !== 0) return en;
-            const lc = (a.line_code || '').localeCompare(b.line_code || '');
-            if (lc !== 0) return lc;
-            if (a.workstation_number !== b.workstation_number) return a.workstation_number - b.workstation_number;
-            return (a.workstation_code || '').localeCompare(b.workstation_code || '');
+            return (a.emp_name || '').localeCompare(b.emp_name || '');
         });
 
         rows.forEach(row => {
             let totalOutput = 0, totalSAHEarned = 0, totalHoursWorked = 0;
-            const samH = row.actual_sam_seconds / 3600;
+            let totalOtOutput = 0, totalOtEarned = 0, totalOtAvail = 0;
+            let rowHasOt = false;
             for (const d of dates) {
                 if (!row.dates[d]) {
-                    row.dates[d] = { wip: 0, output: 0, eff: 0, tag: null, hours_worked: 0 };
+                    row.dates[d] = { line_target: 0, wip: 0, output: 0, eff: 0, tag: null, hours_worked: 0 };
                 }
                 const cell = row.dates[d];
-                totalOutput      += cell.output || 0;
-                if (cell.tag === 'COMB' && cell.eff !== null) {
-                    totalSAHEarned += cell.eff * (cell.hours_worked || 0) / 100;
-                } else {
-                    totalSAHEarned += (cell.output || 0) * samH;
-                }
+                const earnedHours = parseFloat(cell._earned_hours || 0) || 0;
+                cell.eff = (cell.hours_worked > 0)
+                    ? Math.round((earnedHours / cell.hours_worked) * 10000) / 100
+                    : 0;
+                delete cell._earned_hours;
+                // OT efficiency: earned-hours based
+                const cellOtAvailHours = parseFloat(cell.ot_available_hours || 0);
+                const cellOtEarnedHours = parseFloat(cell.ot_earned_hours || 0);
+                cell.ot_eff = cellOtAvailHours > 0
+                    ? Math.round((cellOtEarnedHours / cellOtAvailHours) * 10000) / 100
+                    : null;
+                if (cell.ot_available_hours > 0 || cell.ot_output > 0) rowHasOt = true;
+                totalOutput += cell.output || 0;
+                totalSAHEarned += earnedHours;
                 totalHoursWorked += cell.hours_worked || 0;
+                totalOtOutput += cell.ot_output || 0;
+                totalOtEarned += cellOtEarnedHours;
+                totalOtAvail += cellOtAvailHours;
             }
             row.total_output = totalOutput;
             row.overall_eff  = totalHoursWorked > 0
                 ? Math.round(totalSAHEarned / totalHoursWorked * 10000) / 100 : 0;
+            row.total_ot_output = totalOtOutput;
+            row.overall_ot_eff  = totalOtAvail > 0
+                ? Math.round(totalOtEarned / totalOtAvail * 10000) / 100 : null;
+            row.has_ot = rowHasOt;
         });
 
         res.json({ success: true, data: { dates, rows, shift_hours: shiftHours } });
@@ -15192,7 +15777,7 @@ router.get('/material-tracking', async (req, res) => {
         // Line info
         const lineResult = await pool.query(
             `SELECT pl.id, pl.line_name, pl.line_code,
-                    ldp.target_units, p.product_name, p.product_code
+                    ldp.target_units, p.id AS product_id, p.product_name, p.product_code, p.target_qty AS order_quantity
              FROM production_lines pl
              LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
              LEFT JOIN products p ON p.id = ldp.product_id
@@ -15201,6 +15786,7 @@ router.get('/material-tracking', async (req, res) => {
         );
         if (!lineResult.rows[0]) return res.status(404).json({ success: false, error: 'Line not found' });
         const line = lineResult.rows[0];
+        const feedSummary = await getProductFeedSummary(pool, line.product_id ? parseInt(line.product_id, 10) : null);
 
         // All workstations for this line+date, ordered by group then workstation_number
         const wsResult = await pool.query(
@@ -15256,7 +15842,7 @@ router.get('/material-tracking', async (req, res) => {
              FROM group_wip WHERE line_id = $1 AND work_date = $2`,
             [line_id, date]
         );
-        const groupWipMap = new Map(groupWipResult.rows.map(r => [r.group_name ?? r.group_name, r]));
+        const groupWipMap = new Map(groupWipResult.rows.map(r => [r.group_name, r]));
 
         // Build groups
         const groupMap = new Map();
@@ -15283,12 +15869,10 @@ router.get('/material-tracking', async (req, res) => {
                 emp_code: ws.emp_code ?? null,
                 emp_name: ws.emp_name ?? null,
                 actual_sam_seconds: parseFloat(ws.actual_sam_seconds ?? 0),
+                material_provided: parseInt(ws.material_provided || 0, 10) || 0,
                 hourly,
                 cumulative_output,
             });
-
-            // Same-day changeover can inject feed at any workstation, so group feed is cumulative.
-            group.feed += parseInt(ws.material_provided || 0, 10);
         }
 
         // Resolve output (last WS) + WIP for each group
@@ -15298,12 +15882,31 @@ router.get('/material-tracking', async (req, res) => {
                 (a.workstation_number ?? 9999) - (b.workstation_number ?? 9999)
             );
             const lastWs = sorted[sorted.length - 1];
-            const group_output = lastWs?.cumulative_output ?? 0;
 
             // Prefer pre-computed group_wip row; fall back to live calc
             const wipRow = groupWipMap.get(gKey) ?? groupWipMap.get(group.group_name);
-            const feed = wipRow ? parseInt(wipRow.materials_in, 10) : group.feed;
-            const wip = Math.max(0, feed - group_output);
+            const feed = wipRow
+                ? parseInt(wipRow.materials_in, 10) || 0
+                : (parseInt(sorted[0]?.material_provided || 0, 10) || 0);
+            const group_output = wipRow
+                ? parseInt(wipRow.output_qty, 10) || 0
+                : (lastWs?.cumulative_output ?? 0);
+            const wip = wipRow
+                ? parseInt(wipRow.wip_quantity, 10) || 0
+                : Math.max(0, feed - group_output);
+
+            let previousOutput = null;
+            const enrichedWorkstations = sorted.map((ws, idx) => {
+                const input_quantity = idx === 0 ? feed : (previousOutput ?? 0);
+                const workstationWip = Math.max(0, input_quantity - ws.cumulative_output);
+                previousOutput = ws.cumulative_output;
+                return {
+                    ...ws,
+                    input_quantity,
+                    wip_quantity: workstationWip,
+                    is_last_workstation: idx === sorted.length - 1
+                };
+            });
 
             groups.push({
                 group_name: group.group_name,
@@ -15311,11 +15914,23 @@ router.get('/material-tracking', async (req, res) => {
                 feed,
                 group_output,
                 wip,
-                workstations: sorted,
+                workstations: enrichedWorkstations,
             });
         }
 
-        res.json({ success: true, data: { line, date, groups } });
+        res.json({
+            success: true,
+            data: {
+                line: {
+                    ...line,
+                    order_quantity: parseInt(line.order_quantity || 0, 10) || 0,
+                    cumulative_feed_qty: feedSummary.cumulativeFeedQty,
+                    remaining_order_qty: feedSummary.remainingOrderQty
+                },
+                date,
+                groups
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
