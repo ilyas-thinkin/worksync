@@ -1033,3 +1033,7 @@
 }
 
 /* ws-cards-grid is fluid via auto-fit — no override needed */
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}

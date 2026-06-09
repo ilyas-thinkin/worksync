@@ -15485,13 +15485,14 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                         COALESCE(SUM(lotp.ot_target_units), 0)               AS ot_target,
                         COALESCE(SUM(lotp.quantity), 0)                       AS ot_output,
                         COALESCE(SUM(lotp.quantity * low.actual_sam_seconds) / 3600.0, 0) AS ot_earned_hours,
-                        COALESCE(SUM(low.ot_minutes) / 60.0, 0)              AS ot_available_hours
+                        COALESCE(SUM(COALESCE(NULLIF(low.ot_minutes, 0), lop.global_ot_minutes, 0)) / 60.0, 0) AS ot_available_hours
                  FROM employee_workstation_assignments ewa
                  JOIN line_ot_workstations low
                    ON low.workstation_code = ewa.workstation_code
                   AND low.ot_plan_id IN (
                       SELECT id FROM line_ot_plans WHERE line_id = $1 AND work_date = $2
                   )
+                 JOIN line_ot_plans lop ON lop.id = low.ot_plan_id
                  LEFT JOIN line_ot_progress lotp
                    ON lotp.ot_workstation_id = low.id
                   AND lotp.work_date = $2
@@ -15499,6 +15500,7 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                    AND ewa.work_date = $2
                    AND ewa.is_overtime = true
                    AND ewa.employee_id IS NOT NULL
+                   AND low.is_active = true
                  GROUP BY ewa.employee_id`,
                 [lid, date]
             );

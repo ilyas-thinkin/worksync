@@ -1787,7 +1787,7 @@ async function openWsChangeoverEmployeeChange(wsCode, linePlanWsId) {
             : '';
         return `<div class="co-emp-opt" data-id="${eStr}" data-label="${label.replace(/"/g,'&quot;')}"
             data-taken="${takenWs || ''}"
-            onclick="coEmpOptSelect(this,${JSON.stringify(wsCode)},${linePlanWsId || 'null'})"
+            onclick="coEmpOptSelect(this,'${wsCode}',${linePlanWsId || 'null'})"
             style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6;${takenWs?'color:#9ca3af;':''}">
             <span>${label}</span>${takenBadge}
         </div>`;
@@ -1804,7 +1804,7 @@ async function openWsChangeoverEmployeeChange(wsCode, linePlanWsId) {
                 oninput="coEmpSearch(this)">
             <div id="co-emp-list" style="max-height:260px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;">
                 <div class="co-emp-opt" data-id="" data-label="— No employee —" data-taken=""
-                    onclick="coEmpOptSelect(this,${JSON.stringify(wsCode)},${linePlanWsId || 'null'})"
+                    onclick="coEmpOptSelect(this,'${wsCode}',${linePlanWsId || 'null'})"
                     style="padding:8px 10px;cursor:pointer;font-size:13px;color:#9ca3af;border-bottom:1px solid #f3f4f6;">
                     — No employee —
                 </div>
@@ -2365,7 +2365,7 @@ function renderHourlySummary() {
             let coBtn = '';
             if (isWsChangeover) {
                 coBtn = `<button class="btn ws-card-action" style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;"
-                    onclick="revertWsChangeover(${JSON.stringify(ws.workstation_code)}, ${JSON.stringify(date)})">&#8617; Primary</button>`;
+                    onclick="revertWsChangeover('${ws.workstation_code}', '${date}')">&#8617; Primary</button>`;
             } else if (canStartWorkstationChangeover && hasChangeover) {
                 const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
                 coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
@@ -3232,7 +3232,7 @@ function renderOtPlanSection() {
                 <input type="text" id="ot-rem-${ws.workstation_code}" value="${remarks}" placeholder="Remarks"
                     class="form-control" style="min-width:90px;" ${isActive?'':'disabled'}></td>` : '';
             const saveCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <button onclick="saveOtProgress(${JSON.stringify(ws.workstation_code)}, ${ws.id})"
+                <button id="ot-save-btn-${ws.workstation_code}" onclick="saveOtProgress('${ws.workstation_code}', ${ws.id})"
                     class="btn btn-primary btn-sm" ${isActive?'':'disabled'}>Save</button></td>` : '';
 
             return `<tr style="background:${rowBg};${dimStyle}" ${isFirst ? `id="ot-row-${ws.workstation_code}"` : ''}>
@@ -3381,6 +3381,7 @@ async function toggleOtWsActive(wsCode, makeActive) {
     const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
     if (!ws) return;
     ws.is_active = makeActive;
+    if (makeActive && !ws.ot_minutes) ws.ot_minutes = plan.global_ot_minutes || 0;
     // Save to server
     try {
         const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan/workstations`, {
@@ -3388,7 +3389,7 @@ async function toggleOtWsActive(wsCode, makeActive) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 date: otPlanState.date,
-                workstations: [{ workstation_code: wsCode, is_active: makeActive, ot_minutes: ws.ot_minutes || 0 }]
+                workstations: [{ workstation_code: wsCode, is_active: makeActive, ot_minutes: makeActive ? (ws.ot_minutes || plan.global_ot_minutes || 0) : (ws.ot_minutes || 0) }]
             })
         });
         const result = await r.json();
@@ -3464,6 +3465,15 @@ async function saveOtProgress(wsCode, otWorkstationId) {
     const remarks = document.getElementById('ot-rem-' + wsCode)?.value || '';
     if (!otPlanState.lineId || !otPlanState.date) return;
     if (qty < 0) { showToast('Output must be 0 or more', 'error'); return; }
+
+    const btn = document.getElementById('ot-save-btn-' + wsCode);
+    const spinnerHtml = '<span style="display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:5px;"></span>Saving…';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = spinnerHtml;
+        btn.style.cssText = 'background:#6b7280;border-color:#6b7280;min-width:72px;';
+    }
+
     try {
         const r = await fetch(`${API_BASE}/supervisor/ot-progress`, {
             method: 'POST',
@@ -3481,9 +3491,17 @@ async function saveOtProgress(wsCode, otWorkstationId) {
             ws.balance_quantity = result.data?.balance_quantity ?? ws.balance_quantity;
             ws.closing_wip_quantity = result.data?.closing_wip_quantity ?? ws.closing_wip_quantity;
         }
-        showToast(`OT output saved for ${wsCode}`, 'success');
-        renderOtPlanSection();
+        if (btn) {
+            btn.innerHTML = '✓ Saved';
+            btn.style.cssText = 'background:#16a34a;border-color:#16a34a;min-width:72px;';
+        }
+        setTimeout(() => renderOtPlanSection(), 1200);
     } catch (err) {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = 'Save';
+            btn.style.cssText = '';
+        }
         showToast(err.message, 'error');
     }
 }
@@ -3534,7 +3552,7 @@ function startOtScan(wsCode) {
             if (scanResult) scanResult.innerHTML = `
                 <div style="padding:12px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;">
                     <p style="font-weight:700;font-size:1.1em;">${employee.emp_code} - ${employee.emp_name}</p>
-                    <button class="btn btn-primary" onclick="confirmOtAssign(${employee.id}, ${JSON.stringify(employee.emp_code)}, ${JSON.stringify(employee.emp_name)})" style="margin-top:8px;">Assign to ${wsCode}</button>
+                    <button class="btn btn-primary" onclick="confirmOtAssign(${employee.id}, '${String(employee.emp_code || '').replace(/'/g, "\\'")}', '${String(employee.emp_name || '').replace(/'/g, "\\'")}')" style="margin-top:8px;">Assign to ${wsCode}</button>
                 </div>`;
         } catch (err) {
             if (scanResult) scanResult.innerHTML = `<p style="color:#dc2626;">Error: ${err.message}</p>`;
