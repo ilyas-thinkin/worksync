@@ -1,0 +1,50 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/public/admin.html",
+      "type": "file",
+      "name": "admin.html",
+      "filePath": "src/public/admin.html",
+      "summary": "SPA shell for the Admin Panel: renders a fixed sidebar (Dashboard, Hourly Update, Users, Production Days, Audit Logs, Master Data, Reports, System) plus modal/toast containers, and loads admin.js to dynamically populate #main-content based on role 'admin'.",
+      "tags": ["entry-point", "spa-shell", "admin-panel", "navigation", "markup"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/ie.html",
+      "type": "file",
+      "name": "ie.html",
+      "filePath": "src/public/ie.html",
+      "summary": "SPA shell for the Industrial Engineering (IE) Panel: sidebar covering Daily Plan, Line Management, Styles/Products, Reports (OSM, Plan History, Efficiency, Worker Efficiency, Downtime) and a custom 'Low Output Alerts' floating action button/modal with inline CSS, loaded via admin.js and low-output-alerts.js under role 'ie'.",
+      "tags": ["entry-point", "spa-shell", "ie-panel", "navigation", "alerts"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/index.html",
+      "type": "file",
+      "name": "index.html",
+      "filePath": "src/public/index.html",
+      "summary": "Login/role-selection landing page ('WorkSync Access') presenting Admin, IE, Supervisor, and Management role cards that open a password login modal; styled inline and driven by login.js.",
+      "tags": ["entry-point", "login", "spa-shell", "role-selection", "markup"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/management.html",
+      "type": "file",
+      "name": "management.html",
+      "filePath": "src/public/management.html",
+      "summary": "SPA shell for the Management view: sidebar with Dashboard and Reports (Material Tracking, OSM, Efficiency, Worker Efficiency, Graphs), loaded via management.js under role 'management' for overview/reporting access.",
+      "tags": ["entry-point", "spa-shell", "management-panel", "navigation", "reports"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/supervisor.html",
+      "type": "file",
+      "name": "supervisor.html",
+      "filePath": "src/public/supervisor.html",
+      "summary": "SPA shell for the Supervisor (Line Leader) Panel: sidebar with Mapping, Feed Input, Hourly Procedure, and Worker Adjustment sections, including jsQR library for QR scanning and supervisor.js to drive the workstation assignment/output workflow under role 'supervisor'.",
+      "tags": ["entry-point", "spa-shell", "supervisor-panel", "navigation", "qr-scanning"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": []
+}

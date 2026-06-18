@@ -1,0 +1,17 @@
+{
+  "projectRoot": "/home/worksync/worksync/backend",
+  "batchFiles": [
+    {"path": "src/public/css/admin.css", "language": "css", "sizeLines": 2050, "fileCategory": "markup"},
+    {"path": "src/public/css/ie.css", "language": "css", "sizeLines": 443, "fileCategory": "markup"},
+    {"path": "src/public/css/offline.css", "language": "css", "sizeLines": 199, "fileCategory": "markup"},
+    {"path": "src/public/css/shop-floor.css", "language": "css", "sizeLines": 904, "fileCategory": "markup"},
+    {"path": "src/public/css/supervisor.css", "language": "css", "sizeLines": 1039, "fileCategory": "markup"}
+  ],
+  "batchImportData": {
+    "src/public/css/admin.css": [],
+    "src/public/css/ie.css": [],
+    "src/public/css/offline.css": [],
+    "src/public/css/shop-floor.css": [],
+    "src/public/css/supervisor.css": []
+  }
+}

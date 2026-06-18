@@ -1,0 +1,17 @@
+{
+  "projectRoot": "/home/worksync/worksync/backend",
+  "batchFiles": [
+    {"path": "src/public/admin.html", "language": "html", "sizeLines": 212, "fileCategory": "markup"},
+    {"path": "src/public/ie.html", "language": "html", "sizeLines": 345, "fileCategory": "markup"},
+    {"path": "src/public/index.html", "language": "html", "sizeLines": 248, "fileCategory": "markup"},
+    {"path": "src/public/management.html", "language": "html", "sizeLines": 123, "fileCategory": "markup"},
+    {"path": "src/public/supervisor.html", "language": "html", "sizeLines": 103, "fileCategory": "markup"}
+  ],
+  "batchImportData": {
+    "src/public/admin.html": [],
+    "src/public/ie.html": [],
+    "src/public/index.html": [],
+    "src/public/management.html": [],
+    "src/public/supervisor.html": []
+  }
+}

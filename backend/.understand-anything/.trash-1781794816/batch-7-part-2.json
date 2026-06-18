@@ -1,0 +1,1880 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/public/css/admin.css.bak",
+      "type": "file",
+      "name": "admin.css.bak",
+      "filePath": "src/public/css/admin.css.bak",
+      "summary": "Backup copy of the admin panel stylesheet (1578 lines), retained as a `.bak` file rather than the active CSS used by the admin UI.",
+      "tags": [
+        "stylesheet",
+        "backup",
+        "frontend"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:src/public/js/admin.js",
+      "type": "file",
+      "name": "admin.js",
+      "filePath": "src/public/js/admin.js",
+      "summary": "Largest frontend script (~11,880 lines) implementing the entire admin panel: dashboard, line/product/process management, daily and OT plan editing, workstation plan upload, hourly progress and efficiency reporting, and system update/rollback controls.",
+      "tags": [
+        "component",
+        "api-handler",
+        "dashboard",
+        "entry-point",
+        "reporting"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Plain browser script (no ES module import/export) bootstrapped via a single DOMContentLoaded listener; organizes ~323 top-level functions by feature area (dashboard, plans, OT, reports, system updates) rather than classes."
+    },
+    {
+      "id": "function:src/public/js/admin.js:requireAuth",
+      "type": "function",
+      "name": "requireAuth",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        36,
+        61
+      ],
+      "summary": "Verifies an authenticated admin session on page load and redirects to login if absent.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/admin.js:setupNavigation",
+      "type": "function",
+      "name": "setupNavigation",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        64,
+        77
+      ],
+      "summary": "Wires up sidebar navigation link clicks to section switching.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/admin.js:setupMobileSidebar",
+      "type": "function",
+      "name": "setupMobileSidebar",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        79,
+        96
+      ],
+      "summary": "Sets up the collapsible sidebar behavior for mobile viewports.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/admin.js:loadSection",
+      "type": "function",
+      "name": "loadSection",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        106,
+        173
+      ],
+      "summary": "Loads and renders the data for whichever admin section the user navigated to.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/admin.js:loadDashboard",
+      "type": "function",
+      "name": "loadDashboard",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        797,
+        980
+      ],
+      "summary": "Loads and renders the main admin dashboard summary cards and line overview.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:viewLineDetails",
+      "type": "function",
+      "name": "viewLineDetails",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        1502,
+        1703
+      ],
+      "summary": "Opens the detailed view for a single production line, loading its current plan and status.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:openLineDetailsPage",
+      "type": "function",
+      "name": "openLineDetailsPage",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        4715,
+        4834
+      ],
+      "summary": "Builds and displays the full line-details page including plan, OT, and progress sections.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:loadProducts",
+      "type": "function",
+      "name": "loadProducts",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        2617,
+        2752
+      ],
+      "summary": "Fetches and renders the products list/table in the admin products section.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:viewProductProcess",
+      "type": "function",
+      "name": "viewProductProcess",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        2922,
+        3041
+      ],
+      "summary": "Displays the process/workstation breakdown for a selected product.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:openPlanUploadModal",
+      "type": "function",
+      "name": "openPlanUploadModal",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        3966,
+        4078
+      ],
+      "summary": "Opens the modal for uploading an Excel-based daily plan.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:submitPlanUpload",
+      "type": "function",
+      "name": "submitPlanUpload",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        4080,
+        4248
+      ],
+      "summary": "Submits the uploaded Excel plan file to the plan-upload-excel API and handles the response.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:loadDailyPlanData",
+      "type": "function",
+      "name": "loadDailyPlanData",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        4535,
+        4677
+      ],
+      "summary": "Loads the daily plan data for a selected line and date.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:_buildLdTbody",
+      "type": "function",
+      "name": "_buildLdTbody",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        5731,
+        5962
+      ],
+      "summary": "Builds the table body markup for the line-details workstation/process table.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:ldPreviewCopyPlan",
+      "type": "function",
+      "name": "ldPreviewCopyPlan",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        5056,
+        5175
+      ],
+      "summary": "Renders a preview of copying a workstation plan to another date/line before confirming.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:renderLineDetailsContent",
+      "type": "function",
+      "name": "renderLineDetailsContent",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        6184,
+        6506
+      ],
+      "summary": "Renders the full content panel for the line-details page, combining plan, employee, and OT data.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:saveLineDetails",
+      "type": "function",
+      "name": "saveLineDetails",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        6988,
+        7151
+      ],
+      "summary": "Persists edits made on the line-details page back to the server.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:fillOtLineCard",
+      "type": "function",
+      "name": "fillOtLineCard",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        7576,
+        7775
+      ],
+      "summary": "Populates an overtime summary card for a line with target/actual figures.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:printDailyPlans",
+      "type": "function",
+      "name": "printDailyPlans",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        8769,
+        8909
+      ],
+      "summary": "Generates a printable view of the daily plans across lines.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:renderOTPlanDetails",
+      "type": "function",
+      "name": "renderOTPlanDetails",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        8983,
+        9113
+      ],
+      "summary": "Renders the detailed OT plan view for a line and date.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:_buildSingleOsmDailyCard",
+      "type": "function",
+      "name": "_buildSingleOsmDailyCard",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        9659,
+        9784
+      ],
+      "summary": "Builds a single OSM (output-shipment-measure) daily report card.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:_buildEfficiencyTable",
+      "type": "function",
+      "name": "_buildEfficiencyTable",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        10112,
+        10439
+      ],
+      "summary": "Builds the efficiency report table aggregating worker/workstation output against targets.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:_buildWorkerIndividualEffTable",
+      "type": "function",
+      "name": "_buildWorkerIndividualEffTable",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        10942,
+        11139
+      ],
+      "summary": "Builds the per-worker individual efficiency breakdown table.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/admin.js:renderSystemUpdateSection",
+      "type": "function",
+      "name": "renderSystemUpdateSection",
+      "filePath": "src/public/js/admin.js",
+      "lineRange": [
+        11666,
+        11793
+      ],
+      "summary": "Renders the system update/rollback admin section showing current version and available actions.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "admin-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:src/public/js/ie.js",
+      "type": "file",
+      "name": "ie.js",
+      "filePath": "src/public/js/ie.js",
+      "summary": "Frontend script for the Industrial Engineer (IE) attendance panel: loads, renders, edits, and saves daily employee attendance records with realtime updates.",
+      "tags": [
+        "component",
+        "api-handler",
+        "attendance",
+        "realtime"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/ie.js:loadAttendance",
+      "type": "function",
+      "name": "loadAttendance",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        15,
+        60
+      ],
+      "summary": "Fetches and renders the attendance list for the selected date.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/ie.js:renderRow",
+      "type": "function",
+      "name": "renderRow",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        62,
+        90
+      ],
+      "summary": "Renders a single attendance table row for an employee.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/ie.js:formatStatus",
+      "type": "function",
+      "name": "formatStatus",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        92,
+        95
+      ],
+      "summary": "Formats an attendance status code into a display label.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/ie.js:filterAttendance",
+      "type": "function",
+      "name": "filterAttendance",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        97,
+        105
+      ],
+      "summary": "Filters the rendered attendance rows by search/status criteria.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/ie.js:saveRow",
+      "type": "function",
+      "name": "saveRow",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        107,
+        118
+      ],
+      "summary": "Saves a single edited attendance row to the server.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/ie.js:saveAll",
+      "type": "function",
+      "name": "saveAll",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        120,
+        132
+      ],
+      "summary": "Saves all pending attendance edits in bulk.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/ie.js:saveAttendance",
+      "type": "function",
+      "name": "saveAttendance",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        134,
+        157
+      ],
+      "summary": "Performs the API call to persist attendance changes.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/ie.js:setupRealtime",
+      "type": "function",
+      "name": "setupRealtime",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        159,
+        179
+      ],
+      "summary": "Subscribes to SSE events to keep the attendance view live-updated.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/ie.js:showToast",
+      "type": "function",
+      "name": "showToast",
+      "filePath": "src/public/js/ie.js",
+      "lineRange": [
+        181,
+        205
+      ],
+      "summary": "Displays a transient toast notification message.",
+      "tags": [
+        "api-handler",
+        "attendance",
+        "ie-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/js/login.js",
+      "type": "file",
+      "name": "login.js",
+      "filePath": "src/public/js/login.js",
+      "summary": "Small frontend script controlling the login modal open/close behavior and submitting login credentials to the authentication API.",
+      "tags": [
+        "component",
+        "api-handler",
+        "authentication"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/login.js:openLogin",
+      "type": "function",
+      "name": "openLogin",
+      "filePath": "src/public/js/login.js",
+      "lineRange": [
+        3,
+        11
+      ],
+      "summary": "Opens the login modal dialog.",
+      "tags": [
+        "authentication",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/login.js:closeLogin",
+      "type": "function",
+      "name": "closeLogin",
+      "filePath": "src/public/js/login.js",
+      "lineRange": [
+        13,
+        16
+      ],
+      "summary": "Closes the login modal dialog.",
+      "tags": [
+        "authentication",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/login.js:submitLogin",
+      "type": "function",
+      "name": "submitLogin",
+      "filePath": "src/public/js/login.js",
+      "lineRange": [
+        18,
+        37
+      ],
+      "summary": "Submits the entered username/password to the login API and handles success/failure.",
+      "tags": [
+        "authentication",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/js/low-output-alerts.js",
+      "type": "file",
+      "name": "low-output-alerts.js",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "summary": "Self-contained IIFE behavior module powering the low-output-alerts floating action button and modal, fetching and rendering summary/detail tabs of underperforming workstations against static HTML markup in ie.html.",
+      "tags": [
+        "component",
+        "modal",
+        "alerts",
+        "iife"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Wrapped in an immediately-invoked function expression (IIFE) to avoid polluting globals; binds to pre-existing static DOM elements rather than generating its own shell."
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:escHtml",
+      "type": "function",
+      "name": "escHtml",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        8,
+        12
+      ],
+      "summary": "Escapes a string for safe HTML interpolation.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:updateBadge",
+      "type": "function",
+      "name": "updateBadge",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        14,
+        32
+      ],
+      "summary": "Updates the alert-count badge on the floating action button.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:openModal",
+      "type": "function",
+      "name": "openModal",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        34,
+        39
+      ],
+      "summary": "Opens the low-output-alerts modal and triggers data refresh.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:closeModal",
+      "type": "function",
+      "name": "closeModal",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        41,
+        44
+      ],
+      "summary": "Closes the low-output-alerts modal.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:renderModal",
+      "type": "function",
+      "name": "renderModal",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        46,
+        61
+      ],
+      "summary": "Renders the modal shell and active tab content.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:renderSummaryTab",
+      "type": "function",
+      "name": "renderSummaryTab",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        62,
+        81
+      ],
+      "summary": "Renders the summary tab listing aggregated low-output alerts.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:renderDetailsTab",
+      "type": "function",
+      "name": "renderDetailsTab",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        82,
+        115
+      ],
+      "summary": "Renders the detailed tab listing individual workstation low-output entries.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:fetchAlerts",
+      "type": "function",
+      "name": "fetchAlerts",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        116,
+        125
+      ],
+      "summary": "Fetches current low-output alert data from the API.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/low-output-alerts.js:init",
+      "type": "function",
+      "name": "init",
+      "filePath": "src/public/js/low-output-alerts.js",
+      "lineRange": [
+        126,
+        150
+      ],
+      "summary": "Initializes the low-output-alerts module, wiring up the FAB and modal event handlers.",
+      "tags": [
+        "alerts",
+        "modal",
+        "ui-handler"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/js/management.js",
+      "type": "file",
+      "name": "management.js",
+      "filePath": "src/public/js/management.js",
+      "summary": "Frontend script (~2,455 lines) for the management dashboard: line metrics, material tracking, OSM and efficiency reports, and worker efficiency graphs, refreshed via realtime SSE events.",
+      "tags": [
+        "component",
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/management.js:requireAuth",
+      "type": "function",
+      "name": "requireAuth",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        37,
+        54
+      ],
+      "summary": "Verifies an authenticated management session and redirects to login if absent.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/management.js:setupMobileSidebar",
+      "type": "function",
+      "name": "setupMobileSidebar",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        56,
+        71
+      ],
+      "summary": "Sets up the collapsible sidebar behavior for mobile viewports.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/management.js:setupRealtime",
+      "type": "function",
+      "name": "setupRealtime",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        74,
+        124
+      ],
+      "summary": "Subscribes to SSE data-change events to keep the management dashboard live-updated.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadMgmtMaterialTracking",
+      "type": "function",
+      "name": "loadMgmtMaterialTracking",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        160,
+        208
+      ],
+      "summary": "Loads material/WIP tracking data for the management material-tracking section.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:refreshMgmtMaterialTracking",
+      "type": "function",
+      "name": "refreshMgmtMaterialTracking",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        210,
+        265
+      ],
+      "summary": "Refreshes the rendered material tracking cards without a full reload.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:buildMgmtMaterialGroupCard",
+      "type": "function",
+      "name": "buildMgmtMaterialGroupCard",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        267,
+        321
+      ],
+      "summary": "Builds the markup for a single material-tracking group card.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadManagementDashboard",
+      "type": "function",
+      "name": "loadManagementDashboard",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        323,
+        433
+      ],
+      "summary": "Loads and renders the top-level management dashboard summary.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadLineOptions",
+      "type": "function",
+      "name": "loadLineOptions",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        454,
+        465
+      ],
+      "summary": "Loads the list of production lines into a select dropdown.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadLineMetrics",
+      "type": "function",
+      "name": "loadLineMetrics",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        535,
+        590
+      ],
+      "summary": "Loads efficiency/output metrics for a selected line.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadMgmtOsmReport",
+      "type": "function",
+      "name": "loadMgmtOsmReport",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        690,
+        755
+      ],
+      "summary": "Loads the OSM (output-shipment-measure) report data.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:_buildMgmtOsmTable",
+      "type": "function",
+      "name": "_buildMgmtOsmTable",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        829,
+        954
+      ],
+      "summary": "Builds the OSM report table markup.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/management.js:_buildMgmtOsmRangeTable",
+      "type": "function",
+      "name": "_buildMgmtOsmRangeTable",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        956,
+        1015
+      ],
+      "summary": "Builds the OSM report table for a date-range view.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadMgmtEfficiencyReport",
+      "type": "function",
+      "name": "loadMgmtEfficiencyReport",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        1079,
+        1128
+      ],
+      "summary": "Loads efficiency report data for the management efficiency section.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:_buildMgmtEfficiencyTable",
+      "type": "function",
+      "name": "_buildMgmtEfficiencyTable",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        1167,
+        1464
+      ],
+      "summary": "Builds the full efficiency report table aggregating per-line/worker output against targets.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/management.js:buildMgmtWorkerEfficiencyGraphs",
+      "type": "function",
+      "name": "buildMgmtWorkerEfficiencyGraphs",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        1751,
+        1850
+      ],
+      "summary": "Builds chart data/markup for worker efficiency trend graphs.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadMgmtWorkerIndividualEff",
+      "type": "function",
+      "name": "loadMgmtWorkerIndividualEff",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        1578,
+        1649
+      ],
+      "summary": "Loads individual worker efficiency data.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:buildMgmtWorkerIndividualEffTable",
+      "type": "function",
+      "name": "buildMgmtWorkerIndividualEffTable",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        2257,
+        2374
+      ],
+      "summary": "Builds the individual worker efficiency breakdown table.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/management.js:loadMgmtWorkerEfficiencyGraphs",
+      "type": "function",
+      "name": "loadMgmtWorkerEfficiencyGraphs",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        2007,
+        2090
+      ],
+      "summary": "Loads the data feeding the worker efficiency graphs.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/management.js:downloadReport",
+      "type": "function",
+      "name": "downloadReport",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        435,
+        438
+      ],
+      "summary": "Triggers download of a generated report file.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/management.js:downloadRangeReport",
+      "type": "function",
+      "name": "downloadRangeReport",
+      "filePath": "src/public/js/management.js",
+      "lineRange": [
+        440,
+        452
+      ],
+      "summary": "Triggers download of a date-range report file.",
+      "tags": [
+        "api-handler",
+        "dashboard",
+        "reporting"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/js/offline-db.js",
+      "type": "file",
+      "name": "offline-db.js",
+      "filePath": "src/public/js/offline-db.js",
+      "summary": "IndexedDB wrapper singleton (OfflineDB) providing local storage for a pending sync queue and cached API responses to support offline operation in the shop-floor UI.",
+      "tags": [
+        "utility",
+        "offline-support",
+        "storage",
+        "singleton"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Implemented as a plain object literal singleton (`const OfflineDB = {...}`) rather than a class, exposing methods like init/addToSyncQueue directly as object properties."
+    },
+    {
+      "id": "function:src/public/js/offline-db.js:init",
+      "type": "function",
+      "name": "init",
+      "filePath": "src/public/js/offline-db.js",
+      "lineRange": [
+        18,
+        65
+      ],
+      "summary": "Opens (and upgrades if needed) the IndexedDB database, creating the sync-queue and cache object stores.",
+      "tags": [
+        "offline-support",
+        "storage",
+        "indexeddb"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/offline-db.js:addToSyncQueue",
+      "type": "function",
+      "name": "addToSyncQueue",
+      "filePath": "src/public/js/offline-db.js",
+      "lineRange": [
+        70,
+        90
+      ],
+      "summary": "Adds a pending offline action to the sync queue store for later replay when connectivity returns.",
+      "tags": [
+        "offline-support",
+        "storage",
+        "indexeddb"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/js/offline-sync.js",
+      "type": "file",
+      "name": "offline-sync.js",
+      "filePath": "src/public/js/offline-sync.js",
+      "summary": "OfflineSync singleton managing online/offline detection, queuing actions while offline via OfflineDB, and background syncing of queued actions when connectivity is restored.",
+      "tags": [
+        "utility",
+        "offline-support",
+        "singleton",
+        "event-handler"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Plain object-literal singleton; depends on OfflineDB for persistence and exposes on/off listener registration for status changes."
+    },
+    {
+      "id": "function:src/public/js/offline-sync.js:init",
+      "type": "function",
+      "name": "init",
+      "filePath": "src/public/js/offline-sync.js",
+      "lineRange": [
+        16,
+        38
+      ],
+      "summary": "Sets up online/offline event listeners and starts periodic background sync.",
+      "tags": [
+        "offline-support",
+        "event-handler",
+        "sync"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/offline-sync.js:handleOnline",
+      "type": "function",
+      "name": "handleOnline",
+      "filePath": "src/public/js/offline-sync.js",
+      "lineRange": [
+        43,
+        51
+      ],
+      "summary": "Handles the browser coming back online: updates status and triggers a sync attempt.",
+      "tags": [
+        "offline-support",
+        "event-handler",
+        "sync"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/offline-sync.js:handleOffline",
+      "type": "function",
+      "name": "handleOffline",
+      "filePath": "src/public/js/offline-sync.js",
+      "lineRange": [
+        56,
+        61
+      ],
+      "summary": "Handles the browser going offline: updates status indicator and notifies listeners.",
+      "tags": [
+        "offline-support",
+        "event-handler",
+        "sync"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/offline-sync.js:updateStatusIndicator",
+      "type": "function",
+      "name": "updateStatusIndicator",
+      "filePath": "src/public/js/offline-sync.js",
+      "lineRange": [
+        242,
+        242
+      ],
+      "summary": "Updates the visible online/offline status indicator in the UI.",
+      "tags": [
+        "offline-support",
+        "event-handler",
+        "sync"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/offline-sync.js:notifyListeners",
+      "type": "function",
+      "name": "notifyListeners",
+      "filePath": "src/public/js/offline-sync.js",
+      "lineRange": [
+        311,
+        319
+      ],
+      "summary": "Notifies registered listeners of an offline/online status change event.",
+      "tags": [
+        "offline-support",
+        "event-handler",
+        "sync"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/offline-sync.js:getStatus",
+      "type": "function",
+      "name": "getStatus",
+      "filePath": "src/public/js/offline-sync.js",
+      "lineRange": [
+        320,
+        329
+      ],
+      "summary": "Returns the current online/offline and syncing status.",
+      "tags": [
+        "offline-support",
+        "event-handler",
+        "sync"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/WorkSync_Pitch_Deck.docx",
+      "type": "file",
+      "name": "WorkSync_Pitch_Deck.docx",
+      "filePath": "src/public/WorkSync_Pitch_Deck.docx",
+      "summary": "Word document pitch deck describing WorkSync for stakeholders, served as a static downloadable file from the public directory.",
+      "tags": [
+        "documentation",
+        "static-asset",
+        "pitch-deck"
+      ],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:requireAuth",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:setupNavigation",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:setupMobileSidebar",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:loadSection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:loadDashboard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:viewLineDetails",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:openLineDetailsPage",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:loadProducts",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:viewProductProcess",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:openPlanUploadModal",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:submitPlanUpload",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:loadDailyPlanData",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:_buildLdTbody",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:ldPreviewCopyPlan",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:renderLineDetailsContent",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:saveLineDetails",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:fillOtLineCard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:printDailyPlans",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:renderOTPlanDetails",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:_buildSingleOsmDailyCard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:_buildEfficiencyTable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:_buildWorkerIndividualEffTable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/admin.js",
+      "target": "function:src/public/js/admin.js:renderSystemUpdateSection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:loadAttendance",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:renderRow",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:formatStatus",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:filterAttendance",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:saveRow",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:saveAll",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:saveAttendance",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:setupRealtime",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "function:src/public/js/ie.js:showToast",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/ie.js",
+      "target": "file:src/public/js/sse-manager.js",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:src/public/js/login.js",
+      "target": "function:src/public/js/login.js:openLogin",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/login.js",
+      "target": "function:src/public/js/login.js:closeLogin",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/login.js",
+      "target": "function:src/public/js/login.js:submitLogin",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:escHtml",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:updateBadge",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:openModal",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:closeModal",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:renderModal",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:renderSummaryTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:renderDetailsTab",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:fetchAlerts",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/low-output-alerts.js",
+      "target": "function:src/public/js/low-output-alerts.js:init",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:requireAuth",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:setupMobileSidebar",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:setupRealtime",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadMgmtMaterialTracking",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:refreshMgmtMaterialTracking",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:buildMgmtMaterialGroupCard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadManagementDashboard",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadLineOptions",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadLineMetrics",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadMgmtOsmReport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:_buildMgmtOsmTable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:_buildMgmtOsmRangeTable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadMgmtEfficiencyReport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:_buildMgmtEfficiencyTable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:buildMgmtWorkerEfficiencyGraphs",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadMgmtWorkerIndividualEff",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:buildMgmtWorkerIndividualEffTable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:loadMgmtWorkerEfficiencyGraphs",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:downloadReport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "function:src/public/js/management.js:downloadRangeReport",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/management.js",
+      "target": "file:src/public/js/sse-manager.js",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:src/public/js/offline-db.js",
+      "target": "function:src/public/js/offline-db.js:init",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-db.js",
+      "target": "function:src/public/js/offline-db.js:addToSyncQueue",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-sync.js",
+      "target": "function:src/public/js/offline-sync.js:init",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-sync.js",
+      "target": "function:src/public/js/offline-sync.js:handleOnline",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-sync.js",
+      "target": "function:src/public/js/offline-sync.js:handleOffline",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-sync.js",
+      "target": "function:src/public/js/offline-sync.js:updateStatusIndicator",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-sync.js",
+      "target": "function:src/public/js/offline-sync.js:notifyListeners",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-sync.js",
+      "target": "function:src/public/js/offline-sync.js:getStatus",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/offline-sync.js",
+      "target": "file:src/public/js/offline-db.js",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

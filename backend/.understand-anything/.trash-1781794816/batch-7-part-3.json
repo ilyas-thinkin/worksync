@@ -1,0 +1,1197 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/public/js/optimistic-ui.js",
+      "type": "file",
+      "name": "optimistic-ui.js",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "summary": "OptimisticUI singleton implementing optimistic update patterns: immediately reflects UI changes, queues the real API call with retry/rollback, and integrates with ShopFloorUX for visual feedback.",
+      "tags": [
+        "utility",
+        "singleton",
+        "optimistic-update",
+        "retry-logic"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Object-literal singleton holding pending operations in a Map with bounded history for rollback; depends on ShopFloorUX for UI feedback hooks."
+    },
+    {
+      "id": "function:src/public/js/optimistic-ui.js:init",
+      "type": "function",
+      "name": "init",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "lineRange": [
+        26,
+        32
+      ],
+      "summary": "Initializes the optimistic UI manager and resumes any pending operations on load.",
+      "tags": [
+        "optimistic-update",
+        "retry-logic",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/optimistic-ui.js:execute",
+      "type": "function",
+      "name": "execute",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "lineRange": [
+        45,
+        121
+      ],
+      "summary": "Executes an optimistic operation: applies the UI update immediately, then performs the real API call with rollback on failure.",
+      "tags": [
+        "optimistic-update",
+        "retry-logic",
+        "ui-handler"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/optimistic-ui.js:executeWithRetry",
+      "type": "function",
+      "name": "executeWithRetry",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "lineRange": [
+        125,
+        148
+      ],
+      "summary": "Wraps an API call with timeout and retry/backoff logic.",
+      "tags": [
+        "optimistic-update",
+        "retry-logic",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/optimistic-ui.js:queueForSync",
+      "type": "function",
+      "name": "queueForSync",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "lineRange": [
+        161,
+        214
+      ],
+      "summary": "Queues a failed optimistic operation for later retry via the offline sync mechanism.",
+      "tags": [
+        "optimistic-update",
+        "retry-logic",
+        "ui-handler"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/optimistic-ui.js:updateListItem",
+      "type": "function",
+      "name": "updateListItem",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "lineRange": [
+        248,
+        283
+      ],
+      "summary": "Applies an optimistic update to a list item element in the DOM.",
+      "tags": [
+        "optimistic-update",
+        "retry-logic",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/optimistic-ui.js:updateCounter",
+      "type": "function",
+      "name": "updateCounter",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "lineRange": [
+        284,
+        346
+      ],
+      "summary": "Applies an optimistic update to a counter/badge element, animating the value change.",
+      "tags": [
+        "optimistic-update",
+        "retry-logic",
+        "ui-handler"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/optimistic-ui.js:createDebouncedUpdate",
+      "type": "function",
+      "name": "createDebouncedUpdate",
+      "filePath": "src/public/js/optimistic-ui.js",
+      "lineRange": [
+        438,
+        460
+      ],
+      "summary": "Creates a debounced wrapper around an update function to coalesce rapid optimistic updates.",
+      "tags": [
+        "optimistic-update",
+        "retry-logic",
+        "ui-handler"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/js/shop-floor-ux.js",
+      "type": "file",
+      "name": "shop-floor-ux.js",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "summary": "ShopFloorUX singleton providing touch-friendly visual feedback for factory-floor use: ripple effects, haptic feedback, quantity steppers, toasts, scan success/error flashes, and optimistic-update visual markers.",
+      "tags": [
+        "utility",
+        "singleton",
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Object-literal singleton with ~25 methods covering touch/haptic UX; two standalone top-level functions (initTableScrollFade, initBottomNavSync) are defined outside the singleton for table/nav scroll behavior."
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:init",
+      "type": "function",
+      "name": "init",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        18,
+        26
+      ],
+      "summary": "Initializes all shop-floor UX enhancements (touch ripple, haptics, steppers, HTTPS banner, error logging).",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:setupTouchRipple",
+      "type": "function",
+      "name": "setupTouchRipple",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        31,
+        52
+      ],
+      "summary": "Adds a Material-style ripple animation to touch/click targets.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:confirm",
+      "type": "function",
+      "name": "confirm",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        275,
+        346
+      ],
+      "summary": "Shows a confirm-style inline interaction requiring a deliberate second tap before committing an action.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:toast",
+      "type": "function",
+      "name": "toast",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        347,
+        376
+      ],
+      "summary": "Displays a transient toast notification.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:markOptimisticPending",
+      "type": "function",
+      "name": "markOptimisticPending",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        502,
+        510
+      ],
+      "summary": "Marks a DOM element as having a pending optimistic update.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:markOptimisticSuccess",
+      "type": "function",
+      "name": "markOptimisticSuccess",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        511,
+        525
+      ],
+      "summary": "Marks a DOM element as having a confirmed optimistic update.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:rollbackOptimistic",
+      "type": "function",
+      "name": "rollbackOptimistic",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        526,
+        541
+      ],
+      "summary": "Reverts a DOM element's optimistic update visual state and re-applies the original value.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:initTableScrollFade",
+      "type": "function",
+      "name": "initTableScrollFade",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        542,
+        558
+      ],
+      "summary": "Initializes scroll-fade visual indicators on horizontally scrollable tables.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/shop-floor-ux.js:initBottomNavSync",
+      "type": "function",
+      "name": "initBottomNavSync",
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "lineRange": [
+        561,
+        572
+      ],
+      "summary": "Synchronizes the active state of the bottom navigation bar with scroll position/route.",
+      "tags": [
+        "ui-feedback",
+        "touch-interaction"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/js/sse-manager.js",
+      "type": "file",
+      "name": "sse-manager.js",
+      "filePath": "src/public/js/sse-manager.js",
+      "summary": "SSEManager singleton wrapping a single EventSource connection to /events with exponential-backoff reconnection, heartbeat tracking, visibility/online-triggered reconnects, and a pub/sub listener API for data-change events.",
+      "tags": [
+        "service",
+        "singleton",
+        "realtime",
+        "event-handler"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Object-literal singleton intended as the single shared EventSource for the whole frontend; other scripts (admin.js, supervisor.js, management.js, ie.js) are expected to call SSEManager.on() rather than opening their own EventSource."
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:init",
+      "type": "function",
+      "name": "init",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        22,
+        40
+      ],
+      "summary": "Initializes the SSE manager: connects, and wires visibility/online listeners to trigger reconnects.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:connect",
+      "type": "function",
+      "name": "connect",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        47,
+        100
+      ],
+      "summary": "Opens the EventSource connection to /events and attaches message/error handlers.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:scheduleReconnect",
+      "type": "function",
+      "name": "scheduleReconnect",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        101,
+        128
+      ],
+      "summary": "Schedules a reconnect attempt using exponential backoff up to a maximum delay/attempt count.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:handleEvent",
+      "type": "function",
+      "name": "handleEvent",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        129,
+        161
+      ],
+      "summary": "Dispatches an incoming SSE event to registered listeners by event type.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:on",
+      "type": "function",
+      "name": "on",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        162,
+        171
+      ],
+      "summary": "Registers a listener callback for a given SSE event type.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:off",
+      "type": "function",
+      "name": "off",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        172,
+        182
+      ],
+      "summary": "Unregisters a previously registered listener.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:onConnectionChange",
+      "type": "function",
+      "name": "onConnectionChange",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        183,
+        189
+      ],
+      "summary": "Registers a callback for connection status changes.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:notifyConnectionChange",
+      "type": "function",
+      "name": "notifyConnectionChange",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        190,
+        205
+      ],
+      "summary": "Notifies registered connection-status listeners of a change.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:updateStatusIndicator",
+      "type": "function",
+      "name": "updateStatusIndicator",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        206,
+        234
+      ],
+      "summary": "Updates the visible connection status indicator in the UI.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:reconnect",
+      "type": "function",
+      "name": "reconnect",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        235,
+        242
+      ],
+      "summary": "Forces an immediate reconnect attempt.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:close",
+      "type": "function",
+      "name": "close",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        243,
+        257
+      ],
+      "summary": "Closes the EventSource connection and clears timers.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/sse-manager.js:getStatus",
+      "type": "function",
+      "name": "getStatus",
+      "filePath": "src/public/js/sse-manager.js",
+      "lineRange": [
+        258,
+        270
+      ],
+      "summary": "Returns the current connection status and reconnect-attempt count.",
+      "tags": [
+        "realtime",
+        "event-handler",
+        "singleton"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/js/supervisor.js",
+      "type": "file",
+      "name": "supervisor.js",
+      "filePath": "src/public/js/supervisor.js",
+      "summary": "Largest supervisor-facing frontend script (~4,129 lines) implementing the line leader panel: QR-camera scanning, morning employee linking, hourly output entry, workstation changeover flows, adjustments, OT management, and shift-summary reporting.",
+      "tags": [
+        "component",
+        "api-handler",
+        "realtime",
+        "workstation-management"
+      ],
+      "complexity": "complex",
+      "languageNotes": "Plain browser script bootstrapped on DOMContentLoaded; uses the device camera (getUserMedia) for QR scanning of employee/workstation codes alongside button-based employee linking."
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:requireAuth",
+      "type": "function",
+      "name": "requireAuth",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        11,
+        36
+      ],
+      "summary": "Verifies an authenticated supervisor session and redirects to login if absent.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:setupNavigation",
+      "type": "function",
+      "name": "setupNavigation",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        38,
+        49
+      ],
+      "summary": "Wires up sidebar navigation for the supervisor panel sections.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:startCamera",
+      "type": "function",
+      "name": "startCamera",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        125,
+        172
+      ],
+      "summary": "Starts the device camera stream for QR code scanning.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:scanLoop",
+      "type": "function",
+      "name": "scanLoop",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        183,
+        219
+      ],
+      "summary": "Continuously scans video frames for QR codes during an active scan session.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:loadMorningProcedure",
+      "type": "function",
+      "name": "loadMorningProcedure",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        266,
+        325
+      ],
+      "summary": "Loads the morning procedure section: workstation assignments grouped for the current line/date.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:renderMorningAssignments",
+      "type": "function",
+      "name": "renderMorningAssignments",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        354,
+        497
+      ],
+      "summary": "Renders the morning assignment cards per workstation, including link buttons and status badges.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:startChangeEmployee",
+      "type": "function",
+      "name": "startChangeEmployee",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        632,
+        720
+      ],
+      "summary": "Opens the change-employee flow for a workstation, replacing the currently linked employee.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:loadHourlyProcedure",
+      "type": "function",
+      "name": "loadHourlyProcedure",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        1274,
+        1419
+      ],
+      "summary": "Loads the hourly procedure section: per-workstation targets and progress for the current hour.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:onHourlyLineChange",
+      "type": "function",
+      "name": "onHourlyLineChange",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        1448,
+        1526
+      ],
+      "summary": "Handles switching the selected line in the hourly section, reloading plan and progress data.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:renderHourlySummary",
+      "type": "function",
+      "name": "renderHourlySummary",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        2193,
+        2578
+      ],
+      "summary": "Renders the full hourly summary table of workstation output vs. targets with shortfall reasons.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:renderFeedInput",
+      "type": "function",
+      "name": "renderFeedInput",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        895,
+        1012
+      ],
+      "summary": "Renders the feed-input section for entering material/WIP provided to workstations.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:openWorkstationHourlyEntry",
+      "type": "function",
+      "name": "openWorkstationHourlyEntry",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        2704,
+        2777
+      ],
+      "summary": "Opens the entry form for recording a workstation's hourly output.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:saveWorkstationHourlyOutput",
+      "type": "function",
+      "name": "saveWorkstationHourlyOutput",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        2779,
+        2854
+      ],
+      "summary": "Saves the entered hourly output quantity (and shortfall reason if below target) for a workstation.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:openWsChangeoverModal",
+      "type": "function",
+      "name": "openWsChangeoverModal",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        1911,
+        2020
+      ],
+      "summary": "Opens the modal to start a changeover on a specific workstation, with employee picker.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:submitWsChangeoverStart",
+      "type": "function",
+      "name": "submitWsChangeoverStart",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        2058,
+        2118
+      ],
+      "summary": "Submits the changeover-start request for a workstation with the selected employee.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:renderOtPlanSection",
+      "type": "function",
+      "name": "renderOtPlanSection",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        3070,
+        3334
+      ],
+      "summary": "Renders the overtime plan section showing OT workstations, targets, and progress.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/public/js/supervisor.js:renderAdjStatusTable",
+      "type": "function",
+      "name": "renderAdjStatusTable",
+      "filePath": "src/public/js/supervisor.js",
+      "lineRange": [
+        3776,
+        3839
+      ],
+      "summary": "Renders the adjustment status table tracking worker departures and reassignments.",
+      "tags": [
+        "api-handler",
+        "workstation-management",
+        "supervisor-panel"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/js/sw-register.js",
+      "type": "file",
+      "name": "sw-register.js",
+      "filePath": "src/public/js/sw-register.js",
+      "summary": "Tiny script that unregisters any previously installed service worker, effectively disabling the PWA service-worker feature.",
+      "tags": [
+        "utility",
+        "service-worker",
+        "deprecated"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/line_plan_template.xlsx",
+      "type": "file",
+      "name": "line_plan_template.xlsx",
+      "filePath": "src/public/line_plan_template.xlsx",
+      "summary": "Downloadable Excel template matching the documented plan-upload format (LINE CODE, PRODUCT, BUYER, STYLE NO, DESCRIPTION, TARGET header rows plus GROUP/WORK STATION/EMPLOYEE CODE/PROCESS DETAILS table) used by admins/IE to prepare daily plan uploads.",
+      "tags": [
+        "data-template",
+        "excel",
+        "plan-upload"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/sw.js",
+      "type": "file",
+      "name": "sw.js",
+      "filePath": "src/public/sw.js",
+      "summary": "Service worker script that unregisters itself and clears all caches on activation, completing the rollback away from PWA offline-caching behavior.",
+      "tags": [
+        "service-worker",
+        "deprecated",
+        "cache-management"
+      ],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "function:src/public/js/optimistic-ui.js:init",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "function:src/public/js/optimistic-ui.js:execute",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "function:src/public/js/optimistic-ui.js:executeWithRetry",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "function:src/public/js/optimistic-ui.js:queueForSync",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "function:src/public/js/optimistic-ui.js:updateListItem",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "function:src/public/js/optimistic-ui.js:updateCounter",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "function:src/public/js/optimistic-ui.js:createDebouncedUpdate",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/optimistic-ui.js",
+      "target": "file:src/public/js/shop-floor-ux.js",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:init",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:setupTouchRipple",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:confirm",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:toast",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:markOptimisticPending",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:markOptimisticSuccess",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:rollbackOptimistic",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:initTableScrollFade",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/shop-floor-ux.js",
+      "target": "function:src/public/js/shop-floor-ux.js:initBottomNavSync",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:init",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:connect",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:scheduleReconnect",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:handleEvent",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:on",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:off",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:onConnectionChange",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:notifyConnectionChange",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:updateStatusIndicator",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:reconnect",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:close",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/sse-manager.js",
+      "target": "function:src/public/js/sse-manager.js:getStatus",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:requireAuth",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:setupNavigation",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:startCamera",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:scanLoop",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:loadMorningProcedure",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:renderMorningAssignments",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:startChangeEmployee",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:loadHourlyProcedure",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:onHourlyLineChange",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:renderHourlySummary",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:renderFeedInput",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:openWorkstationHourlyEntry",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:saveWorkstationHourlyOutput",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:openWsChangeoverModal",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:submitWsChangeoverStart",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:renderOtPlanSection",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "function:src/public/js/supervisor.js:renderAdjStatusTable",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/public/js/supervisor.js",
+      "target": "file:src/public/js/sse-manager.js",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "file:src/public/js/sw-register.js",
+      "target": "file:src/public/sw.js",
+      "type": "depends_on",
+      "direction": "forward",
+      "weight": 0.6
+    }
+  ]
+}

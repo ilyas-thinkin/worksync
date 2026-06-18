@@ -1,0 +1,1282 @@
+{
+  "scriptCompleted": true,
+  "filesAnalyzed": 3,
+  "filesSkipped": [],
+  "results": [
+    {
+      "path": "src/public/WorkSync_Technical_Report.docx",
+      "language": "docx",
+      "fileCategory": "code",
+      "totalLines": 148,
+      "nonEmptyLines": 147,
+      "metrics": {}
+    },
+    {
+      "path": "src/schema.base.migrations",
+      "language": "migrations",
+      "fileCategory": "code",
+      "totalLines": 33,
+      "nonEmptyLines": 33,
+      "metrics": {}
+    },
+    {
+      "path": "src/schema.base.sql",
+      "language": "sql",
+      "fileCategory": "data",
+      "totalLines": 3610,
+      "nonEmptyLines": 2458,
+      "definitions": [
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "value",
+            "updated_at"
+          ],
+          "startLine": 122,
+          "endLine": 126
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "table_name",
+            "record_id",
+            "action",
+            "old_values",
+            "new_values",
+            "changed_by",
+            "changed_at",
+            "reason",
+            "ip_address",
+            "user_agent",
+            "session_id",
+            "request_path",
+            "http_method"
+          ],
+          "startLine": 133,
+          "endLine": 148
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "process_id",
+            "employee_id",
+            "defect_type_id",
+            "work_date",
+            "hour_slot",
+            "quantity",
+            "status",
+            "rework_employee_id",
+            "rework_completed_at",
+            "notes",
+            "detected_by",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 175,
+          "endLine": 192
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "defect_code",
+            "defect_name",
+            "defect_category",
+            "severity",
+            "is_reworkable",
+            "description",
+            "is_active",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 219,
+          "endLine": 230
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "reason_id",
+            "work_date",
+            "start_time",
+            "end_time",
+            "duration_minutes",
+            "affected_processes",
+            "notes",
+            "reported_by",
+            "resolved_by",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 257,
+          "endLine": 271
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "reason_code",
+            "reason_name",
+            "reason_category",
+            "is_planned",
+            "default_duration_minutes",
+            "description",
+            "is_active",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 298,
+          "endLine": 309
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "employee_id",
+            "attendance_date",
+            "in_time",
+            "out_time",
+            "status",
+            "notes",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 336,
+          "endLine": 346
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "process_id",
+            "employee_id",
+            "assigned_at",
+            "line_id"
+          ],
+          "startLine": 373,
+          "endLine": 379
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "workstation_code",
+            "employee_id",
+            "assigned_at",
+            "work_date",
+            "line_plan_workstation_id",
+            "is_overtime",
+            "material_provided",
+            "is_linked",
+            "linked_at",
+            "late_reason",
+            "attendance_start"
+          ],
+          "startLine": 406,
+          "endLine": 421
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "emp_code",
+            "emp_name",
+            "designation",
+            "default_line_id",
+            "qr_code_path",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+            "manpower_factor"
+          ],
+          "startLine": 476,
+          "endLine": 491
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "group_name",
+            "materials_in",
+            "output_qty",
+            "wip_quantity",
+            "updated_at"
+          ],
+          "startLine": 518,
+          "endLine": 527
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "forwarded_quantity",
+            "remaining_wip",
+            "materials_issued",
+            "updated_by",
+            "updated_at",
+            "qa_output"
+          ],
+          "startLine": 554,
+          "endLine": 565
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "product_id",
+            "work_date",
+            "target_units",
+            "created_by",
+            "updated_by",
+            "created_at",
+            "updated_at",
+            "is_locked",
+            "incoming_product_id",
+            "incoming_target_units",
+            "changeover_sequence",
+            "overtime_minutes",
+            "overtime_target",
+            "changeover_started_at",
+            "ot_enabled"
+          ],
+          "startLine": 592,
+          "endLine": 611
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "line_id",
+            "work_date",
+            "hour_slot",
+            "remarks",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 638,
+          "endLine": 645
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "opening_stock",
+            "total_issued",
+            "total_used",
+            "total_returned",
+            "closing_stock",
+            "updated_at"
+          ],
+          "startLine": 652,
+          "endLine": 662
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "product_id",
+            "global_ot_minutes",
+            "ot_target_units",
+            "created_at",
+            "updated_at",
+            "supervisor_authorized"
+          ],
+          "startLine": 696,
+          "endLine": 706
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "ot_workstation_id",
+            "work_date",
+            "quantity",
+            "qa_rejection",
+            "remarks",
+            "employee_id",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 740,
+          "endLine": 751
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "ot_workstation_id",
+            "product_process_id",
+            "sequence_in_workstation"
+          ],
+          "startLine": 778,
+          "endLine": 783
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "ot_plan_id",
+            "workstation_code",
+            "workstation_number",
+            "group_name",
+            "is_active",
+            "ot_minutes",
+            "actual_sam_seconds",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 810,
+          "endLine": 821
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "workstation_id",
+            "product_process_id",
+            "sequence_in_workstation",
+            "osm_checked"
+          ],
+          "startLine": 848,
+          "endLine": 854
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "product_id",
+            "workstation_number",
+            "workstation_code",
+            "takt_time_seconds",
+            "actual_sam_seconds",
+            "workload_pct",
+            "created_at",
+            "updated_at",
+            "group_name",
+            "is_ot_skipped",
+            "ws_changeover_active",
+            "ws_changeover_started_at",
+            "co_employee_id"
+          ],
+          "startLine": 881,
+          "endLine": 898
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "process_id",
+            "work_date",
+            "hour_slot",
+            "quantity",
+            "created_at",
+            "updated_at",
+            "employee_id",
+            "forwarded_quantity",
+            "remaining_quantity",
+            "qa_rejection",
+            "remarks",
+            "shortfall_reason"
+          ],
+          "startLine": 932,
+          "endLine": 950
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "closed_by",
+            "closed_at",
+            "notes"
+          ],
+          "startLine": 977,
+          "endLine": 984
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "workstation_number",
+            "workstation_code",
+            "qr_code_path",
+            "created_at"
+          ],
+          "startLine": 1011,
+          "endLine": 1019
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "transaction_type",
+            "quantity",
+            "from_process_id",
+            "to_process_id",
+            "notes",
+            "recorded_by",
+            "created_at"
+          ],
+          "startLine": 1046,
+          "endLine": 1057
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "operation_code",
+            "operation_name",
+            "operation_description",
+            "operation_category",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+            "qr_code_path"
+          ],
+          "startLine": 1091,
+          "endLine": 1103
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "process_id",
+            "employee_id",
+            "start_time",
+            "end_time",
+            "quantity_completed",
+            "changed_by",
+            "created_at",
+            "materials_at_link",
+            "existing_materials"
+          ],
+          "startLine": 1137,
+          "endLine": 1151
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "process_id",
+            "work_date",
+            "materials_in",
+            "materials_out",
+            "wip_quantity",
+            "updated_at"
+          ],
+          "startLine": 1178,
+          "endLine": 1187
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "product_id",
+            "operation_id",
+            "sequence_number",
+            "operation_sah",
+            "cycle_time_seconds",
+            "manpower_required",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+            "qr_code_path",
+            "target_units",
+            "workspace_id",
+            "group_name",
+            "workstation_code",
+            "worker_input_mapping",
+            "osm_checked"
+          ],
+          "startLine": 1221,
+          "endLine": 1244
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "work_date",
+            "locked_by",
+            "locked_at",
+            "notes"
+          ],
+          "startLine": 1299,
+          "endLine": 1304
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "line_id",
+            "work_date",
+            "deleted_by",
+            "deleted_at"
+          ],
+          "startLine": 1311,
+          "endLine": 1316
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_code",
+            "line_name",
+            "hall_location",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+            "current_product_id",
+            "target_units",
+            "efficiency",
+            "qr_code_path",
+            "line_leader"
+          ],
+          "startLine": 1323,
+          "endLine": 1338
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "product_code",
+            "product_name",
+            "product_description",
+            "category",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+            "line_id",
+            "buyer_name",
+            "target_qty",
+            "plan_month"
+          ],
+          "startLine": 1365,
+          "endLine": 1380
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "username",
+            "full_name",
+            "role",
+            "is_active",
+            "created_at",
+            "updated_at"
+          ],
+          "startLine": 1428,
+          "endLine": 1437
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "departure_id",
+            "vacant_workstation_code",
+            "from_employee_id",
+            "from_workstation_code",
+            "adjustment_type",
+            "reassignment_time",
+            "created_at"
+          ],
+          "startLine": 1590,
+          "endLine": 1602
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "line_id",
+            "work_date",
+            "employee_id",
+            "workstation_code",
+            "departure_time",
+            "departure_reason",
+            "notes",
+            "created_at"
+          ],
+          "startLine": 1629,
+          "endLine": 1640
+        },
+        {
+          "name": "public",
+          "kind": "table",
+          "fields": [
+            "id",
+            "workspace_code",
+            "workspace_name",
+            "workspace_type",
+            "line_id",
+            "qr_code_path",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+            "group_name",
+            "worker_input_mapping"
+          ],
+          "startLine": 1667,
+          "endLine": 1681
+        },
+        {
+          "name": "public",
+          "kind": "view",
+          "fields": [],
+          "startLine": 1464,
+          "endLine": 1464
+        },
+        {
+          "name": "public",
+          "kind": "view",
+          "fields": [],
+          "startLine": 1480,
+          "endLine": 1480
+        },
+        {
+          "name": "public",
+          "kind": "view",
+          "fields": [],
+          "startLine": 1511,
+          "endLine": 1511
+        },
+        {
+          "name": "public",
+          "kind": "view",
+          "fields": [],
+          "startLine": 1532,
+          "endLine": 1532
+        },
+        {
+          "name": "public",
+          "kind": "view",
+          "fields": [],
+          "startLine": 1568,
+          "endLine": 1568
+        },
+        {
+          "name": "idx_assignment_history_employee",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2419,
+          "endLine": 2419
+        },
+        {
+          "name": "idx_assignment_history_line_process",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2426,
+          "endLine": 2426
+        },
+        {
+          "name": "idx_assignment_history_open",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2433,
+          "endLine": 2433
+        },
+        {
+          "name": "idx_assignment_history_start_time",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2440,
+          "endLine": 2440
+        },
+        {
+          "name": "idx_attendance_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2447,
+          "endLine": 2447
+        },
+        {
+          "name": "idx_attendance_status",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2454,
+          "endLine": 2454
+        },
+        {
+          "name": "idx_audit_logs_changed_at",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2461,
+          "endLine": 2461
+        },
+        {
+          "name": "idx_audit_logs_ip",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2468,
+          "endLine": 2468
+        },
+        {
+          "name": "idx_audit_logs_session",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2475,
+          "endLine": 2475
+        },
+        {
+          "name": "idx_audit_logs_table",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2482,
+          "endLine": 2482
+        },
+        {
+          "name": "idx_audit_logs_table_record",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2489,
+          "endLine": 2489
+        },
+        {
+          "name": "idx_audit_logs_user",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2496,
+          "endLine": 2496
+        },
+        {
+          "name": "idx_day_locks_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2503,
+          "endLine": 2503
+        },
+        {
+          "name": "idx_line_daily_plan_delete_markers_work_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2510,
+          "endLine": 2510
+        },
+        {
+          "name": "idx_defect_log_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2517,
+          "endLine": 2517
+        },
+        {
+          "name": "idx_defect_log_employee",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2524,
+          "endLine": 2524
+        },
+        {
+          "name": "idx_defect_log_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2531,
+          "endLine": 2531
+        },
+        {
+          "name": "idx_defect_log_process",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2538,
+          "endLine": 2538
+        },
+        {
+          "name": "idx_defect_log_status",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2545,
+          "endLine": 2545
+        },
+        {
+          "name": "idx_defect_log_type",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2552,
+          "endLine": 2552
+        },
+        {
+          "name": "idx_defect_types_active",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2559,
+          "endLine": 2559
+        },
+        {
+          "name": "idx_defect_types_category",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2566,
+          "endLine": 2566
+        },
+        {
+          "name": "idx_defect_types_code",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2573,
+          "endLine": 2573
+        },
+        {
+          "name": "idx_downtime_log_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2580,
+          "endLine": 2580
+        },
+        {
+          "name": "idx_downtime_log_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2587,
+          "endLine": 2587
+        },
+        {
+          "name": "idx_downtime_log_reason",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2594,
+          "endLine": 2594
+        },
+        {
+          "name": "idx_downtime_log_start",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2601,
+          "endLine": 2601
+        },
+        {
+          "name": "idx_downtime_reasons_active",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2608,
+          "endLine": 2608
+        },
+        {
+          "name": "idx_downtime_reasons_category",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2615,
+          "endLine": 2615
+        },
+        {
+          "name": "idx_downtime_reasons_code",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2622,
+          "endLine": 2622
+        },
+        {
+          "name": "idx_employees_emp_code",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2629,
+          "endLine": 2629
+        },
+        {
+          "name": "idx_employees_is_active",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2636,
+          "endLine": 2636
+        },
+        {
+          "name": "idx_employees_line_id",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2643,
+          "endLine": 2643
+        },
+        {
+          "name": "idx_ewa_employee",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2650,
+          "endLine": 2650
+        },
+        {
+          "name": "idx_ewa_line",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2657,
+          "endLine": 2657
+        },
+        {
+          "name": "idx_ewa_line_date_ws_ot",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2664,
+          "endLine": 2664
+        },
+        {
+          "name": "idx_group_wip_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2671,
+          "endLine": 2671
+        },
+        {
+          "name": "idx_hourly_progress_employee",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2678,
+          "endLine": 2678
+        },
+        {
+          "name": "idx_hourly_progress_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2685,
+          "endLine": 2685
+        },
+        {
+          "name": "idx_hourly_progress_work_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2692,
+          "endLine": 2692
+        },
+        {
+          "name": "idx_line_daily_metrics_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2699,
+          "endLine": 2699
+        },
+        {
+          "name": "idx_line_daily_metrics_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2706,
+          "endLine": 2706
+        },
+        {
+          "name": "idx_line_daily_plans_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2713,
+          "endLine": 2713
+        },
+        {
+          "name": "idx_line_daily_plans_line",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2720,
+          "endLine": 2720
+        },
+        {
+          "name": "idx_line_daily_plans_product_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2727,
+          "endLine": 2727
+        },
+        {
+          "name": "idx_line_material_stock_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2734,
+          "endLine": 2734
+        },
+        {
+          "name": "idx_line_workstations_line",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2741,
+          "endLine": 2741
+        },
+        {
+          "name": "idx_lpw_group",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2748,
+          "endLine": 2748
+        },
+        {
+          "name": "idx_lpw_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2755,
+          "endLine": 2755
+        },
+        {
+          "name": "idx_lpw_line_date_product_ws",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2762,
+          "endLine": 2762
+        },
+        {
+          "name": "idx_lpwp_process",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2769,
+          "endLine": 2769
+        },
+        {
+          "name": "idx_lpwp_workstation",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2776,
+          "endLine": 2776
+        },
+        {
+          "name": "idx_material_transactions_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2783,
+          "endLine": 2783
+        },
+        {
+          "name": "idx_material_transactions_line",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2790,
+          "endLine": 2790
+        },
+        {
+          "name": "idx_material_transactions_type",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2797,
+          "endLine": 2797
+        },
+        {
+          "name": "idx_material_tx_line_date_type",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2804,
+          "endLine": 2804
+        },
+        {
+          "name": "idx_operations_active",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2811,
+          "endLine": 2811
+        },
+        {
+          "name": "idx_operations_category",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2818,
+          "endLine": 2818
+        },
+        {
+          "name": "idx_operations_code",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2825,
+          "endLine": 2825
+        },
+        {
+          "name": "idx_process_material_wip_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2832,
+          "endLine": 2832
+        },
+        {
+          "name": "idx_process_material_wip_line",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2839,
+          "endLine": 2839
+        },
+        {
+          "name": "idx_process_wip_line_process_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2846,
+          "endLine": 2846
+        },
+        {
+          "name": "idx_product_processes_operation",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2853,
+          "endLine": 2853
+        },
+        {
+          "name": "idx_product_processes_product",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2860,
+          "endLine": 2860
+        },
+        {
+          "name": "idx_product_processes_sequence",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2867,
+          "endLine": 2867
+        },
+        {
+          "name": "idx_products_active",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2874,
+          "endLine": 2874
+        },
+        {
+          "name": "idx_products_code",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2881,
+          "endLine": 2881
+        },
+        {
+          "name": "idx_shift_closures_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2888,
+          "endLine": 2888
+        },
+        {
+          "name": "idx_wa_departure",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2895,
+          "endLine": 2895
+        },
+        {
+          "name": "idx_wa_departure_unique",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2902,
+          "endLine": 2902
+        },
+        {
+          "name": "idx_wa_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2909,
+          "endLine": 2909
+        },
+        {
+          "name": "idx_wd_employee_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2916,
+          "endLine": 2916
+        },
+        {
+          "name": "idx_wd_line_date",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2923,
+          "endLine": 2923
+        },
+        {
+          "name": "idx_wd_line_date_ws_emp",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2930,
+          "endLine": 2930
+        },
+        {
+          "name": "idx_workspaces_active",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2937,
+          "endLine": 2937
+        },
+        {
+          "name": "idx_workspaces_code",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2944,
+          "endLine": 2944
+        },
+        {
+          "name": "idx_workspaces_line",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2951,
+          "endLine": 2951
+        },
+        {
+          "name": "uq_product_sequence",
+          "kind": "index",
+          "fields": [],
+          "startLine": 2958,
+          "endLine": 2958
+        }
+      ],
+      "metrics": {
+        "importCount": 0,
+        "exportCount": 0,
+        "functionCount": 0,
+        "classCount": 0,
+        "definitionCount": 120
+      }
+    }
+  ]
+}

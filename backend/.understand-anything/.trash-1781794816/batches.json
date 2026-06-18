@@ -1,0 +1,883 @@
+{
+  "schemaVersion": 1,
+  "algorithm": "louvain",
+  "totalFiles": 94,
+  "totalBatches": 8,
+  "exportsByPath": {
+    ".understand-anything/.understandignore": [],
+    "ecosystem.config.js": [],
+    "src/.graphifyignore": [],
+    "src/config/app.config.js": [],
+    "src/config/db.config.js": [],
+    "src/middleware/audit.js": [],
+    "src/middleware/rbac.js": [],
+    "src/middleware/session.js": [],
+    "src/middleware/transaction.js": [],
+    "src/middleware/validation.js": [],
+    "src/public/css/admin.css.bak": [],
+    "src/public/js/admin.js": [],
+    "src/public/js/ie.js": [],
+    "src/public/js/login.js": [],
+    "src/public/js/low-output-alerts.js": [],
+    "src/public/js/management.js": [],
+    "src/public/js/offline-db.js": [],
+    "src/public/js/offline-sync.js": [],
+    "src/public/js/optimistic-ui.js": [],
+    "src/public/js/shop-floor-ux.js": [],
+    "src/public/js/sse-manager.js": [],
+    "src/public/js/supervisor.js": [],
+    "src/public/js/sw-register.js": [],
+    "src/public/line_plan_template.xlsx": [],
+    "src/public/sw.js": [],
+    "src/public/WorkSync_Operational_Guide.docx": [],
+    "src/public/WorkSync_Pitch_Deck.docx": [],
+    "src/public/WorkSync_Technical_Report.docx": [],
+    "src/realtime.js": [],
+    "src/routes/api.routes.js": [],
+    "src/routes/system-update.routes.js": [],
+    "src/schema.base.migrations": [],
+    "src/scripts/run-migrations.js": [],
+    "src/scripts/run-system-rollback.js": [],
+    "src/scripts/run-system-update.js": [],
+    "src/server.js": [],
+    "src/utils/qr.js": [],
+    "src/utils/streaming-excel.js": [],
+    "src/utils/system-update-plan.js": [],
+    "src/utils/system-update.js": []
+  },
+  "batches": [
+    {
+      "batchIndex": 1,
+      "files": [
+        {
+          "path": "src/config/db.config.js",
+          "language": "javascript",
+          "sizeLines": 32,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/middleware/audit.js",
+          "language": "javascript",
+          "sizeLines": 262,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/middleware/transaction.js",
+          "language": "javascript",
+          "sizeLines": 209,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/middleware/validation.js",
+          "language": "javascript",
+          "sizeLines": 342,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/routes/api.routes.js",
+          "language": "javascript",
+          "sizeLines": 16203,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/scripts/run-migrations.js",
+          "language": "javascript",
+          "sizeLines": 88,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/utils/streaming-excel.js",
+          "language": "javascript",
+          "sizeLines": 389,
+          "fileCategory": "code"
+        }
+      ],
+      "batchImportData": {
+        "src/config/db.config.js": [],
+        "src/middleware/audit.js": [
+          "src/config/db.config.js"
+        ],
+        "src/middleware/transaction.js": [
+          "src/config/db.config.js"
+        ],
+        "src/middleware/validation.js": [],
+        "src/routes/api.routes.js": [
+          "src/config/db.config.js",
+          "src/middleware/audit.js",
+          "src/middleware/transaction.js",
+          "src/middleware/validation.js",
+          "src/realtime.js",
+          "src/utils/qr.js"
+        ],
+        "src/scripts/run-migrations.js": [
+          "src/config/db.config.js"
+        ],
+        "src/utils/streaming-excel.js": [
+          "src/config/db.config.js"
+        ]
+      },
+      "neighborMap": {
+        "src/config/db.config.js": [
+          {
+            "path": "src/server.js",
+            "batchIndex": 2,
+            "symbols": []
+          },
+          {
+            "path": "src/utils/qr.js",
+            "batchIndex": 2,
+            "symbols": []
+          }
+        ],
+        "src/routes/api.routes.js": [
+          {
+            "path": "src/realtime.js",
+            "batchIndex": 2,
+            "symbols": []
+          },
+          {
+            "path": "src/utils/qr.js",
+            "batchIndex": 2,
+            "symbols": []
+          },
+          {
+            "path": "src/server.js",
+            "batchIndex": 2,
+            "symbols": []
+          }
+        ]
+      }
+    },
+    {
+      "batchIndex": 2,
+      "files": [
+        {
+          "path": "src/realtime.js",
+          "language": "javascript",
+          "sizeLines": 116,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/routes/system-update.routes.js",
+          "language": "javascript",
+          "sizeLines": 260,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/server.js",
+          "language": "javascript",
+          "sizeLines": 440,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/utils/qr.js",
+          "language": "javascript",
+          "sizeLines": 156,
+          "fileCategory": "code"
+        }
+      ],
+      "batchImportData": {
+        "src/realtime.js": [
+          "src/utils/qr.js"
+        ],
+        "src/routes/system-update.routes.js": [
+          "src/utils/system-update.js"
+        ],
+        "src/server.js": [
+          "src/config/db.config.js",
+          "src/realtime.js",
+          "src/routes/api.routes.js",
+          "src/routes/system-update.routes.js"
+        ],
+        "src/utils/qr.js": [
+          "src/config/db.config.js"
+        ]
+      },
+      "neighborMap": {
+        "src/realtime.js": [
+          {
+            "path": "src/routes/api.routes.js",
+            "batchIndex": 1,
+            "symbols": []
+          }
+        ],
+        "src/routes/system-update.routes.js": [
+          {
+            "path": "src/utils/system-update.js",
+            "batchIndex": 3,
+            "symbols": []
+          }
+        ],
+        "src/server.js": [
+          {
+            "path": "src/config/db.config.js",
+            "batchIndex": 1,
+            "symbols": []
+          },
+          {
+            "path": "src/routes/api.routes.js",
+            "batchIndex": 1,
+            "symbols": []
+          }
+        ],
+        "src/utils/qr.js": [
+          {
+            "path": "src/config/db.config.js",
+            "batchIndex": 1,
+            "symbols": []
+          },
+          {
+            "path": "src/routes/api.routes.js",
+            "batchIndex": 1,
+            "symbols": []
+          }
+        ]
+      }
+    },
+    {
+      "batchIndex": 3,
+      "files": [
+        {
+          "path": "src/scripts/run-system-rollback.js",
+          "language": "javascript",
+          "sizeLines": 374,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/scripts/run-system-update.js",
+          "language": "javascript",
+          "sizeLines": 302,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/utils/system-update-plan.js",
+          "language": "javascript",
+          "sizeLines": 163,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/utils/system-update.js",
+          "language": "javascript",
+          "sizeLines": 88,
+          "fileCategory": "code"
+        }
+      ],
+      "batchImportData": {
+        "src/scripts/run-system-rollback.js": [
+          "src/utils/system-update-plan.js",
+          "src/utils/system-update.js"
+        ],
+        "src/scripts/run-system-update.js": [
+          "src/utils/system-update-plan.js",
+          "src/utils/system-update.js"
+        ],
+        "src/utils/system-update-plan.js": [
+          "src/utils/system-update.js"
+        ],
+        "src/utils/system-update.js": []
+      },
+      "neighborMap": {
+        "src/utils/system-update.js": [
+          {
+            "path": "src/routes/system-update.routes.js",
+            "batchIndex": 2,
+            "symbols": []
+          }
+        ]
+      }
+    },
+    {
+      "batchIndex": 4,
+      "files": [
+        {
+          "path": "src/migrations/007_add_performance_indexes.sql",
+          "language": "sql",
+          "sizeLines": 111,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/008_enhanced_audit_logging.sql",
+          "language": "sql",
+          "sizeLines": 56,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/009_defect_and_downtime_tracking.sql",
+          "language": "sql",
+          "sizeLines": 230,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/010_add_target_qty_to_products.sql",
+          "language": "sql",
+          "sizeLines": 6,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/011_add_shortfall_reason.sql",
+          "language": "sql",
+          "sizeLines": 3,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/012_employee_workstation_assignments.sql",
+          "language": "sql",
+          "sizeLines": 13,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/013_line_plan_workstations.sql",
+          "language": "sql",
+          "sizeLines": 53,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/014_workstation_plan_group.sql",
+          "language": "sql",
+          "sizeLines": 6,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/015_line_workstations.sql",
+          "language": "sql",
+          "sizeLines": 12,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/016_overtime.sql",
+          "language": "sql",
+          "sizeLines": 8,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/017_lpw_product_unique.sql",
+          "language": "sql",
+          "sizeLines": 11,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/018_ewa_is_overtime.sql",
+          "language": "sql",
+          "sizeLines": 14,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/019_lpw_ot_skipped.sql",
+          "language": "sql",
+          "sizeLines": 6,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/020_changeover_started_at.sql",
+          "language": "sql",
+          "sizeLines": 7,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/021_ot_plan.sql",
+          "language": "sql",
+          "sizeLines": 45,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/022_ot_progress.sql",
+          "language": "sql",
+          "sizeLines": 16,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/023_add_line_leader.sql",
+          "language": "sql",
+          "sizeLines": 2,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/023_ewa_is_linked.sql",
+          "language": "sql",
+          "sizeLines": 4,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/023_fix_product_sequence_constraint.sql",
+          "language": "sql",
+          "sizeLines": 14,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/023_ws_changeover.sql",
+          "language": "sql",
+          "sizeLines": 9,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/024_add_plan_month.sql",
+          "language": "sql",
+          "sizeLines": 3,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/024_group_wip.sql",
+          "language": "sql",
+          "sizeLines": 19,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/024_is_linked_default_false.sql",
+          "language": "sql",
+          "sizeLines": 6,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/024_osm_checked.sql",
+          "language": "sql",
+          "sizeLines": 8,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/025_material_provided.sql",
+          "language": "sql",
+          "sizeLines": 5,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/026_material_nullable.sql",
+          "language": "sql",
+          "sizeLines": 10,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/027_worker_departures.sql",
+          "language": "sql",
+          "sizeLines": 20,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/028_worker_adjustments.sql",
+          "language": "sql",
+          "sizeLines": 19,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/029_osm_product_level.sql",
+          "language": "sql",
+          "sizeLines": 13,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/030_co_employee_assignment.sql",
+          "language": "sql",
+          "sizeLines": 10,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/031_ot_supervisor_auth.sql",
+          "language": "sql",
+          "sizeLines": 9,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/032_attendance_link_tracking.sql",
+          "language": "sql",
+          "sizeLines": 23,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/033_employee_workstation_assignment_history.sql",
+          "language": "sql",
+          "sizeLines": 60,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/033_working_hours.sql",
+          "language": "sql",
+          "sizeLines": 12,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/034_workstation_changeover_events.sql",
+          "language": "sql",
+          "sizeLines": 51,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/035_ot_workstation_flow.sql",
+          "language": "sql",
+          "sizeLines": 18,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/036_daily_plan_delete_markers.sql",
+          "language": "sql",
+          "sizeLines": 12,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/037_changeover_primary_promotions.sql",
+          "language": "sql",
+          "sizeLines": 20,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/038_material_feed_events.sql",
+          "language": "sql",
+          "sizeLines": 21,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/039_ot_workstations_default_inactive.sql",
+          "language": "sql",
+          "sizeLines": 5,
+          "fileCategory": "data"
+        },
+        {
+          "path": "src/migrations/040_custom_takt_flag.sql",
+          "language": "sql",
+          "sizeLines": 5,
+          "fileCategory": "data"
+        }
+      ],
+      "batchImportData": {
+        "src/migrations/007_add_performance_indexes.sql": [],
+        "src/migrations/008_enhanced_audit_logging.sql": [],
+        "src/migrations/009_defect_and_downtime_tracking.sql": [],
+        "src/migrations/010_add_target_qty_to_products.sql": [],
+        "src/migrations/011_add_shortfall_reason.sql": [],
+        "src/migrations/012_employee_workstation_assignments.sql": [],
+        "src/migrations/013_line_plan_workstations.sql": [],
+        "src/migrations/014_workstation_plan_group.sql": [],
+        "src/migrations/015_line_workstations.sql": [],
+        "src/migrations/016_overtime.sql": [],
+        "src/migrations/017_lpw_product_unique.sql": [],
+        "src/migrations/018_ewa_is_overtime.sql": [],
+        "src/migrations/019_lpw_ot_skipped.sql": [],
+        "src/migrations/020_changeover_started_at.sql": [],
+        "src/migrations/021_ot_plan.sql": [],
+        "src/migrations/022_ot_progress.sql": [],
+        "src/migrations/023_add_line_leader.sql": [],
+        "src/migrations/023_ewa_is_linked.sql": [],
+        "src/migrations/023_fix_product_sequence_constraint.sql": [],
+        "src/migrations/023_ws_changeover.sql": [],
+        "src/migrations/024_add_plan_month.sql": [],
+        "src/migrations/024_group_wip.sql": [],
+        "src/migrations/024_is_linked_default_false.sql": [],
+        "src/migrations/024_osm_checked.sql": [],
+        "src/migrations/025_material_provided.sql": [],
+        "src/migrations/026_material_nullable.sql": [],
+        "src/migrations/027_worker_departures.sql": [],
+        "src/migrations/028_worker_adjustments.sql": [],
+        "src/migrations/029_osm_product_level.sql": [],
+        "src/migrations/030_co_employee_assignment.sql": [],
+        "src/migrations/031_ot_supervisor_auth.sql": [],
+        "src/migrations/032_attendance_link_tracking.sql": [],
+        "src/migrations/033_employee_workstation_assignment_history.sql": [],
+        "src/migrations/033_working_hours.sql": [],
+        "src/migrations/034_workstation_changeover_events.sql": [],
+        "src/migrations/035_ot_workstation_flow.sql": [],
+        "src/migrations/036_daily_plan_delete_markers.sql": [],
+        "src/migrations/037_changeover_primary_promotions.sql": [],
+        "src/migrations/038_material_feed_events.sql": [],
+        "src/migrations/039_ot_workstations_default_inactive.sql": [],
+        "src/migrations/040_custom_takt_flag.sql": []
+      },
+      "neighborMap": {}
+    },
+    {
+      "batchIndex": 5,
+      "files": [
+        {
+          "path": "src/public/admin.html",
+          "language": "html",
+          "sizeLines": 212,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/ie.html",
+          "language": "html",
+          "sizeLines": 345,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/index.html",
+          "language": "html",
+          "sizeLines": 248,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/management.html",
+          "language": "html",
+          "sizeLines": 123,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/supervisor.html",
+          "language": "html",
+          "sizeLines": 103,
+          "fileCategory": "markup"
+        }
+      ],
+      "batchImportData": {
+        "src/public/admin.html": [],
+        "src/public/ie.html": [],
+        "src/public/index.html": [],
+        "src/public/management.html": [],
+        "src/public/supervisor.html": []
+      },
+      "neighborMap": {}
+    },
+    {
+      "batchIndex": 6,
+      "files": [
+        {
+          "path": "src/public/css/admin.css",
+          "language": "css",
+          "sizeLines": 2050,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/css/ie.css",
+          "language": "css",
+          "sizeLines": 443,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/css/offline.css",
+          "language": "css",
+          "sizeLines": 199,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/css/shop-floor.css",
+          "language": "css",
+          "sizeLines": 904,
+          "fileCategory": "markup"
+        },
+        {
+          "path": "src/public/css/supervisor.css",
+          "language": "css",
+          "sizeLines": 1039,
+          "fileCategory": "markup"
+        }
+      ],
+      "batchImportData": {
+        "src/public/css/admin.css": [],
+        "src/public/css/ie.css": [],
+        "src/public/css/offline.css": [],
+        "src/public/css/shop-floor.css": [],
+        "src/public/css/supervisor.css": []
+      },
+      "neighborMap": {}
+    },
+    {
+      "batchIndex": 7,
+      "files": [
+        {
+          "path": ".env.example",
+          "language": "config",
+          "sizeLines": 42,
+          "fileCategory": "config"
+        },
+        {
+          "path": ".understand-anything/.understandignore",
+          "language": "unknown",
+          "sizeLines": 36,
+          "fileCategory": "code"
+        },
+        {
+          "path": "ecosystem.config.js",
+          "language": "javascript",
+          "sizeLines": 98,
+          "fileCategory": "code"
+        },
+        {
+          "path": "package.json",
+          "language": "json",
+          "sizeLines": 32,
+          "fileCategory": "config"
+        },
+        {
+          "path": "src/.graphifyignore",
+          "language": "unknown",
+          "sizeLines": 1,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/config/app.config.js",
+          "language": "javascript",
+          "sizeLines": 0,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/middleware/rbac.js",
+          "language": "javascript",
+          "sizeLines": 371,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/middleware/session.js",
+          "language": "javascript",
+          "sizeLines": 397,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/css/admin.css.bak",
+          "language": "bak",
+          "sizeLines": 1578,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/admin.js",
+          "language": "javascript",
+          "sizeLines": 11880,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/ie.js",
+          "language": "javascript",
+          "sizeLines": 205,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/login.js",
+          "language": "javascript",
+          "sizeLines": 44,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/low-output-alerts.js",
+          "language": "javascript",
+          "sizeLines": 131,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/management.js",
+          "language": "javascript",
+          "sizeLines": 2455,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/offline-db.js",
+          "language": "javascript",
+          "sizeLines": 280,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/offline-sync.js",
+          "language": "javascript",
+          "sizeLines": 335,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/optimistic-ui.js",
+          "language": "javascript",
+          "sizeLines": 474,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/shop-floor-ux.js",
+          "language": "javascript",
+          "sizeLines": 594,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/sse-manager.js",
+          "language": "javascript",
+          "sizeLines": 328,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/supervisor.js",
+          "language": "javascript",
+          "sizeLines": 4129,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/js/sw-register.js",
+          "language": "javascript",
+          "sizeLines": 6,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/line_plan_template.xlsx",
+          "language": "xlsx",
+          "sizeLines": 470,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/sw.js",
+          "language": "javascript",
+          "sizeLines": 13,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/WorkSync_Operational_Guide.docx",
+          "language": "docx",
+          "sizeLines": 101,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/public/WorkSync_Pitch_Deck.docx",
+          "language": "docx",
+          "sizeLines": 93,
+          "fileCategory": "code"
+        }
+      ],
+      "batchImportData": {
+        ".env.example": [],
+        ".understand-anything/.understandignore": [],
+        "ecosystem.config.js": [],
+        "package.json": [],
+        "src/.graphifyignore": [],
+        "src/config/app.config.js": [],
+        "src/middleware/rbac.js": [],
+        "src/middleware/session.js": [],
+        "src/public/css/admin.css.bak": [],
+        "src/public/js/admin.js": [],
+        "src/public/js/ie.js": [],
+        "src/public/js/login.js": [],
+        "src/public/js/low-output-alerts.js": [],
+        "src/public/js/management.js": [],
+        "src/public/js/offline-db.js": [],
+        "src/public/js/offline-sync.js": [],
+        "src/public/js/optimistic-ui.js": [],
+        "src/public/js/shop-floor-ux.js": [],
+        "src/public/js/sse-manager.js": [],
+        "src/public/js/supervisor.js": [],
+        "src/public/js/sw-register.js": [],
+        "src/public/line_plan_template.xlsx": [],
+        "src/public/sw.js": [],
+        "src/public/WorkSync_Operational_Guide.docx": [],
+        "src/public/WorkSync_Pitch_Deck.docx": []
+      },
+      "neighborMap": {}
+    },
+    {
+      "batchIndex": 8,
+      "files": [
+        {
+          "path": "src/public/WorkSync_Technical_Report.docx",
+          "language": "docx",
+          "sizeLines": 147,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/schema.base.migrations",
+          "language": "migrations",
+          "sizeLines": 33,
+          "fileCategory": "code"
+        },
+        {
+          "path": "src/schema.base.sql",
+          "language": "sql",
+          "sizeLines": 3610,
+          "fileCategory": "data"
+        }
+      ],
+      "batchImportData": {
+        "src/public/WorkSync_Technical_Report.docx": [],
+        "src/schema.base.migrations": [],
+        "src/schema.base.sql": []
+      },
+      "neighborMap": {}
+    }
+  ]
+}

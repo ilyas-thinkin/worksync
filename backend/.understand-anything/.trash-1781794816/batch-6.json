@@ -1,0 +1,52 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/public/css/admin.css",
+      "type": "file",
+      "name": "admin.css",
+      "filePath": "src/public/css/admin.css",
+      "summary": "Primary design-system stylesheet for the admin dashboard, defining the leather/amber-gold CSS custom-property theme (colors, spacing) plus styles for the sidebar nav, mobile header, cards, stat widgets, data tables with sticky columns, forms, dropdown panels, modals, badges, and a floating action button.",
+      "tags": ["styling", "design-system", "admin-panel", "css-variables", "responsive"],
+      "complexity": "complex",
+      "languageNotes": "Uses a large `:root` custom-property palette (leather/amber theme) consumed throughout the file and likely shared conceptually with other panel stylesheets; organized into ~50 commented sections covering layout, tables, forms, and overlays."
+    },
+    {
+      "id": "file:src/public/css/ie.css",
+      "type": "file",
+      "name": "ie.css",
+      "filePath": "src/public/css/ie.css",
+      "summary": "Mobile-first stylesheet for the Industrial Engineer (IE) panel, styling the IE container, line-balancing/workstation-plan views, and related layout sections specific to the IE role.",
+      "tags": ["styling", "ie-panel", "responsive", "mobile-first", "layout"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/css/offline.css",
+      "type": "file",
+      "name": "offline.css",
+      "filePath": "src/public/css/offline.css",
+      "summary": "Styles for offline/connectivity UI affordances: a fixed offline status indicator, sync-pending badge, offline banner, queued-action indicator, header connection status, and toast notifications for sync events, with mobile adjustments.",
+      "tags": ["styling", "offline-support", "notifications", "status-indicator", "responsive"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/public/css/shop-floor.css",
+      "type": "file",
+      "name": "shop-floor.css",
+      "filePath": "src/public/css/shop-floor.css",
+      "summary": "Touch-optimized UX stylesheet for shop-floor screens, defining extra-large touch targets for gloved-hand interaction, action button states (success/error/warning/loading with animations), and enlarged quantity-input controls.",
+      "tags": ["styling", "shop-floor", "touch-ui", "accessibility", "animation"],
+      "complexity": "moderate",
+      "languageNotes": "Extends the base design tokens with shop-floor-specific `:root` variables (e.g. `--touch-target-xl/xxl/giant`) tuned for industrial touch-screen use."
+    },
+    {
+      "id": "file:src/public/css/supervisor.css",
+      "type": "file",
+      "name": "supervisor.css",
+      "filePath": "src/public/css/supervisor.css",
+      "summary": "Mobile-first stylesheet for the Supervisor panel, covering the supervisor header/controls and the Morning/Hourly/Adjustment/Feed/OT/Shift-Summary section layouts plus status badge color variants.",
+      "tags": ["styling", "supervisor-panel", "responsive", "mobile-first", "layout"],
+      "complexity": "complex"
+    }
+  ],
+  "edges": []
+}

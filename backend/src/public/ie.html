@@ -102,7 +102,24 @@
             overflow-y: auto; flex: 1; padding: 16px;
             -webkit-overflow-scrolling: touch;
         }
+        .loa-tabs {
+            display: flex; gap: 4px; padding: 10px 20px 0;
+            border-bottom: 1px solid #e5e0d8; flex-shrink: 0;
+        }
+        .loa-tab {
+            border: none; background: transparent; cursor: pointer;
+            font-size: 13px; font-weight: 600; color: #78716C;
+            padding: 8px 14px; border-radius: 8px 8px 0 0;
+            margin-bottom: -1px; border-bottom: 2px solid transparent;
+        }
+        .loa-tab.active { color: #B91C1C; border-bottom-color: #B91C1C; }
         .loa-subtitle { font-size: 13px; color: #78716C; margin: 0 0 12px; }
+        .loa-summary-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .loa-summary-table th { background: #FFFAF3; padding: 8px 10px; text-align: left; font-weight: 600; color: #78716C; border-bottom: 1px solid #e5e0d8; white-space: nowrap; }
+        .loa-summary-table td { padding: 8px 10px; border-bottom: 1px solid #e5e0d8; white-space: nowrap; }
+        .loa-summary-table tr:last-child td { border-bottom: none; }
+        .loa-summary-achieved-low { color: #B91C1C; font-weight: 700; }
+        .loa-summary-achieved-ok { color: #15803D; font-weight: 600; }
         .loa-list { display: flex; flex-direction: column; gap: 12px; }
         .loa-card { background: #FBF5EA; border: 1px solid #e5e0d8; border-radius: 12px; overflow: hidden; }
         .loa-card-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 6px; gap: 8px; flex-wrap: wrap; }
@@ -301,6 +318,10 @@
                         <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
                     </svg>
                 </button>
+            </div>
+            <div class="loa-tabs" id="loa-tabs">
+                <button class="loa-tab active" type="button" data-tab="summary">Summary</button>
+                <button class="loa-tab" type="button" data-tab="details">Details</button>
             </div>
             <div class="loa-modal-body" id="loa-modal-body">
                 <div class="loa-loading">Loading…</div>

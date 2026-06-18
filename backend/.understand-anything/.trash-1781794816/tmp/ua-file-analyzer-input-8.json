@@ -1,0 +1,13 @@
+{
+  "projectRoot": "/home/worksync/worksync/backend",
+  "batchFiles": [
+    {"path": "src/public/WorkSync_Technical_Report.docx", "language": "docx", "sizeLines": 147, "fileCategory": "code"},
+    {"path": "src/schema.base.migrations", "language": "migrations", "sizeLines": 33, "fileCategory": "code"},
+    {"path": "src/schema.base.sql", "language": "sql", "sizeLines": 3610, "fileCategory": "data"}
+  ],
+  "batchImportData": {
+    "src/public/WorkSync_Technical_Report.docx": [],
+    "src/schema.base.migrations": [],
+    "src/schema.base.sql": []
+  }
+}

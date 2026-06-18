@@ -1,0 +1,47 @@
+{
+  "scriptCompleted": true,
+  "filesAnalyzed": 5,
+  "filesSkipped": [],
+  "results": [
+    {
+      "path": "src/public/admin.html",
+      "language": "html",
+      "fileCategory": "markup",
+      "totalLines": 212,
+      "nonEmptyLines": 207,
+      "metrics": {}
+    },
+    {
+      "path": "src/public/ie.html",
+      "language": "html",
+      "fileCategory": "markup",
+      "totalLines": 366,
+      "nonEmptyLines": 359,
+      "metrics": {}
+    },
+    {
+      "path": "src/public/index.html",
+      "language": "html",
+      "fileCategory": "markup",
+      "totalLines": 248,
+      "nonEmptyLines": 246,
+      "metrics": {}
+    },
+    {
+      "path": "src/public/management.html",
+      "language": "html",
+      "fileCategory": "markup",
+      "totalLines": 123,
+      "nonEmptyLines": 120,
+      "metrics": {}
+    },
+    {
+      "path": "src/public/supervisor.html",
+      "language": "html",
+      "fileCategory": "markup",
+      "totalLines": 103,
+      "nonEmptyLines": 98,
+      "metrics": {}
+    }
+  ]
+}

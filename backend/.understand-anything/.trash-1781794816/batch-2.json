@@ -1,0 +1,234 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/realtime.js",
+      "type": "file",
+      "name": "realtime.js",
+      "filePath": "src/realtime.js",
+      "summary": "Implements the server-sent events (SSE) hub for real-time UI updates: holds the connected-client set, broadcasts data_change events, and listens on a dedicated PostgreSQL connection for LISTEN/NOTIFY 'data_change' messages to auto-regenerate QR codes and push updates to clients.",
+      "tags": ["service", "event-handler", "real-time", "sse", "pubsub"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/routes/system-update.routes.js",
+      "type": "file",
+      "name": "system-update.routes.js",
+      "filePath": "src/routes/system-update.routes.js",
+      "summary": "Express router exposing admin endpoints to check git/deploy status, trigger a self-update (git pull + restart) job, and roll back to the latest backup tag/DB dump by shelling out to git and spawning background update scripts.",
+      "tags": ["api-handler", "deployment", "service", "background-job"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:src/server.js",
+      "type": "file",
+      "name": "server.js",
+      "filePath": "src/server.js",
+      "summary": "Main application entry point: configures Express middleware (CORS, JSON, HTTPS redirect, static assets), implements custom cookie-based JWT-like auth (sign/verify token, role guards), mounts the API and system-update routers, starts HTTP/HTTPS listeners, wires systemd watchdog notify, and handles graceful shutdown of servers, DB pool, and realtime connections.",
+      "tags": ["entry-point", "middleware", "authentication", "server-bootstrap"],
+      "complexity": "complex"
+    },
+    {
+      "id": "file:src/utils/qr.js",
+      "type": "file",
+      "name": "qr.js",
+      "filePath": "src/utils/qr.js",
+      "summary": "Utility module that generates labeled SVG QR codes for employees, production lines, and workstations, writing them to disk under the configured qrcodes directory and updating each entity's qr_code_path/qr_generated_at columns in the database.",
+      "tags": ["utility", "service", "qr-generation", "file-io"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/realtime.js:handleEvents",
+      "type": "function",
+      "name": "handleEvents",
+      "filePath": "src/realtime.js",
+      "lineRange": [15, 27],
+      "summary": "Express request handler that upgrades a connection to an SSE stream, registers the response object in the in-memory clients set, and deregisters it when the client disconnects.",
+      "tags": ["event-handler", "sse", "api-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/realtime.js:broadcast",
+      "type": "function",
+      "name": "broadcast",
+      "filePath": "src/realtime.js",
+      "lineRange": [29, 34],
+      "summary": "Serializes an event name and payload to JSON and writes it as an SSE message to every currently connected client.",
+      "tags": ["event-handler", "sse", "pubsub"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/realtime.js:closeAllConnections",
+      "type": "function",
+      "name": "closeAllConnections",
+      "filePath": "src/realtime.js",
+      "lineRange": [42, 58],
+      "summary": "Ends every open SSE response, clears the clients set, and closes the dedicated PostgreSQL LISTEN connection during graceful shutdown.",
+      "tags": ["shutdown", "sse", "cleanup"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/realtime.js:startDbListener",
+      "type": "function",
+      "name": "startDbListener",
+      "filePath": "src/realtime.js",
+      "lineRange": [67, 116],
+      "summary": "Opens a dedicated pg Client, issues LISTEN data_change, and on each notification parses the payload, regenerates QR codes for newly inserted employees/lines/processes/operations, and broadcasts the change to SSE clients.",
+      "tags": ["event-handler", "database", "pubsub", "qr-generation"],
+      "complexity": "complex",
+      "languageNotes": "Calls qr.generateProcessQrById and qr.generateOperationQrById, which are not present among qr.js's exported functions — a likely latent bug where the QR auto-regeneration silently throws on INSERT of product_processes/operations."
+    },
+    {
+      "id": "function:src/routes/system-update.routes.js:getRepoValue",
+      "type": "function",
+      "name": "getRepoValue",
+      "filePath": "src/routes/system-update.routes.js",
+      "lineRange": [17, 26],
+      "summary": "Runs a git command synchronously in the project root and returns its trimmed stdout, swallowing errors as null.",
+      "tags": ["utility", "git", "shell-exec"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/routes/system-update.routes.js:resolveRollbackTarget",
+      "type": "function",
+      "name": "resolveRollbackTarget",
+      "filePath": "src/routes/system-update.routes.js",
+      "lineRange": [52, 94],
+      "summary": "Determines the git tag and database backup path to roll back to, validating that no update job is currently running and that a previous backup exists before allowing a rollback.",
+      "tags": ["deployment", "validation", "rollback"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/routes/system-update.routes.js:spawnJob",
+      "type": "function",
+      "name": "spawnJob",
+      "filePath": "src/routes/system-update.routes.js",
+      "lineRange": [96, 107],
+      "summary": "Spawns a detached background Node script (update or rollback) by job id and unrefs the child process so it survives the parent request lifecycle.",
+      "tags": ["background-job", "deployment", "process-management"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/server.js:verifyToken",
+      "type": "function",
+      "name": "verifyToken",
+      "filePath": "src/server.js",
+      "lineRange": [72, 88],
+      "summary": "Validates a custom signed token's HMAC-SHA256 signature against AUTH_SECRET and checks its expiry, returning the decoded payload or null.",
+      "tags": ["authentication", "security", "validation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/server.js:buildAuthCookie",
+      "type": "function",
+      "name": "buildAuthCookie",
+      "filePath": "src/server.js",
+      "lineRange": [95, 107],
+      "summary": "Builds the Set-Cookie header value for the auth token, applying HttpOnly/SameSite/Secure flags based on whether the request was made over HTTPS.",
+      "tags": ["authentication", "security", "cookie"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/server.js:setupSystemdNotify",
+      "type": "function",
+      "name": "setupSystemdNotify",
+      "filePath": "src/server.js",
+      "lineRange": [348, 365],
+      "summary": "Sends READY=1 to systemd via sd_notify on startup and schedules periodic WATCHDOG=1 pings at half the configured watchdog interval, enabling systemd service supervision.",
+      "tags": ["service", "monitoring", "systemd"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/server.js:gracefulShutdown",
+      "type": "function",
+      "name": "gracefulShutdown",
+      "filePath": "src/server.js",
+      "lineRange": [372, 419],
+      "summary": "Handles SIGTERM/SIGINT by closing the HTTP and HTTPS servers, ending the PostgreSQL pool, closing all realtime SSE connections, and force-exiting the process if shutdown does not complete within a timeout.",
+      "tags": ["shutdown", "cleanup", "process-management"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/utils/qr.js:writeQrWithLabel",
+      "type": "function",
+      "name": "writeQrWithLabel",
+      "filePath": "src/utils/qr.js",
+      "lineRange": [21, 64],
+      "summary": "Renders a QR code to SVG via the qrcode library, then post-processes the SVG to append one or two text labels beneath the code before writing the final file to disk.",
+      "tags": ["qr-generation", "svg", "file-io"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/utils/qr.js:generateEmployeeQrById",
+      "type": "function",
+      "name": "generateEmployeeQrById",
+      "filePath": "src/utils/qr.js",
+      "lineRange": [66, 87],
+      "summary": "Loads an employee by id, generates a labeled QR (employee code + name) under the employees QR directory, and updates the employee's qr_code_path and qr_generated_at columns.",
+      "tags": ["qr-generation", "database", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/utils/qr.js:generateLineQrById",
+      "type": "function",
+      "name": "generateLineQrById",
+      "filePath": "src/utils/qr.js",
+      "lineRange": [89, 110],
+      "summary": "Loads a production line by id, generates a labeled QR (line code + name) under the lines QR directory, and updates the line's qr_code_path and qr_generated_at columns.",
+      "tags": ["qr-generation", "database", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/utils/qr.js:generateWorkstationQrForLine",
+      "type": "function",
+      "name": "generateWorkstationQrForLine",
+      "filePath": "src/utils/qr.js",
+      "lineRange": [112, 150],
+      "summary": "Generates a labeled QR code for every workstation belonging to a given production line, writing each SVG file and collecting the results to return to the caller.",
+      "tags": ["qr-generation", "database", "batch-processing"],
+      "complexity": "complex"
+    }
+  ],
+  "edges": [
+    {"source": "file:src/realtime.js", "target": "file:src/utils/qr.js", "type": "imports", "direction": "forward", "weight": 0.7},
+    {"source": "file:src/routes/system-update.routes.js", "target": "file:src/utils/system-update.js", "type": "imports", "direction": "forward", "weight": 0.7},
+    {"source": "file:src/server.js", "target": "file:src/config/db.config.js", "type": "imports", "direction": "forward", "weight": 0.7},
+    {"source": "file:src/server.js", "target": "file:src/realtime.js", "type": "imports", "direction": "forward", "weight": 0.7},
+    {"source": "file:src/server.js", "target": "file:src/routes/api.routes.js", "type": "imports", "direction": "forward", "weight": 0.7},
+    {"source": "file:src/server.js", "target": "file:src/routes/system-update.routes.js", "type": "imports", "direction": "forward", "weight": 0.7},
+    {"source": "file:src/utils/qr.js", "target": "file:src/config/db.config.js", "type": "imports", "direction": "forward", "weight": 0.7},
+
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:handleEvents", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:broadcast", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:closeAllConnections", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:startDbListener", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:handleEvents", "type": "exports", "direction": "forward", "weight": 0.8},
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:broadcast", "type": "exports", "direction": "forward", "weight": 0.8},
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:closeAllConnections", "type": "exports", "direction": "forward", "weight": 0.8},
+    {"source": "file:src/realtime.js", "target": "function:src/realtime.js:startDbListener", "type": "exports", "direction": "forward", "weight": 0.8},
+
+    {"source": "file:src/routes/system-update.routes.js", "target": "function:src/routes/system-update.routes.js:getRepoValue", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/routes/system-update.routes.js", "target": "function:src/routes/system-update.routes.js:resolveRollbackTarget", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/routes/system-update.routes.js", "target": "function:src/routes/system-update.routes.js:spawnJob", "type": "contains", "direction": "forward", "weight": 1.0},
+
+    {"source": "file:src/server.js", "target": "function:src/server.js:verifyToken", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/server.js", "target": "function:src/server.js:buildAuthCookie", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/server.js", "target": "function:src/server.js:setupSystemdNotify", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/server.js", "target": "function:src/server.js:gracefulShutdown", "type": "contains", "direction": "forward", "weight": 1.0},
+
+    {"source": "file:src/utils/qr.js", "target": "function:src/utils/qr.js:writeQrWithLabel", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/utils/qr.js", "target": "function:src/utils/qr.js:generateEmployeeQrById", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/utils/qr.js", "target": "function:src/utils/qr.js:generateLineQrById", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/utils/qr.js", "target": "function:src/utils/qr.js:generateWorkstationQrForLine", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:src/utils/qr.js", "target": "function:src/utils/qr.js:generateEmployeeQrById", "type": "exports", "direction": "forward", "weight": 0.8},
+    {"source": "file:src/utils/qr.js", "target": "function:src/utils/qr.js:generateLineQrById", "type": "exports", "direction": "forward", "weight": 0.8},
+    {"source": "file:src/utils/qr.js", "target": "function:src/utils/qr.js:generateWorkstationQrForLine", "type": "exports", "direction": "forward", "weight": 0.8},
+
+    {"source": "function:src/realtime.js:startDbListener", "target": "function:src/realtime.js:broadcast", "type": "calls", "direction": "forward", "weight": 0.8},
+    {"source": "function:src/realtime.js:startDbListener", "target": "function:src/utils/qr.js:generateEmployeeQrById", "type": "calls", "direction": "forward", "weight": 0.8},
+    {"source": "function:src/realtime.js:startDbListener", "target": "function:src/utils/qr.js:generateLineQrById", "type": "calls", "direction": "forward", "weight": 0.8},
+
+    {"source": "function:src/server.js:gracefulShutdown", "target": "function:src/realtime.js:closeAllConnections", "type": "calls", "direction": "forward", "weight": 0.8},
+
+    {"source": "function:src/routes/system-update.routes.js:resolveRollbackTarget", "target": "function:src/routes/system-update.routes.js:getRepoValue", "type": "calls", "direction": "forward", "weight": 0.8}
+  ]
+}

@@ -1,0 +1,328 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/config/db.config.js",
+      "type": "file",
+      "name": "db.config.js",
+      "filePath": "src/config/db.config.js",
+      "summary": "Configures and exports the shared PostgreSQL connection pool (pg.Pool) used across the entire backend, including a custom type parser that returns DATE columns as plain strings to avoid IST timezone off-by-one errors.",
+      "tags": ["config", "database", "singleton", "entry-point"],
+      "complexity": "simple",
+      "languageNotes": "Overrides pg's default DATE (OID 1082) type parser globally so all queries in the app receive raw YYYY-MM-DD strings instead of UTC-shifted Date objects."
+    },
+    {
+      "id": "file:src/middleware/audit.js",
+      "type": "file",
+      "name": "audit.js",
+      "filePath": "src/middleware/audit.js",
+      "summary": "Express middleware and helper functions for recording and querying audit log entries (who changed what, when, from where) across the application's data tables.",
+      "tags": ["middleware", "audit", "logging", "security"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/middleware/transaction.js",
+      "type": "file",
+      "name": "transaction.js",
+      "filePath": "src/middleware/transaction.js",
+      "summary": "Database transaction helpers providing wrapped transaction execution, isolation level control, retry-on-conflict logic, savepoints, and row-level locking for PostgreSQL operations.",
+      "tags": ["middleware", "database", "transaction", "concurrency"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/middleware/validation.js",
+      "type": "file",
+      "name": "validation.js",
+      "filePath": "src/middleware/validation.js",
+      "summary": "Zod-based request validation middleware defining schemas for all major entities (users, lines, employees, products, daily plans, progress, assignments) plus body/query/param validators and input sanitization.",
+      "tags": ["middleware", "validation", "schema-definition", "security"],
+      "complexity": "moderate",
+      "languageNotes": "Centralizes Zod schemas as a single exported `schemas` map plus reusable primitive validators (positiveInt, dateString, empCode, etc.) shared across route handlers."
+    },
+    {
+      "id": "function:src/middleware/audit.js:getClientIP",
+      "type": "function",
+      "name": "getClientIP",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [12, 21],
+      "summary": "Extracts the originating client IP address from an Express request, accounting for proxy headers.",
+      "tags": ["utility", "middleware", "security"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/audit.js:getUserAgent",
+      "type": "function",
+      "name": "getUserAgent",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [26, 28],
+      "summary": "Reads the User-Agent header from an Express request for audit logging context.",
+      "tags": ["utility", "middleware"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/audit.js:getSessionId",
+      "type": "function",
+      "name": "getSessionId",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [33, 37],
+      "summary": "Resolves a session identifier from the request for correlating audit entries with a user session.",
+      "tags": ["utility", "middleware", "audit"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/audit.js:logAudit",
+      "type": "function",
+      "name": "logAudit",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [43, 84],
+      "summary": "Writes a structured audit log entry (table, action, record id, actor, IP, timestamp) to the audit_logs table.",
+      "tags": ["audit", "logging", "database"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/audit.js:auditMiddleware",
+      "type": "function",
+      "name": "auditMiddleware",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [110, 154],
+      "summary": "Express middleware factory that wraps a route handler to automatically log create/update/delete actions on a given table.",
+      "tags": ["middleware", "audit", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/audit.js:getAuditHistory",
+      "type": "function",
+      "name": "getAuditHistory",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [159, 172],
+      "summary": "Retrieves the audit trail of changes for a specific table and record id.",
+      "tags": ["audit", "database", "query"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/audit.js:getAuditSummary",
+      "type": "function",
+      "name": "getAuditSummary",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [177, 185],
+      "summary": "Produces an aggregated summary of recent audit activity for dashboards or admin review.",
+      "tags": ["audit", "database", "reporting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/audit.js:getRecentCriticalChanges",
+      "type": "function",
+      "name": "getRecentCriticalChanges",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [190, 193],
+      "summary": "Fetches the most recent high-impact audit log entries (e.g., deletions, critical field changes) for monitoring.",
+      "tags": ["audit", "database", "monitoring"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/audit.js:searchAuditLogs",
+      "type": "function",
+      "name": "searchAuditLogs",
+      "filePath": "src/middleware/audit.js",
+      "lineRange": [198, 249],
+      "summary": "Performs a filterable, paginated search across the audit_logs table by table name, action, actor, or date range.",
+      "tags": ["audit", "database", "query"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:withTransaction",
+      "type": "function",
+      "name": "withTransaction",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [22, 35],
+      "summary": "Runs a callback within a BEGIN/COMMIT/ROLLBACK database transaction, releasing the client afterward.",
+      "tags": ["transaction", "database", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:withClient",
+      "type": "function",
+      "name": "withClient",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [44, 51],
+      "summary": "Acquires a pooled database client, runs a callback with it, and guarantees release back to the pool.",
+      "tags": ["database", "utility", "connection-pooling"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:withIsolation",
+      "type": "function",
+      "name": "withIsolation",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [70, 83],
+      "summary": "Executes a transaction with an explicit SQL isolation level (e.g., SERIALIZABLE) for stronger consistency guarantees.",
+      "tags": ["transaction", "database", "concurrency"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:withRetry",
+      "type": "function",
+      "name": "withRetry",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [94, 119],
+      "summary": "Retries a transactional operation on serialization/deadlock failures with backoff, used for concurrency-sensitive writes.",
+      "tags": ["transaction", "database", "concurrency", "retry"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:createSavepoint",
+      "type": "function",
+      "name": "createSavepoint",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [128, 130],
+      "summary": "Issues a SQL SAVEPOINT within an active transaction for partial rollback support.",
+      "tags": ["transaction", "database", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:rollbackToSavepoint",
+      "type": "function",
+      "name": "rollbackToSavepoint",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [138, 140],
+      "summary": "Rolls back a transaction to a previously created savepoint.",
+      "tags": ["transaction", "database", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:releaseSavepoint",
+      "type": "function",
+      "name": "releaseSavepoint",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [148, 150],
+      "summary": "Releases a savepoint after the partial operation it guarded has succeeded.",
+      "tags": ["transaction", "database", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:transactionMiddleware",
+      "type": "function",
+      "name": "transactionMiddleware",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [156, 160],
+      "summary": "Express middleware that attaches transaction helpers to the request/response cycle for downstream route handlers.",
+      "tags": ["middleware", "transaction", "event-handler"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:lockForUpdate",
+      "type": "function",
+      "name": "lockForUpdate",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [172, 178],
+      "summary": "Issues a SELECT ... FOR UPDATE to lock a single row by column value for the duration of a transaction.",
+      "tags": ["database", "concurrency", "locking"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/transaction.js:lockRowsForUpdate",
+      "type": "function",
+      "name": "lockRowsForUpdate",
+      "filePath": "src/middleware/transaction.js",
+      "lineRange": [189, 195],
+      "summary": "Issues a SELECT ... FOR UPDATE to lock multiple rows matching a set of column values within a transaction.",
+      "tags": ["database", "concurrency", "locking"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/validation.js:validateBody",
+      "type": "function",
+      "name": "validateBody",
+      "filePath": "src/middleware/validation.js",
+      "lineRange": [198, 216],
+      "summary": "Express middleware factory that validates req.body against a given Zod schema and returns a 400 with details on failure.",
+      "tags": ["middleware", "validation", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/validation.js:validateQuery",
+      "type": "function",
+      "name": "validateQuery",
+      "filePath": "src/middleware/validation.js",
+      "lineRange": [223, 241],
+      "summary": "Express middleware factory that validates req.query against a given Zod schema and returns a 400 with details on failure.",
+      "tags": ["middleware", "validation", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/validation.js:validateParams",
+      "type": "function",
+      "name": "validateParams",
+      "filePath": "src/middleware/validation.js",
+      "lineRange": [248, 266],
+      "summary": "Express middleware factory that validates req.params against a given Zod schema and returns a 400 with details on failure.",
+      "tags": ["middleware", "validation", "event-handler"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/validation.js:sanitizeInputs",
+      "type": "function",
+      "name": "sanitizeInputs",
+      "filePath": "src/middleware/validation.js",
+      "lineRange": [285, 294],
+      "summary": "Global Express middleware that recursively sanitizes string fields in incoming request bodies to mitigate injection/XSS risks.",
+      "tags": ["middleware", "validation", "security"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    { "source": "file:src/middleware/audit.js", "target": "file:src/config/db.config.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+    { "source": "file:src/middleware/transaction.js", "target": "file:src/config/db.config.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getClientIP", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getUserAgent", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getSessionId", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:logAudit", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:auditMiddleware", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getAuditHistory", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getAuditSummary", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getRecentCriticalChanges", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:searchAuditLogs", "type": "contains", "direction": "forward", "weight": 1.0 },
+
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:logAudit", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:auditMiddleware", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getAuditHistory", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getAuditSummary", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getRecentCriticalChanges", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:searchAuditLogs", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getClientIP", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getUserAgent", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/audit.js", "target": "function:src/middleware/audit.js:getSessionId", "type": "exports", "direction": "forward", "weight": 0.8 },
+
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withTransaction", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withClient", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withIsolation", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withRetry", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:createSavepoint", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:rollbackToSavepoint", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:releaseSavepoint", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:transactionMiddleware", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:lockForUpdate", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:lockRowsForUpdate", "type": "contains", "direction": "forward", "weight": 1.0 },
+
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withTransaction", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withClient", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withIsolation", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:withRetry", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:createSavepoint", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:rollbackToSavepoint", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:releaseSavepoint", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:transactionMiddleware", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:lockForUpdate", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/transaction.js", "target": "function:src/middleware/transaction.js:lockRowsForUpdate", "type": "exports", "direction": "forward", "weight": 0.8 },
+
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:validateBody", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:validateQuery", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:validateParams", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:sanitizeInputs", "type": "contains", "direction": "forward", "weight": 1.0 },
+
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:validateBody", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:validateQuery", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:validateParams", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/middleware/validation.js", "target": "function:src/middleware/validation.js:sanitizeInputs", "type": "exports", "direction": "forward", "weight": 0.8 }
+  ]
+}

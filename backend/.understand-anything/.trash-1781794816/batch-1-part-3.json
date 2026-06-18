@@ -1,0 +1,134 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/scripts/run-migrations.js",
+      "type": "file",
+      "name": "run-migrations.js",
+      "filePath": "src/scripts/run-migrations.js",
+      "summary": "Standalone CLI script that applies pending SQL migration files to the PostgreSQL database, tracking which migrations have already been run in a migrations table.",
+      "tags": ["entry-point", "database", "migration", "script"],
+      "complexity": "simple",
+      "languageNotes": "Run directly via `node` rather than required as a module; has no module.exports and calls main().catch() at the bottom to handle and report failures before closing the pool."
+    },
+    {
+      "id": "file:src/utils/streaming-excel.js",
+      "type": "file",
+      "name": "streaming-excel.js",
+      "filePath": "src/utils/streaming-excel.js",
+      "summary": "Utility for generating large Excel reports (daily and date-range production reports) using ExcelJS's streaming writer so workbooks are written directly to the HTTP response without buffering the whole file in memory.",
+      "tags": ["utility", "reporting", "data-pipeline", "service"],
+      "complexity": "moderate",
+      "languageNotes": "Uses ExcelJS's WorkbookWriter streaming API to keep memory usage low for large daily/range exports, committing each sheet/row incrementally instead of building an in-memory workbook."
+    },
+    {
+      "id": "function:src/scripts/run-migrations.js:ensureMigrationsTable",
+      "type": "function",
+      "name": "ensureMigrationsTable",
+      "filePath": "src/scripts/run-migrations.js",
+      "lineRange": [9, 16],
+      "summary": "Creates the migrations tracking table if it does not already exist.",
+      "tags": ["database", "migration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/scripts/run-migrations.js:getAppliedMigrations",
+      "type": "function",
+      "name": "getAppliedMigrations",
+      "filePath": "src/scripts/run-migrations.js",
+      "lineRange": [18, 21],
+      "summary": "Queries the migrations table to determine which migration files have already been applied.",
+      "tags": ["database", "migration", "query"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/scripts/run-migrations.js:getMigrationFiles",
+      "type": "function",
+      "name": "getMigrationFiles",
+      "filePath": "src/scripts/run-migrations.js",
+      "lineRange": [23, 32],
+      "summary": "Reads the migrations directory and returns the list of SQL migration files in order.",
+      "tags": ["migration", "utility"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/scripts/run-migrations.js:applyMigration",
+      "type": "function",
+      "name": "applyMigration",
+      "filePath": "src/scripts/run-migrations.js",
+      "lineRange": [34, 55],
+      "summary": "Executes a single migration file's SQL against the database and records it as applied.",
+      "tags": ["database", "migration"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/scripts/run-migrations.js:main",
+      "type": "function",
+      "name": "main",
+      "filePath": "src/scripts/run-migrations.js",
+      "lineRange": [57, 78],
+      "summary": "Entry point that orchestrates ensuring the migrations table exists, finding pending migration files, and applying them in order.",
+      "tags": ["entry-point", "migration", "service"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/utils/streaming-excel.js:createStreamingWorkbook",
+      "type": "function",
+      "name": "createStreamingWorkbook",
+      "filePath": "src/utils/streaming-excel.js",
+      "lineRange": [15, 29],
+      "summary": "Creates an ExcelJS streaming WorkbookWriter piped directly to the HTTP response with the appropriate download headers.",
+      "tags": ["utility", "reporting", "factory"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/streaming-excel.js:addStreamingSheet",
+      "type": "function",
+      "name": "addStreamingSheet",
+      "filePath": "src/utils/streaming-excel.js",
+      "lineRange": [73, 147],
+      "summary": "Adds a worksheet to a streaming workbook and writes rows incrementally from a database query result, applying header styling.",
+      "tags": ["reporting", "database", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/utils/streaming-excel.js:exportDailyReportStreaming",
+      "type": "function",
+      "name": "exportDailyReportStreaming",
+      "filePath": "src/utils/streaming-excel.js",
+      "lineRange": [154, 295],
+      "summary": "Streams a complete daily production report workbook (multiple sheets) directly to the HTTP response for a given date.",
+      "tags": ["reporting", "database", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/utils/streaming-excel.js:exportRangeReportStreaming",
+      "type": "function",
+      "name": "exportRangeReportStreaming",
+      "filePath": "src/utils/streaming-excel.js",
+      "lineRange": [303, 381],
+      "summary": "Streams a production report workbook aggregated over a date range directly to the HTTP response.",
+      "tags": ["reporting", "database", "service"],
+      "complexity": "complex"
+    }
+  ],
+  "edges": [
+    { "source": "file:src/scripts/run-migrations.js", "target": "file:src/config/db.config.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+    { "source": "file:src/utils/streaming-excel.js", "target": "file:src/config/db.config.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+
+    { "source": "file:src/scripts/run-migrations.js", "target": "function:src/scripts/run-migrations.js:ensureMigrationsTable", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-migrations.js", "target": "function:src/scripts/run-migrations.js:getAppliedMigrations", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-migrations.js", "target": "function:src/scripts/run-migrations.js:getMigrationFiles", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-migrations.js", "target": "function:src/scripts/run-migrations.js:applyMigration", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-migrations.js", "target": "function:src/scripts/run-migrations.js:main", "type": "contains", "direction": "forward", "weight": 1.0 },
+
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:createStreamingWorkbook", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:addStreamingSheet", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:exportDailyReportStreaming", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:exportRangeReportStreaming", "type": "contains", "direction": "forward", "weight": 1.0 },
+
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:createStreamingWorkbook", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:addStreamingSheet", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:exportDailyReportStreaming", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/streaming-excel.js", "target": "function:src/utils/streaming-excel.js:exportRangeReportStreaming", "type": "exports", "direction": "forward", "weight": 0.8 }
+  ]
+}

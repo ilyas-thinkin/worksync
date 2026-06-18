@@ -3,6 +3,7 @@
 
 (function () {
     var alertData = [];
+    var activeTab = 'summary';
 
     function escHtml(str) {
         return String(str || '')
@@ -55,6 +56,30 @@
                 '</div>';
             return;
         }
+        body.innerHTML = activeTab === 'summary' ? renderSummaryTab() : renderDetailsTab();
+    }
+
+    function renderSummaryTab() {
+        var rows = alertData.map(function(a) {
+            var cumulativeTarget  = a.hourly_target * a.all_hours.length;
+            var cumulativeAchieved = a.all_hours.reduce(function(sum, h) { return sum + h.quantity; }, 0);
+            var achievedClass = cumulativeAchieved < cumulativeTarget ? 'loa-summary-achieved-low' : 'loa-summary-achieved-ok';
+            return '<tr>' +
+                '<td>' + escHtml(a.emp_code) + ' — ' + escHtml(a.emp_name) + '</td>' +
+                '<td>' + escHtml(a.line_code) + ' / WS ' + escHtml(a.workstation_code) + '</td>' +
+                '<td>' + cumulativeTarget + '</td>' +
+                '<td class="' + achievedClass + '">' + cumulativeAchieved + '</td>' +
+                '</tr>';
+        }).join('');
+        return '<p class="loa-subtitle">' + alertData.length +
+            ' employee' + (alertData.length !== 1 ? 's' : '') +
+            ' with 3+ consecutive hours below target</p>' +
+            '<div class="loa-table-wrap"><table class="loa-summary-table">' +
+            '<thead><tr><th>Employee</th><th>Workstation</th><th>Cumulative Target</th><th>Output Achieved</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody></table></div>';
+    }
+
+    function renderDetailsTab() {
         var cards = alertData.map(function(a) {
             var rows = a.all_hours.map(function(h) {
                 var low = h.quantity < a.hourly_target;
@@ -82,8 +107,7 @@
                   '<tbody>' + rows + '</tbody>' +
                 '</table></div></div>';
         }).join('');
-        body.innerHTML =
-            '<p class="loa-subtitle">' + alertData.length +
+        return '<p class="loa-subtitle">' + alertData.length +
             ' employee' + (alertData.length !== 1 ? 's' : '') +
             ' with 3+ consecutive hours below target</p>' +
             '<div class="loa-list">' + cards + '</div>';
@@ -103,6 +127,7 @@
         var fab   = document.getElementById('loa-fab');
         var closeBtn = document.getElementById('loa-modal-close');
         var backdrop = document.getElementById('loa-backdrop');
+        var tabs = document.getElementById('loa-tabs');
 
         if (!fab) return;   // not on this page
 
@@ -110,6 +135,15 @@
         if (closeBtn) closeBtn.addEventListener('click', closeModal);
         if (backdrop) backdrop.addEventListener('click', function(e) {
             if (e.target === backdrop) closeModal();
+        });
+        if (tabs) tabs.addEventListener('click', function(e) {
+            var btn = e.target.closest('.loa-tab');
+            if (!btn) return;
+            activeTab = btn.getAttribute('data-tab');
+            tabs.querySelectorAll('.loa-tab').forEach(function(t) {
+                t.classList.toggle('active', t === btn);
+            });
+            renderModal();
         });
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') closeModal();

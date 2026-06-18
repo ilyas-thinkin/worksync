@@ -1,0 +1,6713 @@
+{
+  "version": "1.0.0",
+  "gitCommitHash": "564652b1471522f91f0936b97e43ee46d80ad144",
+  "generatedAt": "2026-06-18T14:59:59.984Z",
+  "files": {
+    ".env.example": {
+      "filePath": ".env.example",
+      "contentHash": "57ddfea82cc59076096252a8257a76056d0245fe3f96392dd67f7bfe4407b96e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 43,
+      "hasStructuralAnalysis": true
+    },
+    ".understand-anything/.understandignore": {
+      "filePath": ".understand-anything/.understandignore",
+      "contentHash": "8e035a0b770e87486af35e684c42bb06e79efded51186d688874f8ddd7f8a106",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 37,
+      "hasStructuralAnalysis": false
+    },
+    "ecosystem.config.js": {
+      "filePath": "ecosystem.config.js",
+      "contentHash": "f9762cd9c9529cc71de00a00761c925b6532bef705c74331d33086322d71aca8",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 99,
+      "hasStructuralAnalysis": true
+    },
+    "package.json": {
+      "filePath": "package.json",
+      "contentHash": "65c244dde1ced7f222366351f7500b78e701e9d44306b321e5356c0dd6e451be",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 33,
+      "hasStructuralAnalysis": true
+    },
+    "src/.graphifyignore": {
+      "filePath": "src/.graphifyignore",
+      "contentHash": "39b99042e3a14b86d89a4c5eb8f19da65b16293e0e791d0be7a8302631b2dfda",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2,
+      "hasStructuralAnalysis": false
+    },
+    "src/config/app.config.js": {
+      "filePath": "src/config/app.config.js",
+      "contentHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1,
+      "hasStructuralAnalysis": true
+    },
+    "src/config/db.config.js": {
+      "filePath": "src/config/db.config.js",
+      "contentHash": "a357f89ebb988c7495705fe01785092d03e7684c189fe380a5647c92de62451c",
+      "functions": [
+        {
+          "name": "requireEnv",
+          "params": [
+            "name"
+          ],
+          "exported": false,
+          "lineCount": 7
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 33,
+      "hasStructuralAnalysis": true
+    },
+    "src/middleware/audit.js": {
+      "filePath": "src/middleware/audit.js",
+      "contentHash": "6f628318b22f1137215f40897e9370e420aa0d85351087eef18d5334cd367770",
+      "functions": [
+        {
+          "name": "getClientIP",
+          "params": [
+            "req"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "getUserAgent",
+          "params": [
+            "req"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "getSessionId",
+          "params": [
+            "req"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "logAudit",
+          "params": [],
+          "exported": false,
+          "lineCount": 42
+        },
+        {
+          "name": "auditMiddleware",
+          "params": [
+            "tableName",
+            "action",
+            "getRecordId"
+          ],
+          "exported": false,
+          "lineCount": 45
+        },
+        {
+          "name": "getAuditHistory",
+          "params": [
+            "tableName",
+            "recordId"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "getAuditSummary",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "getRecentCriticalChanges",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "searchAuditLogs",
+          "params": [],
+          "exported": false,
+          "lineCount": 52
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 263,
+      "hasStructuralAnalysis": true
+    },
+    "src/middleware/rbac.js": {
+      "filePath": "src/middleware/rbac.js",
+      "contentHash": "70d138d46f9a05ccb1d8166ae17167a127442353d64eafb1a2a33983e2832a41",
+      "functions": [
+        {
+          "name": "hasPermission",
+          "params": [
+            "role",
+            "permission"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "isRoleHigherOrEqual",
+          "params": [
+            "role1",
+            "role2"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "getRolePermissions",
+          "params": [
+            "role"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "rbacMiddleware",
+          "params": [],
+          "exported": false,
+          "lineCount": 51
+        },
+        {
+          "name": "requirePermission",
+          "params": [
+            "permission"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "requireRole",
+          "params": [
+            "...roles"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "requireMinRole",
+          "params": [
+            "minRole"
+          ],
+          "exported": false,
+          "lineCount": 20
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 372,
+      "hasStructuralAnalysis": true
+    },
+    "src/middleware/session.js": {
+      "filePath": "src/middleware/session.js",
+      "contentHash": "46cc182261638a4a07050a9a08535a51cc4373b6405e32477ab0f2d87c216c16",
+      "functions": [
+        {
+          "name": "generateSessionId",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "createSession",
+          "params": [
+            "user",
+            "ipAddress",
+            "userAgent"
+          ],
+          "exported": false,
+          "lineCount": 37
+        },
+        {
+          "name": "findOldestSession",
+          "params": [
+            "sessionIds"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "getSession",
+          "params": [
+            "sessionId"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "touchSession",
+          "params": [
+            "sessionId"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "destroySession",
+          "params": [
+            "sessionId"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "destroyUserSessions",
+          "params": [
+            "userId"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "isSessionValid",
+          "params": [
+            "session"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "needsRenewal",
+          "params": [
+            "session"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "renewSession",
+          "params": [
+            "sessionId"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "getUserActiveSessions",
+          "params": [
+            "userId"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "cleanupExpiredSessions",
+          "params": [],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "sessionMiddleware",
+          "params": [
+            "req",
+            "res",
+            "next"
+          ],
+          "exported": false,
+          "lineCount": 40
+        },
+        {
+          "name": "securityHeaders",
+          "params": [
+            "req",
+            "res",
+            "next"
+          ],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "rateLimiter",
+          "params": [],
+          "exported": false,
+          "lineCount": 50
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 398,
+      "hasStructuralAnalysis": true
+    },
+    "src/middleware/transaction.js": {
+      "filePath": "src/middleware/transaction.js",
+      "contentHash": "49056ce81a1820278133dc59011698039dd50662215806019ab7958176622c64",
+      "functions": [
+        {
+          "name": "withTransaction",
+          "params": [
+            "fn"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "withClient",
+          "params": [
+            "fn"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "withIsolation",
+          "params": [
+            "fn"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "withRetry",
+          "params": [
+            "fn"
+          ],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "createSavepoint",
+          "params": [
+            "client",
+            "name"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "rollbackToSavepoint",
+          "params": [
+            "client",
+            "name"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "releaseSavepoint",
+          "params": [
+            "client",
+            "name"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "transactionMiddleware",
+          "params": [
+            "req",
+            "res",
+            "next"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "lockForUpdate",
+          "params": [
+            "client",
+            "table",
+            "column",
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "lockRowsForUpdate",
+          "params": [
+            "client",
+            "table",
+            "column",
+            "values"
+          ],
+          "exported": false,
+          "lineCount": 7
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 210,
+      "hasStructuralAnalysis": true
+    },
+    "src/middleware/validation.js": {
+      "filePath": "src/middleware/validation.js",
+      "contentHash": "ffc4bbb6fe9fcf39884d8be9381697f72e9e55ad66493b7c24a0fe94c0a33ee6",
+      "functions": [
+        {
+          "name": "validateBody",
+          "params": [
+            "schema"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "validateQuery",
+          "params": [
+            "schema"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "validateParams",
+          "params": [
+            "schema"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "sanitizeString",
+          "params": [
+            "str"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "sanitizeInputs",
+          "params": [
+            "req",
+            "res",
+            "next"
+          ],
+          "exported": false,
+          "lineCount": 10
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 343,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/007_add_performance_indexes.sql": {
+      "filePath": "src/migrations/007_add_performance_indexes.sql",
+      "contentHash": "ef31ddb1bf0dcb7edaec50621ea47ed083ad26feee628dc9cb6171e1a61a3bff",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 112,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/008_enhanced_audit_logging.sql": {
+      "filePath": "src/migrations/008_enhanced_audit_logging.sql",
+      "contentHash": "b3e832bcddaa4ccb0decf99e33465c01bb3e73e6c5f1a7637c98f3fb256ed469",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 57,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/009_defect_and_downtime_tracking.sql": {
+      "filePath": "src/migrations/009_defect_and_downtime_tracking.sql",
+      "contentHash": "a0f8439191cf36b47d423b5c89c7ee97e4ed4ee85fb4d46d2e5d8dcd2b45a205",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 231,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/010_add_target_qty_to_products.sql": {
+      "filePath": "src/migrations/010_add_target_qty_to_products.sql",
+      "contentHash": "4ba66dd12a2fb2ce33fe8acc37cb2156857b8edc0b958e4aaad8dd2f687ff963",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 7,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/011_add_shortfall_reason.sql": {
+      "filePath": "src/migrations/011_add_shortfall_reason.sql",
+      "contentHash": "be8e667aa612f90400e8901b35724eba62c8c60ebce52a3fd96b7e5b9589cc71",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/012_employee_workstation_assignments.sql": {
+      "filePath": "src/migrations/012_employee_workstation_assignments.sql",
+      "contentHash": "3744622864bd0f7e8eb6187fe127c9256004ebf1fbb1d1b964004dd5defc8e28",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 14,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/013_line_plan_workstations.sql": {
+      "filePath": "src/migrations/013_line_plan_workstations.sql",
+      "contentHash": "cbd6deb992e143b44bda4a5fa051dae42a5a0791fc090f28473ec9d7a8238a59",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 54,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/014_workstation_plan_group.sql": {
+      "filePath": "src/migrations/014_workstation_plan_group.sql",
+      "contentHash": "94459b6a703c2843009fe7551810381de615c9475745e644bf76c6331ec3f93e",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 7,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/015_line_workstations.sql": {
+      "filePath": "src/migrations/015_line_workstations.sql",
+      "contentHash": "9b81f88edfc9111b4bf79b2335f89ddde4979a75c64be0e798e6e04356ef1dea",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/016_overtime.sql": {
+      "filePath": "src/migrations/016_overtime.sql",
+      "contentHash": "a3ee107ba490b3e717b5f945fe04cbc3b39849f51de4d9472ccc186de6d834f9",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 9,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/017_lpw_product_unique.sql": {
+      "filePath": "src/migrations/017_lpw_product_unique.sql",
+      "contentHash": "79075db482c30ef5aab91e8d379b2d4d1c3db1e6219a4fdd9f46c1199a42be58",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 12,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/018_ewa_is_overtime.sql": {
+      "filePath": "src/migrations/018_ewa_is_overtime.sql",
+      "contentHash": "cbfb1cef627f4b9e916b4287cce28beb1f3fac47af8565499e610a7f9d3d5e2f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 15,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/019_lpw_ot_skipped.sql": {
+      "filePath": "src/migrations/019_lpw_ot_skipped.sql",
+      "contentHash": "a650536aa4211f1a376f4dddeb736559cf95e40987b2f5a997b8f1287c701f43",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 7,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/020_changeover_started_at.sql": {
+      "filePath": "src/migrations/020_changeover_started_at.sql",
+      "contentHash": "061c17406e061414b777b680fc4a99456915ccc5c8b45bcf8a17b068aa7d0f84",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 8,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/021_ot_plan.sql": {
+      "filePath": "src/migrations/021_ot_plan.sql",
+      "contentHash": "1f92b9224639e3be8da5a34f41e42be3e745258e0fbd2f593588c2a0f43a047a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 46,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/022_ot_progress.sql": {
+      "filePath": "src/migrations/022_ot_progress.sql",
+      "contentHash": "d89aed3a361ee9641f777433c62eb5cdc6e01b7f9ddec8087d8c1ca0284f6407",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 17,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/023_add_line_leader.sql": {
+      "filePath": "src/migrations/023_add_line_leader.sql",
+      "contentHash": "4d65a8c03585ff6fe084a91da80f35e4620e39ec834e6f968c92d6e859db44b6",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 3,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/023_ewa_is_linked.sql": {
+      "filePath": "src/migrations/023_ewa_is_linked.sql",
+      "contentHash": "1f43a9d476973bfd49df574783fc2fbee13e29b869b25554598a56e5f4926352",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 5,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/023_fix_product_sequence_constraint.sql": {
+      "filePath": "src/migrations/023_fix_product_sequence_constraint.sql",
+      "contentHash": "6f59ff4f7395079fe7f2a26d654c64dcdd3298fb83944e9939adaf74c0b90014",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 15,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/023_ws_changeover.sql": {
+      "filePath": "src/migrations/023_ws_changeover.sql",
+      "contentHash": "af815cc92ad482937b8c99909ccc6e974b8cb8feb6ec30ee8a8f984136df360a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 10,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/024_add_plan_month.sql": {
+      "filePath": "src/migrations/024_add_plan_month.sql",
+      "contentHash": "c083f24fab438a39a0f8b8c2d8d59a4eee5fc76f3e8af55bbf943fc81412aea1",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/024_group_wip.sql": {
+      "filePath": "src/migrations/024_group_wip.sql",
+      "contentHash": "e3da773e40ed6143c216d83a355a7c91b609caa27f44d8c96b307099b1b802ea",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 20,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/024_is_linked_default_false.sql": {
+      "filePath": "src/migrations/024_is_linked_default_false.sql",
+      "contentHash": "7df44c29c63b78eb01c8fb0abf969ab8426bbafc52c513f4985f8ddf7c895072",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 7,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/024_osm_checked.sql": {
+      "filePath": "src/migrations/024_osm_checked.sql",
+      "contentHash": "01554710712d7602c3c24aa03c912a4209e1067481c636ebc91e6ee78c568035",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 9,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/025_material_provided.sql": {
+      "filePath": "src/migrations/025_material_provided.sql",
+      "contentHash": "258a38a1802b19896f24b6b32202760df1151b241d1d3e6fc15abe9c60c092be",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 6,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/026_material_nullable.sql": {
+      "filePath": "src/migrations/026_material_nullable.sql",
+      "contentHash": "3f04206feda1f6e410cfe920cb60137d2e60c6705a770841e9e06daadcb793fe",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 11,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/027_worker_departures.sql": {
+      "filePath": "src/migrations/027_worker_departures.sql",
+      "contentHash": "342b630c008f943731d97d000cdfed0c9d7454028059fb0f75d8fe65631bc179",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 21,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/028_worker_adjustments.sql": {
+      "filePath": "src/migrations/028_worker_adjustments.sql",
+      "contentHash": "b8314c5acc523dc91eeb7f50c7deb763a4e068a4095178da2fdebc5623389579",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 20,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/029_osm_product_level.sql": {
+      "filePath": "src/migrations/029_osm_product_level.sql",
+      "contentHash": "b6d79f97aca1d09918322c0b2bc0170f9e414a56404573c80bf423dd03880e34",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 14,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/030_co_employee_assignment.sql": {
+      "filePath": "src/migrations/030_co_employee_assignment.sql",
+      "contentHash": "71d44459c5b9c5ef228512f41a902d802528aec7dba750218720fec4742f8912",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 11,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/031_ot_supervisor_auth.sql": {
+      "filePath": "src/migrations/031_ot_supervisor_auth.sql",
+      "contentHash": "2f03e0b523b11fbf82b6e53c4a21a13053c1d42a51663fc35d61d5757d24523f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 10,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/032_attendance_link_tracking.sql": {
+      "filePath": "src/migrations/032_attendance_link_tracking.sql",
+      "contentHash": "bd74e001d260fc2cc7dda35920e429f76442de18e0e8e6dfc50c7681e99c2275",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 24,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/033_employee_workstation_assignment_history.sql": {
+      "filePath": "src/migrations/033_employee_workstation_assignment_history.sql",
+      "contentHash": "d4ee2c0e42c5d4beac2b0643a0ec390384ad61c94228ff06d52b2b9257906aaa",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 61,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/033_working_hours.sql": {
+      "filePath": "src/migrations/033_working_hours.sql",
+      "contentHash": "fb196d0bec9081b311e4e7ccc5e95bc2cc91ec4e35daddb18524c89b14831541",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/034_workstation_changeover_events.sql": {
+      "filePath": "src/migrations/034_workstation_changeover_events.sql",
+      "contentHash": "f8a5e713ab16dcf133a9ce555f1b0cb8c16b5286b79047b43d30b3a3591f861a",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 52,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/035_ot_workstation_flow.sql": {
+      "filePath": "src/migrations/035_ot_workstation_flow.sql",
+      "contentHash": "0336a212cb1b9a039e05ff55923a2b207640617d12f11fa97a4aa3e0254b5449",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 19,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/036_daily_plan_delete_markers.sql": {
+      "filePath": "src/migrations/036_daily_plan_delete_markers.sql",
+      "contentHash": "8b51e9a56bef11eb35e2ff083e0d66ba97463dcca9937083dac94a16f09cf0c6",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 13,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/037_changeover_primary_promotions.sql": {
+      "filePath": "src/migrations/037_changeover_primary_promotions.sql",
+      "contentHash": "28a42276f5af893bb169faa9bc1f2d531901b5e1c8856865d52777119b864d74",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 21,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/038_material_feed_events.sql": {
+      "filePath": "src/migrations/038_material_feed_events.sql",
+      "contentHash": "f4636990ba8b9aba23fd92e6e0505b6ab77340dd25d9661ecf68c66deacd0f94",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 22,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/039_ot_workstations_default_inactive.sql": {
+      "filePath": "src/migrations/039_ot_workstations_default_inactive.sql",
+      "contentHash": "f342d0f47c6142927e63cc38451661ff98cda2a1cc7a38481552ce47e1c32036",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 6,
+      "hasStructuralAnalysis": true
+    },
+    "src/migrations/040_custom_takt_flag.sql": {
+      "filePath": "src/migrations/040_custom_takt_flag.sql",
+      "contentHash": "3867ece35427285a6291b7a7abd09177eab11f1bcfc4548ba9ffeffbfad8fbff",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 6,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/admin.html": {
+      "filePath": "src/public/admin.html",
+      "contentHash": "548786a84fe5b18df52297c6881025b790ea1af5edce8dff162b98a8a39b2d2b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 213,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/css/admin.css": {
+      "filePath": "src/public/css/admin.css",
+      "contentHash": "56ab7cd45f073555e5bcdaedd75ad6f492f4676c4db46808e5c03f23ee2315e7",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2051,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/css/admin.css.bak": {
+      "filePath": "src/public/css/admin.css.bak",
+      "contentHash": "b79851b31538055884d565c9e0f92700ad6aceccdf0defc7fb7e7560ac65bdff",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1579,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/css/ie.css": {
+      "filePath": "src/public/css/ie.css",
+      "contentHash": "bbc522491c24dc11e751a7280152a7dbd7f48fde551e77595b5fe847b1f179a6",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 444,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/css/offline.css": {
+      "filePath": "src/public/css/offline.css",
+      "contentHash": "466f7f987e6f4f138e5bbd74783138c282482bd9542a3c08011f0e7be360c4ad",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 200,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/css/shop-floor.css": {
+      "filePath": "src/public/css/shop-floor.css",
+      "contentHash": "b41dfb9caad8a0516a13e4522920f9db7a86b8e84239e1ad99e7869b0c9c2548",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 905,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/css/supervisor.css": {
+      "filePath": "src/public/css/supervisor.css",
+      "contentHash": "e6884a4800cfb77f077c20ddceabe1380a4eb6c320cce00e55a2f401a506d171",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 1040,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/ie.html": {
+      "filePath": "src/public/ie.html",
+      "contentHash": "38943523b12982ce01868edc06568abab709c517a688f93b77ebb68fae7dffa8",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 367,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/index.html": {
+      "filePath": "src/public/index.html",
+      "contentHash": "ded4a38df5bfae36f491c86484d066d8e8e8af26d133d7932e85842fdf3baf08",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 249,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/js/admin.js": {
+      "filePath": "src/public/js/admin.js",
+      "contentHash": "744a2f5b0c95de26c0595e405034cbac42f9c8f7984e2e842cde0623a3117e13",
+      "functions": [
+        {
+          "name": "escHtml",
+          "params": [
+            "str"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "requireAuth",
+          "params": [],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "setupNavigation",
+          "params": [],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "setupMobileSidebar",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "closeMobileSidebar",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "loadSection",
+          "params": [
+            "section"
+          ],
+          "exported": false,
+          "lineCount": 68
+        },
+        {
+          "name": "getCurrentAdminWorkHour",
+          "params": [
+            "hours"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "adminHourlyOrdinal",
+          "params": [
+            "n"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "adminHourlyRange",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "adminHourlyLabel",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "adminHourlyEntryTime",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "buildAdminReasonSelectHTML",
+          "params": [
+            "existingReason"
+          ],
+          "exported": false,
+          "lineCount": 35
+        },
+        {
+          "name": "selectAdminReasonOption",
+          "params": [
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "getAdminFinalReason",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "loadAdminHourlyUpdate",
+          "params": [],
+          "exported": false,
+          "lineCount": 67
+        },
+        {
+          "name": "populateAdminHourlyLines",
+          "params": [],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "loadAdminHourlyLineData",
+          "params": [],
+          "exported": false,
+          "lineCount": 39
+        },
+        {
+          "name": "renderAdminHourlySummary",
+          "params": [],
+          "exported": false,
+          "lineCount": 153
+        },
+        {
+          "name": "cancelAdminHourlyEntry",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "openAdminWorkstationHourlyEntry",
+          "params": [
+            "workstationPlanId"
+          ],
+          "exported": false,
+          "lineCount": 59
+        },
+        {
+          "name": "openAdminProcessHourlyEntry",
+          "params": [
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 56
+        },
+        {
+          "name": "saveAdminHourlyOutput",
+          "params": [],
+          "exported": false,
+          "lineCount": 81
+        },
+        {
+          "name": "loadDashboard",
+          "params": [],
+          "exported": false,
+          "lineCount": 184
+        },
+        {
+          "name": "loadLines",
+          "params": [],
+          "exported": false,
+          "lineCount": 69
+        },
+        {
+          "name": "adminLoadLineOptions",
+          "params": [],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "adminHourOrdinal",
+          "params": [
+            "n"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "adminHourRange",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "adminHourLabel",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "adminLoadHourOptions",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "adminSetLatestHour",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "adminRefreshManagementData",
+          "params": [],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "adminLoadLineMetrics",
+          "params": [],
+          "exported": false,
+          "lineCount": 57
+        },
+        {
+          "name": "adminRefreshEmployeeEfficiency",
+          "params": [],
+          "exported": false,
+          "lineCount": 41
+        },
+        {
+          "name": "adminLoadFinalStatus",
+          "params": [],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "showLineModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 69
+        },
+        {
+          "name": "saveLine",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 33
+        },
+        {
+          "name": "deactivateLine",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "hardDeleteLine",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "viewWorkstationQRs",
+          "params": [
+            "lineId",
+            "lineCode"
+          ],
+          "exported": false,
+          "lineCount": 59
+        },
+        {
+          "name": "regenWorkstationQRs",
+          "params": [
+            "lineId",
+            "lineCode"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "printWorkstationQRs",
+          "params": [],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "viewLineDetails",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 202
+        },
+        {
+          "name": "loadWorkstationAssignments",
+          "params": [
+            "lineId",
+            "processes",
+            "employees"
+          ],
+          "exported": false,
+          "lineCount": 63
+        },
+        {
+          "name": "saveWorkstationAssignment",
+          "params": [
+            "lineId",
+            "workstationCode",
+            "employeeId"
+          ],
+          "exported": false,
+          "lineCount": 21
+        },
+        {
+          "name": "saveProcessAssignment",
+          "params": [
+            "processId",
+            "employeeId"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "recomputeEmployeeDropdownOptions",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "applyProcessAssignmentUpdate",
+          "params": [
+            "processId",
+            "employeeId",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "showAddWorkstationModal",
+          "params": [
+            "lineId",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 42
+        },
+        {
+          "name": "editWorkstation",
+          "params": [
+            "ws",
+            "lineId",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 42
+        },
+        {
+          "name": "saveWorkstation",
+          "params": [
+            "wsId",
+            "lineId",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 41
+        },
+        {
+          "name": "deleteWorkstation",
+          "params": [
+            "wsId",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "assignProcessWorkstation",
+          "params": [
+            "processId",
+            "workspaceId",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 23
+        },
+        {
+          "name": "buildEmployeeOptions",
+          "params": [
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "updateEmployeeDropdownLabel",
+          "params": [
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "positionEmployeeDropdown",
+          "params": [
+            "dropdown"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "toggleEmployeeDropdown",
+          "params": [
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "filterEmployeeList",
+          "params": [
+            "processId",
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "_repositionOpenDropdowns",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "resetEmployeeQrExportSelection",
+          "params": [
+            "employees"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "areAllEmployeesSelected",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "syncEmployeeSelectAllCheckbox",
+          "params": [],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "toggleEmployeeQrSelection",
+          "params": [
+            "employeeId",
+            "checked"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "toggleAllEmployeesForQrExport",
+          "params": [
+            "checked"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "downloadSelectedEmployeesQrExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "downloadEmployeeQrExcelForIds",
+          "params": [
+            "employeeIds"
+          ],
+          "exported": false,
+          "lineCount": 35
+        },
+        {
+          "name": "buildEmployeeRows",
+          "params": [
+            "employees",
+            "showActions"
+          ],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "loadEmployees",
+          "params": [],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "renderEmployeesTable",
+          "params": [
+            "employees"
+          ],
+          "exported": false,
+          "lineCount": 76
+        },
+        {
+          "name": "filterEmployees",
+          "params": [
+            "search"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "updateEmployeesTableBody",
+          "params": [
+            "employees"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "formatEmployeeWork",
+          "params": [
+            "emp"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "showEmployeeModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 53
+        },
+        {
+          "name": "getEmployeeQrUrl",
+          "params": [
+            "qrPath"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "showEmployeeQrModal",
+          "params": [
+            "emp"
+          ],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "showEmployeeWorkModal",
+          "params": [
+            "emp"
+          ],
+          "exported": false,
+          "lineCount": 68
+        },
+        {
+          "name": "saveEmployeeWorkAssignment",
+          "params": [
+            "employeeId",
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "saveEmployee",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "deleteEmployee",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "loadProducts",
+          "params": [],
+          "exported": false,
+          "lineCount": 136
+        },
+        {
+          "name": "downloadProductTemplate",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "exportProductExcel",
+          "params": [
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "handleProductExcelUpload",
+          "params": [
+            "input"
+          ],
+          "exported": false,
+          "lineCount": 42
+        },
+        {
+          "name": "showProductModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 69
+        },
+        {
+          "name": "saveProduct",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "deleteProduct",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "viewProductProcess",
+          "params": [
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 120
+        },
+        {
+          "name": "setupRealtime",
+          "params": [],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "scheduleRealtimeRefresh",
+          "params": [
+            "payload"
+          ],
+          "exported": false,
+          "lineCount": 86
+        },
+        {
+          "name": "showAddProcessModal",
+          "params": [
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 51
+        },
+        {
+          "name": "updateProcessOperationOptions",
+          "params": [
+            "filterValue",
+            "operations"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "saveProcess",
+          "params": [],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "editProcess",
+          "params": [
+            "proc",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 40
+        },
+        {
+          "name": "updateProcess",
+          "params": [
+            "processId",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "deleteProcess",
+          "params": [
+            "processId",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "loadOperations",
+          "params": [],
+          "exported": false,
+          "lineCount": 83
+        },
+        {
+          "name": "renderOperationsTable",
+          "params": [
+            "operations"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "filterOperations",
+          "params": [],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "filterOperationsByCategory",
+          "params": [
+            "category"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "showOperationModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 60
+        },
+        {
+          "name": "saveOperation",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "deleteOperation",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "closeModal",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "showToast",
+          "params": [
+            "message"
+          ],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "loadAttendanceSection",
+          "params": [],
+          "exported": false,
+          "lineCount": 58
+        },
+        {
+          "name": "loadIeSettings",
+          "params": [],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "saveIeSettings",
+          "params": [],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "loadAttendanceData",
+          "params": [],
+          "exported": false,
+          "lineCount": 46
+        },
+        {
+          "name": "renderAttendanceRow",
+          "params": [
+            "row",
+            "index"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "formatAttendanceStatus",
+          "params": [
+            "status"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "filterAttendanceRows",
+          "params": [
+            "search"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "saveAttendanceRow",
+          "params": [
+            "employeeId"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "saveAllAttendance",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "saveAttendance",
+          "params": [
+            "employeeId",
+            "date",
+            "inTime",
+            "outTime",
+            "status",
+            "notes"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "loadDailyPlans",
+          "params": [],
+          "exported": false,
+          "lineCount": 56
+        },
+        {
+          "name": "switchDpTab",
+          "params": [
+            "tab"
+          ],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "openPlanUploadModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 113
+        },
+        {
+          "name": "submitPlanUpload",
+          "params": [],
+          "exported": false,
+          "lineCount": 169
+        },
+        {
+          "name": "_planUploadConfirmLine",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "_planUploadUseExistingProduct",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "_planUploadReplaceExistingProduct",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "_planUploadShowNewProductInput",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "_planUploadCreateWithNewCode",
+          "params": [],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "_planUploadCancel",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "openMissingEmployeesModal",
+          "params": [
+            "missingEmployees"
+          ],
+          "exported": false,
+          "lineCount": 64
+        },
+        {
+          "name": "saveMissingEmployeesAndContinue",
+          "params": [],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "skipMissingEmployeesAndContinue",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "getUploadAvailableEmployees",
+          "params": [],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "openDuplicateAssignmentsModal",
+          "params": [
+            "duplicateAssignments"
+          ],
+          "exported": false,
+          "lineCount": 91
+        },
+        {
+          "name": "onDuplicateEmployeeSelectChange",
+          "params": [
+            "selectEl"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "saveDuplicateAssignmentsAndContinue",
+          "params": [],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "skipDuplicateAssignmentsAndContinue",
+          "params": [],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "loadDailyPlanData",
+          "params": [],
+          "exported": false,
+          "lineCount": 143
+        },
+        {
+          "name": "_ldResolveCopyProductId",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "_ldSyncCopyPlanButton",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "toggleLineDetails",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "toggleWorkstationPlan",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 1
+        },
+        {
+          "name": "openLineDetailsPage",
+          "params": [
+            "lineId",
+            "date",
+            "productId",
+            "target"
+          ],
+          "exported": false,
+          "lineCount": 120
+        },
+        {
+          "name": "closeLineDetailsPage",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "ldOpenCopyPlanModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 64
+        },
+        {
+          "name": "ldCloseCopyPlanModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "ldGetCurrentTemplateMode",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "ldReloadCurrentPlanView",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "ldDownloadPlanTemplate",
+          "params": [],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "ldOpenPlanUploadModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 72
+        },
+        {
+          "name": "ldPreviewCopyPlan",
+          "params": [
+            "lineId",
+            "toDate",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 120
+        },
+        {
+          "name": "ldExecuteCopyPlan",
+          "params": [
+            "lineId",
+            "fromLineId",
+            "fromDate",
+            "toDate",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 60
+        },
+        {
+          "name": "_ldGetWorkSecs",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "ldUpdateWorkHours",
+          "params": [
+            "lineId",
+            "field",
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "ldUpdateWsOt",
+          "params": [
+            "lineId",
+            "wsCode",
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "ensureLdOtMinutes",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "loadLineDetailsPanel",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 1
+        },
+        {
+          "name": "loadWorkstationPlanPanel",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 1
+        },
+        {
+          "name": "ldHourOrdinal",
+          "params": [
+            "n"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "ldHourRange",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 1
+        },
+        {
+          "name": "ldHourLabel",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "_buildWsGroups",
+          "params": [
+            "processes",
+            "taktSecs",
+            "useOT"
+          ],
+          "exported": false,
+          "lineCount": 46
+        },
+        {
+          "name": "ldWsToggleOTSkip",
+          "params": [
+            "btn",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 35
+        },
+        {
+          "name": "ldRoundMetric",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "ldWorkloadColor",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "ldComputeWsMetrics",
+          "params": [],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "ldSetWsSaveState",
+          "params": [
+            "btn",
+            "isDirty"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "ldSyncWsMetrics",
+          "params": [
+            "lineId",
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "ldHandleWsTaktInput",
+          "params": [
+            "input",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "ldHandleWsTargetInput",
+          "params": [
+            "input",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "ldUpdateCachedWsTakt",
+          "params": [
+            "lineId",
+            "wsCode",
+            "takt"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "ldSaveWsTakt",
+          "params": [
+            "btn",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 55
+        },
+        {
+          "name": "ldPositionEmpDropdown",
+          "params": [
+            "pickerEl"
+          ],
+          "exported": false,
+          "lineCount": 40
+        },
+        {
+          "name": "ldTakenAssignmentLabel",
+          "params": [
+            "assignInfo"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "ldSetPickerValue",
+          "params": [
+            "picker",
+            "empId",
+            "label"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "ldEmpPickerToggle",
+          "params": [
+            "pickerEl",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "ldEmpPickerFilter",
+          "params": [
+            "searchInput"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "ldEmpPickerSelect",
+          "params": [
+            "optionEl",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 43
+        },
+        {
+          "name": "showQrModal",
+          "params": [
+            "src",
+            "label"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "_buildLdTbody",
+          "params": [
+            "tbody",
+            "lineId",
+            "wsGroups",
+            "employees",
+            "useOT"
+          ],
+          "exported": false,
+          "lineCount": 232
+        },
+        {
+          "name": "syncEmpDropdowns",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 83
+        },
+        {
+          "name": "renderLineDetailsPanel",
+          "params": [
+            "panel",
+            "lineId",
+            "date",
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "ldEnsureChangeoverDataLoaded",
+          "params": [
+            "lineId",
+            "date",
+            "incomingProductId",
+            "incomingTargetUnits"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "_ldQrSelectionKey",
+          "params": [
+            "lineId",
+            "date",
+            "activeOT",
+            "displayIsChangeover"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "_ldBuildQrEmployeeList",
+          "params": [
+            "wsGroups",
+            "employees"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "_ldEnsureQrSelection",
+          "params": [
+            "lineId",
+            "date",
+            "activeOT",
+            "displayIsChangeover",
+            "lineEmployees"
+          ],
+          "exported": false,
+          "lineCount": 21
+        },
+        {
+          "name": "_ldUpdateQrSelectionUI",
+          "params": [
+            "lineId",
+            "date",
+            "activeOT",
+            "displayIsChangeover",
+            "lineEmployees"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "toggleLdQrEmpDropdown",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "filterLdQrEmpList",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "toggleLdQrEmployee",
+          "params": [
+            "lineId",
+            "date",
+            "activeOT",
+            "displayIsChangeover",
+            "employeeId",
+            "checked"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "toggleLdQrAllEmployees",
+          "params": [
+            "lineId",
+            "date",
+            "activeOT",
+            "displayIsChangeover",
+            "checked"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "downloadLineDetailsQrExcel",
+          "params": [
+            "lineId",
+            "date",
+            "activeOT",
+            "displayIsChangeover"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "renderLineDetailsContent",
+          "params": [
+            "panel",
+            "lineId",
+            "date",
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 323
+        },
+        {
+          "name": "ldLoadDowntimeSummary",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "ldOpenDowntimeModal",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "ldRenderDowntimeModal",
+          "params": [
+            "data",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 83
+        },
+        {
+          "name": "ldBuildPieHtml",
+          "params": [
+            "items",
+            "minutesPerOcc"
+          ],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "ldPiePoint",
+          "params": [
+            "portion"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "ldBuildBarHtml",
+          "params": [
+            "items"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "switchLdTakt",
+          "params": [
+            "lineId",
+            "useOT"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "switchLdOTProduct",
+          "params": [
+            "lineId",
+            "mode"
+          ],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "switchLdProduct",
+          "params": [
+            "lineId",
+            "mode"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "saveLdPlanSettings",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 52
+        },
+        {
+          "name": "validateAndApplyWs",
+          "params": [
+            "input",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "recolorDetailRows",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 87
+        },
+        {
+          "name": "_highlightWsSequenceErrors",
+          "params": [
+            "tbody",
+            "processes"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "_showWsSeqError",
+          "params": [
+            "message"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "_validateWsSequence",
+          "params": [
+            "processes"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "saveLineDetails",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 164
+        },
+        {
+          "name": "saveDailyPlan",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 84
+        },
+        {
+          "name": "lockDailyPlan",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "unlockDailyPlan",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "deleteDailyPlan",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "fetchDailyPlanSnapshot",
+          "params": [
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "doesDailyPlanExist",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "requestDailyPlanDelete",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "clearDailyPlanRow",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "copyDailyPlan",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "submitCopyDailyPlan",
+          "params": [
+            "lineId",
+            "targetDate"
+          ],
+          "exported": false,
+          "lineCount": 21
+        },
+        {
+          "name": "toggleOTPlan",
+          "params": [
+            "lineId",
+            "enable",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "loadOtPlanSection",
+          "params": [
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "openOtLineDetail",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 33
+        },
+        {
+          "name": "renderOtLineCard",
+          "params": [
+            "line",
+            "plan",
+            "date",
+            "hasPlan",
+            "otEnabled"
+          ],
+          "exported": false,
+          "lineCount": 50
+        },
+        {
+          "name": "loadOtLineCard",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "fillOtLineCard",
+          "params": [
+            "lineId",
+            "date",
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 200
+        },
+        {
+          "name": "saveOtCardSettings",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "calcOtTarget",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "toggleOtSupervisorAuth",
+          "params": [
+            "lineId",
+            "date",
+            "currentAuth"
+          ],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "toggleOtWsAdminBtn",
+          "params": [
+            "lineId",
+            "date",
+            "wsCode",
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "saveOtWsTimes",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "resetOtFromRegular",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "openOtEmpPicker",
+          "params": [
+            "lineId",
+            "date",
+            "wsCode",
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 54
+        },
+        {
+          "name": "assignOtEmployee",
+          "params": [
+            "lineId",
+            "date",
+            "wsCode",
+            "empId",
+            "empCode"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "clearOtEmployee",
+          "params": [
+            "lineId",
+            "date",
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 33
+        },
+        {
+          "name": "openOtLayoutEditor",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 77
+        },
+        {
+          "name": "saveOtLayout",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 48
+        },
+        {
+          "name": "loadProductionDays",
+          "params": [],
+          "exported": false,
+          "lineCount": 55
+        },
+        {
+          "name": "refreshLockStatus",
+          "params": [],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "updateLock",
+          "params": [
+            "isLock"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "loadLineShiftClosures",
+          "params": [],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "unlockLineShift",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "loadUsers",
+          "params": [],
+          "exported": false,
+          "lineCount": 55
+        },
+        {
+          "name": "showUserModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 43
+        },
+        {
+          "name": "saveUser",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "deactivateUser",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "loadAuditLogs",
+          "params": [],
+          "exported": false,
+          "lineCount": 47
+        },
+        {
+          "name": "openDailyPlanPrintModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 39
+        },
+        {
+          "name": "dpToggleSelectAll",
+          "params": [
+            "checked"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "dpLoadPrintPreview",
+          "params": [],
+          "exported": false,
+          "lineCount": 96
+        },
+        {
+          "name": "_renderDpPrintConfig",
+          "params": [
+            "activeLines",
+            "planMap"
+          ],
+          "exported": false,
+          "lineCount": 78
+        },
+        {
+          "name": "dpToggleWsOt",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "printDailyPlans",
+          "params": [],
+          "exported": false,
+          "lineCount": 141
+        },
+        {
+          "name": "downloadDailyPlansExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "switchLdTab",
+          "params": [
+            "tab",
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "loadOTPlanDetails",
+          "params": [
+            "panel",
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "renderOTPlanDetails",
+          "params": [
+            "panel",
+            "lineId",
+            "date",
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 131
+        },
+        {
+          "name": "otToggleWs",
+          "params": [
+            "checkbox",
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "otUpdateWsMins",
+          "params": [
+            "input",
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "otUpdateWsEmployee",
+          "params": [
+            "lineId",
+            "date",
+            "wsCode",
+            "employeeId"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "saveOTPlanSettings",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 21
+        },
+        {
+          "name": "regenOTPlanFromRegular",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "saveOTPlanWorkstations",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 23
+        },
+        {
+          "name": "loadPlanHistory",
+          "params": [],
+          "exported": false,
+          "lineCount": 40
+        },
+        {
+          "name": "refreshPlanHistory",
+          "params": [],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "renderPlanHistoryCards",
+          "params": [
+            "lines",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 77
+        },
+        {
+          "name": "openCopyPlanModal",
+          "params": [
+            "fromLineId",
+            "fromDate",
+            "fromProductId",
+            "fromProductLabel",
+            "fromLineLabel"
+          ],
+          "exported": false,
+          "lineCount": 60
+        },
+        {
+          "name": "executeCopyPlan",
+          "params": [
+            "fromLineId",
+            "fromDate",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 44
+        },
+        {
+          "name": "refreshOsmLabels",
+          "params": [
+            "tbody"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "toggleOsmCheck",
+          "params": [
+            "lpwpId",
+            "checked",
+            "cbEl"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "getDefaultReportHour",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "buildReportHourOptions",
+          "params": [
+            "selectedHour"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "formatReportHourLabel",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "setAdminLiveReportTimer",
+          "params": [
+            "refreshFn",
+            "guardId"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "loadOsmReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 72
+        },
+        {
+          "name": "osmSwitchTab",
+          "params": [
+            "tab"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "refreshOsmReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "refreshOsmRangeReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "_buildSingleOsmDailyCard",
+          "params": [
+            "lineMeta",
+            "section",
+            "sectionLabel"
+          ],
+          "exported": false,
+          "lineCount": 126
+        },
+        {
+          "name": "_buildOsmTable",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 46
+        },
+        {
+          "name": "_buildSingleOsmRangeCard",
+          "params": [
+            "lineMeta",
+            "section",
+            "sectionLabel"
+          ],
+          "exported": false,
+          "lineCount": 65
+        },
+        {
+          "name": "_buildOsmRangeTable",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "printOsmReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 48
+        },
+        {
+          "name": "downloadOsmExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "loadEfficiencyReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 49
+        },
+        {
+          "name": "refreshEfficiencyReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 42
+        },
+        {
+          "name": "_buildEfficiencyTable",
+          "params": [
+            "data",
+            "selectedHour"
+          ],
+          "exported": false,
+          "lineCount": 328
+        },
+        {
+          "name": "toggleEffWsCombine",
+          "params": [
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "_syncEffGlobalBtn",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "toggleEffAllCombine",
+          "params": [
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "printEfficiencyReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "downloadEfficiencyExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "loadWieLineOptions",
+          "params": [],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "loadWorkerIndividualEff",
+          "params": [],
+          "exported": false,
+          "lineCount": 73
+        },
+        {
+          "name": "loadDowntimeReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 49
+        },
+        {
+          "name": "refreshDowntimeReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "renderDowntimeReport",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 75
+        },
+        {
+          "name": "setWieMetric",
+          "params": [
+            "metric"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "toggleWieCombine",
+          "params": [
+            "empId"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "_syncWieGlobalBtn",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "toggleWieAllCombine",
+          "params": [
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "toggleWieEmpDropdown",
+          "params": [],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "filterWieEmpList",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "_wieUpdateEmpLabel",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "toggleWieEmp",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "selectAllWieEmp",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "clearAllWieEmp",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "_wiePopulateEmpList",
+          "params": [
+            "rows"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "_wieRenderFiltered",
+          "params": [],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "refreshWorkerIndividualEff",
+          "params": [],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "_buildWorkerIndividualEffTable",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 198
+        },
+        {
+          "name": "printWorkerIndividualEff",
+          "params": [],
+          "exported": false,
+          "lineCount": 33
+        },
+        {
+          "name": "downloadWorkerIndividualEffExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "wifiReadJsonResponse",
+          "params": [
+            "response",
+            "fallbackMessage"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "loadWifiSection",
+          "params": [],
+          "exported": false,
+          "lineCount": 84
+        },
+        {
+          "name": "scanWifiNetworks",
+          "params": [],
+          "exported": false,
+          "lineCount": 49
+        },
+        {
+          "name": "_wifiSignalSvg",
+          "params": [
+            "bars"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "openWifiConnectModal",
+          "params": [
+            "ssid",
+            "needsPassword"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "closeWifiModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "doWifiConnect",
+          "params": [],
+          "exported": false,
+          "lineCount": 82
+        },
+        {
+          "name": "loadMaterialTracking",
+          "params": [],
+          "exported": false,
+          "lineCount": 48
+        },
+        {
+          "name": "refreshMaterialTracking",
+          "params": [],
+          "exported": false,
+          "lineCount": 55
+        },
+        {
+          "name": "_buildMtGroupCard",
+          "params": [
+            "group",
+            "allHours",
+            "fmtHour"
+          ],
+          "exported": false,
+          "lineCount": 62
+        },
+        {
+          "name": "stopSystemUpdatePolling",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "formatSystemUpdateTime",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "renderSystemUpdateSection",
+          "params": [],
+          "exported": false,
+          "lineCount": 128
+        },
+        {
+          "name": "refreshSystemUpdateStatus",
+          "params": [],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "loadSystemUpdateSection",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "startSystemUpdate",
+          "params": [],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "startSystemRollback",
+          "params": [],
+          "exported": false,
+          "lineCount": 25
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 11881,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/ie.js": {
+      "filePath": "src/public/js/ie.js",
+      "contentHash": "b90cbddcb5ce05fd611c3215b8c335facc9d07fa0a5a96e719c9afbde989c3a5",
+      "functions": [
+        {
+          "name": "loadAttendance",
+          "params": [],
+          "exported": false,
+          "lineCount": 46
+        },
+        {
+          "name": "renderRow",
+          "params": [
+            "row",
+            "index"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "formatStatus",
+          "params": [
+            "status"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "filterAttendance",
+          "params": [
+            "search"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "saveRow",
+          "params": [
+            "employeeId"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "saveAll",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "saveAttendance",
+          "params": [
+            "employeeId",
+            "date",
+            "inTime",
+            "outTime",
+            "status",
+            "notes"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "setupRealtime",
+          "params": [],
+          "exported": false,
+          "lineCount": 21
+        },
+        {
+          "name": "showToast",
+          "params": [
+            "message"
+          ],
+          "exported": false,
+          "lineCount": 25
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 206,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/login.js": {
+      "filePath": "src/public/js/login.js",
+      "contentHash": "72b366a3be1bb7417bff4e3fb9b4fbec009193f6e46835e5092b0805f5e759fd",
+      "functions": [
+        {
+          "name": "openLogin",
+          "params": [
+            "role"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "closeLogin",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "submitLogin",
+          "params": [],
+          "exported": false,
+          "lineCount": 20
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 45,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/low-output-alerts.js": {
+      "filePath": "src/public/js/low-output-alerts.js",
+      "contentHash": "f8c8727d65ee183cfefc43c03483bd5535db58f321d170385076bd70ff965eed",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 166,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/management.js": {
+      "filePath": "src/public/js/management.js",
+      "contentHash": "1a4b78ca8601226d33746387c2ca6dcc0f5bde7fe005527e4a7fcef2ebcca5cd",
+      "functions": [
+        {
+          "name": "requireAuth",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "setupMobileSidebar",
+          "params": [],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "setupRealtime",
+          "params": [],
+          "exported": false,
+          "lineCount": 51
+        },
+        {
+          "name": "setMgmtManualRefresh",
+          "params": [
+            "fn"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "setupMgmtFloatingRefresh",
+          "params": [],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "loadMgmtMaterialTracking",
+          "params": [],
+          "exported": false,
+          "lineCount": 49
+        },
+        {
+          "name": "refreshMgmtMaterialTracking",
+          "params": [],
+          "exported": false,
+          "lineCount": 56
+        },
+        {
+          "name": "buildMgmtMaterialGroupCard",
+          "params": [
+            "group",
+            "allHours",
+            "fmtHour"
+          ],
+          "exported": false,
+          "lineCount": 55
+        },
+        {
+          "name": "loadManagementDashboard",
+          "params": [],
+          "exported": false,
+          "lineCount": 111
+        },
+        {
+          "name": "downloadReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "downloadRangeReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "loadLineOptions",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "getCurrentMgmtWorkHour",
+          "params": [
+            "hours"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "mgmtHourOrdinal",
+          "params": [
+            "n"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "mgmtHourRange",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "mgmtHourLabel",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "loadHourOptions",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "mgmtSetLatestHour",
+          "params": [
+            "lineId",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "refreshManagementData",
+          "params": [],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "loadLineMetrics",
+          "params": [],
+          "exported": false,
+          "lineCount": 56
+        },
+        {
+          "name": "refreshEmployeeEfficiency",
+          "params": [],
+          "exported": false,
+          "lineCount": 44
+        },
+        {
+          "name": "loadFinalStatus",
+          "params": [],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "mgmtGetDefaultReportHour",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "mgmtBuildReportHourOptions",
+          "params": [
+            "selectedHour"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "mgmtFormatReportHourLabel",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "setMgmtLiveReportTimer",
+          "params": [
+            "refreshFn",
+            "guardId"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "loadMgmtOsmReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 66
+        },
+        {
+          "name": "mgmtOsmSwitchTab",
+          "params": [
+            "tab"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "refreshMgmtOsmReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "refreshMgmtOsmRangeReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "_buildMgmtOsmTable",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 126
+        },
+        {
+          "name": "_buildMgmtOsmRangeTable",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 60
+        },
+        {
+          "name": "printMgmtOsmReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 39
+        },
+        {
+          "name": "downloadMgmtOsmExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "loadMgmtEfficiencyReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 50
+        },
+        {
+          "name": "refreshMgmtEfficiencyReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "_buildMgmtEfficiencyTable",
+          "params": [
+            "data",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 298
+        },
+        {
+          "name": "toggleEffWsCombine",
+          "params": [
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "_syncEffGlobalBtn",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "toggleEffAllCombine",
+          "params": [
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "printMgmtEfficiencyReport",
+          "params": [],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "downloadMgmtEfficiencyExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "loadMgmtWorkerEfficiencyLineOptions",
+          "params": [
+            "selectId"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "loadMgmtWorkerIndividualEff",
+          "params": [],
+          "exported": false,
+          "lineCount": 72
+        },
+        {
+          "name": "setMgmtWieMetric",
+          "params": [
+            "metric"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "toggleMgmtWieEmpDropdown",
+          "params": [],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "filterMgmtWieEmpList",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "updateMgmtWieEmpLabel",
+          "params": [],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "toggleMgmtWieEmp",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "selectAllMgmtWieEmp",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "clearAllMgmtWieEmp",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "populateMgmtWieEmpList",
+          "params": [
+            "rows"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "renderMgmtWieFiltered",
+          "params": [],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "buildMgmtWorkerEfficiencyGraphs",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 100
+        },
+        {
+          "name": "itemSortKey",
+          "params": [
+            "item"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "itemLabel",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "escapeMgmtGraphAttr",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "formatMgmtWieChartDate",
+          "params": [
+            "dateStr"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "buildMgmtWieMiniBarChart",
+          "params": [
+            "items"
+          ],
+          "exported": false,
+          "lineCount": 23
+        },
+        {
+          "name": "buildMgmtWieHorizontalBars",
+          "params": [
+            "items"
+          ],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "buildMgmtWieDistribution",
+          "params": [
+            "bands",
+            "total"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "mgmtGraphMatchesEffBand",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "mgmtGraphMatchesSearch",
+          "params": [
+            "item"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "setMgmtGraphEffBand",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "setMgmtGraphSearch",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "buildMgmtGraphAllEmployeeBars",
+          "params": [
+            "items"
+          ],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "loadMgmtWorkerEfficiencyGraphs",
+          "params": [],
+          "exported": false,
+          "lineCount": 84
+        },
+        {
+          "name": "toggleMgmtGraphEmpDropdown",
+          "params": [],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "filterMgmtGraphEmpList",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "updateMgmtGraphEmpLabel",
+          "params": [],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "toggleMgmtGraphEmp",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "selectAllMgmtGraphEmp",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "clearAllMgmtGraphEmp",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "populateMgmtGraphEmpList",
+          "params": [
+            "rows"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "refreshMgmtWorkerEfficiencyGraphs",
+          "params": [],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "renderMgmtWorkerEfficiencyGraphs",
+          "params": [],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "refreshMgmtWorkerIndividualEff",
+          "params": [],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "buildMgmtWorkerIndividualEffTable",
+          "params": [
+            "data"
+          ],
+          "exported": false,
+          "lineCount": 118
+        },
+        {
+          "name": "printMgmtWorkerIndividualEff",
+          "params": [],
+          "exported": false,
+          "lineCount": 35
+        },
+        {
+          "name": "downloadMgmtWorkerIndividualEffExcel",
+          "params": [],
+          "exported": false,
+          "lineCount": 31
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 2456,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/offline-db.js": {
+      "filePath": "src/public/js/offline-db.js",
+      "contentHash": "26aa4cbd1b8f2863cff09086671c0d2e0a67b98faf98b46b655a895afd1066f5",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 281,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/offline-sync.js": {
+      "filePath": "src/public/js/offline-sync.js",
+      "contentHash": "ea9a44c0d81291c4e77efdd221629ba8cc61830dc6d211623bcb4030348e05d0",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 336,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/optimistic-ui.js": {
+      "filePath": "src/public/js/optimistic-ui.js",
+      "contentHash": "f6cd37f54ce43f5944dbfb308907ee7cea77279191280c1cc6fe406791913c5d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 475,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/shop-floor-ux.js": {
+      "filePath": "src/public/js/shop-floor-ux.js",
+      "contentHash": "74051e176a1271782f485fc9a5634cdbe01aec020015cedaa6fa35235af5f3ea",
+      "functions": [
+        {
+          "name": "initTableScrollFade",
+          "params": [],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "initBottomNavSync",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 595,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/sse-manager.js": {
+      "filePath": "src/public/js/sse-manager.js",
+      "contentHash": "c450a1abfd4812351e31b18bbedb2d310b225b1f994f63a0fb0042f47fecfbdc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 329,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/supervisor.js": {
+      "filePath": "src/public/js/supervisor.js",
+      "contentHash": "b03e75b5cab73bdd85fe30a13a7039db8d88563201d38702509c531012924f4e",
+      "functions": [
+        {
+          "name": "requireAuth",
+          "params": [],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "setupNavigation",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "setupMobileSidebar",
+          "params": [],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "closeMobileSidebar",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "loadSection",
+          "params": [
+            "section"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "showToast",
+          "params": [
+            "message"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "parseScanPayload",
+          "params": [
+            "rawValue"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "startCamera",
+          "params": [
+            "videoElementId",
+            "statusElementId",
+            "callback"
+          ],
+          "exported": false,
+          "lineCount": 48
+        },
+        {
+          "name": "stopCamera",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "scanLoop",
+          "params": [
+            "videoElementId"
+          ],
+          "exported": false,
+          "lineCount": 37
+        },
+        {
+          "name": "getSupervisorLocalDate",
+          "params": [],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "reloadMorningAssignments",
+          "params": [],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "loadMorningProcedure",
+          "params": [],
+          "exported": false,
+          "lineCount": 60
+        },
+        {
+          "name": "onMorningLineChange",
+          "params": [],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "renderMorningAssignments",
+          "params": [
+            "hasPlan"
+          ],
+          "exported": false,
+          "lineCount": 144
+        },
+        {
+          "name": "_renderWsCardFooter",
+          "params": [
+            "wsCode",
+            "planId",
+            "empId",
+            "empCode",
+            "empName",
+            "isLinked"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "_pickLateReason",
+          "params": [
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 59
+        },
+        {
+          "name": "linkMappedEmployee",
+          "params": [
+            "wsCode",
+            "planId",
+            "empId",
+            "empCode",
+            "empName"
+          ],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "unlinkWorkstation",
+          "params": [
+            "wsCode",
+            "planId"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "startChangeEmployee",
+          "params": [
+            "workstationCode",
+            "linePlanWorkstationId",
+            "currentEmpId",
+            "currentEmpCode",
+            "currentEmpName"
+          ],
+          "exported": false,
+          "lineCount": 89
+        },
+        {
+          "name": "confirmChangeEmployee",
+          "params": [],
+          "exported": false,
+          "lineCount": 42
+        },
+        {
+          "name": "cancelChangeEmployee",
+          "params": [],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "unlinkAllMapping",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "loadFeedInput",
+          "params": [],
+          "exported": false,
+          "lineCount": 38
+        },
+        {
+          "name": "onFeedLineChange",
+          "params": [],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "renderFeedInput",
+          "params": [],
+          "exported": false,
+          "lineCount": 118
+        },
+        {
+          "name": "saveFeedInput",
+          "params": [
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 34
+        },
+        {
+          "name": "getCurrentSupervisorWorkHour",
+          "params": [
+            "hours"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "supHourOrdinal",
+          "params": [
+            "n"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "supHourRange",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 1
+        },
+        {
+          "name": "supHourLabel",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "formatHourlyEntryTime",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "formatHourlyRange",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "buildReasonSelectHTML",
+          "params": [
+            "existingReason",
+            "isCombined"
+          ],
+          "exported": false,
+          "lineCount": 37
+        },
+        {
+          "name": "selectReasonOption",
+          "params": [
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "onReasonChange",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "getFinalReason",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "checkHourPendingReasons",
+          "params": [
+            "hour"
+          ],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "showReasonRequiredBanner",
+          "params": [
+            "violations"
+          ],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "loadHourlyProcedure",
+          "params": [],
+          "exported": false,
+          "lineCount": 146
+        },
+        {
+          "name": "switchHourlyMode",
+          "params": [
+            "mode"
+          ],
+          "exported": false,
+          "lineCount": 26
+        },
+        {
+          "name": "onHourlyLineChange",
+          "params": [],
+          "exported": false,
+          "lineCount": 79
+        },
+        {
+          "name": "refreshHourlySummary",
+          "params": [],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "getWorkstationHourlyTarget",
+          "params": [
+            "ws"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "getWorkstationEffectiveTarget",
+          "params": [
+            "ws"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "getRepresentativeProcessId",
+          "params": [
+            "processes"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "computeProcessCumulativeOutput",
+          "params": [
+            "progressData",
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "computeTotalOutput",
+          "params": [
+            "progressData",
+            "workstations"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "getWorkstationFlowKey",
+          "params": [
+            "ws"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "computeWorkstationCumulativeOutput",
+          "params": [
+            "progressData",
+            "ws"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "buildWorkstationFlowMetrics",
+          "params": [
+            "workstations",
+            "progressData"
+          ],
+          "exported": false,
+          "lineCount": 33
+        },
+        {
+          "name": "activateChangeover",
+          "params": [
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 42
+        },
+        {
+          "name": "activateWsChangeover",
+          "params": [
+            "wsCode",
+            "date",
+            "force"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "revertWsChangeover",
+          "params": [
+            "wsCode",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "openWsChangeoverEmployeeChange",
+          "params": [
+            "wsCode",
+            "linePlanWsId"
+          ],
+          "exported": false,
+          "lineCount": 58
+        },
+        {
+          "name": "coEmpSearch",
+          "params": [
+            "input"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "coEmpOptSelect",
+          "params": [
+            "optEl",
+            "wsCode",
+            "linePlanWsId"
+          ],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "ensureSupervisorEmployeeList",
+          "params": [],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "promptWsChangeover",
+          "params": [
+            "btn"
+          ],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "openWsChangeoverModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 110
+        },
+        {
+          "name": "toggleWsChangeoverModalFields",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "coPickerFilter",
+          "params": [
+            "input"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "coPickerSelect",
+          "params": [
+            "optEl"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "submitWsChangeoverStart",
+          "params": [],
+          "exported": false,
+          "lineCount": 61
+        },
+        {
+          "name": "closeWsChangeoverModal",
+          "params": [],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "enableHourlyChangeover",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "finalizeChangeoverPrimary",
+          "params": [],
+          "exported": false,
+          "lineCount": 35
+        },
+        {
+          "name": "renderHourlySummary",
+          "params": [],
+          "exported": false,
+          "lineCount": 386
+        },
+        {
+          "name": "startHourlyScan",
+          "params": [],
+          "exported": false,
+          "lineCount": 47
+        },
+        {
+          "name": "cancelHourlyEntry",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "openHourlyEntry",
+          "params": [
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 68
+        },
+        {
+          "name": "openWorkstationHourlyEntry",
+          "params": [
+            "workstationPlanId"
+          ],
+          "exported": false,
+          "lineCount": 74
+        },
+        {
+          "name": "saveWorkstationHourlyOutput",
+          "params": [],
+          "exported": false,
+          "lineCount": 76
+        },
+        {
+          "name": "saveHourlyOutput",
+          "params": [],
+          "exported": false,
+          "lineCount": 63
+        },
+        {
+          "name": "cancelHourlyScan",
+          "params": [],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "hideHourlyPanels",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "getSelectedHourlyLineMeta",
+          "params": [],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "loadOtPlanList",
+          "params": [
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "toggleOtEnabled",
+          "params": [
+            "lineId",
+            "workDate",
+            "currentEnabled"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "saveOtLineSummary",
+          "params": [
+            "lineId",
+            "date",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "openOtPlanDetails",
+          "params": [
+            "lineId",
+            "lineName",
+            "date",
+            "lineCode"
+          ],
+          "exported": false,
+          "lineCount": 44
+        },
+        {
+          "name": "closeOtPlanDetails",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "renderOtPlanSection",
+          "params": [],
+          "exported": false,
+          "lineCount": 265
+        },
+        {
+          "name": "bindOtPlanSectionActions",
+          "params": [],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "otEmpPickerToggle",
+          "params": [
+            "picker"
+          ],
+          "exported": false,
+          "lineCount": 11
+        },
+        {
+          "name": "otEmpPickerFilter",
+          "params": [
+            "input"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "otEmpPickerCloseAll",
+          "params": [
+            "e"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "otEmpPickerSelect",
+          "params": [
+            "el"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "toggleOtWsActive",
+          "params": [
+            "wsCode",
+            "makeActive"
+          ],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "saveOtGlobalSettings",
+          "params": [],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "saveAllOtMinutes",
+          "params": [],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "saveOtProgress",
+          "params": [
+            "wsCode",
+            "otWorkstationId"
+          ],
+          "exported": false,
+          "lineCount": 48
+        },
+        {
+          "name": "otEditProgress",
+          "params": [
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "startOtScan",
+          "params": [
+            "wsCode"
+          ],
+          "exported": false,
+          "lineCount": 53
+        },
+        {
+          "name": "confirmOtAssign",
+          "params": [
+            "empId",
+            "empCode",
+            "empName"
+          ],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "cancelOtScan",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "filterOtEmpSelect",
+          "params": [
+            "searchInput",
+            "selectId"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "assignOtEmployee",
+          "params": [
+            "wsCode",
+            "empId"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "setupOtRealtimeListener",
+          "params": [],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "loadAdjustmentPanel",
+          "params": [],
+          "exported": false,
+          "lineCount": 29
+        },
+        {
+          "name": "compareAdjustmentWorkstations",
+          "params": [
+            "a",
+            "b"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "loadAdjLineStatus",
+          "params": [],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "renderAdjStatusTable",
+          "params": [
+            "workstations"
+          ],
+          "exported": false,
+          "lineCount": 64
+        },
+        {
+          "name": "renderAdjHistory",
+          "params": [
+            "records"
+          ],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "openDepartureForm",
+          "params": [
+            "workstationCode",
+            "employeeId"
+          ],
+          "exported": false,
+          "lineCount": 46
+        },
+        {
+          "name": "closeDepartureForm",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "confirmDeparture",
+          "params": [],
+          "exported": false,
+          "lineCount": 33
+        },
+        {
+          "name": "openAdjustmentScan",
+          "params": [
+            "departureId",
+            "vacantWsCode"
+          ],
+          "exported": false,
+          "lineCount": 52
+        },
+        {
+          "name": "retryAdjScan",
+          "params": [],
+          "exported": false,
+          "lineCount": 35
+        },
+        {
+          "name": "showAdjChoicePrompt",
+          "params": [
+            "emp",
+            "fromWs"
+          ],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "confirmAdjustment",
+          "params": [
+            "type"
+          ],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "closeAdjustmentScan",
+          "params": [],
+          "exported": false,
+          "lineCount": 17
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 4130,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/js/sw-register.js": {
+      "filePath": "src/public/js/sw-register.js",
+      "contentHash": "1788f032f2267775e1ac79b5be0a83b4e3d5b804af14ad92bbb75887c33a732d",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 7,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/line_plan_template.xlsx": {
+      "filePath": "src/public/line_plan_template.xlsx",
+      "contentHash": "ed897a5ea25c48fa9615f6a7739575d212319068905dc870d64e3d8da19ae670",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 471,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/management.html": {
+      "filePath": "src/public/management.html",
+      "contentHash": "664433a3ea2880204458162771e178f52cc38eacbeb3c69f6568d29abf51f4fd",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 124,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/supervisor.html": {
+      "filePath": "src/public/supervisor.html",
+      "contentHash": "68c3a88273fc8b700a0873c1eaf8c8c8a34cc8cfe79bf6550e6581cb07119e30",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 104,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/sw.js": {
+      "filePath": "src/public/sw.js",
+      "contentHash": "2f0f42ec0202b30b7ae4002c1195df61d656ef364feaf6908334f0a26c0f1b4f",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 14,
+      "hasStructuralAnalysis": true
+    },
+    "src/public/WorkSync_Operational_Guide.docx": {
+      "filePath": "src/public/WorkSync_Operational_Guide.docx",
+      "contentHash": "b16b2b46e2afd525d89ed61c766001a50317ce22b69cd2a6e1c75e4d60c0be2b",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 102,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/WorkSync_Pitch_Deck.docx": {
+      "filePath": "src/public/WorkSync_Pitch_Deck.docx",
+      "contentHash": "dc23ffeef85aa09db7b8c27a7c557be937e10534efb18dc32f8a904160d72470",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 94,
+      "hasStructuralAnalysis": false
+    },
+    "src/public/WorkSync_Technical_Report.docx": {
+      "filePath": "src/public/WorkSync_Technical_Report.docx",
+      "contentHash": "e563db40c3ddcf368c844ebe791a8ccb7da7817308b2ed61ae917f9907d888cc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 148,
+      "hasStructuralAnalysis": false
+    },
+    "src/realtime.js": {
+      "filePath": "src/realtime.js",
+      "contentHash": "38c5a9c9cfa329f1e429aa0abee1fafa33c8c1cb5a01f0780e44d3565d83e082",
+      "functions": [
+        {
+          "name": "requireEnv",
+          "params": [
+            "name"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "handleEvents",
+          "params": [
+            "req",
+            "res"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "broadcast",
+          "params": [
+            "event",
+            "payload"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "closeAllConnections",
+          "params": [],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "startDbListener",
+          "params": [],
+          "exported": false,
+          "lineCount": 50
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 117,
+      "hasStructuralAnalysis": true
+    },
+    "src/routes/api.routes.js": {
+      "filePath": "src/routes/api.routes.js",
+      "contentHash": "fd81cc95ac2b3a732539375ed582b7ca3819dfaa7a1ca3c7878283fadbf8adff",
+      "functions": [
+        {
+          "name": "normalizeWsCode",
+          "params": [
+            "code"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "normalizePlanMonth",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 25
+        },
+        {
+          "name": "normalizeWorkDate",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 71
+        },
+        {
+          "name": "getSettingValue",
+          "params": [
+            "key",
+            "fallback"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "isDayLocked",
+          "params": [
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "isLineClosed",
+          "params": [
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "isProductLocked",
+          "params": [
+            "productId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "collectDuplicateEmployeeIds",
+          "params": [
+            "items",
+            "selector"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "generateNextOperationCode",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "getHistoryHours",
+          "params": [],
+          "exported": false,
+          "lineCount": 1
+        },
+        {
+          "name": "resolveHistoryEffectiveFromHour",
+          "params": [
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 27
+        },
+        {
+          "name": "resolveHistoryEffectiveToHour",
+          "params": [
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "closeAssignmentHistoryForEmployee",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 46
+        },
+        {
+          "name": "syncAssignmentHistoryForCurrentRow",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 109
+        },
+        {
+          "name": "closeHistoryForWorkstationAssignmentIfNeeded",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "clearEmployeeAssignmentConflicts",
+          "params": [
+            "db",
+            "employeeId",
+            "workDate",
+            "isOvertime",
+            "keepLineId",
+            "keepWorkstationCode"
+          ],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "findEmployeeAssignmentConflicts",
+          "params": [
+            "db",
+            "employeeIds",
+            "workDate",
+            "isOvertime",
+            "keepLineId"
+          ],
+          "exported": false,
+          "lineCount": 32
+        },
+        {
+          "name": "findLatestPriorDailyPlanForLine",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "hasDailyPlanDeletionMarker",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "getLineActualOutput",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 84
+        },
+        {
+          "name": "getProductTargetQuantity",
+          "params": [
+            "db",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "getCumulativeWorkstationOutput",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 50
+        },
+        {
+          "name": "getRemainingShiftHours",
+          "params": [
+            "startedAt",
+            "inTime",
+            "outTime"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "parseClockToMinutes",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "getLunchOverlapMinutes",
+          "params": [
+            "startMins",
+            "endMins"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "getNetWorkingMinutes",
+          "params": [
+            "inTime",
+            "outTime"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "getEffectiveEmployeeSamSeconds",
+          "params": [
+            "actualSamSeconds",
+            "workloadPct"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "getNetHoursBetweenTimestamps",
+          "params": [
+            "startAt",
+            "endAt"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "buildShiftStartTimestamp",
+          "params": [
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "getShiftWindowDetails",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "roundMetric",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "computeTaktTimeFromTarget",
+          "params": [
+            "targetUnits",
+            "workingSeconds"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "computeTargetUnitsFromTakt",
+          "params": [
+            "taktTimeSeconds",
+            "workingSeconds"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "computeHourlyTargetFromTakt",
+          "params": [
+            "taktTimeSeconds"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "syncDailyPlanTargetFromWorkstations",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 71
+        },
+        {
+          "name": "getEffectiveRegularSourceWorkstations",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 76
+        },
+        {
+          "name": "getEffectiveRegularSourceProcesses",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 48
+        },
+        {
+          "name": "getEffectiveOtSourceWorkstations",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 138
+        },
+        {
+          "name": "recalculateOtPlanTarget",
+          "params": [
+            "db",
+            "otPlanId"
+          ],
+          "exported": false,
+          "lineCount": 38
+        },
+        {
+          "name": "getWorkstationChangeoverSnapshot",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 53
+        },
+        {
+          "name": "buildChangeoverPromotionSnapshot",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 116
+        },
+        {
+          "name": "normalizeRegularAssignmentsToProductWorkstations",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 38
+        },
+        {
+          "name": "ensureDailyPlanCarryForwardForLine",
+          "params": [
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 111
+        },
+        {
+          "name": "ensureDailyPlansCarryForward",
+          "params": [
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "getRegularAssignmentStateByEmployee",
+          "params": [
+            "db",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "detachRegularAssignmentsFromPlan",
+          "params": [
+            "db",
+            "lineId",
+            "workDate",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 20
+        },
+        {
+          "name": "getPreservedRegularAssignmentState",
+          "params": [
+            "stateByEmployee",
+            "employeeId"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "formatHourRangeLabel",
+          "params": [
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "getEmployeeProgressForWindow",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 216
+        },
+        {
+          "name": "getHourlyEmployeeProgress",
+          "params": [
+            "db",
+            "lineId",
+            "workDate",
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "getCumulativeEmployeeProgress",
+          "params": [
+            "db",
+            "lineId",
+            "workDate",
+            "endHour"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "getDepartureHourDenomMap",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "applyDepartureEfficiency",
+          "params": [
+            "rows",
+            "denomMap"
+          ],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "getWorkstationProgressForWindow",
+          "params": [
+            "db",
+            "lineId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 171
+        },
+        {
+          "name": "getWorkstationOutputMap",
+          "params": [
+            "db",
+            "lineId",
+            "workDate",
+            "workstationIds"
+          ],
+          "exported": false,
+          "lineCount": 35
+        },
+        {
+          "name": "getHourlyWorkstationEmployeeFallbackMap",
+          "params": [
+            "db",
+            "lineId",
+            "workDate",
+            "workstationIds",
+            "hourSlot"
+          ],
+          "exported": false,
+          "lineCount": 49
+        },
+        {
+          "name": "logAudit",
+          "params": [
+            "tableName",
+            "recordId",
+            "action"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "logClientError",
+          "params": [
+            "payload",
+            "req"
+          ],
+          "exported": false,
+          "lineCount": 14
+        },
+        {
+          "name": "syncProductProcessListFromSource",
+          "params": [
+            "sourceProductId",
+            "targetProductId",
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 57
+        },
+        {
+          "name": "copyWorkstationPlanFromDate",
+          "params": [
+            "fromLineId",
+            "fromDate",
+            "toLineId",
+            "toDate",
+            "sourceProductId",
+            "client"
+          ],
+          "exported": false,
+          "lineCount": 171
+        },
+        {
+          "name": "carryForwardMixedLineState",
+          "params": [
+            "lineId",
+            "sourceDate",
+            "targetDate",
+            "sourcePlan",
+            "client"
+          ],
+          "exported": false,
+          "lineCount": 260
+        },
+        {
+          "name": "remapProcessMaterialWipBetweenWorkstations",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 93
+        },
+        {
+          "name": "findLatestWorkstationPlanDate",
+          "params": [
+            "lineId",
+            "productId",
+            "beforeDate"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "ensureWorkstationPlanCarryForward",
+          "params": [
+            "lineId",
+            "workDate",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "runLineBalancing",
+          "params": [
+            "processes",
+            "taktTimeSeconds"
+          ],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "generateLinePlanTemplate",
+          "params": [],
+          "exported": false,
+          "lineCount": 273
+        },
+        {
+          "name": "parseSupervisorQr",
+          "params": [
+            "payload"
+          ],
+          "exported": false,
+          "lineCount": 19
+        },
+        {
+          "name": "getIncomingMaxSequence",
+          "params": [
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "getLineProductIds",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 31
+        },
+        {
+          "name": "isProcessActiveForChangeover",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "resolveProcessForLine",
+          "params": [
+            "lineId",
+            "processPayload"
+          ],
+          "exported": false,
+          "lineCount": 70
+        },
+        {
+          "name": "resolveNextProcessForLine",
+          "params": [
+            "lineId",
+            "processId"
+          ],
+          "exported": false,
+          "lineCount": 16
+        },
+        {
+          "name": "refreshProcessWip",
+          "params": [
+            "lineId",
+            "processId",
+            "workDate"
+          ],
+          "exported": false,
+          "lineCount": 28
+        },
+        {
+          "name": "refreshGroupWip",
+          "params": [
+            "lineId",
+            "workDate",
+            "groupIdentifier"
+          ],
+          "exported": false,
+          "lineCount": 60
+        },
+        {
+          "name": "getProductFeedSummary",
+          "params": [
+            "db",
+            "productId"
+          ],
+          "exported": false,
+          "lineCount": 30
+        },
+        {
+          "name": "getWorkstationFeedContext",
+          "params": [
+            "db",
+            "lineId",
+            "workDate",
+            "workstationCode"
+          ],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "validateWorkstationHourlySave",
+          "params": [
+            "db"
+          ],
+          "exported": false,
+          "lineCount": 144
+        },
+        {
+          "name": "performChangeoverPromotion",
+          "params": [
+            "lineId",
+            "workDate",
+            "userId"
+          ],
+          "exported": false,
+          "lineCount": 147
+        },
+        {
+          "name": "parseNmcliWifiLine",
+          "params": [
+            "line"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "getWifiNetworks",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "getWifiProfilesBySsid",
+          "params": [
+            "ssid"
+          ],
+          "exported": false,
+          "lineCount": 21
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 16204,
+      "hasStructuralAnalysis": true
+    },
+    "src/routes/system-update.routes.js": {
+      "filePath": "src/routes/system-update.routes.js",
+      "contentHash": "54865b8965a646bd5ea35a6fcfca6ef1606de9435c36193036b6c99915ae22bf",
+      "functions": [
+        {
+          "name": "getRepoValue",
+          "params": [
+            "args"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "getRepoInfo",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "getLatestBackupTag",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "getLatestDbBackupPath",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "resolveRollbackTarget",
+          "params": [
+            "status"
+          ],
+          "exported": false,
+          "lineCount": 43
+        },
+        {
+          "name": "spawnJob",
+          "params": [
+            "scriptName",
+            "jobId"
+          ],
+          "exported": false,
+          "lineCount": 12
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 261,
+      "hasStructuralAnalysis": true
+    },
+    "src/schema.base.migrations": {
+      "filePath": "src/schema.base.migrations",
+      "contentHash": "0fd091d4ffca881ea4e4032162c68f00a7a39af6b9edb6bd94e6c7237972e371",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 34,
+      "hasStructuralAnalysis": false
+    },
+    "src/schema.base.sql": {
+      "filePath": "src/schema.base.sql",
+      "contentHash": "e38aeba159ed362a6861f9a76b10432728b7bc48085f2c08fed76d9fa042dfcc",
+      "functions": [],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 3611,
+      "hasStructuralAnalysis": true
+    },
+    "src/scripts/run-migrations.js": {
+      "filePath": "src/scripts/run-migrations.js",
+      "contentHash": "c170a0a90bb4405e5faf17c6197110119371be0c533b254d5915b6512567cf40",
+      "functions": [
+        {
+          "name": "ensureMigrationsTable",
+          "params": [
+            "client"
+          ],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "getAppliedMigrations",
+          "params": [
+            "client"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "getMigrationFiles",
+          "params": [],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "applyMigration",
+          "params": [
+            "client",
+            "migration"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "main",
+          "params": [],
+          "exported": false,
+          "lineCount": 22
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 89,
+      "hasStructuralAnalysis": true
+    },
+    "src/scripts/run-system-rollback.js": {
+      "filePath": "src/scripts/run-system-rollback.js",
+      "contentHash": "515787649a45316a09199297eb44b5a8e47850a8acee5d6ce7df7c41ca52ee69",
+      "functions": [
+        {
+          "name": "nowIso",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "updateStatus",
+          "params": [
+            "patch"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "isIgnoredRuntimePath",
+          "params": [
+            "rawPath"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "parseGitStatusLine",
+          "params": [
+            "line"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "runCommand",
+          "params": [
+            "command",
+            "args"
+          ],
+          "exported": false,
+          "lineCount": 38
+        },
+        {
+          "name": "getRepoInfo",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "ensureCleanWorktree",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "formatStamp",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "getLatestDbBackupPath",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "createSafetySnapshot",
+          "params": [
+            "currentCommit"
+          ],
+          "exported": false,
+          "lineCount": 24
+        },
+        {
+          "name": "restoreDatabaseFromBackup",
+          "params": [
+            "backupPath"
+          ],
+          "exported": false,
+          "lineCount": 95
+        },
+        {
+          "name": "run",
+          "params": [],
+          "exported": false,
+          "lineCount": 97
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 375,
+      "hasStructuralAnalysis": true
+    },
+    "src/scripts/run-system-update.js": {
+      "filePath": "src/scripts/run-system-update.js",
+      "contentHash": "f4a435deffd2c3d36562eb8ffd9952a471a1f700e889b804041063cb7802db46",
+      "functions": [
+        {
+          "name": "nowIso",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "updateStatus",
+          "params": [
+            "patch"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "isIgnoredRuntimePath",
+          "params": [
+            "rawPath"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "parseGitStatusLine",
+          "params": [
+            "line"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "runCommand",
+          "params": [
+            "command",
+            "args"
+          ],
+          "exported": false,
+          "lineCount": 38
+        },
+        {
+          "name": "getRepoInfo",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "ensureCleanWorktree",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "formatStamp",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "getLatestDbBackupPath",
+          "params": [],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "createRollbackPoint",
+          "params": [
+            "beforeCommit"
+          ],
+          "exported": false,
+          "lineCount": 23
+        },
+        {
+          "name": "run",
+          "params": [],
+          "exported": false,
+          "lineCount": 123
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 303,
+      "hasStructuralAnalysis": true
+    },
+    "src/server.js": {
+      "filePath": "src/server.js",
+      "contentHash": "cf55e475b93367b045a56dd95a23fd9f46a0eaeff4bbe5de27dfb3a25671b2e0",
+      "functions": [
+        {
+          "name": "requireEnv",
+          "params": [
+            "name"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "parseCookies",
+          "params": [],
+          "exported": false,
+          "lineCount": 8
+        },
+        {
+          "name": "signToken",
+          "params": [
+            "payload"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "verifyToken",
+          "params": [
+            "token"
+          ],
+          "exported": false,
+          "lineCount": 17
+        },
+        {
+          "name": "isHttpsRequest",
+          "params": [
+            "req"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "buildAuthCookie",
+          "params": [
+            "token",
+            "req"
+          ],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "requireRole",
+          "params": [
+            "role"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "requireAnyRole",
+          "params": [
+            "roles"
+          ],
+          "exported": false,
+          "lineCount": 9
+        },
+        {
+          "name": "setupSystemdNotify",
+          "params": [],
+          "exported": false,
+          "lineCount": 18
+        },
+        {
+          "name": "gracefulShutdown",
+          "params": [
+            "signal"
+          ],
+          "exported": false,
+          "lineCount": 48
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 441,
+      "hasStructuralAnalysis": true
+    },
+    "src/utils/qr.js": {
+      "filePath": "src/utils/qr.js",
+      "contentHash": "33d477739739d8e9824d3fc8cee93960fe87c4f7969a61bb4302f1d0bda01543",
+      "functions": [
+        {
+          "name": "ensureDir",
+          "params": [
+            "dir"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "escXml",
+          "params": [
+            "str"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "writeQrWithLabel",
+          "params": [
+            "filePath",
+            "payload",
+            "label1",
+            "label2"
+          ],
+          "exported": false,
+          "lineCount": 44
+        },
+        {
+          "name": "generateEmployeeQrById",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "generateLineQrById",
+          "params": [
+            "id"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "generateWorkstationQrForLine",
+          "params": [
+            "lineId"
+          ],
+          "exported": false,
+          "lineCount": 39
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 157,
+      "hasStructuralAnalysis": true
+    },
+    "src/utils/streaming-excel.js": {
+      "filePath": "src/utils/streaming-excel.js",
+      "contentHash": "1ea9f05647dc57d777a7437c1648f6cbc6447b900197e90c005f28b6510bf7a0",
+      "functions": [
+        {
+          "name": "createStreamingWorkbook",
+          "params": [
+            "res",
+            "filename"
+          ],
+          "exported": false,
+          "lineCount": 15
+        },
+        {
+          "name": "addStreamingSheet",
+          "params": [
+            "workbook",
+            "sheetName",
+            "query"
+          ],
+          "exported": false,
+          "lineCount": 75
+        },
+        {
+          "name": "exportDailyReportStreaming",
+          "params": [
+            "res",
+            "date"
+          ],
+          "exported": false,
+          "lineCount": 142
+        },
+        {
+          "name": "exportRangeReportStreaming",
+          "params": [
+            "res",
+            "startDate",
+            "endDate"
+          ],
+          "exported": false,
+          "lineCount": 79
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 390,
+      "hasStructuralAnalysis": true
+    },
+    "src/utils/system-update-plan.js": {
+      "filePath": "src/utils/system-update-plan.js",
+      "contentHash": "48e1c80df9dd1af54f12f0f2160d42f24ad852fddd64e01673ac1a551c41f3fe",
+      "functions": [
+        {
+          "name": "asArray",
+          "params": [
+            "value"
+          ],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "mergeSection",
+          "params": [
+            "base",
+            "incoming"
+          ],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "cloneDefaultPlan",
+          "params": [],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "resolvePlanPaths",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "loadRawPlan",
+          "params": [],
+          "exported": false,
+          "lineCount": 13
+        },
+        {
+          "name": "loadSystemUpdatePlan",
+          "params": [],
+          "exported": false,
+          "lineCount": 12
+        },
+        {
+          "name": "resolvePath",
+          "params": [
+            "rawPath"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "syncEnvironmentFiles",
+          "params": [
+            "plan"
+          ],
+          "exported": false,
+          "lineCount": 36
+        },
+        {
+          "name": "normalizeCommandEntry",
+          "params": [
+            "entry"
+          ],
+          "exported": false,
+          "lineCount": 22
+        },
+        {
+          "name": "runHookCommands",
+          "params": [
+            "stageLabel",
+            "commands"
+          ],
+          "exported": false,
+          "lineCount": 18
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 164,
+      "hasStructuralAnalysis": true
+    },
+    "src/utils/system-update.js": {
+      "filePath": "src/utils/system-update.js",
+      "contentHash": "31c87c885e672d3ea1b19dbb8d55b74d34bd07d5f3f4e4e9fcb4989733ed5415",
+      "functions": [
+        {
+          "name": "ensureRuntimeDirs",
+          "params": [],
+          "exported": false,
+          "lineCount": 3
+        },
+        {
+          "name": "readJson",
+          "params": [
+            "filePath"
+          ],
+          "exported": false,
+          "lineCount": 7
+        },
+        {
+          "name": "writeStatus",
+          "params": [
+            "status"
+          ],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "readStatus",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "appendLog",
+          "params": [
+            "message"
+          ],
+          "exported": false,
+          "lineCount": 5
+        },
+        {
+          "name": "clearLog",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "getLogTail",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        },
+        {
+          "name": "acquireLock",
+          "params": [
+            "lockData"
+          ],
+          "exported": false,
+          "lineCount": 10
+        },
+        {
+          "name": "readLock",
+          "params": [],
+          "exported": false,
+          "lineCount": 4
+        },
+        {
+          "name": "releaseLock",
+          "params": [],
+          "exported": false,
+          "lineCount": 6
+        }
+      ],
+      "classes": [],
+      "imports": [],
+      "exports": [],
+      "totalLines": 89,
+      "hasStructuralAnalysis": true
+    }
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "projectRoot": "/home/worksync/worksync/backend",
+  "batchFiles": [
+    {
+      "path": ".env.example",
+      "language": "config",
+      "sizeLines": 42,
+      "fileCategory": "config"
+    },
+    {
+      "path": ".understand-anything/.understandignore",
+      "language": "unknown",
+      "sizeLines": 36,
+      "fileCategory": "code"
+    },
+    {
+      "path": "ecosystem.config.js",
+      "language": "javascript",
+      "sizeLines": 98,
+      "fileCategory": "code"
+    },
+    {
+      "path": "package.json",
+      "language": "json",
+      "sizeLines": 32,
+      "fileCategory": "config"
+    },
+    {
+      "path": "src/.graphifyignore",
+      "language": "unknown",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/config/app.config.js",
+      "language": "javascript",
+      "sizeLines": 0,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/middleware/rbac.js",
+      "language": "javascript",
+      "sizeLines": 371,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/middleware/session.js",
+      "language": "javascript",
+      "sizeLines": 397,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/css/admin.css.bak",
+      "language": "bak",
+      "sizeLines": 1578,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/admin.js",
+      "language": "javascript",
+      "sizeLines": 11880,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/ie.js",
+      "language": "javascript",
+      "sizeLines": 205,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/login.js",
+      "language": "javascript",
+      "sizeLines": 44,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/low-output-alerts.js",
+      "language": "javascript",
+      "sizeLines": 131,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/management.js",
+      "language": "javascript",
+      "sizeLines": 2455,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/offline-db.js",
+      "language": "javascript",
+      "sizeLines": 280,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/offline-sync.js",
+      "language": "javascript",
+      "sizeLines": 335,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/optimistic-ui.js",
+      "language": "javascript",
+      "sizeLines": 474,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/shop-floor-ux.js",
+      "language": "javascript",
+      "sizeLines": 594,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/sse-manager.js",
+      "language": "javascript",
+      "sizeLines": 328,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/supervisor.js",
+      "language": "javascript",
+      "sizeLines": 4129,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/js/sw-register.js",
+      "language": "javascript",
+      "sizeLines": 6,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/line_plan_template.xlsx",
+      "language": "xlsx",
+      "sizeLines": 470,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/sw.js",
+      "language": "javascript",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/WorkSync_Operational_Guide.docx",
+      "language": "docx",
+      "sizeLines": 101,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/public/WorkSync_Pitch_Deck.docx",
+      "language": "docx",
+      "sizeLines": 93,
+      "fileCategory": "code"
+    }
+  ],
+  "batchImportData": {
+    ".env.example": [],
+    ".understand-anything/.understandignore": [],
+    "ecosystem.config.js": [],
+    "package.json": [],
+    "src/.graphifyignore": [],
+    "src/config/app.config.js": [],
+    "src/middleware/rbac.js": [],
+    "src/middleware/session.js": [],
+    "src/public/css/admin.css.bak": [],
+    "src/public/js/admin.js": [],
+    "src/public/js/ie.js": [],
+    "src/public/js/login.js": [],
+    "src/public/js/low-output-alerts.js": [],
+    "src/public/js/management.js": [],
+    "src/public/js/offline-db.js": [],
+    "src/public/js/offline-sync.js": [],
+    "src/public/js/optimistic-ui.js": [],
+    "src/public/js/shop-floor-ux.js": [],
+    "src/public/js/sse-manager.js": [],
+    "src/public/js/supervisor.js": [],
+    "src/public/js/sw-register.js": [],
+    "src/public/line_plan_template.xlsx": [],
+    "src/public/sw.js": [],
+    "src/public/WorkSync_Operational_Guide.docx": [],
+    "src/public/WorkSync_Pitch_Deck.docx": []
+  }
+}

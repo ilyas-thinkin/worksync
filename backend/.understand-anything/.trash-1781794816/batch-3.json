@@ -1,0 +1,349 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/scripts/run-system-rollback.js",
+      "type": "file",
+      "name": "run-system-rollback.js",
+      "filePath": "src/scripts/run-system-rollback.js",
+      "summary": "CLI script that rolls back a previously applied system update job: verifies a clean git worktree, restores the database from the most recent backup, resets the repository to the prior commit, and reports rollback status/log progress for a given job ID.",
+      "tags": ["entry-point", "script", "deployment", "database", "git-operations"],
+      "complexity": "complex",
+      "languageNotes": "Heavy use of Node's child_process.spawn with manual stdout/stderr stream buffering to drive git, pg_restore/psql, and gunzip subprocesses sequentially."
+    },
+    {
+      "id": "file:src/scripts/run-system-update.js",
+      "type": "file",
+      "name": "run-system-update.js",
+      "filePath": "src/scripts/run-system-update.js",
+      "summary": "CLI script that performs an in-place system update: checks out the latest commit, creates a rollback snapshot (db backup + commit ref), runs pre/post hook commands from the update plan, syncs environment files, and updates job status/log for a given job ID.",
+      "tags": ["entry-point", "script", "deployment", "database", "automation"],
+      "complexity": "complex",
+      "languageNotes": "Mirrors run-system-rollback.js's command-running and git-status helpers, suggesting shared logic that could be further factored into utils."
+    },
+    {
+      "id": "file:src/utils/system-update-plan.js",
+      "type": "file",
+      "name": "system-update-plan.js",
+      "filePath": "src/utils/system-update-plan.js",
+      "summary": "Loads and normalizes the system update plan configuration (JSON or JS module), merges it with built-in defaults, syncs declared environment files into place, and executes the plan's pre/post hook shell commands.",
+      "tags": ["utility", "configuration", "automation", "deployment"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/utils/system-update.js",
+      "type": "file",
+      "name": "system-update.js",
+      "filePath": "src/utils/system-update.js",
+      "summary": "Low-level utility module providing the runtime state machinery for system update/rollback jobs: status JSON read/write, append-only log file, and a simple file-based lock to prevent concurrent update runs.",
+      "tags": ["utility", "service", "file-io", "concurrency"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/scripts/run-system-rollback.js:runCommand",
+      "type": "function",
+      "name": "runCommand",
+      "filePath": "src/scripts/run-system-rollback.js",
+      "lineRange": [56, 93],
+      "summary": "Spawns a child process for the given command/args, streaming and logging stdout/stderr line-by-line, and resolves with the collected output or rejects on non-zero exit.",
+      "tags": ["utility", "process-management", "logging"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/scripts/run-system-rollback.js:ensureCleanWorktree",
+      "type": "function",
+      "name": "ensureCleanWorktree",
+      "filePath": "src/scripts/run-system-rollback.js",
+      "lineRange": [105, 117],
+      "summary": "Checks `git status --porcelain` output and throws if there are uncommitted changes outside the ignored runtime directories, preventing rollback on a dirty worktree.",
+      "tags": ["validation", "git-operations"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/scripts/run-system-rollback.js:formatStamp",
+      "type": "function",
+      "name": "formatStamp",
+      "filePath": "src/scripts/run-system-rollback.js",
+      "lineRange": [119, 130],
+      "summary": "Formats the current date/time into a sortable `YYYYMMDD-HHMMSS` timestamp string used for backup/snapshot directory naming.",
+      "tags": ["utility", "formatting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/scripts/run-system-rollback.js:createSafetySnapshot",
+      "type": "function",
+      "name": "createSafetySnapshot",
+      "filePath": "src/scripts/run-system-rollback.js",
+      "lineRange": [142, 165],
+      "summary": "Creates a pre-rollback safety snapshot directory recording the current git commit and the latest database backup path, so a failed rollback can itself be recovered from.",
+      "tags": ["service", "database", "git-operations"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/scripts/run-system-rollback.js:restoreDatabaseFromBackup",
+      "type": "function",
+      "name": "restoreDatabaseFromBackup",
+      "filePath": "src/scripts/run-system-rollback.js",
+      "lineRange": [167, 261],
+      "summary": "Restores the PostgreSQL database from a gzip-compressed SQL backup by piping `gunzip` output into `psql`, streaming progress to the update log and resolving once both subprocesses complete successfully.",
+      "tags": ["database", "process-management", "service"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/scripts/run-system-rollback.js:run",
+      "type": "function",
+      "name": "run",
+      "filePath": "src/scripts/run-system-rollback.js",
+      "lineRange": [263, 359],
+      "summary": "Main orchestration function for the rollback script: acquires the job lock, verifies worktree cleanliness, restores the database, resets git to the prior commit, re-syncs environment files, runs hook commands, and finalizes job status.",
+      "tags": ["entry-point", "automation", "deployment"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/scripts/run-system-update.js:runCommand",
+      "type": "function",
+      "name": "runCommand",
+      "filePath": "src/scripts/run-system-update.js",
+      "lineRange": [55, 92],
+      "summary": "Spawns a child process for the given command/args, streaming and logging stdout/stderr line-by-line, and resolves with the collected output or rejects on non-zero exit.",
+      "tags": ["utility", "process-management", "logging"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/scripts/run-system-update.js:ensureCleanWorktree",
+      "type": "function",
+      "name": "ensureCleanWorktree",
+      "filePath": "src/scripts/run-system-update.js",
+      "lineRange": [104, 116],
+      "summary": "Checks `git status --porcelain` output and throws if there are uncommitted changes outside the ignored runtime directories, preventing an update on a dirty worktree.",
+      "tags": ["validation", "git-operations"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/scripts/run-system-update.js:formatStamp",
+      "type": "function",
+      "name": "formatStamp",
+      "filePath": "src/scripts/run-system-update.js",
+      "lineRange": [118, 129],
+      "summary": "Formats the current date/time into a sortable `YYYYMMDD-HHMMSS` timestamp string used for backup/snapshot directory naming.",
+      "tags": ["utility", "formatting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/scripts/run-system-update.js:createRollbackPoint",
+      "type": "function",
+      "name": "createRollbackPoint",
+      "filePath": "src/scripts/run-system-update.js",
+      "lineRange": [141, 163],
+      "summary": "Creates a rollback-point snapshot before applying the update, capturing a fresh database backup and recording the pre-update commit so the update can later be reverted.",
+      "tags": ["service", "database", "git-operations"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/scripts/run-system-update.js:run",
+      "type": "function",
+      "name": "run",
+      "filePath": "src/scripts/run-system-update.js",
+      "lineRange": [165, 287],
+      "summary": "Main orchestration function for the update script: acquires the job lock, validates worktree state, fetches/checks out the target commit, creates a rollback point, runs pre-update hooks, applies migrations/dependencies, syncs environment files, runs post-update hooks, and finalizes job status.",
+      "tags": ["entry-point", "automation", "deployment"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:loadRawPlan",
+      "type": "function",
+      "name": "loadRawPlan",
+      "filePath": "src/utils/system-update-plan.js",
+      "lineRange": [48, 60],
+      "summary": "Loads the raw system update plan from disk, supporting either a `.js` module export or a JSON file, returning null if no plan file exists.",
+      "tags": ["utility", "configuration", "file-io"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:loadSystemUpdatePlan",
+      "type": "function",
+      "name": "loadSystemUpdatePlan",
+      "filePath": "src/utils/system-update-plan.js",
+      "lineRange": [62, 73],
+      "summary": "Loads the raw plan (if any) and merges its environment-file and hook-command sections on top of the built-in default plan, returning the effective update plan.",
+      "tags": ["configuration", "utility"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:syncEnvironmentFiles",
+      "type": "function",
+      "name": "syncEnvironmentFiles",
+      "filePath": "src/utils/system-update-plan.js",
+      "lineRange": [80, 115],
+      "summary": "Copies each environment file declared in the update plan from its source path to its target path, creating target directories as needed and logging each sync action; returns the list of synced targets.",
+      "tags": ["file-io", "configuration", "deployment"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:normalizeCommandEntry",
+      "type": "function",
+      "name": "normalizeCommandEntry",
+      "filePath": "src/utils/system-update-plan.js",
+      "lineRange": [117, 138],
+      "summary": "Normalizes a hook command entry from the plan (resolving relative paths in args and building a human-readable command label) into a consistent shape for execution.",
+      "tags": ["utility", "validation"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:runHookCommands",
+      "type": "function",
+      "name": "runHookCommands",
+      "filePath": "src/utils/system-update-plan.js",
+      "lineRange": [140, 157],
+      "summary": "Runs a sequence of pre/post hook commands defined in the update plan for a given stage (e.g. 'pre-update'), logging and executing each one via runCommand.",
+      "tags": ["automation", "process-management", "deployment"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/utils/system-update.js:ensureRuntimeDirs",
+      "type": "function",
+      "name": "ensureRuntimeDirs",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [10, 12],
+      "summary": "Ensures the runtime directories used for update status, logs, and lock files exist on disk before they are read or written.",
+      "tags": ["utility", "file-io"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/system-update.js:writeStatus",
+      "type": "function",
+      "name": "writeStatus",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [22, 25],
+      "summary": "Persists the current update/rollback job status object to the status JSON file.",
+      "tags": ["service", "file-io"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/system-update.js:readStatus",
+      "type": "function",
+      "name": "readStatus",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [27, 30],
+      "summary": "Reads the current update/rollback job status object from the status JSON file.",
+      "tags": ["service", "file-io"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/system-update.js:appendLog",
+      "type": "function",
+      "name": "appendLog",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [32, 36],
+      "summary": "Appends a timestamped message line to the update/rollback log file.",
+      "tags": ["service", "logging", "file-io"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/system-update.js:getLogTail",
+      "type": "function",
+      "name": "getLogTail",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [43, 48],
+      "summary": "Reads the update/rollback log file and returns the last N lines, used to surface recent progress to API consumers.",
+      "tags": ["service", "logging", "file-io"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/system-update.js:acquireLock",
+      "type": "function",
+      "name": "acquireLock",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [50, 59],
+      "summary": "Writes a lock file containing the supplied lock data, used to prevent concurrent update or rollback jobs from running simultaneously.",
+      "tags": ["concurrency", "service", "file-io"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/system-update.js:readLock",
+      "type": "function",
+      "name": "readLock",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [61, 64],
+      "summary": "Reads and returns the current lock file contents, or null if no update/rollback job is currently locked.",
+      "tags": ["concurrency", "service", "file-io"],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/utils/system-update.js:releaseLock",
+      "type": "function",
+      "name": "releaseLock",
+      "filePath": "src/utils/system-update.js",
+      "lineRange": [66, 71],
+      "summary": "Removes the lock file, releasing the update/rollback job lock so a new job can start.",
+      "tags": ["concurrency", "service", "file-io"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "file:src/utils/system-update-plan.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "file:src/utils/system-update.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+    { "source": "file:src/scripts/run-system-update.js", "target": "file:src/utils/system-update-plan.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+    { "source": "file:src/scripts/run-system-update.js", "target": "file:src/utils/system-update.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "file:src/utils/system-update.js", "type": "imports", "direction": "forward", "weight": 0.7 },
+
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "function:src/scripts/run-system-rollback.js:runCommand", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "function:src/scripts/run-system-rollback.js:ensureCleanWorktree", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "function:src/scripts/run-system-rollback.js:formatStamp", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "function:src/scripts/run-system-rollback.js:createSafetySnapshot", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "function:src/scripts/run-system-rollback.js:restoreDatabaseFromBackup", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-rollback.js", "target": "function:src/scripts/run-system-rollback.js:run", "type": "contains", "direction": "forward", "weight": 1.0 },
+
+    { "source": "file:src/scripts/run-system-update.js", "target": "function:src/scripts/run-system-update.js:runCommand", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-update.js", "target": "function:src/scripts/run-system-update.js:ensureCleanWorktree", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-update.js", "target": "function:src/scripts/run-system-update.js:formatStamp", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-update.js", "target": "function:src/scripts/run-system-update.js:createRollbackPoint", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/scripts/run-system-update.js", "target": "function:src/scripts/run-system-update.js:run", "type": "contains", "direction": "forward", "weight": 1.0 },
+
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:loadRawPlan", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:loadSystemUpdatePlan", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:syncEnvironmentFiles", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:normalizeCommandEntry", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:runHookCommands", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:loadSystemUpdatePlan", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:syncEnvironmentFiles", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update-plan.js", "target": "function:src/utils/system-update-plan.js:runHookCommands", "type": "exports", "direction": "forward", "weight": 0.8 },
+
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:ensureRuntimeDirs", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:writeStatus", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:readStatus", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:appendLog", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:getLogTail", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:acquireLock", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:readLock", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:releaseLock", "type": "contains", "direction": "forward", "weight": 1.0 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:ensureRuntimeDirs", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:writeStatus", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:readStatus", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:appendLog", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:getLogTail", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:acquireLock", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:readLock", "type": "exports", "direction": "forward", "weight": 0.8 },
+    { "source": "file:src/utils/system-update.js", "target": "function:src/utils/system-update.js:releaseLock", "type": "exports", "direction": "forward", "weight": 0.8 },
+
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/utils/system-update.js:readLock", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/utils/system-update.js:readStatus", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/utils/system-update.js:appendLog", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/utils/system-update-plan.js:loadSystemUpdatePlan", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/utils/system-update-plan.js:syncEnvironmentFiles", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/utils/system-update-plan.js:runHookCommands", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/scripts/run-system-rollback.js:ensureCleanWorktree", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/scripts/run-system-rollback.js:createSafetySnapshot", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-rollback.js:run", "target": "function:src/scripts/run-system-rollback.js:restoreDatabaseFromBackup", "type": "calls", "direction": "forward", "weight": 0.8 },
+
+    { "source": "function:src/scripts/run-system-update.js:run", "target": "function:src/utils/system-update.js:readLock", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-update.js:run", "target": "function:src/utils/system-update.js:appendLog", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-update.js:run", "target": "function:src/utils/system-update-plan.js:loadSystemUpdatePlan", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-update.js:run", "target": "function:src/utils/system-update-plan.js:syncEnvironmentFiles", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-update.js:run", "target": "function:src/utils/system-update-plan.js:runHookCommands", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-update.js:run", "target": "function:src/scripts/run-system-update.js:ensureCleanWorktree", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/scripts/run-system-update.js:run", "target": "function:src/scripts/run-system-update.js:createRollbackPoint", "type": "calls", "direction": "forward", "weight": 0.8 },
+
+    { "source": "function:src/utils/system-update-plan.js:syncEnvironmentFiles", "target": "function:src/utils/system-update.js:appendLog", "type": "calls", "direction": "forward", "weight": 0.8 },
+    { "source": "function:src/utils/system-update-plan.js:runHookCommands", "target": "function:src/utils/system-update.js:appendLog", "type": "calls", "direction": "forward", "weight": 0.8 }
+  ]
+}

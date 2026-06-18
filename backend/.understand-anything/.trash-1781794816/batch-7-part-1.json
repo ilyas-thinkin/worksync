@@ -1,0 +1,809 @@
+{
+  "nodes": [
+    {
+      "id": "config:.env.example",
+      "type": "config",
+      "name": ".env.example",
+      "filePath": ".env.example",
+      "summary": "Template environment configuration listing server, database, security secrets, file-path, shift, and rate-limit settings required to run the WorkSync backend.",
+      "tags": [
+        "configuration",
+        "environment-variables",
+        "secrets-template",
+        "deployment"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:.understand-anything/.understandignore",
+      "type": "config",
+      "name": ".understandignore",
+      "filePath": ".understand-anything/.understandignore",
+      "summary": "Ignore-pattern file for the understand-anything analysis tool, excluding secrets (.env, *.pem, *.key) and optionally test files from the knowledge-graph scan.",
+      "tags": [
+        "configuration",
+        "tooling",
+        "ignore-rules"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:ecosystem.config.js",
+      "type": "config",
+      "name": "ecosystem.config.js",
+      "filePath": "ecosystem.config.js",
+      "summary": "PM2 process-manager configuration running the WorkSync server in 4-instance cluster mode with auto-restart, memory limits, log rotation paths, and an optional remote deploy target.",
+      "tags": [
+        "configuration",
+        "deployment",
+        "process-management",
+        "pm2"
+      ],
+      "complexity": "moderate",
+      "languageNotes": "Defines both runtime (cluster/instances/memory limits) and deploy (git-based remote deploy) sections in one PM2 ecosystem file."
+    },
+    {
+      "id": "config:package.json",
+      "type": "config",
+      "name": "package.json",
+      "filePath": "package.json",
+      "summary": "Node.js package manifest for the WorkSync backend declaring start/migration scripts and core dependencies (Express, pg, ExcelJS, JWT, bcrypt, Joi, Zod, node-cron).",
+      "tags": [
+        "configuration",
+        "build-system",
+        "dependencies"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "config:src/.graphifyignore",
+      "type": "config",
+      "name": ".graphifyignore",
+      "filePath": "src/.graphifyignore",
+      "summary": "Single-line ignore rule excluding the graphify-out/ directory from the graphify code-graph tool's own analysis.",
+      "tags": [
+        "configuration",
+        "tooling",
+        "ignore-rules"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/config/app.config.js",
+      "type": "file",
+      "name": "app.config.js",
+      "filePath": "src/config/app.config.js",
+      "summary": "Empty placeholder file in the config directory with no current content.",
+      "tags": [
+        "configuration",
+        "placeholder"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/middleware/rbac.js",
+      "type": "file",
+      "name": "rbac.js",
+      "filePath": "src/middleware/rbac.js",
+      "summary": "Role-based access control middleware defining the permission matrix and role hierarchy (admin, ie, supervisor, management) plus Express middleware factories for enforcing permissions and minimum roles on routes.",
+      "tags": [
+        "middleware",
+        "security",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/middleware/rbac.js:hasPermission",
+      "type": "function",
+      "name": "hasPermission",
+      "filePath": "src/middleware/rbac.js",
+      "lineRange": [
+        190,
+        197
+      ],
+      "summary": "Checks whether a given role has a specific permission according to the static PERMISSIONS map.",
+      "tags": [
+        "middleware",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/rbac.js:isRoleHigherOrEqual",
+      "type": "function",
+      "name": "isRoleHigherOrEqual",
+      "filePath": "src/middleware/rbac.js",
+      "lineRange": [
+        205,
+        207
+      ],
+      "summary": "Compares two roles against the ROLE_HIERARCHY ordering to determine seniority.",
+      "tags": [
+        "middleware",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/rbac.js:getRolePermissions",
+      "type": "function",
+      "name": "getRolePermissions",
+      "filePath": "src/middleware/rbac.js",
+      "lineRange": [
+        214,
+        222
+      ],
+      "summary": "Returns the full list of permissions granted to a given role.",
+      "tags": [
+        "middleware",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/rbac.js:rbacMiddleware",
+      "type": "function",
+      "name": "rbacMiddleware",
+      "filePath": "src/middleware/rbac.js",
+      "lineRange": [
+        230,
+        280
+      ],
+      "summary": "Core Express middleware that resolves the current user role and attaches permission-checking helpers to the request.",
+      "tags": [
+        "middleware",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/rbac.js:requirePermission",
+      "type": "function",
+      "name": "requirePermission",
+      "filePath": "src/middleware/rbac.js",
+      "lineRange": [
+        287,
+        306
+      ],
+      "summary": "Middleware factory returning a handler that rejects requests lacking a specific permission.",
+      "tags": [
+        "middleware",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/rbac.js:requireRole",
+      "type": "function",
+      "name": "requireRole",
+      "filePath": "src/middleware/rbac.js",
+      "lineRange": [
+        313,
+        332
+      ],
+      "summary": "Middleware factory restricting a route to an explicit list of allowed roles.",
+      "tags": [
+        "middleware",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/rbac.js:requireMinRole",
+      "type": "function",
+      "name": "requireMinRole",
+      "filePath": "src/middleware/rbac.js",
+      "lineRange": [
+        339,
+        358
+      ],
+      "summary": "Middleware factory restricting a route to roles at or above a minimum hierarchy level.",
+      "tags": [
+        "middleware",
+        "authorization",
+        "rbac"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:src/middleware/session.js",
+      "type": "file",
+      "name": "session.js",
+      "filePath": "src/middleware/session.js",
+      "summary": "In-memory session management middleware handling session creation, validation, renewal, cleanup, security headers, and rate limiting for the WorkSync Express app.",
+      "tags": [
+        "middleware",
+        "security",
+        "session-management",
+        "rate-limiting"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:src/middleware/session.js:generateSessionId",
+      "type": "function",
+      "name": "generateSessionId",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        24,
+        26
+      ],
+      "summary": "Generates a cryptographically random session identifier.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:createSession",
+      "type": "function",
+      "name": "createSession",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        34,
+        70
+      ],
+      "summary": "Creates a new session record for an authenticated user, evicting the oldest session if the per-user limit is exceeded.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/session.js:findOldestSession",
+      "type": "function",
+      "name": "findOldestSession",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        75,
+        88
+      ],
+      "summary": "Finds the least-recently-used session among a user's active sessions for eviction.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:getSession",
+      "type": "function",
+      "name": "getSession",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        94,
+        96
+      ],
+      "summary": "Looks up a session by its identifier.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:touchSession",
+      "type": "function",
+      "name": "touchSession",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        102,
+        108
+      ],
+      "summary": "Updates a session's last-activity timestamp.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:destroySession",
+      "type": "function",
+      "name": "destroySession",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        114,
+        128
+      ],
+      "summary": "Removes a session by id and clears it from the user's active session list.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:destroyUserSessions",
+      "type": "function",
+      "name": "destroyUserSessions",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        134,
+        142
+      ],
+      "summary": "Destroys all sessions belonging to a given user, used on logout-all or password change.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:isSessionValid",
+      "type": "function",
+      "name": "isSessionValid",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        148,
+        164
+      ],
+      "summary": "Validates a session against expiry and idle-timeout rules.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:needsRenewal",
+      "type": "function",
+      "name": "needsRenewal",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        170,
+        174
+      ],
+      "summary": "Determines whether a session is close enough to expiry to need a sliding renewal.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:renewSession",
+      "type": "function",
+      "name": "renewSession",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        180,
+        187
+      ],
+      "summary": "Extends a session's expiry window.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:getUserActiveSessions",
+      "type": "function",
+      "name": "getUserActiveSessions",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        193,
+        212
+      ],
+      "summary": "Returns all currently active sessions for a user.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:cleanupExpiredSessions",
+      "type": "function",
+      "name": "cleanupExpiredSessions",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        217,
+        233
+      ],
+      "summary": "Sweeps and removes expired sessions; invoked on an interval timer.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "function:src/middleware/session.js:sessionMiddleware",
+      "type": "function",
+      "name": "sessionMiddleware",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        238,
+        277
+      ],
+      "summary": "Express middleware that authenticates each request via its session cookie and attaches the user/session to the request object.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/session.js:securityHeaders",
+      "type": "function",
+      "name": "securityHeaders",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        282,
+        311
+      ],
+      "summary": "Express middleware applying security-related HTTP response headers.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:src/middleware/session.js:rateLimiter",
+      "type": "function",
+      "name": "rateLimiter",
+      "filePath": "src/middleware/session.js",
+      "lineRange": [
+        318,
+        367
+      ],
+      "summary": "Middleware factory implementing a sliding-window request rate limiter.",
+      "tags": [
+        "middleware",
+        "session-management",
+        "security"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "file:src/public/WorkSync_Operational_Guide.docx",
+      "type": "file",
+      "name": "WorkSync_Operational_Guide.docx",
+      "filePath": "src/public/WorkSync_Operational_Guide.docx",
+      "summary": "Word document operational guide describing how to use the WorkSync system, served as a static downloadable file from the public directory.",
+      "tags": [
+        "documentation",
+        "static-asset",
+        "operational-guide"
+      ],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:hasPermission",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:hasPermission",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:isRoleHigherOrEqual",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:isRoleHigherOrEqual",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:getRolePermissions",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:getRolePermissions",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:rbacMiddleware",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:rbacMiddleware",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:requirePermission",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:requirePermission",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:requireRole",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:requireRole",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:requireMinRole",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/rbac.js",
+      "target": "function:src/middleware/rbac.js:requireMinRole",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:generateSessionId",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:generateSessionId",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:createSession",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:createSession",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:findOldestSession",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:findOldestSession",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:getSession",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:getSession",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:touchSession",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:touchSession",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:destroySession",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:destroySession",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:destroyUserSessions",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:destroyUserSessions",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:isSessionValid",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:isSessionValid",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:needsRenewal",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:needsRenewal",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:renewSession",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:renewSession",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:getUserActiveSessions",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:getUserActiveSessions",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:cleanupExpiredSessions",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:cleanupExpiredSessions",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:sessionMiddleware",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:sessionMiddleware",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:securityHeaders",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:securityHeaders",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:rateLimiter",
+      "type": "contains",
+      "direction": "forward",
+      "weight": 1
+    },
+    {
+      "source": "file:src/middleware/session.js",
+      "target": "function:src/middleware/session.js:rateLimiter",
+      "type": "exports",
+      "direction": "forward",
+      "weight": 0.8
+    }
+  ]
+}

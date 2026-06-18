@@ -1,0 +1,2948 @@
+{
+  "scriptCompleted": true,
+  "entryPointCandidates": [
+    {
+      "id": "file:src/server.js",
+      "score": 6,
+      "name": "server.js",
+      "summary": "Main application entry point: configures Express middleware (CORS, JSON, HTTPS redirect, static assets), implements custom cookie-based JWT-like auth (sign/verify token, role guards), mounts the API and system-update routers, starts HTTP/HTTPS listeners, wires systemd watchdog notify, and handles graceful shutdown of servers, DB pool, and realtime connections."
+    },
+    {
+      "id": "file:src/schema.base.migrations",
+      "score": 3,
+      "name": "schema.base.migrations",
+      "summary": "Plain-text manifest listing the ordered filenames of all 27 SQL migrations (007 through 033) that have been applied to bring the database to its current baseline state, used as a changelog/checklist rather than executable SQL."
+    },
+    {
+      "id": "file:src/scripts/run-migrations.js",
+      "score": 2,
+      "name": "run-migrations.js",
+      "summary": "Standalone CLI script that applies pending SQL migration files to the PostgreSQL database, tracking which migrations have already been run in a migrations table."
+    },
+    {
+      "id": "file:src/utils/streaming-excel.js",
+      "score": 2,
+      "name": "streaming-excel.js",
+      "summary": "Utility for generating large Excel reports (daily and date-range production reports) using ExcelJS's streaming writer so workbooks are written directly to the HTTP response without buffering the whole file in memory."
+    },
+    {
+      "id": "file:src/middleware/audit.js",
+      "score": 2,
+      "name": "audit.js",
+      "summary": "Express middleware and helper functions for recording and querying audit log entries (who changed what, when, from where) across the application's data tables."
+    }
+  ],
+  "fanInRanking": [
+    {
+      "id": "file:src/config/db.config.js",
+      "fanIn": 7,
+      "name": "db.config.js"
+    },
+    {
+      "id": "function:src/utils/system-update.js:appendLog",
+      "fanIn": 6,
+      "name": "appendLog"
+    },
+    {
+      "id": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "fanIn": 6,
+      "name": "employee_workstation_assignments"
+    },
+    {
+      "id": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "fanIn": 6,
+      "name": "line_plan_workstations"
+    },
+    {
+      "id": "file:src/utils/system-update.js",
+      "fanIn": 4,
+      "name": "system-update.js"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:loadSystemUpdatePlan",
+      "fanIn": 4,
+      "name": "loadSystemUpdatePlan"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:syncEnvironmentFiles",
+      "fanIn": 4,
+      "name": "syncEnvironmentFiles"
+    },
+    {
+      "id": "function:src/utils/system-update-plan.js:runHookCommands",
+      "fanIn": 4,
+      "name": "runHookCommands"
+    },
+    {
+      "id": "function:src/utils/system-update.js:readLock",
+      "fanIn": 4,
+      "name": "readLock"
+    },
+    {
+      "id": "table:src/schema.base.sql:employee_workstation_assignments",
+      "fanIn": 4,
+      "name": "employee_workstation_assignments"
+    },
+    {
+      "id": "function:src/realtime.js:broadcast",
+      "fanIn": 3,
+      "name": "broadcast"
+    },
+    {
+      "id": "function:src/realtime.js:closeAllConnections",
+      "fanIn": 3,
+      "name": "closeAllConnections"
+    },
+    {
+      "id": "function:src/utils/qr.js:generateEmployeeQrById",
+      "fanIn": 3,
+      "name": "generateEmployeeQrById"
+    },
+    {
+      "id": "function:src/utils/qr.js:generateLineQrById",
+      "fanIn": 3,
+      "name": "generateLineQrById"
+    },
+    {
+      "id": "function:src/utils/system-update.js:readStatus",
+      "fanIn": 3,
+      "name": "readStatus"
+    },
+    {
+      "id": "file:src/public/js/sse-manager.js",
+      "fanIn": 3,
+      "name": "sse-manager.js"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_plan_workstations",
+      "fanIn": 3,
+      "name": "line_plan_workstations"
+    },
+    {
+      "id": "function:src/utils/streaming-excel.js:createStreamingWorkbook",
+      "fanIn": 2,
+      "name": "createStreamingWorkbook"
+    },
+    {
+      "id": "function:src/utils/streaming-excel.js:addStreamingSheet",
+      "fanIn": 2,
+      "name": "addStreamingSheet"
+    },
+    {
+      "id": "function:src/utils/streaming-excel.js:exportDailyReportStreaming",
+      "fanIn": 2,
+      "name": "exportDailyReportStreaming"
+    }
+  ],
+  "fanOutRanking": [
+    {
+      "id": "file:src/routes/api.routes.js",
+      "fanOut": 63,
+      "name": "api.routes.js"
+    },
+    {
+      "id": "file:src/middleware/session.js",
+      "fanOut": 30,
+      "name": "session.js"
+    },
+    {
+      "id": "file:src/public/js/admin.js",
+      "fanOut": 23,
+      "name": "admin.js"
+    },
+    {
+      "id": "file:src/middleware/transaction.js",
+      "fanOut": 21,
+      "name": "transaction.js"
+    },
+    {
+      "id": "file:src/public/js/management.js",
+      "fanOut": 21,
+      "name": "management.js"
+    },
+    {
+      "id": "file:src/middleware/audit.js",
+      "fanOut": 19,
+      "name": "audit.js"
+    },
+    {
+      "id": "file:src/public/js/supervisor.js",
+      "fanOut": 18,
+      "name": "supervisor.js"
+    },
+    {
+      "id": "file:src/utils/system-update.js",
+      "fanOut": 16,
+      "name": "system-update.js"
+    },
+    {
+      "id": "file:src/middleware/rbac.js",
+      "fanOut": 14,
+      "name": "rbac.js"
+    },
+    {
+      "id": "file:src/public/js/sse-manager.js",
+      "fanOut": 12,
+      "name": "sse-manager.js"
+    },
+    {
+      "id": "file:src/public/js/ie.js",
+      "fanOut": 10,
+      "name": "ie.js"
+    },
+    {
+      "id": "file:src/utils/streaming-excel.js",
+      "fanOut": 9,
+      "name": "streaming-excel.js"
+    },
+    {
+      "id": "file:src/realtime.js",
+      "fanOut": 9,
+      "name": "realtime.js"
+    },
+    {
+      "id": "file:src/utils/system-update-plan.js",
+      "fanOut": 9,
+      "name": "system-update-plan.js"
+    },
+    {
+      "id": "function:src/scripts/run-system-rollback.js:run",
+      "fanOut": 9,
+      "name": "run"
+    },
+    {
+      "id": "file:src/public/js/low-output-alerts.js",
+      "fanOut": 9,
+      "name": "low-output-alerts.js"
+    },
+    {
+      "id": "file:src/public/js/shop-floor-ux.js",
+      "fanOut": 9,
+      "name": "shop-floor-ux.js"
+    },
+    {
+      "id": "file:src/middleware/validation.js",
+      "fanOut": 8,
+      "name": "validation.js"
+    },
+    {
+      "id": "file:src/server.js",
+      "fanOut": 8,
+      "name": "server.js"
+    },
+    {
+      "id": "file:src/utils/qr.js",
+      "fanOut": 8,
+      "name": "qr.js"
+    }
+  ],
+  "bfsTraversal": {
+    "startNode": "file:src/server.js",
+    "order": [
+      "file:src/server.js",
+      "file:src/config/db.config.js",
+      "file:src/realtime.js",
+      "file:src/routes/api.routes.js",
+      "file:src/routes/system-update.routes.js",
+      "file:src/utils/qr.js",
+      "file:src/middleware/audit.js",
+      "file:src/middleware/transaction.js",
+      "file:src/middleware/validation.js",
+      "file:src/utils/system-update.js"
+    ],
+    "depthMap": {
+      "file:src/server.js": 0,
+      "file:src/config/db.config.js": 1,
+      "file:src/realtime.js": 1,
+      "file:src/routes/api.routes.js": 1,
+      "file:src/routes/system-update.routes.js": 1,
+      "file:src/utils/qr.js": 2,
+      "file:src/middleware/audit.js": 2,
+      "file:src/middleware/transaction.js": 2,
+      "file:src/middleware/validation.js": 2,
+      "file:src/utils/system-update.js": 2
+    },
+    "byDepth": {
+      "0": [
+        "file:src/server.js"
+      ],
+      "1": [
+        "file:src/config/db.config.js",
+        "file:src/realtime.js",
+        "file:src/routes/api.routes.js",
+        "file:src/routes/system-update.routes.js"
+      ],
+      "2": [
+        "file:src/utils/qr.js",
+        "file:src/middleware/audit.js",
+        "file:src/middleware/transaction.js",
+        "file:src/middleware/validation.js",
+        "file:src/utils/system-update.js"
+      ]
+    }
+  },
+  "nonCodeFiles": {
+    "documentation": [
+      {
+        "id": "file:src/public/WorkSync_Technical_Report.docx",
+        "name": "WorkSync_Technical_Report.docx",
+        "type": "document",
+        "summary": "Internal technical reference document (v1.0, March 2026) covering WorkSync's system overview, technology stack, user roles/permissions, the full 31+ table database schema, API endpoints, screens/panels, business flows, formulas, JS state, migration history, SSE events, Excel upload template, QR code system, PWA features, and key constants."
+      }
+    ],
+    "infrastructure": [],
+    "data": [
+      {
+        "id": "table:src/migrations/007_add_performance_indexes.sql:line_process_hourly_progress",
+        "name": "line_process_hourly_progress",
+        "type": "table",
+        "summary": "Adds 16 performance-tuning indexes across hourly progress, attendance, assignment history, daily plans/metrics, material transactions, day locks, shift closures, process WIP, and audit logs tables to speed up common query patterns."
+      },
+      {
+        "id": "table:src/migrations/008_enhanced_audit_logging.sql:audit_logs",
+        "name": "audit_logs",
+        "type": "table",
+        "summary": "Extends audit logging with IP/session indexes and adds two reporting views (audit summary, recent critical changes) for monitoring sensitive changes."
+      },
+      {
+        "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:defect_types",
+        "name": "defect_types",
+        "type": "table",
+        "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+      },
+      {
+        "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:defect_log",
+        "name": "defect_log",
+        "type": "table",
+        "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+      },
+      {
+        "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:downtime_reasons",
+        "name": "downtime_reasons",
+        "type": "table",
+        "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+      },
+      {
+        "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:downtime_log",
+        "name": "downtime_log",
+        "type": "table",
+        "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+      },
+      {
+        "id": "table:src/migrations/010_add_target_qty_to_products.sql:products",
+        "name": "products",
+        "type": "table",
+        "summary": "Adds a target_qty column (with index) to the products table so each product can carry its own production target quantity."
+      },
+      {
+        "id": "table:src/migrations/011_add_shortfall_reason.sql:line_process_hourly_progress",
+        "name": "line_process_hourly_progress",
+        "type": "table",
+        "summary": "Adds a shortfall_reason column to line_process_hourly_progress so supervisors can record why hourly output fell below target."
+      },
+      {
+        "id": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Creates the core employee_workstation_assignments table linking employees to workstations on a line, with supporting indexes — the foundation of the live workstation assignment model."
+      },
+      {
+        "id": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Creates line_plan_workstations and line_plan_workstation_processes tables to model the planned workstation layout and process sequencing per line/date/product, with supporting indexes."
+      },
+      {
+        "id": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstation_processes",
+        "name": "line_plan_workstation_processes",
+        "type": "table",
+        "summary": "Creates line_plan_workstations and line_plan_workstation_processes tables to model the planned workstation layout and process sequencing per line/date/product, with supporting indexes."
+      },
+      {
+        "id": "table:src/migrations/014_workstation_plan_group.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Adds an index supporting group_name lookups on the workstation plan table."
+      },
+      {
+        "id": "table:src/migrations/015_line_workstations.sql:line_workstations",
+        "name": "line_workstations",
+        "type": "table",
+        "summary": "Creates the line_workstations table storing static workstation codes and QR code paths per production line."
+      },
+      {
+        "id": "table:src/migrations/016_overtime.sql:line_daily_plans",
+        "name": "line_daily_plans",
+        "type": "table",
+        "summary": "Adds overtime_minutes and overtime_target columns to line_daily_plans, enabling an optional overtime session alongside the regular shift for a given line/date."
+      },
+      {
+        "id": "table:src/migrations/017_lpw_product_unique.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Adds a uniqueness index on line_plan_workstations scoped by line, date, and product to prevent duplicate workstation plan rows for the same plan context."
+      },
+      {
+        "id": "table:src/migrations/018_ewa_is_overtime.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Adds an is_overtime-aware unique index to employee_workstation_assignments so regular and OT assignments for the same workstation can coexist without conflict."
+      },
+      {
+        "id": "table:src/migrations/019_lpw_ot_skipped.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Adds an is_ot_skipped boolean to line_plan_workstations so IE can mark individual workstations as not running during overtime."
+      },
+      {
+        "id": "table:src/migrations/020_changeover_started_at.sql:line_daily_plans",
+        "name": "line_daily_plans",
+        "type": "table",
+        "summary": "Adds a changeover_started_at timestamp to line_daily_plans to track when a supervisor activates a product changeover on a line."
+      },
+      {
+        "id": "table:src/migrations/021_ot_plan.sql:line_ot_plans",
+        "name": "line_ot_plans",
+        "type": "table",
+        "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions."
+      },
+      {
+        "id": "table:src/migrations/021_ot_plan.sql:line_ot_workstations",
+        "name": "line_ot_workstations",
+        "type": "table",
+        "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions."
+      },
+      {
+        "id": "table:src/migrations/021_ot_plan.sql:line_ot_workstation_processes",
+        "name": "line_ot_workstation_processes",
+        "type": "table",
+        "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions."
+      },
+      {
+        "id": "table:src/migrations/022_ot_progress.sql:line_ot_progress",
+        "name": "line_ot_progress",
+        "type": "table",
+        "summary": "Creates the line_ot_progress table for recording supervisor-entered overtime output per OT workstation per date."
+      },
+      {
+        "id": "table:src/migrations/023_add_line_leader.sql:production_lines",
+        "name": "production_lines",
+        "type": "table",
+        "summary": "Adds a line_leader column to production_lines to record the assigned line leader's name."
+      },
+      {
+        "id": "table:src/migrations/023_ewa_is_linked.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Adds an is_linked boolean to employee_workstation_assignments distinguishing a confirmed (linked) employee presence from a mere assignment."
+      },
+      {
+        "id": "table:src/migrations/023_fix_product_sequence_constraint.sql:product_processes",
+        "name": "product_processes",
+        "type": "table",
+        "summary": "Adds a uniqueness index enforcing one sequence_number per product in product_processes, fixing a constraint gap that previously allowed duplicate sequence numbers."
+      },
+      {
+        "id": "table:src/migrations/023_ws_changeover.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Adds ws_changeover_active and ws_changeover_started_at columns to line_plan_workstations enabling per-workstation changeover so individual stations can switch product independently of the rest of the line."
+      },
+      {
+        "id": "table:src/migrations/024_add_plan_month.sql:products",
+        "name": "products",
+        "type": "table",
+        "summary": "Adds a plan_month column (YYYY-MM format) to products for monthly production planning grouping."
+      },
+      {
+        "id": "table:src/migrations/024_group_wip.sql:group_wip",
+        "name": "group_wip",
+        "type": "table",
+        "summary": "Creates the group_wip table tracking work-in-progress quantity per process group per line/date, with a supporting index."
+      },
+      {
+        "id": "table:src/migrations/024_is_linked_default_false.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Changes the is_linked default to false and resets today's links so that assignments never auto-link employees — linking now requires explicit supervisor confirmation each morning."
+      },
+      {
+        "id": "table:src/migrations/024_osm_checked.sql:line_plan_workstation_processes",
+        "name": "line_plan_workstation_processes",
+        "type": "table",
+        "summary": "Adds an osm_checked boolean to line_plan_workstation_processes so IE/Admin can flag specific processes as OSM (operation sequence/measurement) observation points for the OSM report."
+      },
+      {
+        "id": "table:src/migrations/025_material_provided.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Adds a material_provided integer column to employee_workstation_assignments to record units of material/WIP given to a workstation at the start of the day."
+      },
+      {
+        "id": "table:src/migrations/026_material_nullable.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Makes material_provided nullable (removing the default) so NULL distinctly represents 'not yet confirmed by supervisor' versus an explicit 0, and backfills previously auto-defaulted rows to NULL."
+      },
+      {
+        "id": "table:src/migrations/027_worker_departures.sql:worker_departures",
+        "name": "worker_departures",
+        "type": "table",
+        "summary": "Creates the worker_departures table to record when and why an employee left a workstation mid-day (sick, personal, operational, other), with supporting indexes."
+      },
+      {
+        "id": "table:src/migrations/028_worker_adjustments.sql:worker_adjustments",
+        "name": "worker_adjustments",
+        "type": "table",
+        "summary": "Creates the worker_adjustments table recording how a vacated workstation was reassigned in response to a worker departure, linked back to worker_departures."
+      },
+      {
+        "id": "table:src/migrations/029_osm_product_level.sql:product_processes",
+        "name": "product_processes",
+        "type": "table",
+        "summary": "Moves OSM-checked state from the daily plan level to product_processes so OSM selections persist per product rather than per day, and backfills existing checked flags accordingly."
+      },
+      {
+        "id": "table:src/migrations/030_co_employee_assignment.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Adds co_employee_id to line_plan_workstations so IE can pre-assign a suggested changeover employee per workstation, independent of live employee_workstation_assignments."
+      },
+      {
+        "id": "table:src/migrations/031_ot_supervisor_auth.sql:line_ot_plans",
+        "name": "line_ot_plans",
+        "type": "table",
+        "summary": "Adds a supervisor_authorized flag to line_ot_plans so IE can grant supervisors permission to manage workstations and employees during an OT session."
+      },
+      {
+        "id": "table:src/migrations/032_attendance_link_tracking.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Adds linked_at, late_reason, and attendance_start columns plus a check constraint to employee_workstation_assignments to track when supervisors confirm links, capture late-arrival reasons, and compute the effective shift start used for efficiency calculations; backfills existing linked rows."
+      },
+      {
+        "id": "table:src/migrations/033_employee_workstation_assignment_history.sql:employee_workstation_assignment_history",
+        "name": "employee_workstation_assignment_history",
+        "type": "table",
+        "summary": "Creates the employee_workstation_assignment_history table that records every assignment window (effective_from_hour to effective_to_hour) per employee/workstation/line/date, enabling correct attribution of hourly output even after mid-day reassignment or unlinking."
+      },
+      {
+        "id": "table:src/migrations/033_working_hours.sql:app_settings",
+        "name": "app_settings",
+        "type": "table",
+        "summary": "Seeds default working-hour app_settings (08:00-17:00 shift with a 60-minute lunch break) used as the factory-wide default schedule."
+      },
+      {
+        "id": "table:src/migrations/034_workstation_changeover_events.sql:workstation_changeover_events",
+        "name": "workstation_changeover_events",
+        "type": "table",
+        "summary": "Creates the workstation_changeover_events table capturing per-workstation changeover activation details (incoming product/workstation, assigned employee, feed quantity, start time), with supporting indexes."
+      },
+      {
+        "id": "table:src/migrations/035_ot_workstation_flow.sql:line_ot_workstations",
+        "name": "line_ot_workstations",
+        "type": "table",
+        "summary": "Adds source-state and WIP snapshot columns to line_ot_workstations and line_ot_progress, preserving shift-end context for OT and keeping OT WIP separate from regular-shift WIP while supporting combined-flow views."
+      },
+      {
+        "id": "table:src/migrations/036_daily_plan_delete_markers.sql:line_daily_plan_delete_markers",
+        "name": "line_daily_plan_delete_markers",
+        "type": "table",
+        "summary": "Creates the line_daily_plan_delete_markers table to record soft-deletion of daily plans (who deleted, when) with a supporting index."
+      },
+      {
+        "id": "table:src/migrations/037_changeover_primary_promotions.sql:changeover_primary_promotions",
+        "name": "changeover_primary_promotions",
+        "type": "table",
+        "summary": "Creates the changeover_primary_promotions table recording when a changeover product is promoted to become the new primary product on a line, including a snapshot of prior state."
+      },
+      {
+        "id": "table:src/migrations/038_material_feed_events.sql:material_feed_events",
+        "name": "material_feed_events",
+        "type": "table",
+        "summary": "Creates the material_feed_events table logging material/WIP feed quantities given to a workstation group, including override tracking when feed exceeds the order quantity."
+      },
+      {
+        "id": "table:src/migrations/039_ot_workstations_default_inactive.sql:line_ot_workstations",
+        "name": "line_ot_workstations",
+        "type": "table",
+        "summary": "Changes the is_active default on line_ot_workstations to false so IE must explicitly activate each OT workstation rather than having it active by default."
+      },
+      {
+        "id": "table:src/migrations/040_custom_takt_flag.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Adds an is_custom_takt boolean to line_plan_workstations so the frontend can distinguish manually-overridden workstation takt times from auto-calculated ones tied to the live line target."
+      },
+      {
+        "id": "table:src/schema.base.sql:app_settings",
+        "name": "app_settings",
+        "type": "table",
+        "summary": "Key/value store for global runtime configuration such as default working hours and lunch break minutes."
+      },
+      {
+        "id": "table:src/schema.base.sql:audit_logs",
+        "name": "audit_logs",
+        "type": "table",
+        "summary": "Central audit trail recording every tracked change with old/new values, the acting user, request metadata (IP, user agent, session, path, method), and reason."
+      },
+      {
+        "id": "table:src/schema.base.sql:defect_log",
+        "name": "defect_log",
+        "type": "table",
+        "summary": "Per-employee, per-process defect occurrences including rework tracking (rework employee, completion time) and quality status."
+      },
+      {
+        "id": "table:src/schema.base.sql:defect_types",
+        "name": "defect_types",
+        "type": "table",
+        "summary": "Master list of defect type codes with category, severity, and whether the defect is reworkable."
+      },
+      {
+        "id": "table:src/schema.base.sql:downtime_log",
+        "name": "downtime_log",
+        "type": "table",
+        "summary": "Records downtime incidents per line with start/end times, duration, affected processes, and resolution metadata."
+      },
+      {
+        "id": "table:src/schema.base.sql:downtime_reasons",
+        "name": "downtime_reasons",
+        "type": "table",
+        "summary": "Master list of downtime reason codes, categorized and flagged as planned/unplanned with a default duration."
+      },
+      {
+        "id": "table:src/schema.base.sql:employee_attendance",
+        "name": "employee_attendance",
+        "type": "table",
+        "summary": "Daily attendance record per employee with in/out times and status."
+      },
+      {
+        "id": "table:src/schema.base.sql:employee_process_assignments",
+        "name": "employee_process_assignments",
+        "type": "table",
+        "summary": "Legacy table assigning employees directly to product processes per line; superseded by the workstation-based employee_workstation_assignments model but still present in the schema."
+      },
+      {
+        "id": "table:src/schema.base.sql:employee_workstation_assignments",
+        "name": "employee_workstation_assignments",
+        "type": "table",
+        "summary": "Core live-assignment table linking employees to workstations per line/date, tracking overtime flag, link confirmation state, late reason, attendance start, and material provided; unique per (line, date, workstation, overtime flag)."
+      },
+      {
+        "id": "table:src/schema.base.sql:employees",
+        "name": "employees",
+        "type": "table",
+        "summary": "Employee master data including employee code, name, designation, default line, QR code path, active flag, and manpower factor."
+      },
+      {
+        "id": "table:src/schema.base.sql:group_wip",
+        "name": "group_wip",
+        "type": "table",
+        "summary": "Tracks work-in-progress quantities per process group per line/date, including materials-in and output quantity, used for group-first feed workstations."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_daily_metrics",
+        "name": "line_daily_metrics",
+        "type": "table",
+        "summary": "Daily rollup of forwarded quantity, remaining WIP, materials issued, and QA output per line."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_daily_plans",
+        "name": "line_daily_plans",
+        "type": "table",
+        "summary": "One row per line per work date holding the active product, target units, lock state, changeover sequence/target, and overtime settings — the central daily planning record."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_hourly_reports",
+        "name": "line_hourly_reports",
+        "type": "table",
+        "summary": "Free-text remarks captured per line per work date per hour slot."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_material_stock",
+        "name": "line_material_stock",
+        "type": "table",
+        "summary": "Tracks opening/closing material stock and issued/used/returned totals per line per day."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_ot_plans",
+        "name": "line_ot_plans",
+        "type": "table",
+        "summary": "Overtime plan per line/date/product holding global OT minutes, OT target units, and a supervisor_authorized flag that grants the supervisor permission to manage OT workstations."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_ot_progress",
+        "name": "line_ot_progress",
+        "type": "table",
+        "summary": "Supervisor-entered OT output per workstation per date, including quantity, QA rejection, and the employee credited."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_ot_workstation_processes",
+        "name": "line_ot_workstation_processes",
+        "type": "table",
+        "summary": "Junction table linking OT workstations to product processes with sequence ordering."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_ot_workstations",
+        "name": "line_ot_workstations",
+        "type": "table",
+        "summary": "Per-workstation OT configuration (active flag, OT minutes, actual SAM seconds) for a given OT plan."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_plan_workstation_processes",
+        "name": "line_plan_workstation_processes",
+        "type": "table",
+        "summary": "Junction table linking planned workstations to product processes with sequence ordering and an OSM-checked flag."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_plan_workstations",
+        "name": "line_plan_workstations",
+        "type": "table",
+        "summary": "Workstation layout per line/date/product including takt time, actual SAM seconds, workload percentage, group name, OT-skip flag, changeover active state/start time, and the pre-assigned changeover employee (co_employee_id)."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_process_hourly_progress",
+        "name": "line_process_hourly_progress",
+        "type": "table",
+        "summary": "Hourly output entry per process per employee per line/date, including forwarded/remaining quantity, QA rejection, remarks, and mandatory shortfall reason when below target."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_shift_closures",
+        "name": "line_shift_closures",
+        "type": "table",
+        "summary": "Records when a supervisor closes a line's shift for a given work date, with closer identity and notes."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_workstations",
+        "name": "line_workstations",
+        "type": "table",
+        "summary": "Static workstation codes (e.g., W01-W100) defined per line, each with a QR code path."
+      },
+      {
+        "id": "table:src/schema.base.sql:material_transactions",
+        "name": "material_transactions",
+        "type": "table",
+        "summary": "Logs material movement transactions per line/date between processes, including quantity, type, and recorder."
+      },
+      {
+        "id": "table:src/schema.base.sql:operations",
+        "name": "operations",
+        "type": "table",
+        "summary": "Reusable operation library (codes like OP-XXXX) shared across products, with category, active flag, and QR code path."
+      },
+      {
+        "id": "table:src/schema.base.sql:process_assignment_history",
+        "name": "process_assignment_history",
+        "type": "table",
+        "summary": "Historical record of employee-to-process assignments per line with start/end times, quantity completed, and materials snapshot at link time — predecessor of the workstation-level assignment history table."
+      },
+      {
+        "id": "table:src/schema.base.sql:process_material_wip",
+        "name": "process_material_wip",
+        "type": "table",
+        "summary": "Tracks materials in/out and WIP quantity per process per line per date."
+      },
+      {
+        "id": "table:src/schema.base.sql:product_processes",
+        "name": "product_processes",
+        "type": "table",
+        "summary": "Ordered sequence of operations per product, with operation SAH, cycle time, manpower required, free-text workstation_code, group name, QR path, and worker input mapping — defines the production routing for a product."
+      },
+      {
+        "id": "table:src/schema.base.sql:production_day_locks",
+        "name": "production_day_locks",
+        "type": "table",
+        "summary": "Locks an entire production day, recording who locked it, when, and notes."
+      },
+      {
+        "id": "table:src/schema.base.sql:line_daily_plan_delete_markers",
+        "name": "line_daily_plan_delete_markers",
+        "type": "table",
+        "summary": "Soft-delete marker for line daily plans, recording who deleted a line/date plan and when."
+      },
+      {
+        "id": "table:src/schema.base.sql:production_lines",
+        "name": "production_lines",
+        "type": "table",
+        "summary": "Master record for physical production lines including code, hall location, current product, target units, computed efficiency, QR code path, and line leader."
+      },
+      {
+        "id": "table:src/schema.base.sql:products",
+        "name": "products",
+        "type": "table",
+        "summary": "Product master data with code, description, category, buyer name, target quantity, plan month, and the line it is assigned to."
+      },
+      {
+        "id": "table:src/schema.base.sql:users",
+        "name": "users",
+        "type": "table",
+        "summary": "Application user accounts with username, full name, role (admin/supervisor/ie/management), and active flag."
+      },
+      {
+        "id": "table:src/schema.base.sql:worker_adjustments",
+        "name": "worker_adjustments",
+        "type": "table",
+        "summary": "Records the response to a worker departure mid-shift — reassignment type, vacant workstation, source employee/workstation, and reassignment time."
+      },
+      {
+        "id": "table:src/schema.base.sql:worker_departures",
+        "name": "worker_departures",
+        "type": "table",
+        "summary": "Tracks when and why an employee left their workstation mid-day (sick/personal/operational/other) for a given line/date."
+      },
+      {
+        "id": "table:src/schema.base.sql:workspaces",
+        "name": "workspaces",
+        "type": "table",
+        "summary": "Workspace/work-area master data per line including type, QR code path, group name, and worker input mapping."
+      },
+      {
+        "id": "table:src/schema.base.sql:v_audit_summary",
+        "name": "v_audit_summary",
+        "type": "table",
+        "summary": "Database view summarizing audit_logs activity for reporting purposes."
+      },
+      {
+        "id": "table:src/schema.base.sql:v_daily_defect_summary",
+        "name": "v_daily_defect_summary",
+        "type": "table",
+        "summary": "Database view aggregating daily defect counts from defect_log for quality reporting."
+      },
+      {
+        "id": "table:src/schema.base.sql:v_daily_downtime_summary",
+        "name": "v_daily_downtime_summary",
+        "type": "table",
+        "summary": "Database view aggregating daily downtime duration from downtime_log for reporting."
+      },
+      {
+        "id": "table:src/schema.base.sql:v_daily_material_summary",
+        "name": "v_daily_material_summary",
+        "type": "table",
+        "summary": "Database view aggregating daily material transaction totals for reporting."
+      },
+      {
+        "id": "table:src/schema.base.sql:v_recent_critical_changes",
+        "name": "v_recent_critical_changes",
+        "type": "table",
+        "summary": "Database view surfacing recent critical audit log changes for monitoring."
+      }
+    ],
+    "config": [
+      {
+        "id": "config:.env.example",
+        "name": ".env.example",
+        "type": "config",
+        "summary": "Template environment configuration listing server, database, security secrets, file-path, shift, and rate-limit settings required to run the WorkSync backend."
+      },
+      {
+        "id": "config:.understand-anything/.understandignore",
+        "name": ".understandignore",
+        "type": "config",
+        "summary": "Ignore-pattern file for the understand-anything analysis tool, excluding secrets (.env, *.pem, *.key) and optionally test files from the knowledge-graph scan."
+      },
+      {
+        "id": "config:ecosystem.config.js",
+        "name": "ecosystem.config.js",
+        "type": "config",
+        "summary": "PM2 process-manager configuration running the WorkSync server in 4-instance cluster mode with auto-restart, memory limits, log rotation paths, and an optional remote deploy target."
+      },
+      {
+        "id": "config:package.json",
+        "name": "package.json",
+        "type": "config",
+        "summary": "Node.js package manifest for the WorkSync backend declaring start/migration scripts and core dependencies (Express, pg, ExcelJS, JWT, bcrypt, Joi, Zod, node-cron)."
+      },
+      {
+        "id": "config:src/.graphifyignore",
+        "name": ".graphifyignore",
+        "type": "config",
+        "summary": "Single-line ignore rule excluding the graphify-out/ directory from the graphify code-graph tool's own analysis."
+      }
+    ]
+  },
+  "clusters": [],
+  "layers": {
+    "count": 7,
+    "list": [
+      {
+        "id": "layer:api",
+        "name": "API Layer",
+        "description": "Express route handlers exposing the MES REST API (production lines, plans, assignments, OT, reports) and the system-update endpoint."
+      },
+      {
+        "id": "layer:middleware",
+        "name": "Middleware Layer",
+        "description": "Cross-cutting Express middleware for audit logging, transaction wrapping, request validation, role-based access control, and session handling that wraps every API route."
+      },
+      {
+        "id": "layer:utility",
+        "name": "Utility & Operations Scripts",
+        "description": "Shared helper modules (Excel streaming, QR generation, system-update planning) and standalone operational scripts for running migrations and applying or rolling back system updates."
+      },
+      {
+        "id": "layer:config",
+        "name": "Configuration Layer",
+        "description": "Database and app configuration modules plus project-level config files (package.json, PM2 ecosystem config, env template, ignore files) that bootstrap the runtime."
+      },
+      {
+        "id": "layer:core",
+        "name": "Core Server & Realtime",
+        "description": "The Express application entry point and the SSE/PostgreSQL LISTEN-NOTIFY realtime broadcast module that ties API changes to live frontend updates, plus the consolidated migration tracking record."
+      },
+      {
+        "id": "layer:data",
+        "name": "Data Layer",
+        "description": "PostgreSQL schema definitions and the full sequence of incremental SQL migrations defining every table in the workstation-based production tracking model (plans, assignments, OT, progress, audit)."
+      },
+      {
+        "id": "layer:frontend",
+        "name": "Frontend Static Assets",
+        "description": "Vanilla JS/HTML/CSS single-page views for admin, supervisor, IE, and management roles, the offline-capable service worker and IndexedDB sync layer, and bundled reference documents/templates served from src/public."
+      }
+    ]
+  },
+  "nodeSummaryIndex": {
+    "file:src/scripts/run-migrations.js": {
+      "name": "run-migrations.js",
+      "type": "file",
+      "summary": "Standalone CLI script that applies pending SQL migration files to the PostgreSQL database, tracking which migrations have already been run in a migrations table."
+    },
+    "file:src/utils/streaming-excel.js": {
+      "name": "streaming-excel.js",
+      "type": "file",
+      "summary": "Utility for generating large Excel reports (daily and date-range production reports) using ExcelJS's streaming writer so workbooks are written directly to the HTTP response without buffering the whole file in memory."
+    },
+    "function:src/scripts/run-migrations.js:ensureMigrationsTable": {
+      "name": "ensureMigrationsTable",
+      "type": "function",
+      "summary": "Creates the migrations tracking table if it does not already exist."
+    },
+    "function:src/scripts/run-migrations.js:getAppliedMigrations": {
+      "name": "getAppliedMigrations",
+      "type": "function",
+      "summary": "Queries the migrations table to determine which migration files have already been applied."
+    },
+    "function:src/scripts/run-migrations.js:getMigrationFiles": {
+      "name": "getMigrationFiles",
+      "type": "function",
+      "summary": "Reads the migrations directory and returns the list of SQL migration files in order."
+    },
+    "function:src/scripts/run-migrations.js:applyMigration": {
+      "name": "applyMigration",
+      "type": "function",
+      "summary": "Executes a single migration file's SQL against the database and records it as applied."
+    },
+    "function:src/scripts/run-migrations.js:main": {
+      "name": "main",
+      "type": "function",
+      "summary": "Entry point that orchestrates ensuring the migrations table exists, finding pending migration files, and applying them in order."
+    },
+    "function:src/utils/streaming-excel.js:createStreamingWorkbook": {
+      "name": "createStreamingWorkbook",
+      "type": "function",
+      "summary": "Creates an ExcelJS streaming WorkbookWriter piped directly to the HTTP response with the appropriate download headers."
+    },
+    "function:src/utils/streaming-excel.js:addStreamingSheet": {
+      "name": "addStreamingSheet",
+      "type": "function",
+      "summary": "Adds a worksheet to a streaming workbook and writes rows incrementally from a database query result, applying header styling."
+    },
+    "function:src/utils/streaming-excel.js:exportDailyReportStreaming": {
+      "name": "exportDailyReportStreaming",
+      "type": "function",
+      "summary": "Streams a complete daily production report workbook (multiple sheets) directly to the HTTP response for a given date."
+    },
+    "function:src/utils/streaming-excel.js:exportRangeReportStreaming": {
+      "name": "exportRangeReportStreaming",
+      "type": "function",
+      "summary": "Streams a production report workbook aggregated over a date range directly to the HTTP response."
+    },
+    "file:src/config/db.config.js": {
+      "name": "db.config.js",
+      "type": "file",
+      "summary": "Configures and exports the shared PostgreSQL connection pool (pg.Pool) used across the entire backend, including a custom type parser that returns DATE columns as plain strings to avoid IST timezone off-by-one errors."
+    },
+    "file:src/middleware/audit.js": {
+      "name": "audit.js",
+      "type": "file",
+      "summary": "Express middleware and helper functions for recording and querying audit log entries (who changed what, when, from where) across the application's data tables."
+    },
+    "file:src/middleware/transaction.js": {
+      "name": "transaction.js",
+      "type": "file",
+      "summary": "Database transaction helpers providing wrapped transaction execution, isolation level control, retry-on-conflict logic, savepoints, and row-level locking for PostgreSQL operations."
+    },
+    "file:src/middleware/validation.js": {
+      "name": "validation.js",
+      "type": "file",
+      "summary": "Zod-based request validation middleware defining schemas for all major entities (users, lines, employees, products, daily plans, progress, assignments) plus body/query/param validators and input sanitization."
+    },
+    "function:src/middleware/audit.js:getClientIP": {
+      "name": "getClientIP",
+      "type": "function",
+      "summary": "Extracts the originating client IP address from an Express request, accounting for proxy headers."
+    },
+    "function:src/middleware/audit.js:getUserAgent": {
+      "name": "getUserAgent",
+      "type": "function",
+      "summary": "Reads the User-Agent header from an Express request for audit logging context."
+    },
+    "function:src/middleware/audit.js:getSessionId": {
+      "name": "getSessionId",
+      "type": "function",
+      "summary": "Resolves a session identifier from the request for correlating audit entries with a user session."
+    },
+    "function:src/middleware/audit.js:logAudit": {
+      "name": "logAudit",
+      "type": "function",
+      "summary": "Writes a structured audit log entry (table, action, record id, actor, IP, timestamp) to the audit_logs table."
+    },
+    "function:src/middleware/audit.js:auditMiddleware": {
+      "name": "auditMiddleware",
+      "type": "function",
+      "summary": "Express middleware factory that wraps a route handler to automatically log create/update/delete actions on a given table."
+    },
+    "function:src/middleware/audit.js:getAuditHistory": {
+      "name": "getAuditHistory",
+      "type": "function",
+      "summary": "Retrieves the audit trail of changes for a specific table and record id."
+    },
+    "function:src/middleware/audit.js:getAuditSummary": {
+      "name": "getAuditSummary",
+      "type": "function",
+      "summary": "Produces an aggregated summary of recent audit activity for dashboards or admin review."
+    },
+    "function:src/middleware/audit.js:getRecentCriticalChanges": {
+      "name": "getRecentCriticalChanges",
+      "type": "function",
+      "summary": "Fetches the most recent high-impact audit log entries (e.g., deletions, critical field changes) for monitoring."
+    },
+    "function:src/middleware/audit.js:searchAuditLogs": {
+      "name": "searchAuditLogs",
+      "type": "function",
+      "summary": "Performs a filterable, paginated search across the audit_logs table by table name, action, actor, or date range."
+    },
+    "function:src/middleware/transaction.js:withTransaction": {
+      "name": "withTransaction",
+      "type": "function",
+      "summary": "Runs a callback within a BEGIN/COMMIT/ROLLBACK database transaction, releasing the client afterward."
+    },
+    "function:src/middleware/transaction.js:withClient": {
+      "name": "withClient",
+      "type": "function",
+      "summary": "Acquires a pooled database client, runs a callback with it, and guarantees release back to the pool."
+    },
+    "function:src/middleware/transaction.js:withIsolation": {
+      "name": "withIsolation",
+      "type": "function",
+      "summary": "Executes a transaction with an explicit SQL isolation level (e.g., SERIALIZABLE) for stronger consistency guarantees."
+    },
+    "function:src/middleware/transaction.js:withRetry": {
+      "name": "withRetry",
+      "type": "function",
+      "summary": "Retries a transactional operation on serialization/deadlock failures with backoff, used for concurrency-sensitive writes."
+    },
+    "function:src/middleware/transaction.js:createSavepoint": {
+      "name": "createSavepoint",
+      "type": "function",
+      "summary": "Issues a SQL SAVEPOINT within an active transaction for partial rollback support."
+    },
+    "function:src/middleware/transaction.js:rollbackToSavepoint": {
+      "name": "rollbackToSavepoint",
+      "type": "function",
+      "summary": "Rolls back a transaction to a previously created savepoint."
+    },
+    "function:src/middleware/transaction.js:releaseSavepoint": {
+      "name": "releaseSavepoint",
+      "type": "function",
+      "summary": "Releases a savepoint after the partial operation it guarded has succeeded."
+    },
+    "function:src/middleware/transaction.js:transactionMiddleware": {
+      "name": "transactionMiddleware",
+      "type": "function",
+      "summary": "Express middleware that attaches transaction helpers to the request/response cycle for downstream route handlers."
+    },
+    "function:src/middleware/transaction.js:lockForUpdate": {
+      "name": "lockForUpdate",
+      "type": "function",
+      "summary": "Issues a SELECT ... FOR UPDATE to lock a single row by column value for the duration of a transaction."
+    },
+    "function:src/middleware/transaction.js:lockRowsForUpdate": {
+      "name": "lockRowsForUpdate",
+      "type": "function",
+      "summary": "Issues a SELECT ... FOR UPDATE to lock multiple rows matching a set of column values within a transaction."
+    },
+    "function:src/middleware/validation.js:validateBody": {
+      "name": "validateBody",
+      "type": "function",
+      "summary": "Express middleware factory that validates req.body against a given Zod schema and returns a 400 with details on failure."
+    },
+    "function:src/middleware/validation.js:validateQuery": {
+      "name": "validateQuery",
+      "type": "function",
+      "summary": "Express middleware factory that validates req.query against a given Zod schema and returns a 400 with details on failure."
+    },
+    "function:src/middleware/validation.js:validateParams": {
+      "name": "validateParams",
+      "type": "function",
+      "summary": "Express middleware factory that validates req.params against a given Zod schema and returns a 400 with details on failure."
+    },
+    "function:src/middleware/validation.js:sanitizeInputs": {
+      "name": "sanitizeInputs",
+      "type": "function",
+      "summary": "Global Express middleware that recursively sanitizes string fields in incoming request bodies to mitigate injection/XSS risks."
+    },
+    "file:src/routes/api.routes.js": {
+      "name": "api.routes.js",
+      "type": "file",
+      "summary": "The single, monolithic Express router (~16,200 lines, 152 routes) implementing nearly all backend API endpoints for the WorkSync MES: production line planning, workstation assignment, hourly progress tracking, overtime, changeover, audit, line balancing, Excel import/export, and WiFi configuration."
+    },
+    "function:src/routes/api.routes.js:normalizePlanMonth": {
+      "name": "normalizePlanMonth",
+      "type": "function",
+      "summary": "Normalizes various plan-month input formats (ISO, slash-separated, Date) into a canonical YYYY-MM string."
+    },
+    "function:src/routes/api.routes.js:normalizeWorkDate": {
+      "name": "normalizeWorkDate",
+      "type": "function",
+      "summary": "Normalizes a work date from multiple accepted formats (ISO, slash, dash, Date object) into canonical YYYY-MM-DD, used throughout the planning and progress endpoints."
+    },
+    "function:src/routes/api.routes.js:collectDuplicateEmployeeIds": {
+      "name": "collectDuplicateEmployeeIds",
+      "type": "function",
+      "summary": "Scans a list of assignment items to find employee IDs that appear more than once, used to reject conflicting workstation assignments."
+    },
+    "function:src/routes/api.routes.js:resolveHistoryEffectiveFromHour": {
+      "name": "resolveHistoryEffectiveFromHour",
+      "type": "function",
+      "summary": "Computes the next working hour slot (or attendance start) from which an assignment history record becomes effective."
+    },
+    "function:src/routes/api.routes.js:closeAssignmentHistoryForEmployee": {
+      "name": "closeAssignmentHistoryForEmployee",
+      "type": "function",
+      "summary": "Closes the open assignment-history window for an employee (sets effective_to_hour) when they are unlinked from a workstation."
+    },
+    "function:src/routes/api.routes.js:syncAssignmentHistoryForCurrentRow": {
+      "name": "syncAssignmentHistoryForCurrentRow",
+      "type": "function",
+      "summary": "Creates or updates an employee_workstation_assignment_history row to reflect the current link state for a workstation assignment, supporting accurate per-hour output attribution."
+    },
+    "function:src/routes/api.routes.js:closeHistoryForWorkstationAssignmentIfNeeded": {
+      "name": "closeHistoryForWorkstationAssignmentIfNeeded",
+      "type": "function",
+      "summary": "Closes an existing assignment-history window for a workstation when a different employee is taking over, preserving correct attribution before the handover."
+    },
+    "function:src/routes/api.routes.js:clearEmployeeAssignmentConflicts": {
+      "name": "clearEmployeeAssignmentConflicts",
+      "type": "function",
+      "summary": "Removes or unassigns conflicting existing workstation assignments for an employee on a given date before assigning them elsewhere."
+    },
+    "function:src/routes/api.routes.js:findEmployeeAssignmentConflicts": {
+      "name": "findEmployeeAssignmentConflicts",
+      "type": "function",
+      "summary": "Finds existing workstation assignments for a set of employees on a date that would conflict with a new assignment."
+    },
+    "function:src/routes/api.routes.js:findLatestPriorDailyPlanForLine": {
+      "name": "findLatestPriorDailyPlanForLine",
+      "type": "function",
+      "summary": "Looks up the most recent daily plan for a line prior to a given date, used for carry-forward logic."
+    },
+    "function:src/routes/api.routes.js:hasDailyPlanDeletionMarker": {
+      "name": "hasDailyPlanDeletionMarker",
+      "type": "function",
+      "summary": "Checks whether a line's daily plan for a date was explicitly marked deleted, to prevent unwanted carry-forward."
+    },
+    "function:src/routes/api.routes.js:getLineActualOutput": {
+      "name": "getLineActualOutput",
+      "type": "function",
+      "summary": "Computes the actual production output for a line on a given date by aggregating hourly progress and workstation records."
+    },
+    "function:src/routes/api.routes.js:getProductTargetQuantity": {
+      "name": "getProductTargetQuantity",
+      "type": "function",
+      "summary": "Fetches the configured target quantity for a product."
+    },
+    "function:src/routes/api.routes.js:getCumulativeWorkstationOutput": {
+      "name": "getCumulativeWorkstationOutput",
+      "type": "function",
+      "summary": "Aggregates cumulative output quantities per workstation for a line and date across all recorded hours."
+    },
+    "function:src/routes/api.routes.js:getShiftWindowDetails": {
+      "name": "getShiftWindowDetails",
+      "type": "function",
+      "summary": "Returns the configured shift start/end times and lunch break window from app_settings."
+    },
+    "function:src/routes/api.routes.js:syncDailyPlanTargetFromWorkstations": {
+      "name": "syncDailyPlanTargetFromWorkstations",
+      "type": "function",
+      "summary": "Recomputes and updates a line daily plan's target units based on the takt times of its planned workstations."
+    },
+    "function:src/routes/api.routes.js:getEffectiveRegularSourceWorkstations": {
+      "name": "getEffectiveRegularSourceWorkstations",
+      "type": "function",
+      "summary": "Resolves the effective set of regular (non-OT) workstation plan rows that should be used for a line and date, accounting for changeover state."
+    },
+    "function:src/routes/api.routes.js:getEffectiveRegularSourceProcesses": {
+      "name": "getEffectiveRegularSourceProcesses",
+      "type": "function",
+      "summary": "Resolves the effective set of process rows tied to the regular workstation source for a line and date."
+    },
+    "function:src/routes/api.routes.js:getEffectiveOtSourceWorkstations": {
+      "name": "getEffectiveOtSourceWorkstations",
+      "type": "function",
+      "summary": "Resolves the effective set of overtime workstation rows for a line and date, merging OT plan overrides with the base plan."
+    },
+    "function:src/routes/api.routes.js:recalculateOtPlanTarget": {
+      "name": "recalculateOtPlanTarget",
+      "type": "function",
+      "summary": "Recomputes an overtime plan's target units based on its active OT workstations' takt times."
+    },
+    "function:src/routes/api.routes.js:getWorkstationChangeoverSnapshot": {
+      "name": "getWorkstationChangeoverSnapshot",
+      "type": "function",
+      "summary": "Captures a snapshot of workstation state relevant to an in-progress or pending product changeover."
+    },
+    "function:src/routes/api.routes.js:buildChangeoverPromotionSnapshot": {
+      "name": "buildChangeoverPromotionSnapshot",
+      "type": "function",
+      "summary": "Builds the full data snapshot needed to promote a changeover product to become the line's primary product."
+    },
+    "function:src/routes/api.routes.js:normalizeRegularAssignmentsToProductWorkstations": {
+      "name": "normalizeRegularAssignmentsToProductWorkstations",
+      "type": "function",
+      "summary": "Reconciles employee_workstation_assignments rows so they align with the current product's workstation plan after a changeover."
+    },
+    "function:src/routes/api.routes.js:ensureDailyPlanCarryForwardForLine": {
+      "name": "ensureDailyPlanCarryForwardForLine",
+      "type": "function",
+      "summary": "Ensures a line has a daily plan for the current date by carrying forward the prior day's plan if none exists and no deletion marker is present."
+    },
+    "function:src/routes/api.routes.js:ensureDailyPlansCarryForward": {
+      "name": "ensureDailyPlansCarryForward",
+      "type": "function",
+      "summary": "Runs carry-forward plan creation across all production lines for a given work date."
+    },
+    "function:src/routes/api.routes.js:getRegularAssignmentStateByEmployee": {
+      "name": "getRegularAssignmentStateByEmployee",
+      "type": "function",
+      "summary": "Builds a lookup map of each employee's current regular workstation assignment state for a date, used to preserve link status across plan saves."
+    },
+    "function:src/routes/api.routes.js:detachRegularAssignmentsFromPlan": {
+      "name": "detachRegularAssignmentsFromPlan",
+      "type": "function",
+      "summary": "Detaches employee_workstation_assignments rows from a line_plan_workstations reference when a workstation plan is being replaced."
+    },
+    "function:src/routes/api.routes.js:getPreservedRegularAssignmentState": {
+      "name": "getPreservedRegularAssignmentState",
+      "type": "function",
+      "summary": "Looks up an employee's previously captured assignment state (link status, attendance) to restore it after a plan save."
+    },
+    "function:src/routes/api.routes.js:formatHourRangeLabel": {
+      "name": "formatHourRangeLabel",
+      "type": "function",
+      "summary": "Formats an hour slot integer into a human-readable hour-range label (e.g., '9-10 AM') for reports and UI."
+    },
+    "function:src/routes/api.routes.js:getEmployeeProgressForWindow": {
+      "name": "getEmployeeProgressForWindow",
+      "type": "function",
+      "summary": "Computes per-employee production progress for an hour window, using assignment history to correctly attribute output even after mid-day workstation changes."
+    },
+    "function:src/routes/api.routes.js:getDepartureHourDenomMap": {
+      "name": "getDepartureHourDenomMap",
+      "type": "function",
+      "summary": "Builds a map of hour-slot denominators adjusted for worker departures, used to compute fair efficiency percentages."
+    },
+    "function:src/routes/api.routes.js:applyDepartureEfficiency": {
+      "name": "applyDepartureEfficiency",
+      "type": "function",
+      "summary": "Applies departure-adjusted denominators to a set of progress rows to recompute accurate efficiency percentages."
+    },
+    "function:src/routes/api.routes.js:getWorkstationProgressForWindow": {
+      "name": "getWorkstationProgressForWindow",
+      "type": "function",
+      "summary": "Computes per-workstation production progress for an hour window, aggregating output, targets, and efficiency."
+    },
+    "function:src/routes/api.routes.js:getWorkstationOutputMap": {
+      "name": "getWorkstationOutputMap",
+      "type": "function",
+      "summary": "Builds a lookup map of recorded output quantities keyed by workstation id for a line and date."
+    },
+    "function:src/routes/api.routes.js:getHourlyWorkstationEmployeeFallbackMap": {
+      "name": "getHourlyWorkstationEmployeeFallbackMap",
+      "type": "function",
+      "summary": "Builds a fallback map of which employee was at each workstation for a given hour when assignment history is incomplete."
+    },
+    "function:src/routes/api.routes.js:logClientError": {
+      "name": "logClientError",
+      "type": "function",
+      "summary": "Persists a client-side error report (payload plus request context) for later diagnostics."
+    },
+    "function:src/routes/api.routes.js:syncProductProcessListFromSource": {
+      "name": "syncProductProcessListFromSource",
+      "type": "function",
+      "summary": "Copies the product_processes list from a source product to a target product, used when duplicating or carrying forward a changeover product's process plan."
+    },
+    "function:src/routes/api.routes.js:copyWorkstationPlanFromDate": {
+      "name": "copyWorkstationPlanFromDate",
+      "type": "function",
+      "summary": "Copies an entire workstation plan (line_plan_workstations + processes) from one line/date/product to another, supporting plan carry-forward and duplication."
+    },
+    "function:src/routes/api.routes.js:carryForwardMixedLineState": {
+      "name": "carryForwardMixedLineState",
+      "type": "function",
+      "summary": "Carries forward a line's full mixed state (regular + OT + changeover plans, assignments, and WIP) from a source date to a target date."
+    },
+    "function:src/routes/api.routes.js:remapProcessMaterialWipBetweenWorkstations": {
+      "name": "remapProcessMaterialWipBetweenWorkstations",
+      "type": "function",
+      "summary": "Remaps in-progress material/WIP quantities between workstations when a workstation plan changes which processes are grouped together."
+    },
+    "function:src/routes/api.routes.js:ensureWorkstationPlanCarryForward": {
+      "name": "ensureWorkstationPlanCarryForward",
+      "type": "function",
+      "summary": "Ensures a workstation plan exists for a line/date/product by carrying forward the latest prior plan if missing."
+    },
+    "function:src/routes/api.routes.js:runLineBalancing": {
+      "name": "runLineBalancing",
+      "type": "function",
+      "summary": "Runs a takt-time greedy grouping algorithm over a list of processes to assign them into balanced workstations."
+    },
+    "function:src/routes/api.routes.js:generateLinePlanTemplate": {
+      "name": "generateLinePlanTemplate",
+      "type": "function",
+      "summary": "Generates a full line workstation plan template (groups, workstations, processes) for a product, used by the line-balancing and plan-generation endpoints."
+    },
+    "function:src/routes/api.routes.js:parseSupervisorQr": {
+      "name": "parseSupervisorQr",
+      "type": "function",
+      "summary": "Parses and validates a QR code payload scanned by a supervisor into its constituent fields (line, workstation, etc.)."
+    },
+    "function:src/routes/api.routes.js:getLineProductIds": {
+      "name": "getLineProductIds",
+      "type": "function",
+      "summary": "Resolves the set of product IDs currently associated with a line (primary plus any changeover product)."
+    },
+    "function:src/routes/api.routes.js:isProcessActiveForChangeover": {
+      "name": "isProcessActiveForChangeover",
+      "type": "function",
+      "summary": "Determines whether a process should be considered active given the line's current changeover state."
+    },
+    "function:src/routes/api.routes.js:resolveProcessForLine": {
+      "name": "resolveProcessForLine",
+      "type": "function",
+      "summary": "Resolves a process record for a line from a payload that may reference it by id, code, or sequence, validating it belongs to the line's active products."
+    },
+    "function:src/routes/api.routes.js:resolveNextProcessForLine": {
+      "name": "resolveNextProcessForLine",
+      "type": "function",
+      "summary": "Finds the next sequential process after a given process for a line, used for WIP flow and feed calculations."
+    },
+    "function:src/routes/api.routes.js:refreshProcessWip": {
+      "name": "refreshProcessWip",
+      "type": "function",
+      "summary": "Recalculates and updates the work-in-progress quantity for a single process on a line and date."
+    },
+    "function:src/routes/api.routes.js:refreshGroupWip": {
+      "name": "refreshGroupWip",
+      "type": "function",
+      "summary": "Recalculates and updates work-in-progress quantities for all processes within a named group on a line and date."
+    },
+    "function:src/routes/api.routes.js:getProductFeedSummary": {
+      "name": "getProductFeedSummary",
+      "type": "function",
+      "summary": "Summarizes cumulative feed quantity and remaining order quantity for a product across its order history."
+    },
+    "function:src/routes/api.routes.js:getWorkstationFeedContext": {
+      "name": "getWorkstationFeedContext",
+      "type": "function",
+      "summary": "Gathers feed-related context (material provided, WIP, upstream output) for a specific workstation on a line and date."
+    },
+    "function:src/routes/api.routes.js:validateWorkstationHourlySave": {
+      "name": "validateWorkstationHourlySave",
+      "type": "function",
+      "summary": "Validates a supervisor's hourly output submission for a workstation, enforcing feed/material availability, shortfall-reason requirements, and lock state before allowing the save."
+    },
+    "function:src/routes/api.routes.js:performChangeoverPromotion": {
+      "name": "performChangeoverPromotion",
+      "type": "function",
+      "summary": "Executes the full promotion of a changeover product to become a line's primary product, updating plans, assignments, and progress records transactionally."
+    },
+    "function:src/routes/api.routes.js:parseNmcliWifiLine": {
+      "name": "parseNmcliWifiLine",
+      "type": "function",
+      "summary": "Parses a single line of `nmcli` WiFi scan output into a structured network entry."
+    },
+    "function:src/routes/api.routes.js:getWifiNetworks": {
+      "name": "getWifiNetworks",
+      "type": "function",
+      "summary": "Invokes `nmcli` to scan and list available WiFi networks for the device's network-configuration endpoints."
+    },
+    "function:src/routes/api.routes.js:getWifiProfilesBySsid": {
+      "name": "getWifiProfilesBySsid",
+      "type": "function",
+      "summary": "Looks up saved `nmcli` WiFi connection profiles matching a given SSID, used to reconnect without re-entering credentials."
+    },
+    "file:src/realtime.js": {
+      "name": "realtime.js",
+      "type": "file",
+      "summary": "Implements the server-sent events (SSE) hub for real-time UI updates: holds the connected-client set, broadcasts data_change events, and listens on a dedicated PostgreSQL connection for LISTEN/NOTIFY 'data_change' messages to auto-regenerate QR codes and push updates to clients."
+    },
+    "file:src/routes/system-update.routes.js": {
+      "name": "system-update.routes.js",
+      "type": "file",
+      "summary": "Express router exposing admin endpoints to check git/deploy status, trigger a self-update (git pull + restart) job, and roll back to the latest backup tag/DB dump by shelling out to git and spawning background update scripts."
+    },
+    "file:src/server.js": {
+      "name": "server.js",
+      "type": "file",
+      "summary": "Main application entry point: configures Express middleware (CORS, JSON, HTTPS redirect, static assets), implements custom cookie-based JWT-like auth (sign/verify token, role guards), mounts the API and system-update routers, starts HTTP/HTTPS listeners, wires systemd watchdog notify, and handles graceful shutdown of servers, DB pool, and realtime connections."
+    },
+    "file:src/utils/qr.js": {
+      "name": "qr.js",
+      "type": "file",
+      "summary": "Utility module that generates labeled SVG QR codes for employees, production lines, and workstations, writing them to disk under the configured qrcodes directory and updating each entity's qr_code_path/qr_generated_at columns in the database."
+    },
+    "function:src/realtime.js:handleEvents": {
+      "name": "handleEvents",
+      "type": "function",
+      "summary": "Express request handler that upgrades a connection to an SSE stream, registers the response object in the in-memory clients set, and deregisters it when the client disconnects."
+    },
+    "function:src/realtime.js:broadcast": {
+      "name": "broadcast",
+      "type": "function",
+      "summary": "Serializes an event name and payload to JSON and writes it as an SSE message to every currently connected client."
+    },
+    "function:src/realtime.js:closeAllConnections": {
+      "name": "closeAllConnections",
+      "type": "function",
+      "summary": "Ends every open SSE response, clears the clients set, and closes the dedicated PostgreSQL LISTEN connection during graceful shutdown."
+    },
+    "function:src/realtime.js:startDbListener": {
+      "name": "startDbListener",
+      "type": "function",
+      "summary": "Opens a dedicated pg Client, issues LISTEN data_change, and on each notification parses the payload, regenerates QR codes for newly inserted employees/lines/processes/operations, and broadcasts the change to SSE clients."
+    },
+    "function:src/routes/system-update.routes.js:getRepoValue": {
+      "name": "getRepoValue",
+      "type": "function",
+      "summary": "Runs a git command synchronously in the project root and returns its trimmed stdout, swallowing errors as null."
+    },
+    "function:src/routes/system-update.routes.js:resolveRollbackTarget": {
+      "name": "resolveRollbackTarget",
+      "type": "function",
+      "summary": "Determines the git tag and database backup path to roll back to, validating that no update job is currently running and that a previous backup exists before allowing a rollback."
+    },
+    "function:src/routes/system-update.routes.js:spawnJob": {
+      "name": "spawnJob",
+      "type": "function",
+      "summary": "Spawns a detached background Node script (update or rollback) by job id and unrefs the child process so it survives the parent request lifecycle."
+    },
+    "function:src/server.js:verifyToken": {
+      "name": "verifyToken",
+      "type": "function",
+      "summary": "Validates a custom signed token's HMAC-SHA256 signature against AUTH_SECRET and checks its expiry, returning the decoded payload or null."
+    },
+    "function:src/server.js:buildAuthCookie": {
+      "name": "buildAuthCookie",
+      "type": "function",
+      "summary": "Builds the Set-Cookie header value for the auth token, applying HttpOnly/SameSite/Secure flags based on whether the request was made over HTTPS."
+    },
+    "function:src/server.js:setupSystemdNotify": {
+      "name": "setupSystemdNotify",
+      "type": "function",
+      "summary": "Sends READY=1 to systemd via sd_notify on startup and schedules periodic WATCHDOG=1 pings at half the configured watchdog interval, enabling systemd service supervision."
+    },
+    "function:src/server.js:gracefulShutdown": {
+      "name": "gracefulShutdown",
+      "type": "function",
+      "summary": "Handles SIGTERM/SIGINT by closing the HTTP and HTTPS servers, ending the PostgreSQL pool, closing all realtime SSE connections, and force-exiting the process if shutdown does not complete within a timeout."
+    },
+    "function:src/utils/qr.js:writeQrWithLabel": {
+      "name": "writeQrWithLabel",
+      "type": "function",
+      "summary": "Renders a QR code to SVG via the qrcode library, then post-processes the SVG to append one or two text labels beneath the code before writing the final file to disk."
+    },
+    "function:src/utils/qr.js:generateEmployeeQrById": {
+      "name": "generateEmployeeQrById",
+      "type": "function",
+      "summary": "Loads an employee by id, generates a labeled QR (employee code + name) under the employees QR directory, and updates the employee's qr_code_path and qr_generated_at columns."
+    },
+    "function:src/utils/qr.js:generateLineQrById": {
+      "name": "generateLineQrById",
+      "type": "function",
+      "summary": "Loads a production line by id, generates a labeled QR (line code + name) under the lines QR directory, and updates the line's qr_code_path and qr_generated_at columns."
+    },
+    "function:src/utils/qr.js:generateWorkstationQrForLine": {
+      "name": "generateWorkstationQrForLine",
+      "type": "function",
+      "summary": "Generates a labeled QR code for every workstation belonging to a given production line, writing each SVG file and collecting the results to return to the caller."
+    },
+    "file:src/scripts/run-system-rollback.js": {
+      "name": "run-system-rollback.js",
+      "type": "file",
+      "summary": "CLI script that rolls back a previously applied system update job: verifies a clean git worktree, restores the database from the most recent backup, resets the repository to the prior commit, and reports rollback status/log progress for a given job ID."
+    },
+    "file:src/scripts/run-system-update.js": {
+      "name": "run-system-update.js",
+      "type": "file",
+      "summary": "CLI script that performs an in-place system update: checks out the latest commit, creates a rollback snapshot (db backup + commit ref), runs pre/post hook commands from the update plan, syncs environment files, and updates job status/log for a given job ID."
+    },
+    "file:src/utils/system-update-plan.js": {
+      "name": "system-update-plan.js",
+      "type": "file",
+      "summary": "Loads and normalizes the system update plan configuration (JSON or JS module), merges it with built-in defaults, syncs declared environment files into place, and executes the plan's pre/post hook shell commands."
+    },
+    "file:src/utils/system-update.js": {
+      "name": "system-update.js",
+      "type": "file",
+      "summary": "Low-level utility module providing the runtime state machinery for system update/rollback jobs: status JSON read/write, append-only log file, and a simple file-based lock to prevent concurrent update runs."
+    },
+    "function:src/scripts/run-system-rollback.js:runCommand": {
+      "name": "runCommand",
+      "type": "function",
+      "summary": "Spawns a child process for the given command/args, streaming and logging stdout/stderr line-by-line, and resolves with the collected output or rejects on non-zero exit."
+    },
+    "function:src/scripts/run-system-rollback.js:ensureCleanWorktree": {
+      "name": "ensureCleanWorktree",
+      "type": "function",
+      "summary": "Checks `git status --porcelain` output and throws if there are uncommitted changes outside the ignored runtime directories, preventing rollback on a dirty worktree."
+    },
+    "function:src/scripts/run-system-rollback.js:formatStamp": {
+      "name": "formatStamp",
+      "type": "function",
+      "summary": "Formats the current date/time into a sortable `YYYYMMDD-HHMMSS` timestamp string used for backup/snapshot directory naming."
+    },
+    "function:src/scripts/run-system-rollback.js:createSafetySnapshot": {
+      "name": "createSafetySnapshot",
+      "type": "function",
+      "summary": "Creates a pre-rollback safety snapshot directory recording the current git commit and the latest database backup path, so a failed rollback can itself be recovered from."
+    },
+    "function:src/scripts/run-system-rollback.js:restoreDatabaseFromBackup": {
+      "name": "restoreDatabaseFromBackup",
+      "type": "function",
+      "summary": "Restores the PostgreSQL database from a gzip-compressed SQL backup by piping `gunzip` output into `psql`, streaming progress to the update log and resolving once both subprocesses complete successfully."
+    },
+    "function:src/scripts/run-system-rollback.js:run": {
+      "name": "run",
+      "type": "function",
+      "summary": "Main orchestration function for the rollback script: acquires the job lock, verifies worktree cleanliness, restores the database, resets git to the prior commit, re-syncs environment files, runs hook commands, and finalizes job status."
+    },
+    "function:src/scripts/run-system-update.js:runCommand": {
+      "name": "runCommand",
+      "type": "function",
+      "summary": "Spawns a child process for the given command/args, streaming and logging stdout/stderr line-by-line, and resolves with the collected output or rejects on non-zero exit."
+    },
+    "function:src/scripts/run-system-update.js:ensureCleanWorktree": {
+      "name": "ensureCleanWorktree",
+      "type": "function",
+      "summary": "Checks `git status --porcelain` output and throws if there are uncommitted changes outside the ignored runtime directories, preventing an update on a dirty worktree."
+    },
+    "function:src/scripts/run-system-update.js:formatStamp": {
+      "name": "formatStamp",
+      "type": "function",
+      "summary": "Formats the current date/time into a sortable `YYYYMMDD-HHMMSS` timestamp string used for backup/snapshot directory naming."
+    },
+    "function:src/scripts/run-system-update.js:createRollbackPoint": {
+      "name": "createRollbackPoint",
+      "type": "function",
+      "summary": "Creates a rollback-point snapshot before applying the update, capturing a fresh database backup and recording the pre-update commit so the update can later be reverted."
+    },
+    "function:src/scripts/run-system-update.js:run": {
+      "name": "run",
+      "type": "function",
+      "summary": "Main orchestration function for the update script: acquires the job lock, validates worktree state, fetches/checks out the target commit, creates a rollback point, runs pre-update hooks, applies migrations/dependencies, syncs environment files, runs post-update hooks, and finalizes job status."
+    },
+    "function:src/utils/system-update-plan.js:loadRawPlan": {
+      "name": "loadRawPlan",
+      "type": "function",
+      "summary": "Loads the raw system update plan from disk, supporting either a `.js` module export or a JSON file, returning null if no plan file exists."
+    },
+    "function:src/utils/system-update-plan.js:loadSystemUpdatePlan": {
+      "name": "loadSystemUpdatePlan",
+      "type": "function",
+      "summary": "Loads the raw plan (if any) and merges its environment-file and hook-command sections on top of the built-in default plan, returning the effective update plan."
+    },
+    "function:src/utils/system-update-plan.js:syncEnvironmentFiles": {
+      "name": "syncEnvironmentFiles",
+      "type": "function",
+      "summary": "Copies each environment file declared in the update plan from its source path to its target path, creating target directories as needed and logging each sync action; returns the list of synced targets."
+    },
+    "function:src/utils/system-update-plan.js:normalizeCommandEntry": {
+      "name": "normalizeCommandEntry",
+      "type": "function",
+      "summary": "Normalizes a hook command entry from the plan (resolving relative paths in args and building a human-readable command label) into a consistent shape for execution."
+    },
+    "function:src/utils/system-update-plan.js:runHookCommands": {
+      "name": "runHookCommands",
+      "type": "function",
+      "summary": "Runs a sequence of pre/post hook commands defined in the update plan for a given stage (e.g. 'pre-update'), logging and executing each one via runCommand."
+    },
+    "function:src/utils/system-update.js:ensureRuntimeDirs": {
+      "name": "ensureRuntimeDirs",
+      "type": "function",
+      "summary": "Ensures the runtime directories used for update status, logs, and lock files exist on disk before they are read or written."
+    },
+    "function:src/utils/system-update.js:writeStatus": {
+      "name": "writeStatus",
+      "type": "function",
+      "summary": "Persists the current update/rollback job status object to the status JSON file."
+    },
+    "function:src/utils/system-update.js:readStatus": {
+      "name": "readStatus",
+      "type": "function",
+      "summary": "Reads the current update/rollback job status object from the status JSON file."
+    },
+    "function:src/utils/system-update.js:appendLog": {
+      "name": "appendLog",
+      "type": "function",
+      "summary": "Appends a timestamped message line to the update/rollback log file."
+    },
+    "function:src/utils/system-update.js:getLogTail": {
+      "name": "getLogTail",
+      "type": "function",
+      "summary": "Reads the update/rollback log file and returns the last N lines, used to surface recent progress to API consumers."
+    },
+    "function:src/utils/system-update.js:acquireLock": {
+      "name": "acquireLock",
+      "type": "function",
+      "summary": "Writes a lock file containing the supplied lock data, used to prevent concurrent update or rollback jobs from running simultaneously."
+    },
+    "function:src/utils/system-update.js:readLock": {
+      "name": "readLock",
+      "type": "function",
+      "summary": "Reads and returns the current lock file contents, or null if no update/rollback job is currently locked."
+    },
+    "function:src/utils/system-update.js:releaseLock": {
+      "name": "releaseLock",
+      "type": "function",
+      "summary": "Removes the lock file, releasing the update/rollback job lock so a new job can start."
+    },
+    "table:src/migrations/007_add_performance_indexes.sql:line_process_hourly_progress": {
+      "name": "line_process_hourly_progress",
+      "type": "table",
+      "summary": "Adds 16 performance-tuning indexes across hourly progress, attendance, assignment history, daily plans/metrics, material transactions, day locks, shift closures, process WIP, and audit logs tables to speed up common query patterns."
+    },
+    "table:src/migrations/008_enhanced_audit_logging.sql:audit_logs": {
+      "name": "audit_logs",
+      "type": "table",
+      "summary": "Extends audit logging with IP/session indexes and adds two reporting views (audit summary, recent critical changes) for monitoring sensitive changes."
+    },
+    "table:src/migrations/009_defect_and_downtime_tracking.sql:defect_types": {
+      "name": "defect_types",
+      "type": "table",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+    },
+    "table:src/migrations/009_defect_and_downtime_tracking.sql:defect_log": {
+      "name": "defect_log",
+      "type": "table",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+    },
+    "table:src/migrations/009_defect_and_downtime_tracking.sql:downtime_reasons": {
+      "name": "downtime_reasons",
+      "type": "table",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+    },
+    "table:src/migrations/009_defect_and_downtime_tracking.sql:downtime_log": {
+      "name": "downtime_log",
+      "type": "table",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting."
+    },
+    "table:src/migrations/010_add_target_qty_to_products.sql:products": {
+      "name": "products",
+      "type": "table",
+      "summary": "Adds a target_qty column (with index) to the products table so each product can carry its own production target quantity."
+    },
+    "table:src/migrations/011_add_shortfall_reason.sql:line_process_hourly_progress": {
+      "name": "line_process_hourly_progress",
+      "type": "table",
+      "summary": "Adds a shortfall_reason column to line_process_hourly_progress so supervisors can record why hourly output fell below target."
+    },
+    "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Creates the core employee_workstation_assignments table linking employees to workstations on a line, with supporting indexes — the foundation of the live workstation assignment model."
+    },
+    "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Creates line_plan_workstations and line_plan_workstation_processes tables to model the planned workstation layout and process sequencing per line/date/product, with supporting indexes."
+    },
+    "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstation_processes": {
+      "name": "line_plan_workstation_processes",
+      "type": "table",
+      "summary": "Creates line_plan_workstations and line_plan_workstation_processes tables to model the planned workstation layout and process sequencing per line/date/product, with supporting indexes."
+    },
+    "table:src/migrations/014_workstation_plan_group.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Adds an index supporting group_name lookups on the workstation plan table."
+    },
+    "table:src/migrations/015_line_workstations.sql:line_workstations": {
+      "name": "line_workstations",
+      "type": "table",
+      "summary": "Creates the line_workstations table storing static workstation codes and QR code paths per production line."
+    },
+    "table:src/migrations/016_overtime.sql:line_daily_plans": {
+      "name": "line_daily_plans",
+      "type": "table",
+      "summary": "Adds overtime_minutes and overtime_target columns to line_daily_plans, enabling an optional overtime session alongside the regular shift for a given line/date."
+    },
+    "table:src/migrations/017_lpw_product_unique.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Adds a uniqueness index on line_plan_workstations scoped by line, date, and product to prevent duplicate workstation plan rows for the same plan context."
+    },
+    "table:src/migrations/018_ewa_is_overtime.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Adds an is_overtime-aware unique index to employee_workstation_assignments so regular and OT assignments for the same workstation can coexist without conflict."
+    },
+    "table:src/migrations/019_lpw_ot_skipped.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Adds an is_ot_skipped boolean to line_plan_workstations so IE can mark individual workstations as not running during overtime."
+    },
+    "table:src/migrations/020_changeover_started_at.sql:line_daily_plans": {
+      "name": "line_daily_plans",
+      "type": "table",
+      "summary": "Adds a changeover_started_at timestamp to line_daily_plans to track when a supervisor activates a product changeover on a line."
+    },
+    "table:src/migrations/021_ot_plan.sql:line_ot_plans": {
+      "name": "line_ot_plans",
+      "type": "table",
+      "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions."
+    },
+    "table:src/migrations/021_ot_plan.sql:line_ot_workstations": {
+      "name": "line_ot_workstations",
+      "type": "table",
+      "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions."
+    },
+    "table:src/migrations/021_ot_plan.sql:line_ot_workstation_processes": {
+      "name": "line_ot_workstation_processes",
+      "type": "table",
+      "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions."
+    },
+    "table:src/migrations/022_ot_progress.sql:line_ot_progress": {
+      "name": "line_ot_progress",
+      "type": "table",
+      "summary": "Creates the line_ot_progress table for recording supervisor-entered overtime output per OT workstation per date."
+    },
+    "table:src/migrations/023_add_line_leader.sql:production_lines": {
+      "name": "production_lines",
+      "type": "table",
+      "summary": "Adds a line_leader column to production_lines to record the assigned line leader's name."
+    },
+    "table:src/migrations/023_ewa_is_linked.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Adds an is_linked boolean to employee_workstation_assignments distinguishing a confirmed (linked) employee presence from a mere assignment."
+    },
+    "table:src/migrations/023_fix_product_sequence_constraint.sql:product_processes": {
+      "name": "product_processes",
+      "type": "table",
+      "summary": "Adds a uniqueness index enforcing one sequence_number per product in product_processes, fixing a constraint gap that previously allowed duplicate sequence numbers."
+    },
+    "table:src/migrations/023_ws_changeover.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Adds ws_changeover_active and ws_changeover_started_at columns to line_plan_workstations enabling per-workstation changeover so individual stations can switch product independently of the rest of the line."
+    },
+    "table:src/migrations/024_add_plan_month.sql:products": {
+      "name": "products",
+      "type": "table",
+      "summary": "Adds a plan_month column (YYYY-MM format) to products for monthly production planning grouping."
+    },
+    "table:src/migrations/024_group_wip.sql:group_wip": {
+      "name": "group_wip",
+      "type": "table",
+      "summary": "Creates the group_wip table tracking work-in-progress quantity per process group per line/date, with a supporting index."
+    },
+    "table:src/migrations/024_is_linked_default_false.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Changes the is_linked default to false and resets today's links so that assignments never auto-link employees — linking now requires explicit supervisor confirmation each morning."
+    },
+    "table:src/migrations/024_osm_checked.sql:line_plan_workstation_processes": {
+      "name": "line_plan_workstation_processes",
+      "type": "table",
+      "summary": "Adds an osm_checked boolean to line_plan_workstation_processes so IE/Admin can flag specific processes as OSM (operation sequence/measurement) observation points for the OSM report."
+    },
+    "table:src/migrations/025_material_provided.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Adds a material_provided integer column to employee_workstation_assignments to record units of material/WIP given to a workstation at the start of the day."
+    },
+    "table:src/migrations/026_material_nullable.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Makes material_provided nullable (removing the default) so NULL distinctly represents 'not yet confirmed by supervisor' versus an explicit 0, and backfills previously auto-defaulted rows to NULL."
+    },
+    "table:src/migrations/027_worker_departures.sql:worker_departures": {
+      "name": "worker_departures",
+      "type": "table",
+      "summary": "Creates the worker_departures table to record when and why an employee left a workstation mid-day (sick, personal, operational, other), with supporting indexes."
+    },
+    "table:src/migrations/028_worker_adjustments.sql:worker_adjustments": {
+      "name": "worker_adjustments",
+      "type": "table",
+      "summary": "Creates the worker_adjustments table recording how a vacated workstation was reassigned in response to a worker departure, linked back to worker_departures."
+    },
+    "table:src/migrations/029_osm_product_level.sql:product_processes": {
+      "name": "product_processes",
+      "type": "table",
+      "summary": "Moves OSM-checked state from the daily plan level to product_processes so OSM selections persist per product rather than per day, and backfills existing checked flags accordingly."
+    },
+    "table:src/migrations/030_co_employee_assignment.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Adds co_employee_id to line_plan_workstations so IE can pre-assign a suggested changeover employee per workstation, independent of live employee_workstation_assignments."
+    },
+    "table:src/migrations/031_ot_supervisor_auth.sql:line_ot_plans": {
+      "name": "line_ot_plans",
+      "type": "table",
+      "summary": "Adds a supervisor_authorized flag to line_ot_plans so IE can grant supervisors permission to manage workstations and employees during an OT session."
+    },
+    "table:src/migrations/032_attendance_link_tracking.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Adds linked_at, late_reason, and attendance_start columns plus a check constraint to employee_workstation_assignments to track when supervisors confirm links, capture late-arrival reasons, and compute the effective shift start used for efficiency calculations; backfills existing linked rows."
+    },
+    "table:src/migrations/033_employee_workstation_assignment_history.sql:employee_workstation_assignment_history": {
+      "name": "employee_workstation_assignment_history",
+      "type": "table",
+      "summary": "Creates the employee_workstation_assignment_history table that records every assignment window (effective_from_hour to effective_to_hour) per employee/workstation/line/date, enabling correct attribution of hourly output even after mid-day reassignment or unlinking."
+    },
+    "table:src/migrations/033_working_hours.sql:app_settings": {
+      "name": "app_settings",
+      "type": "table",
+      "summary": "Seeds default working-hour app_settings (08:00-17:00 shift with a 60-minute lunch break) used as the factory-wide default schedule."
+    },
+    "table:src/migrations/034_workstation_changeover_events.sql:workstation_changeover_events": {
+      "name": "workstation_changeover_events",
+      "type": "table",
+      "summary": "Creates the workstation_changeover_events table capturing per-workstation changeover activation details (incoming product/workstation, assigned employee, feed quantity, start time), with supporting indexes."
+    },
+    "table:src/migrations/035_ot_workstation_flow.sql:line_ot_workstations": {
+      "name": "line_ot_workstations",
+      "type": "table",
+      "summary": "Adds source-state and WIP snapshot columns to line_ot_workstations and line_ot_progress, preserving shift-end context for OT and keeping OT WIP separate from regular-shift WIP while supporting combined-flow views."
+    },
+    "table:src/migrations/036_daily_plan_delete_markers.sql:line_daily_plan_delete_markers": {
+      "name": "line_daily_plan_delete_markers",
+      "type": "table",
+      "summary": "Creates the line_daily_plan_delete_markers table to record soft-deletion of daily plans (who deleted, when) with a supporting index."
+    },
+    "table:src/migrations/037_changeover_primary_promotions.sql:changeover_primary_promotions": {
+      "name": "changeover_primary_promotions",
+      "type": "table",
+      "summary": "Creates the changeover_primary_promotions table recording when a changeover product is promoted to become the new primary product on a line, including a snapshot of prior state."
+    },
+    "table:src/migrations/038_material_feed_events.sql:material_feed_events": {
+      "name": "material_feed_events",
+      "type": "table",
+      "summary": "Creates the material_feed_events table logging material/WIP feed quantities given to a workstation group, including override tracking when feed exceeds the order quantity."
+    },
+    "table:src/migrations/039_ot_workstations_default_inactive.sql:line_ot_workstations": {
+      "name": "line_ot_workstations",
+      "type": "table",
+      "summary": "Changes the is_active default on line_ot_workstations to false so IE must explicitly activate each OT workstation rather than having it active by default."
+    },
+    "table:src/migrations/040_custom_takt_flag.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Adds an is_custom_takt boolean to line_plan_workstations so the frontend can distinguish manually-overridden workstation takt times from auto-calculated ones tied to the live line target."
+    },
+    "file:src/public/admin.html": {
+      "name": "admin.html",
+      "type": "file",
+      "summary": "SPA shell for the Admin Panel: renders a fixed sidebar (Dashboard, Hourly Update, Users, Production Days, Audit Logs, Master Data, Reports, System) plus modal/toast containers, and loads admin.js to dynamically populate #main-content based on role 'admin'."
+    },
+    "file:src/public/ie.html": {
+      "name": "ie.html",
+      "type": "file",
+      "summary": "SPA shell for the Industrial Engineering (IE) Panel: sidebar covering Daily Plan, Line Management, Styles/Products, Reports (OSM, Plan History, Efficiency, Worker Efficiency, Downtime) and a custom 'Low Output Alerts' floating action button/modal with inline CSS, loaded via admin.js and low-output-alerts.js under role 'ie'."
+    },
+    "file:src/public/index.html": {
+      "name": "index.html",
+      "type": "file",
+      "summary": "Login/role-selection landing page ('WorkSync Access') presenting Admin, IE, Supervisor, and Management role cards that open a password login modal; styled inline and driven by login.js."
+    },
+    "file:src/public/management.html": {
+      "name": "management.html",
+      "type": "file",
+      "summary": "SPA shell for the Management view: sidebar with Dashboard and Reports (Material Tracking, OSM, Efficiency, Worker Efficiency, Graphs), loaded via management.js under role 'management' for overview/reporting access."
+    },
+    "file:src/public/supervisor.html": {
+      "name": "supervisor.html",
+      "type": "file",
+      "summary": "SPA shell for the Supervisor (Line Leader) Panel: sidebar with Mapping, Feed Input, Hourly Procedure, and Worker Adjustment sections, including jsQR library for QR scanning and supervisor.js to drive the workstation assignment/output workflow under role 'supervisor'."
+    },
+    "file:src/public/css/admin.css": {
+      "name": "admin.css",
+      "type": "file",
+      "summary": "Primary design-system stylesheet for the admin dashboard, defining the leather/amber-gold CSS custom-property theme (colors, spacing) plus styles for the sidebar nav, mobile header, cards, stat widgets, data tables with sticky columns, forms, dropdown panels, modals, badges, and a floating action button."
+    },
+    "file:src/public/css/ie.css": {
+      "name": "ie.css",
+      "type": "file",
+      "summary": "Mobile-first stylesheet for the Industrial Engineer (IE) panel, styling the IE container, line-balancing/workstation-plan views, and related layout sections specific to the IE role."
+    },
+    "file:src/public/css/offline.css": {
+      "name": "offline.css",
+      "type": "file",
+      "summary": "Styles for offline/connectivity UI affordances: a fixed offline status indicator, sync-pending badge, offline banner, queued-action indicator, header connection status, and toast notifications for sync events, with mobile adjustments."
+    },
+    "file:src/public/css/shop-floor.css": {
+      "name": "shop-floor.css",
+      "type": "file",
+      "summary": "Touch-optimized UX stylesheet for shop-floor screens, defining extra-large touch targets for gloved-hand interaction, action button states (success/error/warning/loading with animations), and enlarged quantity-input controls."
+    },
+    "file:src/public/css/supervisor.css": {
+      "name": "supervisor.css",
+      "type": "file",
+      "summary": "Mobile-first stylesheet for the Supervisor panel, covering the supervisor header/controls and the Morning/Hourly/Adjustment/Feed/OT/Shift-Summary section layouts plus status badge color variants."
+    },
+    "config:.env.example": {
+      "name": ".env.example",
+      "type": "config",
+      "summary": "Template environment configuration listing server, database, security secrets, file-path, shift, and rate-limit settings required to run the WorkSync backend."
+    },
+    "config:.understand-anything/.understandignore": {
+      "name": ".understandignore",
+      "type": "config",
+      "summary": "Ignore-pattern file for the understand-anything analysis tool, excluding secrets (.env, *.pem, *.key) and optionally test files from the knowledge-graph scan."
+    },
+    "config:ecosystem.config.js": {
+      "name": "ecosystem.config.js",
+      "type": "config",
+      "summary": "PM2 process-manager configuration running the WorkSync server in 4-instance cluster mode with auto-restart, memory limits, log rotation paths, and an optional remote deploy target."
+    },
+    "config:package.json": {
+      "name": "package.json",
+      "type": "config",
+      "summary": "Node.js package manifest for the WorkSync backend declaring start/migration scripts and core dependencies (Express, pg, ExcelJS, JWT, bcrypt, Joi, Zod, node-cron)."
+    },
+    "config:src/.graphifyignore": {
+      "name": ".graphifyignore",
+      "type": "config",
+      "summary": "Single-line ignore rule excluding the graphify-out/ directory from the graphify code-graph tool's own analysis."
+    },
+    "file:src/config/app.config.js": {
+      "name": "app.config.js",
+      "type": "file",
+      "summary": "Empty placeholder file in the config directory with no current content."
+    },
+    "file:src/middleware/rbac.js": {
+      "name": "rbac.js",
+      "type": "file",
+      "summary": "Role-based access control middleware defining the permission matrix and role hierarchy (admin, ie, supervisor, management) plus Express middleware factories for enforcing permissions and minimum roles on routes."
+    },
+    "function:src/middleware/rbac.js:hasPermission": {
+      "name": "hasPermission",
+      "type": "function",
+      "summary": "Checks whether a given role has a specific permission according to the static PERMISSIONS map."
+    },
+    "function:src/middleware/rbac.js:isRoleHigherOrEqual": {
+      "name": "isRoleHigherOrEqual",
+      "type": "function",
+      "summary": "Compares two roles against the ROLE_HIERARCHY ordering to determine seniority."
+    },
+    "function:src/middleware/rbac.js:getRolePermissions": {
+      "name": "getRolePermissions",
+      "type": "function",
+      "summary": "Returns the full list of permissions granted to a given role."
+    },
+    "function:src/middleware/rbac.js:rbacMiddleware": {
+      "name": "rbacMiddleware",
+      "type": "function",
+      "summary": "Core Express middleware that resolves the current user role and attaches permission-checking helpers to the request."
+    },
+    "function:src/middleware/rbac.js:requirePermission": {
+      "name": "requirePermission",
+      "type": "function",
+      "summary": "Middleware factory returning a handler that rejects requests lacking a specific permission."
+    },
+    "function:src/middleware/rbac.js:requireRole": {
+      "name": "requireRole",
+      "type": "function",
+      "summary": "Middleware factory restricting a route to an explicit list of allowed roles."
+    },
+    "function:src/middleware/rbac.js:requireMinRole": {
+      "name": "requireMinRole",
+      "type": "function",
+      "summary": "Middleware factory restricting a route to roles at or above a minimum hierarchy level."
+    },
+    "file:src/middleware/session.js": {
+      "name": "session.js",
+      "type": "file",
+      "summary": "In-memory session management middleware handling session creation, validation, renewal, cleanup, security headers, and rate limiting for the WorkSync Express app."
+    },
+    "function:src/middleware/session.js:generateSessionId": {
+      "name": "generateSessionId",
+      "type": "function",
+      "summary": "Generates a cryptographically random session identifier."
+    },
+    "function:src/middleware/session.js:createSession": {
+      "name": "createSession",
+      "type": "function",
+      "summary": "Creates a new session record for an authenticated user, evicting the oldest session if the per-user limit is exceeded."
+    },
+    "function:src/middleware/session.js:findOldestSession": {
+      "name": "findOldestSession",
+      "type": "function",
+      "summary": "Finds the least-recently-used session among a user's active sessions for eviction."
+    },
+    "function:src/middleware/session.js:getSession": {
+      "name": "getSession",
+      "type": "function",
+      "summary": "Looks up a session by its identifier."
+    },
+    "function:src/middleware/session.js:touchSession": {
+      "name": "touchSession",
+      "type": "function",
+      "summary": "Updates a session's last-activity timestamp."
+    },
+    "function:src/middleware/session.js:destroySession": {
+      "name": "destroySession",
+      "type": "function",
+      "summary": "Removes a session by id and clears it from the user's active session list."
+    },
+    "function:src/middleware/session.js:destroyUserSessions": {
+      "name": "destroyUserSessions",
+      "type": "function",
+      "summary": "Destroys all sessions belonging to a given user, used on logout-all or password change."
+    },
+    "function:src/middleware/session.js:isSessionValid": {
+      "name": "isSessionValid",
+      "type": "function",
+      "summary": "Validates a session against expiry and idle-timeout rules."
+    },
+    "function:src/middleware/session.js:needsRenewal": {
+      "name": "needsRenewal",
+      "type": "function",
+      "summary": "Determines whether a session is close enough to expiry to need a sliding renewal."
+    },
+    "function:src/middleware/session.js:renewSession": {
+      "name": "renewSession",
+      "type": "function",
+      "summary": "Extends a session's expiry window."
+    },
+    "function:src/middleware/session.js:getUserActiveSessions": {
+      "name": "getUserActiveSessions",
+      "type": "function",
+      "summary": "Returns all currently active sessions for a user."
+    },
+    "function:src/middleware/session.js:cleanupExpiredSessions": {
+      "name": "cleanupExpiredSessions",
+      "type": "function",
+      "summary": "Sweeps and removes expired sessions; invoked on an interval timer."
+    },
+    "function:src/middleware/session.js:sessionMiddleware": {
+      "name": "sessionMiddleware",
+      "type": "function",
+      "summary": "Express middleware that authenticates each request via its session cookie and attaches the user/session to the request object."
+    },
+    "function:src/middleware/session.js:securityHeaders": {
+      "name": "securityHeaders",
+      "type": "function",
+      "summary": "Express middleware applying security-related HTTP response headers."
+    },
+    "function:src/middleware/session.js:rateLimiter": {
+      "name": "rateLimiter",
+      "type": "function",
+      "summary": "Middleware factory implementing a sliding-window request rate limiter."
+    },
+    "file:src/public/WorkSync_Operational_Guide.docx": {
+      "name": "WorkSync_Operational_Guide.docx",
+      "type": "file",
+      "summary": "Word document operational guide describing how to use the WorkSync system, served as a static downloadable file from the public directory."
+    },
+    "file:src/public/css/admin.css.bak": {
+      "name": "admin.css.bak",
+      "type": "file",
+      "summary": "Backup copy of the admin panel stylesheet (1578 lines), retained as a `.bak` file rather than the active CSS used by the admin UI."
+    },
+    "file:src/public/js/admin.js": {
+      "name": "admin.js",
+      "type": "file",
+      "summary": "Largest frontend script (~11,880 lines) implementing the entire admin panel: dashboard, line/product/process management, daily and OT plan editing, workstation plan upload, hourly progress and efficiency reporting, and system update/rollback controls."
+    },
+    "function:src/public/js/admin.js:requireAuth": {
+      "name": "requireAuth",
+      "type": "function",
+      "summary": "Verifies an authenticated admin session on page load and redirects to login if absent."
+    },
+    "function:src/public/js/admin.js:setupNavigation": {
+      "name": "setupNavigation",
+      "type": "function",
+      "summary": "Wires up sidebar navigation link clicks to section switching."
+    },
+    "function:src/public/js/admin.js:setupMobileSidebar": {
+      "name": "setupMobileSidebar",
+      "type": "function",
+      "summary": "Sets up the collapsible sidebar behavior for mobile viewports."
+    },
+    "function:src/public/js/admin.js:loadSection": {
+      "name": "loadSection",
+      "type": "function",
+      "summary": "Loads and renders the data for whichever admin section the user navigated to."
+    },
+    "function:src/public/js/admin.js:loadDashboard": {
+      "name": "loadDashboard",
+      "type": "function",
+      "summary": "Loads and renders the main admin dashboard summary cards and line overview."
+    },
+    "function:src/public/js/admin.js:viewLineDetails": {
+      "name": "viewLineDetails",
+      "type": "function",
+      "summary": "Opens the detailed view for a single production line, loading its current plan and status."
+    },
+    "function:src/public/js/admin.js:openLineDetailsPage": {
+      "name": "openLineDetailsPage",
+      "type": "function",
+      "summary": "Builds and displays the full line-details page including plan, OT, and progress sections."
+    },
+    "function:src/public/js/admin.js:loadProducts": {
+      "name": "loadProducts",
+      "type": "function",
+      "summary": "Fetches and renders the products list/table in the admin products section."
+    },
+    "function:src/public/js/admin.js:viewProductProcess": {
+      "name": "viewProductProcess",
+      "type": "function",
+      "summary": "Displays the process/workstation breakdown for a selected product."
+    },
+    "function:src/public/js/admin.js:openPlanUploadModal": {
+      "name": "openPlanUploadModal",
+      "type": "function",
+      "summary": "Opens the modal for uploading an Excel-based daily plan."
+    },
+    "function:src/public/js/admin.js:submitPlanUpload": {
+      "name": "submitPlanUpload",
+      "type": "function",
+      "summary": "Submits the uploaded Excel plan file to the plan-upload-excel API and handles the response."
+    },
+    "function:src/public/js/admin.js:loadDailyPlanData": {
+      "name": "loadDailyPlanData",
+      "type": "function",
+      "summary": "Loads the daily plan data for a selected line and date."
+    },
+    "function:src/public/js/admin.js:_buildLdTbody": {
+      "name": "_buildLdTbody",
+      "type": "function",
+      "summary": "Builds the table body markup for the line-details workstation/process table."
+    },
+    "function:src/public/js/admin.js:ldPreviewCopyPlan": {
+      "name": "ldPreviewCopyPlan",
+      "type": "function",
+      "summary": "Renders a preview of copying a workstation plan to another date/line before confirming."
+    },
+    "function:src/public/js/admin.js:renderLineDetailsContent": {
+      "name": "renderLineDetailsContent",
+      "type": "function",
+      "summary": "Renders the full content panel for the line-details page, combining plan, employee, and OT data."
+    },
+    "function:src/public/js/admin.js:saveLineDetails": {
+      "name": "saveLineDetails",
+      "type": "function",
+      "summary": "Persists edits made on the line-details page back to the server."
+    },
+    "function:src/public/js/admin.js:fillOtLineCard": {
+      "name": "fillOtLineCard",
+      "type": "function",
+      "summary": "Populates an overtime summary card for a line with target/actual figures."
+    },
+    "function:src/public/js/admin.js:printDailyPlans": {
+      "name": "printDailyPlans",
+      "type": "function",
+      "summary": "Generates a printable view of the daily plans across lines."
+    },
+    "function:src/public/js/admin.js:renderOTPlanDetails": {
+      "name": "renderOTPlanDetails",
+      "type": "function",
+      "summary": "Renders the detailed OT plan view for a line and date."
+    },
+    "function:src/public/js/admin.js:_buildSingleOsmDailyCard": {
+      "name": "_buildSingleOsmDailyCard",
+      "type": "function",
+      "summary": "Builds a single OSM (output-shipment-measure) daily report card."
+    },
+    "function:src/public/js/admin.js:_buildEfficiencyTable": {
+      "name": "_buildEfficiencyTable",
+      "type": "function",
+      "summary": "Builds the efficiency report table aggregating worker/workstation output against targets."
+    },
+    "function:src/public/js/admin.js:_buildWorkerIndividualEffTable": {
+      "name": "_buildWorkerIndividualEffTable",
+      "type": "function",
+      "summary": "Builds the per-worker individual efficiency breakdown table."
+    },
+    "function:src/public/js/admin.js:renderSystemUpdateSection": {
+      "name": "renderSystemUpdateSection",
+      "type": "function",
+      "summary": "Renders the system update/rollback admin section showing current version and available actions."
+    },
+    "file:src/public/js/ie.js": {
+      "name": "ie.js",
+      "type": "file",
+      "summary": "Frontend script for the Industrial Engineer (IE) attendance panel: loads, renders, edits, and saves daily employee attendance records with realtime updates."
+    },
+    "function:src/public/js/ie.js:loadAttendance": {
+      "name": "loadAttendance",
+      "type": "function",
+      "summary": "Fetches and renders the attendance list for the selected date."
+    },
+    "function:src/public/js/ie.js:renderRow": {
+      "name": "renderRow",
+      "type": "function",
+      "summary": "Renders a single attendance table row for an employee."
+    },
+    "function:src/public/js/ie.js:formatStatus": {
+      "name": "formatStatus",
+      "type": "function",
+      "summary": "Formats an attendance status code into a display label."
+    },
+    "function:src/public/js/ie.js:filterAttendance": {
+      "name": "filterAttendance",
+      "type": "function",
+      "summary": "Filters the rendered attendance rows by search/status criteria."
+    },
+    "function:src/public/js/ie.js:saveRow": {
+      "name": "saveRow",
+      "type": "function",
+      "summary": "Saves a single edited attendance row to the server."
+    },
+    "function:src/public/js/ie.js:saveAll": {
+      "name": "saveAll",
+      "type": "function",
+      "summary": "Saves all pending attendance edits in bulk."
+    },
+    "function:src/public/js/ie.js:saveAttendance": {
+      "name": "saveAttendance",
+      "type": "function",
+      "summary": "Performs the API call to persist attendance changes."
+    },
+    "function:src/public/js/ie.js:setupRealtime": {
+      "name": "setupRealtime",
+      "type": "function",
+      "summary": "Subscribes to SSE events to keep the attendance view live-updated."
+    },
+    "function:src/public/js/ie.js:showToast": {
+      "name": "showToast",
+      "type": "function",
+      "summary": "Displays a transient toast notification message."
+    },
+    "file:src/public/js/login.js": {
+      "name": "login.js",
+      "type": "file",
+      "summary": "Small frontend script controlling the login modal open/close behavior and submitting login credentials to the authentication API."
+    },
+    "function:src/public/js/login.js:openLogin": {
+      "name": "openLogin",
+      "type": "function",
+      "summary": "Opens the login modal dialog."
+    },
+    "function:src/public/js/login.js:closeLogin": {
+      "name": "closeLogin",
+      "type": "function",
+      "summary": "Closes the login modal dialog."
+    },
+    "function:src/public/js/login.js:submitLogin": {
+      "name": "submitLogin",
+      "type": "function",
+      "summary": "Submits the entered username/password to the login API and handles success/failure."
+    },
+    "file:src/public/js/low-output-alerts.js": {
+      "name": "low-output-alerts.js",
+      "type": "file",
+      "summary": "Self-contained IIFE behavior module powering the low-output-alerts floating action button and modal, fetching and rendering summary/detail tabs of underperforming workstations against static HTML markup in ie.html."
+    },
+    "function:src/public/js/low-output-alerts.js:escHtml": {
+      "name": "escHtml",
+      "type": "function",
+      "summary": "Escapes a string for safe HTML interpolation."
+    },
+    "function:src/public/js/low-output-alerts.js:updateBadge": {
+      "name": "updateBadge",
+      "type": "function",
+      "summary": "Updates the alert-count badge on the floating action button."
+    },
+    "function:src/public/js/low-output-alerts.js:openModal": {
+      "name": "openModal",
+      "type": "function",
+      "summary": "Opens the low-output-alerts modal and triggers data refresh."
+    },
+    "function:src/public/js/low-output-alerts.js:closeModal": {
+      "name": "closeModal",
+      "type": "function",
+      "summary": "Closes the low-output-alerts modal."
+    },
+    "function:src/public/js/low-output-alerts.js:renderModal": {
+      "name": "renderModal",
+      "type": "function",
+      "summary": "Renders the modal shell and active tab content."
+    },
+    "function:src/public/js/low-output-alerts.js:renderSummaryTab": {
+      "name": "renderSummaryTab",
+      "type": "function",
+      "summary": "Renders the summary tab listing aggregated low-output alerts."
+    },
+    "function:src/public/js/low-output-alerts.js:renderDetailsTab": {
+      "name": "renderDetailsTab",
+      "type": "function",
+      "summary": "Renders the detailed tab listing individual workstation low-output entries."
+    },
+    "function:src/public/js/low-output-alerts.js:fetchAlerts": {
+      "name": "fetchAlerts",
+      "type": "function",
+      "summary": "Fetches current low-output alert data from the API."
+    },
+    "function:src/public/js/low-output-alerts.js:init": {
+      "name": "init",
+      "type": "function",
+      "summary": "Initializes the low-output-alerts module, wiring up the FAB and modal event handlers."
+    },
+    "file:src/public/js/management.js": {
+      "name": "management.js",
+      "type": "file",
+      "summary": "Frontend script (~2,455 lines) for the management dashboard: line metrics, material tracking, OSM and efficiency reports, and worker efficiency graphs, refreshed via realtime SSE events."
+    },
+    "function:src/public/js/management.js:requireAuth": {
+      "name": "requireAuth",
+      "type": "function",
+      "summary": "Verifies an authenticated management session and redirects to login if absent."
+    },
+    "function:src/public/js/management.js:setupMobileSidebar": {
+      "name": "setupMobileSidebar",
+      "type": "function",
+      "summary": "Sets up the collapsible sidebar behavior for mobile viewports."
+    },
+    "function:src/public/js/management.js:setupRealtime": {
+      "name": "setupRealtime",
+      "type": "function",
+      "summary": "Subscribes to SSE data-change events to keep the management dashboard live-updated."
+    },
+    "function:src/public/js/management.js:loadMgmtMaterialTracking": {
+      "name": "loadMgmtMaterialTracking",
+      "type": "function",
+      "summary": "Loads material/WIP tracking data for the management material-tracking section."
+    },
+    "function:src/public/js/management.js:refreshMgmtMaterialTracking": {
+      "name": "refreshMgmtMaterialTracking",
+      "type": "function",
+      "summary": "Refreshes the rendered material tracking cards without a full reload."
+    },
+    "function:src/public/js/management.js:buildMgmtMaterialGroupCard": {
+      "name": "buildMgmtMaterialGroupCard",
+      "type": "function",
+      "summary": "Builds the markup for a single material-tracking group card."
+    },
+    "function:src/public/js/management.js:loadManagementDashboard": {
+      "name": "loadManagementDashboard",
+      "type": "function",
+      "summary": "Loads and renders the top-level management dashboard summary."
+    },
+    "function:src/public/js/management.js:loadLineOptions": {
+      "name": "loadLineOptions",
+      "type": "function",
+      "summary": "Loads the list of production lines into a select dropdown."
+    },
+    "function:src/public/js/management.js:loadLineMetrics": {
+      "name": "loadLineMetrics",
+      "type": "function",
+      "summary": "Loads efficiency/output metrics for a selected line."
+    },
+    "function:src/public/js/management.js:loadMgmtOsmReport": {
+      "name": "loadMgmtOsmReport",
+      "type": "function",
+      "summary": "Loads the OSM (output-shipment-measure) report data."
+    },
+    "function:src/public/js/management.js:_buildMgmtOsmTable": {
+      "name": "_buildMgmtOsmTable",
+      "type": "function",
+      "summary": "Builds the OSM report table markup."
+    },
+    "function:src/public/js/management.js:_buildMgmtOsmRangeTable": {
+      "name": "_buildMgmtOsmRangeTable",
+      "type": "function",
+      "summary": "Builds the OSM report table for a date-range view."
+    },
+    "function:src/public/js/management.js:loadMgmtEfficiencyReport": {
+      "name": "loadMgmtEfficiencyReport",
+      "type": "function",
+      "summary": "Loads efficiency report data for the management efficiency section."
+    },
+    "function:src/public/js/management.js:_buildMgmtEfficiencyTable": {
+      "name": "_buildMgmtEfficiencyTable",
+      "type": "function",
+      "summary": "Builds the full efficiency report table aggregating per-line/worker output against targets."
+    },
+    "function:src/public/js/management.js:buildMgmtWorkerEfficiencyGraphs": {
+      "name": "buildMgmtWorkerEfficiencyGraphs",
+      "type": "function",
+      "summary": "Builds chart data/markup for worker efficiency trend graphs."
+    },
+    "function:src/public/js/management.js:loadMgmtWorkerIndividualEff": {
+      "name": "loadMgmtWorkerIndividualEff",
+      "type": "function",
+      "summary": "Loads individual worker efficiency data."
+    },
+    "function:src/public/js/management.js:buildMgmtWorkerIndividualEffTable": {
+      "name": "buildMgmtWorkerIndividualEffTable",
+      "type": "function",
+      "summary": "Builds the individual worker efficiency breakdown table."
+    },
+    "function:src/public/js/management.js:loadMgmtWorkerEfficiencyGraphs": {
+      "name": "loadMgmtWorkerEfficiencyGraphs",
+      "type": "function",
+      "summary": "Loads the data feeding the worker efficiency graphs."
+    },
+    "function:src/public/js/management.js:downloadReport": {
+      "name": "downloadReport",
+      "type": "function",
+      "summary": "Triggers download of a generated report file."
+    },
+    "function:src/public/js/management.js:downloadRangeReport": {
+      "name": "downloadRangeReport",
+      "type": "function",
+      "summary": "Triggers download of a date-range report file."
+    },
+    "file:src/public/js/offline-db.js": {
+      "name": "offline-db.js",
+      "type": "file",
+      "summary": "IndexedDB wrapper singleton (OfflineDB) providing local storage for a pending sync queue and cached API responses to support offline operation in the shop-floor UI."
+    },
+    "function:src/public/js/offline-db.js:init": {
+      "name": "init",
+      "type": "function",
+      "summary": "Opens (and upgrades if needed) the IndexedDB database, creating the sync-queue and cache object stores."
+    },
+    "function:src/public/js/offline-db.js:addToSyncQueue": {
+      "name": "addToSyncQueue",
+      "type": "function",
+      "summary": "Adds a pending offline action to the sync queue store for later replay when connectivity returns."
+    },
+    "file:src/public/js/offline-sync.js": {
+      "name": "offline-sync.js",
+      "type": "file",
+      "summary": "OfflineSync singleton managing online/offline detection, queuing actions while offline via OfflineDB, and background syncing of queued actions when connectivity is restored."
+    },
+    "function:src/public/js/offline-sync.js:init": {
+      "name": "init",
+      "type": "function",
+      "summary": "Sets up online/offline event listeners and starts periodic background sync."
+    },
+    "function:src/public/js/offline-sync.js:handleOnline": {
+      "name": "handleOnline",
+      "type": "function",
+      "summary": "Handles the browser coming back online: updates status and triggers a sync attempt."
+    },
+    "function:src/public/js/offline-sync.js:handleOffline": {
+      "name": "handleOffline",
+      "type": "function",
+      "summary": "Handles the browser going offline: updates status indicator and notifies listeners."
+    },
+    "function:src/public/js/offline-sync.js:updateStatusIndicator": {
+      "name": "updateStatusIndicator",
+      "type": "function",
+      "summary": "Updates the visible online/offline status indicator in the UI."
+    },
+    "function:src/public/js/offline-sync.js:notifyListeners": {
+      "name": "notifyListeners",
+      "type": "function",
+      "summary": "Notifies registered listeners of an offline/online status change event."
+    },
+    "function:src/public/js/offline-sync.js:getStatus": {
+      "name": "getStatus",
+      "type": "function",
+      "summary": "Returns the current online/offline and syncing status."
+    },
+    "file:src/public/WorkSync_Pitch_Deck.docx": {
+      "name": "WorkSync_Pitch_Deck.docx",
+      "type": "file",
+      "summary": "Word document pitch deck describing WorkSync for stakeholders, served as a static downloadable file from the public directory."
+    },
+    "file:src/public/js/optimistic-ui.js": {
+      "name": "optimistic-ui.js",
+      "type": "file",
+      "summary": "OptimisticUI singleton implementing optimistic update patterns: immediately reflects UI changes, queues the real API call with retry/rollback, and integrates with ShopFloorUX for visual feedback."
+    },
+    "function:src/public/js/optimistic-ui.js:init": {
+      "name": "init",
+      "type": "function",
+      "summary": "Initializes the optimistic UI manager and resumes any pending operations on load."
+    },
+    "function:src/public/js/optimistic-ui.js:execute": {
+      "name": "execute",
+      "type": "function",
+      "summary": "Executes an optimistic operation: applies the UI update immediately, then performs the real API call with rollback on failure."
+    },
+    "function:src/public/js/optimistic-ui.js:executeWithRetry": {
+      "name": "executeWithRetry",
+      "type": "function",
+      "summary": "Wraps an API call with timeout and retry/backoff logic."
+    },
+    "function:src/public/js/optimistic-ui.js:queueForSync": {
+      "name": "queueForSync",
+      "type": "function",
+      "summary": "Queues a failed optimistic operation for later retry via the offline sync mechanism."
+    },
+    "function:src/public/js/optimistic-ui.js:updateListItem": {
+      "name": "updateListItem",
+      "type": "function",
+      "summary": "Applies an optimistic update to a list item element in the DOM."
+    },
+    "function:src/public/js/optimistic-ui.js:updateCounter": {
+      "name": "updateCounter",
+      "type": "function",
+      "summary": "Applies an optimistic update to a counter/badge element, animating the value change."
+    },
+    "function:src/public/js/optimistic-ui.js:createDebouncedUpdate": {
+      "name": "createDebouncedUpdate",
+      "type": "function",
+      "summary": "Creates a debounced wrapper around an update function to coalesce rapid optimistic updates."
+    },
+    "file:src/public/js/shop-floor-ux.js": {
+      "name": "shop-floor-ux.js",
+      "type": "file",
+      "summary": "ShopFloorUX singleton providing touch-friendly visual feedback for factory-floor use: ripple effects, haptic feedback, quantity steppers, toasts, scan success/error flashes, and optimistic-update visual markers."
+    },
+    "function:src/public/js/shop-floor-ux.js:init": {
+      "name": "init",
+      "type": "function",
+      "summary": "Initializes all shop-floor UX enhancements (touch ripple, haptics, steppers, HTTPS banner, error logging)."
+    },
+    "function:src/public/js/shop-floor-ux.js:setupTouchRipple": {
+      "name": "setupTouchRipple",
+      "type": "function",
+      "summary": "Adds a Material-style ripple animation to touch/click targets."
+    },
+    "function:src/public/js/shop-floor-ux.js:confirm": {
+      "name": "confirm",
+      "type": "function",
+      "summary": "Shows a confirm-style inline interaction requiring a deliberate second tap before committing an action."
+    },
+    "function:src/public/js/shop-floor-ux.js:toast": {
+      "name": "toast",
+      "type": "function",
+      "summary": "Displays a transient toast notification."
+    },
+    "function:src/public/js/shop-floor-ux.js:markOptimisticPending": {
+      "name": "markOptimisticPending",
+      "type": "function",
+      "summary": "Marks a DOM element as having a pending optimistic update."
+    },
+    "function:src/public/js/shop-floor-ux.js:markOptimisticSuccess": {
+      "name": "markOptimisticSuccess",
+      "type": "function",
+      "summary": "Marks a DOM element as having a confirmed optimistic update."
+    },
+    "function:src/public/js/shop-floor-ux.js:rollbackOptimistic": {
+      "name": "rollbackOptimistic",
+      "type": "function",
+      "summary": "Reverts a DOM element's optimistic update visual state and re-applies the original value."
+    },
+    "function:src/public/js/shop-floor-ux.js:initTableScrollFade": {
+      "name": "initTableScrollFade",
+      "type": "function",
+      "summary": "Initializes scroll-fade visual indicators on horizontally scrollable tables."
+    },
+    "function:src/public/js/shop-floor-ux.js:initBottomNavSync": {
+      "name": "initBottomNavSync",
+      "type": "function",
+      "summary": "Synchronizes the active state of the bottom navigation bar with scroll position/route."
+    },
+    "file:src/public/js/sse-manager.js": {
+      "name": "sse-manager.js",
+      "type": "file",
+      "summary": "SSEManager singleton wrapping a single EventSource connection to /events with exponential-backoff reconnection, heartbeat tracking, visibility/online-triggered reconnects, and a pub/sub listener API for data-change events."
+    },
+    "function:src/public/js/sse-manager.js:init": {
+      "name": "init",
+      "type": "function",
+      "summary": "Initializes the SSE manager: connects, and wires visibility/online listeners to trigger reconnects."
+    },
+    "function:src/public/js/sse-manager.js:connect": {
+      "name": "connect",
+      "type": "function",
+      "summary": "Opens the EventSource connection to /events and attaches message/error handlers."
+    },
+    "function:src/public/js/sse-manager.js:scheduleReconnect": {
+      "name": "scheduleReconnect",
+      "type": "function",
+      "summary": "Schedules a reconnect attempt using exponential backoff up to a maximum delay/attempt count."
+    },
+    "function:src/public/js/sse-manager.js:handleEvent": {
+      "name": "handleEvent",
+      "type": "function",
+      "summary": "Dispatches an incoming SSE event to registered listeners by event type."
+    },
+    "function:src/public/js/sse-manager.js:on": {
+      "name": "on",
+      "type": "function",
+      "summary": "Registers a listener callback for a given SSE event type."
+    },
+    "function:src/public/js/sse-manager.js:off": {
+      "name": "off",
+      "type": "function",
+      "summary": "Unregisters a previously registered listener."
+    },
+    "function:src/public/js/sse-manager.js:onConnectionChange": {
+      "name": "onConnectionChange",
+      "type": "function",
+      "summary": "Registers a callback for connection status changes."
+    },
+    "function:src/public/js/sse-manager.js:notifyConnectionChange": {
+      "name": "notifyConnectionChange",
+      "type": "function",
+      "summary": "Notifies registered connection-status listeners of a change."
+    },
+    "function:src/public/js/sse-manager.js:updateStatusIndicator": {
+      "name": "updateStatusIndicator",
+      "type": "function",
+      "summary": "Updates the visible connection status indicator in the UI."
+    },
+    "function:src/public/js/sse-manager.js:reconnect": {
+      "name": "reconnect",
+      "type": "function",
+      "summary": "Forces an immediate reconnect attempt."
+    },
+    "function:src/public/js/sse-manager.js:close": {
+      "name": "close",
+      "type": "function",
+      "summary": "Closes the EventSource connection and clears timers."
+    },
+    "function:src/public/js/sse-manager.js:getStatus": {
+      "name": "getStatus",
+      "type": "function",
+      "summary": "Returns the current connection status and reconnect-attempt count."
+    },
+    "file:src/public/js/supervisor.js": {
+      "name": "supervisor.js",
+      "type": "file",
+      "summary": "Largest supervisor-facing frontend script (~4,129 lines) implementing the line leader panel: QR-camera scanning, morning employee linking, hourly output entry, workstation changeover flows, adjustments, OT management, and shift-summary reporting."
+    },
+    "function:src/public/js/supervisor.js:requireAuth": {
+      "name": "requireAuth",
+      "type": "function",
+      "summary": "Verifies an authenticated supervisor session and redirects to login if absent."
+    },
+    "function:src/public/js/supervisor.js:setupNavigation": {
+      "name": "setupNavigation",
+      "type": "function",
+      "summary": "Wires up sidebar navigation for the supervisor panel sections."
+    },
+    "function:src/public/js/supervisor.js:startCamera": {
+      "name": "startCamera",
+      "type": "function",
+      "summary": "Starts the device camera stream for QR code scanning."
+    },
+    "function:src/public/js/supervisor.js:scanLoop": {
+      "name": "scanLoop",
+      "type": "function",
+      "summary": "Continuously scans video frames for QR codes during an active scan session."
+    },
+    "function:src/public/js/supervisor.js:loadMorningProcedure": {
+      "name": "loadMorningProcedure",
+      "type": "function",
+      "summary": "Loads the morning procedure section: workstation assignments grouped for the current line/date."
+    },
+    "function:src/public/js/supervisor.js:renderMorningAssignments": {
+      "name": "renderMorningAssignments",
+      "type": "function",
+      "summary": "Renders the morning assignment cards per workstation, including link buttons and status badges."
+    },
+    "function:src/public/js/supervisor.js:startChangeEmployee": {
+      "name": "startChangeEmployee",
+      "type": "function",
+      "summary": "Opens the change-employee flow for a workstation, replacing the currently linked employee."
+    },
+    "function:src/public/js/supervisor.js:loadHourlyProcedure": {
+      "name": "loadHourlyProcedure",
+      "type": "function",
+      "summary": "Loads the hourly procedure section: per-workstation targets and progress for the current hour."
+    },
+    "function:src/public/js/supervisor.js:onHourlyLineChange": {
+      "name": "onHourlyLineChange",
+      "type": "function",
+      "summary": "Handles switching the selected line in the hourly section, reloading plan and progress data."
+    },
+    "function:src/public/js/supervisor.js:renderHourlySummary": {
+      "name": "renderHourlySummary",
+      "type": "function",
+      "summary": "Renders the full hourly summary table of workstation output vs. targets with shortfall reasons."
+    },
+    "function:src/public/js/supervisor.js:renderFeedInput": {
+      "name": "renderFeedInput",
+      "type": "function",
+      "summary": "Renders the feed-input section for entering material/WIP provided to workstations."
+    },
+    "function:src/public/js/supervisor.js:openWorkstationHourlyEntry": {
+      "name": "openWorkstationHourlyEntry",
+      "type": "function",
+      "summary": "Opens the entry form for recording a workstation's hourly output."
+    },
+    "function:src/public/js/supervisor.js:saveWorkstationHourlyOutput": {
+      "name": "saveWorkstationHourlyOutput",
+      "type": "function",
+      "summary": "Saves the entered hourly output quantity (and shortfall reason if below target) for a workstation."
+    },
+    "function:src/public/js/supervisor.js:openWsChangeoverModal": {
+      "name": "openWsChangeoverModal",
+      "type": "function",
+      "summary": "Opens the modal to start a changeover on a specific workstation, with employee picker."
+    },
+    "function:src/public/js/supervisor.js:submitWsChangeoverStart": {
+      "name": "submitWsChangeoverStart",
+      "type": "function",
+      "summary": "Submits the changeover-start request for a workstation with the selected employee."
+    },
+    "function:src/public/js/supervisor.js:renderOtPlanSection": {
+      "name": "renderOtPlanSection",
+      "type": "function",
+      "summary": "Renders the overtime plan section showing OT workstations, targets, and progress."
+    },
+    "function:src/public/js/supervisor.js:renderAdjStatusTable": {
+      "name": "renderAdjStatusTable",
+      "type": "function",
+      "summary": "Renders the adjustment status table tracking worker departures and reassignments."
+    },
+    "file:src/public/js/sw-register.js": {
+      "name": "sw-register.js",
+      "type": "file",
+      "summary": "Tiny script that unregisters any previously installed service worker, effectively disabling the PWA service-worker feature."
+    },
+    "file:src/public/line_plan_template.xlsx": {
+      "name": "line_plan_template.xlsx",
+      "type": "file",
+      "summary": "Downloadable Excel template matching the documented plan-upload format (LINE CODE, PRODUCT, BUYER, STYLE NO, DESCRIPTION, TARGET header rows plus GROUP/WORK STATION/EMPLOYEE CODE/PROCESS DETAILS table) used by admins/IE to prepare daily plan uploads."
+    },
+    "file:src/public/sw.js": {
+      "name": "sw.js",
+      "type": "file",
+      "summary": "Service worker script that unregisters itself and clears all caches on activation, completing the rollback away from PWA offline-caching behavior."
+    },
+    "file:src/public/WorkSync_Technical_Report.docx": {
+      "name": "WorkSync_Technical_Report.docx",
+      "type": "document",
+      "summary": "Internal technical reference document (v1.0, March 2026) covering WorkSync's system overview, technology stack, user roles/permissions, the full 31+ table database schema, API endpoints, screens/panels, business flows, formulas, JS state, migration history, SSE events, Excel upload template, QR code system, PWA features, and key constants."
+    },
+    "file:src/schema.base.migrations": {
+      "name": "schema.base.migrations",
+      "type": "file",
+      "summary": "Plain-text manifest listing the ordered filenames of all 27 SQL migrations (007 through 033) that have been applied to bring the database to its current baseline state, used as a changelog/checklist rather than executable SQL."
+    },
+    "table:src/schema.base.sql:app_settings": {
+      "name": "app_settings",
+      "type": "table",
+      "summary": "Key/value store for global runtime configuration such as default working hours and lunch break minutes."
+    },
+    "table:src/schema.base.sql:audit_logs": {
+      "name": "audit_logs",
+      "type": "table",
+      "summary": "Central audit trail recording every tracked change with old/new values, the acting user, request metadata (IP, user agent, session, path, method), and reason."
+    },
+    "table:src/schema.base.sql:defect_log": {
+      "name": "defect_log",
+      "type": "table",
+      "summary": "Per-employee, per-process defect occurrences including rework tracking (rework employee, completion time) and quality status."
+    },
+    "table:src/schema.base.sql:defect_types": {
+      "name": "defect_types",
+      "type": "table",
+      "summary": "Master list of defect type codes with category, severity, and whether the defect is reworkable."
+    },
+    "table:src/schema.base.sql:downtime_log": {
+      "name": "downtime_log",
+      "type": "table",
+      "summary": "Records downtime incidents per line with start/end times, duration, affected processes, and resolution metadata."
+    },
+    "table:src/schema.base.sql:downtime_reasons": {
+      "name": "downtime_reasons",
+      "type": "table",
+      "summary": "Master list of downtime reason codes, categorized and flagged as planned/unplanned with a default duration."
+    },
+    "table:src/schema.base.sql:employee_attendance": {
+      "name": "employee_attendance",
+      "type": "table",
+      "summary": "Daily attendance record per employee with in/out times and status."
+    },
+    "table:src/schema.base.sql:employee_process_assignments": {
+      "name": "employee_process_assignments",
+      "type": "table",
+      "summary": "Legacy table assigning employees directly to product processes per line; superseded by the workstation-based employee_workstation_assignments model but still present in the schema."
+    },
+    "table:src/schema.base.sql:employee_workstation_assignments": {
+      "name": "employee_workstation_assignments",
+      "type": "table",
+      "summary": "Core live-assignment table linking employees to workstations per line/date, tracking overtime flag, link confirmation state, late reason, attendance start, and material provided; unique per (line, date, workstation, overtime flag)."
+    },
+    "table:src/schema.base.sql:employees": {
+      "name": "employees",
+      "type": "table",
+      "summary": "Employee master data including employee code, name, designation, default line, QR code path, active flag, and manpower factor."
+    },
+    "table:src/schema.base.sql:group_wip": {
+      "name": "group_wip",
+      "type": "table",
+      "summary": "Tracks work-in-progress quantities per process group per line/date, including materials-in and output quantity, used for group-first feed workstations."
+    },
+    "table:src/schema.base.sql:line_daily_metrics": {
+      "name": "line_daily_metrics",
+      "type": "table",
+      "summary": "Daily rollup of forwarded quantity, remaining WIP, materials issued, and QA output per line."
+    },
+    "table:src/schema.base.sql:line_daily_plans": {
+      "name": "line_daily_plans",
+      "type": "table",
+      "summary": "One row per line per work date holding the active product, target units, lock state, changeover sequence/target, and overtime settings — the central daily planning record."
+    },
+    "table:src/schema.base.sql:line_hourly_reports": {
+      "name": "line_hourly_reports",
+      "type": "table",
+      "summary": "Free-text remarks captured per line per work date per hour slot."
+    },
+    "table:src/schema.base.sql:line_material_stock": {
+      "name": "line_material_stock",
+      "type": "table",
+      "summary": "Tracks opening/closing material stock and issued/used/returned totals per line per day."
+    },
+    "table:src/schema.base.sql:line_ot_plans": {
+      "name": "line_ot_plans",
+      "type": "table",
+      "summary": "Overtime plan per line/date/product holding global OT minutes, OT target units, and a supervisor_authorized flag that grants the supervisor permission to manage OT workstations."
+    },
+    "table:src/schema.base.sql:line_ot_progress": {
+      "name": "line_ot_progress",
+      "type": "table",
+      "summary": "Supervisor-entered OT output per workstation per date, including quantity, QA rejection, and the employee credited."
+    },
+    "table:src/schema.base.sql:line_ot_workstation_processes": {
+      "name": "line_ot_workstation_processes",
+      "type": "table",
+      "summary": "Junction table linking OT workstations to product processes with sequence ordering."
+    },
+    "table:src/schema.base.sql:line_ot_workstations": {
+      "name": "line_ot_workstations",
+      "type": "table",
+      "summary": "Per-workstation OT configuration (active flag, OT minutes, actual SAM seconds) for a given OT plan."
+    },
+    "table:src/schema.base.sql:line_plan_workstation_processes": {
+      "name": "line_plan_workstation_processes",
+      "type": "table",
+      "summary": "Junction table linking planned workstations to product processes with sequence ordering and an OSM-checked flag."
+    },
+    "table:src/schema.base.sql:line_plan_workstations": {
+      "name": "line_plan_workstations",
+      "type": "table",
+      "summary": "Workstation layout per line/date/product including takt time, actual SAM seconds, workload percentage, group name, OT-skip flag, changeover active state/start time, and the pre-assigned changeover employee (co_employee_id)."
+    },
+    "table:src/schema.base.sql:line_process_hourly_progress": {
+      "name": "line_process_hourly_progress",
+      "type": "table",
+      "summary": "Hourly output entry per process per employee per line/date, including forwarded/remaining quantity, QA rejection, remarks, and mandatory shortfall reason when below target."
+    },
+    "table:src/schema.base.sql:line_shift_closures": {
+      "name": "line_shift_closures",
+      "type": "table",
+      "summary": "Records when a supervisor closes a line's shift for a given work date, with closer identity and notes."
+    },
+    "table:src/schema.base.sql:line_workstations": {
+      "name": "line_workstations",
+      "type": "table",
+      "summary": "Static workstation codes (e.g., W01-W100) defined per line, each with a QR code path."
+    },
+    "table:src/schema.base.sql:material_transactions": {
+      "name": "material_transactions",
+      "type": "table",
+      "summary": "Logs material movement transactions per line/date between processes, including quantity, type, and recorder."
+    },
+    "table:src/schema.base.sql:operations": {
+      "name": "operations",
+      "type": "table",
+      "summary": "Reusable operation library (codes like OP-XXXX) shared across products, with category, active flag, and QR code path."
+    },
+    "table:src/schema.base.sql:process_assignment_history": {
+      "name": "process_assignment_history",
+      "type": "table",
+      "summary": "Historical record of employee-to-process assignments per line with start/end times, quantity completed, and materials snapshot at link time — predecessor of the workstation-level assignment history table."
+    },
+    "table:src/schema.base.sql:process_material_wip": {
+      "name": "process_material_wip",
+      "type": "table",
+      "summary": "Tracks materials in/out and WIP quantity per process per line per date."
+    },
+    "table:src/schema.base.sql:product_processes": {
+      "name": "product_processes",
+      "type": "table",
+      "summary": "Ordered sequence of operations per product, with operation SAH, cycle time, manpower required, free-text workstation_code, group name, QR path, and worker input mapping — defines the production routing for a product."
+    },
+    "table:src/schema.base.sql:production_day_locks": {
+      "name": "production_day_locks",
+      "type": "table",
+      "summary": "Locks an entire production day, recording who locked it, when, and notes."
+    },
+    "table:src/schema.base.sql:line_daily_plan_delete_markers": {
+      "name": "line_daily_plan_delete_markers",
+      "type": "table",
+      "summary": "Soft-delete marker for line daily plans, recording who deleted a line/date plan and when."
+    },
+    "table:src/schema.base.sql:production_lines": {
+      "name": "production_lines",
+      "type": "table",
+      "summary": "Master record for physical production lines including code, hall location, current product, target units, computed efficiency, QR code path, and line leader."
+    },
+    "table:src/schema.base.sql:products": {
+      "name": "products",
+      "type": "table",
+      "summary": "Product master data with code, description, category, buyer name, target quantity, plan month, and the line it is assigned to."
+    },
+    "table:src/schema.base.sql:users": {
+      "name": "users",
+      "type": "table",
+      "summary": "Application user accounts with username, full name, role (admin/supervisor/ie/management), and active flag."
+    },
+    "table:src/schema.base.sql:worker_adjustments": {
+      "name": "worker_adjustments",
+      "type": "table",
+      "summary": "Records the response to a worker departure mid-shift — reassignment type, vacant workstation, source employee/workstation, and reassignment time."
+    },
+    "table:src/schema.base.sql:worker_departures": {
+      "name": "worker_departures",
+      "type": "table",
+      "summary": "Tracks when and why an employee left their workstation mid-day (sick/personal/operational/other) for a given line/date."
+    },
+    "table:src/schema.base.sql:workspaces": {
+      "name": "workspaces",
+      "type": "table",
+      "summary": "Workspace/work-area master data per line including type, QR code path, group name, and worker input mapping."
+    },
+    "table:src/schema.base.sql:v_audit_summary": {
+      "name": "v_audit_summary",
+      "type": "table",
+      "summary": "Database view summarizing audit_logs activity for reporting purposes."
+    },
+    "table:src/schema.base.sql:v_daily_defect_summary": {
+      "name": "v_daily_defect_summary",
+      "type": "table",
+      "summary": "Database view aggregating daily defect counts from defect_log for quality reporting."
+    },
+    "table:src/schema.base.sql:v_daily_downtime_summary": {
+      "name": "v_daily_downtime_summary",
+      "type": "table",
+      "summary": "Database view aggregating daily downtime duration from downtime_log for reporting."
+    },
+    "table:src/schema.base.sql:v_daily_material_summary": {
+      "name": "v_daily_material_summary",
+      "type": "table",
+      "summary": "Database view aggregating daily material transaction totals for reporting."
+    },
+    "table:src/schema.base.sql:v_recent_critical_changes": {
+      "name": "v_recent_critical_changes",
+      "type": "table",
+      "summary": "Database view surfacing recent critical audit log changes for monitoring."
+    }
+  },
+  "totalNodes": 408,
+  "totalEdges": 441
+}

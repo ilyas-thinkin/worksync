@@ -1,0 +1,788 @@
+{
+  "nodes": [
+    {
+      "id": "table:src/migrations/007_add_performance_indexes.sql:line_process_hourly_progress",
+      "type": "table",
+      "name": "line_process_hourly_progress",
+      "filePath": "src/migrations/007_add_performance_indexes.sql",
+      "summary": "Adds 16 performance-tuning indexes across hourly progress, attendance, assignment history, daily plans/metrics, material transactions, day locks, shift closures, process WIP, and audit logs tables to speed up common query patterns.",
+      "tags": [
+        "database",
+        "migration",
+        "performance",
+        "indexing"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/008_enhanced_audit_logging.sql:audit_logs",
+      "type": "table",
+      "name": "audit_logs",
+      "filePath": "src/migrations/008_enhanced_audit_logging.sql",
+      "summary": "Extends audit logging with IP/session indexes and adds two reporting views (audit summary, recent critical changes) for monitoring sensitive changes.",
+      "tags": [
+        "database",
+        "migration",
+        "audit",
+        "views"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:defect_types",
+      "type": "table",
+      "name": "defect_types",
+      "filePath": "src/migrations/009_defect_and_downtime_tracking.sql",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "quality-tracking"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:defect_log",
+      "type": "table",
+      "name": "defect_log",
+      "filePath": "src/migrations/009_defect_and_downtime_tracking.sql",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "quality-tracking"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:downtime_reasons",
+      "type": "table",
+      "name": "downtime_reasons",
+      "filePath": "src/migrations/009_defect_and_downtime_tracking.sql",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "quality-tracking"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/migrations/009_defect_and_downtime_tracking.sql:downtime_log",
+      "type": "table",
+      "name": "downtime_log",
+      "filePath": "src/migrations/009_defect_and_downtime_tracking.sql",
+      "summary": "Introduces the defect and downtime tracking subsystem: defect_types/defect_log and downtime_reasons/downtime_log tables plus daily summary views and supporting indexes for quality and machine-downtime reporting.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "quality-tracking"
+      ],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/migrations/010_add_target_qty_to_products.sql:products",
+      "type": "table",
+      "name": "products",
+      "filePath": "src/migrations/010_add_target_qty_to_products.sql",
+      "summary": "Adds a target_qty column (with index) to the products table so each product can carry its own production target quantity.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/011_add_shortfall_reason.sql:line_process_hourly_progress",
+      "type": "table",
+      "name": "line_process_hourly_progress",
+      "filePath": "src/migrations/011_add_shortfall_reason.sql",
+      "summary": "Adds a shortfall_reason column to line_process_hourly_progress so supervisors can record why hourly output fell below target.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/migrations/012_employee_workstation_assignments.sql",
+      "summary": "Creates the core employee_workstation_assignments table linking employees to workstations on a line, with supporting indexes \u2014 the foundation of the live workstation assignment model.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "workstation-assignment"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/migrations/013_line_plan_workstations.sql",
+      "summary": "Creates line_plan_workstations and line_plan_workstation_processes tables to model the planned workstation layout and process sequencing per line/date/product, with supporting indexes.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "workstation-plan"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstation_processes",
+      "type": "table",
+      "name": "line_plan_workstation_processes",
+      "filePath": "src/migrations/013_line_plan_workstations.sql",
+      "summary": "Creates line_plan_workstations and line_plan_workstation_processes tables to model the planned workstation layout and process sequencing per line/date/product, with supporting indexes.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "workstation-plan"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/014_workstation_plan_group.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/migrations/014_workstation_plan_group.sql",
+      "summary": "Adds an index supporting group_name lookups on the workstation plan table.",
+      "tags": [
+        "database",
+        "migration",
+        "indexing"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/015_line_workstations.sql:line_workstations",
+      "type": "table",
+      "name": "line_workstations",
+      "filePath": "src/migrations/015_line_workstations.sql",
+      "summary": "Creates the line_workstations table storing static workstation codes and QR code paths per production line.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "qr-code"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/016_overtime.sql:line_daily_plans",
+      "type": "table",
+      "name": "line_daily_plans",
+      "filePath": "src/migrations/016_overtime.sql",
+      "summary": "Adds overtime_minutes and overtime_target columns to line_daily_plans, enabling an optional overtime session alongside the regular shift for a given line/date.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "overtime"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/017_lpw_product_unique.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/migrations/017_lpw_product_unique.sql",
+      "summary": "Adds a uniqueness index on line_plan_workstations scoped by line, date, and product to prevent duplicate workstation plan rows for the same plan context.",
+      "tags": [
+        "database",
+        "migration",
+        "constraint",
+        "indexing"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/018_ewa_is_overtime.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/migrations/018_ewa_is_overtime.sql",
+      "summary": "Adds an is_overtime-aware unique index to employee_workstation_assignments so regular and OT assignments for the same workstation can coexist without conflict.",
+      "tags": [
+        "database",
+        "migration",
+        "constraint",
+        "overtime"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/019_lpw_ot_skipped.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/migrations/019_lpw_ot_skipped.sql",
+      "summary": "Adds an is_ot_skipped boolean to line_plan_workstations so IE can mark individual workstations as not running during overtime.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "overtime"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/020_changeover_started_at.sql:line_daily_plans",
+      "type": "table",
+      "name": "line_daily_plans",
+      "filePath": "src/migrations/020_changeover_started_at.sql",
+      "summary": "Adds a changeover_started_at timestamp to line_daily_plans to track when a supervisor activates a product changeover on a line.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "changeover"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/021_ot_plan.sql:line_ot_plans",
+      "type": "table",
+      "name": "line_ot_plans",
+      "filePath": "src/migrations/021_ot_plan.sql",
+      "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "overtime"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/021_ot_plan.sql:line_ot_workstations",
+      "type": "table",
+      "name": "line_ot_workstations",
+      "filePath": "src/migrations/021_ot_plan.sql",
+      "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "overtime"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/021_ot_plan.sql:line_ot_workstation_processes",
+      "type": "table",
+      "name": "line_ot_workstation_processes",
+      "filePath": "src/migrations/021_ot_plan.sql",
+      "summary": "Creates the overtime planning subsystem tables: line_ot_plans, line_ot_workstations, and line_ot_workstation_processes, mirroring the regular workstation plan structure for OT sessions.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "overtime"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/022_ot_progress.sql:line_ot_progress",
+      "type": "table",
+      "name": "line_ot_progress",
+      "filePath": "src/migrations/022_ot_progress.sql",
+      "summary": "Creates the line_ot_progress table for recording supervisor-entered overtime output per OT workstation per date.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "overtime"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/023_add_line_leader.sql:production_lines",
+      "type": "table",
+      "name": "production_lines",
+      "filePath": "src/migrations/023_add_line_leader.sql",
+      "summary": "Adds a line_leader column to production_lines to record the assigned line leader's name.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/023_ewa_is_linked.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/migrations/023_ewa_is_linked.sql",
+      "summary": "Adds an is_linked boolean to employee_workstation_assignments distinguishing a confirmed (linked) employee presence from a mere assignment.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "linking"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/023_fix_product_sequence_constraint.sql:product_processes",
+      "type": "table",
+      "name": "product_processes",
+      "filePath": "src/migrations/023_fix_product_sequence_constraint.sql",
+      "summary": "Adds a uniqueness index enforcing one sequence_number per product in product_processes, fixing a constraint gap that previously allowed duplicate sequence numbers.",
+      "tags": [
+        "database",
+        "migration",
+        "constraint",
+        "data-integrity"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/023_ws_changeover.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/migrations/023_ws_changeover.sql",
+      "summary": "Adds ws_changeover_active and ws_changeover_started_at columns to line_plan_workstations enabling per-workstation changeover so individual stations can switch product independently of the rest of the line.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "changeover"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/024_add_plan_month.sql:products",
+      "type": "table",
+      "name": "products",
+      "filePath": "src/migrations/024_add_plan_month.sql",
+      "summary": "Adds a plan_month column (YYYY-MM format) to products for monthly production planning grouping.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "planning"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/024_group_wip.sql:group_wip",
+      "type": "table",
+      "name": "group_wip",
+      "filePath": "src/migrations/024_group_wip.sql",
+      "summary": "Creates the group_wip table tracking work-in-progress quantity per process group per line/date, with a supporting index.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "wip-tracking"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/024_is_linked_default_false.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/migrations/024_is_linked_default_false.sql",
+      "summary": "Changes the is_linked default to false and resets today's links so that assignments never auto-link employees \u2014 linking now requires explicit supervisor confirmation each morning.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "linking"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/024_osm_checked.sql:line_plan_workstation_processes",
+      "type": "table",
+      "name": "line_plan_workstation_processes",
+      "filePath": "src/migrations/024_osm_checked.sql",
+      "summary": "Adds an osm_checked boolean to line_plan_workstation_processes so IE/Admin can flag specific processes as OSM (operation sequence/measurement) observation points for the OSM report.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "osm-report"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/025_material_provided.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/migrations/025_material_provided.sql",
+      "summary": "Adds a material_provided integer column to employee_workstation_assignments to record units of material/WIP given to a workstation at the start of the day.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "material-tracking"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/026_material_nullable.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/migrations/026_material_nullable.sql",
+      "summary": "Makes material_provided nullable (removing the default) so NULL distinctly represents 'not yet confirmed by supervisor' versus an explicit 0, and backfills previously auto-defaulted rows to NULL.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "data-cleanup"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/027_worker_departures.sql:worker_departures",
+      "type": "table",
+      "name": "worker_departures",
+      "filePath": "src/migrations/027_worker_departures.sql",
+      "summary": "Creates the worker_departures table to record when and why an employee left a workstation mid-day (sick, personal, operational, other), with supporting indexes.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "attendance"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/028_worker_adjustments.sql:worker_adjustments",
+      "type": "table",
+      "name": "worker_adjustments",
+      "filePath": "src/migrations/028_worker_adjustments.sql",
+      "summary": "Creates the worker_adjustments table recording how a vacated workstation was reassigned in response to a worker departure, linked back to worker_departures.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "attendance"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/029_osm_product_level.sql:product_processes",
+      "type": "table",
+      "name": "product_processes",
+      "filePath": "src/migrations/029_osm_product_level.sql",
+      "summary": "Moves OSM-checked state from the daily plan level to product_processes so OSM selections persist per product rather than per day, and backfills existing checked flags accordingly.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "osm-report"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/030_co_employee_assignment.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/migrations/030_co_employee_assignment.sql",
+      "summary": "Adds co_employee_id to line_plan_workstations so IE can pre-assign a suggested changeover employee per workstation, independent of live employee_workstation_assignments.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "changeover"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/031_ot_supervisor_auth.sql:line_ot_plans",
+      "type": "table",
+      "name": "line_ot_plans",
+      "filePath": "src/migrations/031_ot_supervisor_auth.sql",
+      "summary": "Adds a supervisor_authorized flag to line_ot_plans so IE can grant supervisors permission to manage workstations and employees during an OT session.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "overtime"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/032_attendance_link_tracking.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/migrations/032_attendance_link_tracking.sql",
+      "summary": "Adds linked_at, late_reason, and attendance_start columns plus a check constraint to employee_workstation_assignments to track when supervisors confirm links, capture late-arrival reasons, and compute the effective shift start used for efficiency calculations; backfills existing linked rows.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "attendance",
+        "efficiency"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/033_employee_workstation_assignment_history.sql:employee_workstation_assignment_history",
+      "type": "table",
+      "name": "employee_workstation_assignment_history",
+      "filePath": "src/migrations/033_employee_workstation_assignment_history.sql",
+      "summary": "Creates the employee_workstation_assignment_history table that records every assignment window (effective_from_hour to effective_to_hour) per employee/workstation/line/date, enabling correct attribution of hourly output even after mid-day reassignment or unlinking.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "assignment-history"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/033_working_hours.sql:app_settings",
+      "type": "table",
+      "name": "app_settings",
+      "filePath": "src/migrations/033_working_hours.sql",
+      "summary": "Seeds default working-hour app_settings (08:00-17:00 shift with a 60-minute lunch break) used as the factory-wide default schedule.",
+      "tags": [
+        "database",
+        "migration",
+        "configuration",
+        "working-hours"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/034_workstation_changeover_events.sql:workstation_changeover_events",
+      "type": "table",
+      "name": "workstation_changeover_events",
+      "filePath": "src/migrations/034_workstation_changeover_events.sql",
+      "summary": "Creates the workstation_changeover_events table capturing per-workstation changeover activation details (incoming product/workstation, assigned employee, feed quantity, start time), with supporting indexes.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "changeover"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/035_ot_workstation_flow.sql:line_ot_workstations",
+      "type": "table",
+      "name": "line_ot_workstations",
+      "filePath": "src/migrations/035_ot_workstation_flow.sql",
+      "summary": "Adds source-state and WIP snapshot columns to line_ot_workstations and line_ot_progress, preserving shift-end context for OT and keeping OT WIP separate from regular-shift WIP while supporting combined-flow views.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "overtime",
+        "wip-tracking"
+      ],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/migrations/036_daily_plan_delete_markers.sql:line_daily_plan_delete_markers",
+      "type": "table",
+      "name": "line_daily_plan_delete_markers",
+      "filePath": "src/migrations/036_daily_plan_delete_markers.sql",
+      "summary": "Creates the line_daily_plan_delete_markers table to record soft-deletion of daily plans (who deleted, when) with a supporting index.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "soft-delete"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/037_changeover_primary_promotions.sql:changeover_primary_promotions",
+      "type": "table",
+      "name": "changeover_primary_promotions",
+      "filePath": "src/migrations/037_changeover_primary_promotions.sql",
+      "summary": "Creates the changeover_primary_promotions table recording when a changeover product is promoted to become the new primary product on a line, including a snapshot of prior state.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "changeover"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/038_material_feed_events.sql:material_feed_events",
+      "type": "table",
+      "name": "material_feed_events",
+      "filePath": "src/migrations/038_material_feed_events.sql",
+      "summary": "Creates the material_feed_events table logging material/WIP feed quantities given to a workstation group, including override tracking when feed exceeds the order quantity.",
+      "tags": [
+        "database",
+        "migration",
+        "table-definition",
+        "material-tracking"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/039_ot_workstations_default_inactive.sql:line_ot_workstations",
+      "type": "table",
+      "name": "line_ot_workstations",
+      "filePath": "src/migrations/039_ot_workstations_default_inactive.sql",
+      "summary": "Changes the is_active default on line_ot_workstations to false so IE must explicitly activate each OT workstation rather than having it active by default.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "overtime"
+      ],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/migrations/040_custom_takt_flag.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/migrations/040_custom_takt_flag.sql",
+      "summary": "Adds an is_custom_takt boolean to line_plan_workstations so the frontend can distinguish manually-overridden workstation takt times from auto-calculated ones tied to the live line target.",
+      "tags": [
+        "database",
+        "migration",
+        "schema-change",
+        "line-balancing"
+      ],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    {
+      "source": "table:src/migrations/007_add_performance_indexes.sql:line_process_hourly_progress",
+      "target": "table:src/migrations/033_employee_workstation_assignment_history.sql:employee_workstation_assignment_history",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/014_workstation_plan_group.sql:line_plan_workstations",
+      "target": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/017_lpw_product_unique.sql:line_plan_workstations",
+      "target": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/018_ewa_is_overtime.sql:employee_workstation_assignments",
+      "target": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/019_lpw_ot_skipped.sql:line_plan_workstations",
+      "target": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/023_ewa_is_linked.sql:employee_workstation_assignments",
+      "target": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/023_ws_changeover.sql:line_plan_workstations",
+      "target": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/024_is_linked_default_false.sql:employee_workstation_assignments",
+      "target": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/024_osm_checked.sql:line_plan_workstation_processes",
+      "target": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstation_processes",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/025_material_provided.sql:employee_workstation_assignments",
+      "target": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/026_material_nullable.sql:employee_workstation_assignments",
+      "target": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/030_co_employee_assignment.sql:line_plan_workstations",
+      "target": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/031_ot_supervisor_auth.sql:line_ot_plans",
+      "target": "table:src/migrations/021_ot_plan.sql:line_ot_plans",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/032_attendance_link_tracking.sql:employee_workstation_assignments",
+      "target": "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/035_ot_workstation_flow.sql:line_ot_workstations",
+      "target": "table:src/migrations/021_ot_plan.sql:line_ot_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/035_ot_workstation_flow.sql:line_ot_workstations",
+      "target": "table:src/migrations/022_ot_progress.sql:line_ot_progress",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/039_ot_workstations_default_inactive.sql:line_ot_workstations",
+      "target": "table:src/migrations/021_ot_plan.sql:line_ot_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "table:src/migrations/040_custom_takt_flag.sql:line_plan_workstations",
+      "target": "table:src/migrations/013_line_plan_workstations.sql:line_plan_workstations",
+      "type": "migrates",
+      "direction": "forward",
+      "weight": 0.7
+    }
+  ]
+}

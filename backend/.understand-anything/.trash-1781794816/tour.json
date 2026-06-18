@@ -1,0 +1,93 @@
+[
+  {
+    "order": 1,
+    "title": "Application Entry Point",
+    "description": "There is no README in this project, so the natural starting point is server.js — the file with the highest entry-point score in the dependency graph. It configures Express middleware (CORS, JSON parsing, HTTPS redirect, static assets), implements a custom cookie-based JWT-like auth scheme, mounts the API and system-update routers, starts the HTTP/HTTPS listeners, and wires graceful shutdown of the DB pool and realtime connections. Everything else in this MES backend for garment factory production tracking ultimately gets wired together here.",
+    "nodeIds": ["file:src/server.js"]
+  },
+  {
+    "order": 2,
+    "title": "Database Connection & Realtime Hub",
+    "description": "Two modules sit directly behind server.js at depth 1 of the dependency graph. db.config.js configures the shared PostgreSQL connection pool used across the entire backend, with a custom type parser that returns DATE columns as plain strings to avoid timezone off-by-one bugs — it has the highest fan-in (7) of any file in the codebase, meaning nearly everything depends on it. realtime.js implements the Server-Sent Events hub: it holds connected clients, broadcasts data_change events, and listens on a dedicated PostgreSQL LISTEN/NOTIFY channel so that a database change on one server instance is pushed live to every connected browser.",
+    "nodeIds": ["file:src/config/db.config.js", "file:src/realtime.js"]
+  },
+  {
+    "order": 3,
+    "title": "The Monolithic API Router",
+    "description": "src/routes/api.routes.js is the single Express router implementing nearly all backend endpoints — production line planning, workstation assignment, hourly progress, overtime, changeover, audit, line balancing, and Excel import/export. It has the highest fan-out in the entire graph (63 outgoing references), making it the connective tissue between the database layer from Step 2 and every middleware and utility module covered next. A separate, smaller router, system-update.routes.js, exposes admin-only endpoints for self-updating and rolling back the deployed application.",
+    "nodeIds": ["file:src/routes/api.routes.js", "file:src/routes/system-update.routes.js"]
+  },
+  {
+    "order": 4,
+    "title": "Security & Access Control Middleware",
+    "description": "Every request to api.routes.js passes through a stack of cross-cutting middleware. session.js manages in-memory sessions, security headers, and rate limiting; rbac.js defines the permission matrix and role hierarchy (admin, ie, supervisor, management) used to gate routes; validation.js applies Zod schemas to sanitize and validate incoming request bodies for every major entity. Together these three modules form the security perimeter that wraps the entire API surface introduced in Step 3.",
+    "nodeIds": ["file:src/middleware/session.js", "file:src/middleware/rbac.js", "file:src/middleware/validation.js"],
+    "languageLesson": "Express middleware factories (e.g. requireRole('admin')) are higher-order functions that return a configured (req, res, next) handler — a common pattern for parameterizing cross-cutting concerns without duplicating logic per route."
+  },
+  {
+    "order": 5,
+    "title": "Transactions & Audit Trail",
+    "description": "Beyond security, two more middleware modules support data integrity. transaction.js wraps database operations with isolation-level control, retry-on-conflict logic, savepoints, and row-level locking — essential in a system where multiple supervisors and IEs can edit the same line plan concurrently. audit.js records and queries audit log entries so every change to production data is traceable to who made it, when, and from where. Both sit at depth 2 of the dependency graph, called from deep within the route handlers explored in Step 3.",
+    "nodeIds": ["file:src/middleware/transaction.js", "file:src/middleware/audit.js"]
+  },
+  {
+    "order": 6,
+    "title": "The Core Data Model",
+    "description": "Behind every API route is a PostgreSQL schema centered on a workstation-based assignment model: employees are assigned to physical workstations, not individual processes. line_daily_plans is the central daily planning record (active product, target units, lock state, OT settings) per line per date. line_plan_workstations captures the planned workstation layout — takt time, workload percentage, and pre-assigned changeover employee. employee_workstation_assignments is the live link between an employee and a workstation, tracking the supervisor's link confirmation, late-arrival reason, and effective attendance start used for efficiency calculations.",
+    "nodeIds": [
+      "table:src/schema.base.sql:line_daily_plans",
+      "table:src/schema.base.sql:line_plan_workstations",
+      "table:src/schema.base.sql:employee_workstation_assignments",
+      "table:src/schema.base.sql:production_lines"
+    ],
+    "languageLesson": "SQL migrations should be additive and idempotent. This project tracks 27+ incrementally numbered migration files (007 through 033), each adding a column, index, or table without rewriting history — schema.base.sql represents the consolidated, current-state snapshot of that evolution."
+  },
+  {
+    "order": 7,
+    "title": "Schema Evolution Through Migrations",
+    "description": "The data model in Step 6 did not arrive fully formed — it evolved through a long sequence of migrations. Migration 012 created the foundational employee_workstation_assignments table; migration 021 layered an entire parallel overtime-planning subsystem (line_ot_plans) mirroring the regular workstation plan structure; migration 033 added employee_workstation_assignment_history, which records every assignment time window so hourly output can still be attributed to the correct employee even after a mid-day reassignment or unlink. schema.base.migrations is a plain-text manifest listing all 27 applied migrations as a changelog.",
+    "nodeIds": [
+      "table:src/migrations/012_employee_workstation_assignments.sql:employee_workstation_assignments",
+      "table:src/migrations/021_ot_plan.sql:line_ot_plans",
+      "table:src/migrations/033_employee_workstation_assignment_history.sql:employee_workstation_assignment_history",
+      "file:src/schema.base.migrations"
+    ]
+  },
+  {
+    "order": 8,
+    "title": "Operational Utilities",
+    "description": "Three utility modules support specific backend operations referenced throughout api.routes.js. qr.js generates labeled SVG QR codes for employees, lines, and workstations, persisting the file path back to the database. streaming-excel.js generates large daily and date-range production reports using ExcelJS's streaming writer, so multi-thousand-row workbooks are written straight to the HTTP response without buffering in memory. run-migrations.js is the standalone CLI script (separate from the live server) used to apply pending SQL migrations and track which ones have already run.",
+    "nodeIds": ["file:src/utils/qr.js", "file:src/utils/streaming-excel.js", "file:src/scripts/run-migrations.js"]
+  },
+  {
+    "order": 9,
+    "title": "Self-Updating in Production",
+    "description": "system-update.routes.js (Step 3) exposes admin endpoints to check deploy status, trigger a self-update, or roll back — and those endpoints are backed by two utility modules. system-update.js provides the low-level runtime machinery: status JSON read/write, an append-only log, and a file-based lock preventing concurrent update runs. system-update-plan.js loads and normalizes the update plan configuration, syncs declared environment files, and executes pre/post-hook shell commands — effectively letting this MES backend update and restart itself via git pull without manual server access.",
+    "nodeIds": ["file:src/utils/system-update.js", "file:src/utils/system-update-plan.js"]
+  },
+  {
+    "order": 10,
+    "title": "Frontend: Role-Based Panels",
+    "description": "The backend serves a vanilla JS/HTML/CSS frontend with no build step, split into role-specific panels. admin.js is the largest script (~11,880 lines), covering dashboards, line/product/process management, plan editing, and system-update controls. supervisor.js (~4,129 lines) implements the line leader's daily workflow: QR scanning, morning employee linking, hourly output entry, changeover, and OT management — the live counterpart to the planning data introduced in Steps 6-7. management.js is a smaller dashboard focused on efficiency and material-tracking reports.",
+    "nodeIds": ["file:src/public/js/admin.js", "file:src/public/js/supervisor.js", "file:src/public/js/management.js"]
+  },
+  {
+    "order": 11,
+    "title": "Real-Time Updates on the Client",
+    "description": "All three frontend panels from Step 10 stay in sync with the database through a single shared module: sse-manager.js. It wraps one EventSource connection to the /events endpoint exposed by realtime.js (Step 2), with exponential-backoff reconnection, heartbeat tracking, and a pub/sub API that lets admin.js, supervisor.js, and management.js each subscribe to the specific data_change events they care about — so a plan edit by an IE on one device appears instantly on a supervisor's tablet without polling.",
+    "nodeIds": ["file:src/public/js/sse-manager.js"]
+  },
+  {
+    "order": 12,
+    "title": "Deployment & Process Management",
+    "description": "ecosystem.config.js configures PM2 to run the server in 4-instance cluster mode with auto-restart and memory limits, explaining why server.js (Step 1) and realtime.js (Step 2) had to account for multi-instance coordination via PostgreSQL LISTEN/NOTIFY rather than in-process state alone. package.json declares the start and migration scripts plus core dependencies (Express, pg, ExcelJS, JWT, bcrypt, Joi, Zod, node-cron), and .env.example documents every environment variable the deployment needs — server, database, security secrets, and rate-limit settings.",
+    "nodeIds": ["config:ecosystem.config.js", "config:package.json", "config:.env.example"],
+    "languageLesson": "PM2 cluster mode spawns multiple Node.js processes sharing one port via round-robin load balancing. Because each instance has its own memory, any shared mutable state (like SSE client lists) must be coordinated through an external channel such as PostgreSQL LISTEN/NOTIFY, which is exactly what realtime.js does."
+  },
+  {
+    "order": 13,
+    "title": "The Complete Picture",
+    "description": "WorkSync_Technical_Report.docx is the project's internal reference document, covering the full system overview, technology stack, role permissions, the complete 31+ table database schema, every API endpoint, all screens and panels, business formulas, migration history, and the QR-code and PWA features touched on throughout this tour. It serves as the capstone reference for anything not covered step-by-step here — the closest thing this codebase has to a README, consolidating everything from Step 1's entry point through Step 12's deployment configuration into one document.",
+    "nodeIds": ["file:src/public/WorkSync_Technical_Report.docx"]
+  }
+]

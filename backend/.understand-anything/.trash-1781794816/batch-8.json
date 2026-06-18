@@ -1,0 +1,483 @@
+{
+  "nodes": [
+    {
+      "id": "file:src/public/WorkSync_Technical_Report.docx",
+      "type": "document",
+      "name": "WorkSync_Technical_Report.docx",
+      "filePath": "src/public/WorkSync_Technical_Report.docx",
+      "summary": "Internal technical reference document (v1.0, March 2026) covering WorkSync's system overview, technology stack, user roles/permissions, the full 31+ table database schema, API endpoints, screens/panels, business flows, formulas, JS state, migration history, SSE events, Excel upload template, QR code system, PWA features, and key constants.",
+      "tags": ["documentation", "entry-point", "database", "api-schema", "overview"],
+      "complexity": "complex",
+      "languageNotes": "Served as a static asset under src/public/ rather than processed at runtime; functions as project-wide reference documentation rather than application code."
+    },
+    {
+      "id": "file:src/schema.base.migrations",
+      "type": "file",
+      "name": "schema.base.migrations",
+      "filePath": "src/schema.base.migrations",
+      "summary": "Plain-text manifest listing the ordered filenames of all 27 SQL migrations (007 through 033) that have been applied to bring the database to its current baseline state, used as a changelog/checklist rather than executable SQL.",
+      "tags": ["migration", "database", "changelog", "configuration"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:app_settings",
+      "type": "table",
+      "name": "app_settings",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [122, 126],
+      "summary": "Key/value store for global runtime configuration such as default working hours and lunch break minutes.",
+      "tags": ["database", "configuration", "key-value"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:audit_logs",
+      "type": "table",
+      "name": "audit_logs",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [133, 148],
+      "summary": "Central audit trail recording every tracked change with old/new values, the acting user, request metadata (IP, user agent, session, path, method), and reason.",
+      "tags": ["database", "audit", "security", "logging"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:defect_log",
+      "type": "table",
+      "name": "defect_log",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [175, 192],
+      "summary": "Per-employee, per-process defect occurrences including rework tracking (rework employee, completion time) and quality status.",
+      "tags": ["database", "quality", "defect-tracking"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:defect_types",
+      "type": "table",
+      "name": "defect_types",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [219, 230],
+      "summary": "Master list of defect type codes with category, severity, and whether the defect is reworkable.",
+      "tags": ["database", "quality", "master-data"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:downtime_log",
+      "type": "table",
+      "name": "downtime_log",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [257, 271],
+      "summary": "Records downtime incidents per line with start/end times, duration, affected processes, and resolution metadata.",
+      "tags": ["database", "downtime", "production-tracking"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:downtime_reasons",
+      "type": "table",
+      "name": "downtime_reasons",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [298, 309],
+      "summary": "Master list of downtime reason codes, categorized and flagged as planned/unplanned with a default duration.",
+      "tags": ["database", "downtime", "master-data"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:employee_attendance",
+      "type": "table",
+      "name": "employee_attendance",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [336, 346],
+      "summary": "Daily attendance record per employee with in/out times and status.",
+      "tags": ["database", "attendance", "employee"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:employee_process_assignments",
+      "type": "table",
+      "name": "employee_process_assignments",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [373, 379],
+      "summary": "Legacy table assigning employees directly to product processes per line; superseded by the workstation-based employee_workstation_assignments model but still present in the schema.",
+      "tags": ["database", "legacy", "employee-assignment"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:employee_workstation_assignments",
+      "type": "table",
+      "name": "employee_workstation_assignments",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [406, 421],
+      "summary": "Core live-assignment table linking employees to workstations per line/date, tracking overtime flag, link confirmation state, late reason, attendance start, and material provided; unique per (line, date, workstation, overtime flag).",
+      "tags": ["database", "employee-assignment", "workstation", "core-table"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:employees",
+      "type": "table",
+      "name": "employees",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [476, 491],
+      "summary": "Employee master data including employee code, name, designation, default line, QR code path, active flag, and manpower factor.",
+      "tags": ["database", "master-data", "employee"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:group_wip",
+      "type": "table",
+      "name": "group_wip",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [518, 527],
+      "summary": "Tracks work-in-progress quantities per process group per line/date, including materials-in and output quantity, used for group-first feed workstations.",
+      "tags": ["database", "wip", "production-tracking"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_daily_metrics",
+      "type": "table",
+      "name": "line_daily_metrics",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [554, 565],
+      "summary": "Daily rollup of forwarded quantity, remaining WIP, materials issued, and QA output per line.",
+      "tags": ["database", "metrics", "production-tracking"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_daily_plans",
+      "type": "table",
+      "name": "line_daily_plans",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [592, 611],
+      "summary": "One row per line per work date holding the active product, target units, lock state, changeover sequence/target, and overtime settings — the central daily planning record.",
+      "tags": ["database", "core-table", "production-planning"],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_hourly_reports",
+      "type": "table",
+      "name": "line_hourly_reports",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [638, 645],
+      "summary": "Free-text remarks captured per line per work date per hour slot.",
+      "tags": ["database", "reporting", "hourly"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_material_stock",
+      "type": "table",
+      "name": "line_material_stock",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [652, 662],
+      "summary": "Tracks opening/closing material stock and issued/used/returned totals per line per day.",
+      "tags": ["database", "material-tracking", "inventory"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_ot_plans",
+      "type": "table",
+      "name": "line_ot_plans",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [696, 706],
+      "summary": "Overtime plan per line/date/product holding global OT minutes, OT target units, and a supervisor_authorized flag that grants the supervisor permission to manage OT workstations.",
+      "tags": ["database", "overtime", "production-planning"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_ot_progress",
+      "type": "table",
+      "name": "line_ot_progress",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [740, 751],
+      "summary": "Supervisor-entered OT output per workstation per date, including quantity, QA rejection, and the employee credited.",
+      "tags": ["database", "overtime", "production-tracking"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_ot_workstation_processes",
+      "type": "table",
+      "name": "line_ot_workstation_processes",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [778, 783],
+      "summary": "Junction table linking OT workstations to product processes with sequence ordering.",
+      "tags": ["database", "overtime", "workstation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_ot_workstations",
+      "type": "table",
+      "name": "line_ot_workstations",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [810, 821],
+      "summary": "Per-workstation OT configuration (active flag, OT minutes, actual SAM seconds) for a given OT plan.",
+      "tags": ["database", "overtime", "workstation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_plan_workstation_processes",
+      "type": "table",
+      "name": "line_plan_workstation_processes",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [848, 854],
+      "summary": "Junction table linking planned workstations to product processes with sequence ordering and an OSM-checked flag.",
+      "tags": ["database", "workstation", "production-planning"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_plan_workstations",
+      "type": "table",
+      "name": "line_plan_workstations",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [881, 898],
+      "summary": "Workstation layout per line/date/product including takt time, actual SAM seconds, workload percentage, group name, OT-skip flag, changeover active state/start time, and the pre-assigned changeover employee (co_employee_id).",
+      "tags": ["database", "core-table", "workstation", "production-planning"],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_process_hourly_progress",
+      "type": "table",
+      "name": "line_process_hourly_progress",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [932, 950],
+      "summary": "Hourly output entry per process per employee per line/date, including forwarded/remaining quantity, QA rejection, remarks, and mandatory shortfall reason when below target.",
+      "tags": ["database", "core-table", "hourly", "production-tracking"],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_shift_closures",
+      "type": "table",
+      "name": "line_shift_closures",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [977, 984],
+      "summary": "Records when a supervisor closes a line's shift for a given work date, with closer identity and notes.",
+      "tags": ["database", "shift-management"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_workstations",
+      "type": "table",
+      "name": "line_workstations",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1011, 1019],
+      "summary": "Static workstation codes (e.g., W01-W100) defined per line, each with a QR code path.",
+      "tags": ["database", "workstation", "master-data", "qr-code"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:material_transactions",
+      "type": "table",
+      "name": "material_transactions",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1046, 1057],
+      "summary": "Logs material movement transactions per line/date between processes, including quantity, type, and recorder.",
+      "tags": ["database", "material-tracking", "transaction-log"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:operations",
+      "type": "table",
+      "name": "operations",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1091, 1103],
+      "summary": "Reusable operation library (codes like OP-XXXX) shared across products, with category, active flag, and QR code path.",
+      "tags": ["database", "master-data", "operations"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:process_assignment_history",
+      "type": "table",
+      "name": "process_assignment_history",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1137, 1151],
+      "summary": "Historical record of employee-to-process assignments per line with start/end times, quantity completed, and materials snapshot at link time — predecessor of the workstation-level assignment history table.",
+      "tags": ["database", "history", "employee-assignment"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:process_material_wip",
+      "type": "table",
+      "name": "process_material_wip",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1178, 1187],
+      "summary": "Tracks materials in/out and WIP quantity per process per line per date.",
+      "tags": ["database", "wip", "material-tracking"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:product_processes",
+      "type": "table",
+      "name": "product_processes",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1221, 1244],
+      "summary": "Ordered sequence of operations per product, with operation SAH, cycle time, manpower required, free-text workstation_code, group name, QR path, and worker input mapping — defines the production routing for a product.",
+      "tags": ["database", "core-table", "production-routing"],
+      "complexity": "complex"
+    },
+    {
+      "id": "table:src/schema.base.sql:production_day_locks",
+      "type": "table",
+      "name": "production_day_locks",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1299, 1304],
+      "summary": "Locks an entire production day, recording who locked it, when, and notes.",
+      "tags": ["database", "locking", "control"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:line_daily_plan_delete_markers",
+      "type": "table",
+      "name": "line_daily_plan_delete_markers",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1311, 1316],
+      "summary": "Soft-delete marker for line daily plans, recording who deleted a line/date plan and when.",
+      "tags": ["database", "soft-delete", "production-planning"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:production_lines",
+      "type": "table",
+      "name": "production_lines",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1323, 1338],
+      "summary": "Master record for physical production lines including code, hall location, current product, target units, computed efficiency, QR code path, and line leader.",
+      "tags": ["database", "master-data", "core-table"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:products",
+      "type": "table",
+      "name": "products",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1365, 1380],
+      "summary": "Product master data with code, description, category, buyer name, target quantity, plan month, and the line it is assigned to.",
+      "tags": ["database", "master-data", "core-table"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:users",
+      "type": "table",
+      "name": "users",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1428, 1437],
+      "summary": "Application user accounts with username, full name, role (admin/supervisor/ie/management), and active flag.",
+      "tags": ["database", "authentication", "master-data"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:worker_adjustments",
+      "type": "table",
+      "name": "worker_adjustments",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1590, 1602],
+      "summary": "Records the response to a worker departure mid-shift — reassignment type, vacant workstation, source employee/workstation, and reassignment time.",
+      "tags": ["database", "worker-adjustment", "shift-management"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "table:src/schema.base.sql:worker_departures",
+      "type": "table",
+      "name": "worker_departures",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1629, 1640],
+      "summary": "Tracks when and why an employee left their workstation mid-day (sick/personal/operational/other) for a given line/date.",
+      "tags": ["database", "worker-adjustment", "shift-management"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:workspaces",
+      "type": "table",
+      "name": "workspaces",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1667, 1681],
+      "summary": "Workspace/work-area master data per line including type, QR code path, group name, and worker input mapping.",
+      "tags": ["database", "master-data", "workstation"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:v_audit_summary",
+      "type": "table",
+      "name": "v_audit_summary",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1464, 1464],
+      "summary": "Database view summarizing audit_logs activity for reporting purposes.",
+      "tags": ["database", "view", "audit", "reporting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:v_daily_defect_summary",
+      "type": "table",
+      "name": "v_daily_defect_summary",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1480, 1480],
+      "summary": "Database view aggregating daily defect counts from defect_log for quality reporting.",
+      "tags": ["database", "view", "quality", "reporting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:v_daily_downtime_summary",
+      "type": "table",
+      "name": "v_daily_downtime_summary",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1511, 1511],
+      "summary": "Database view aggregating daily downtime duration from downtime_log for reporting.",
+      "tags": ["database", "view", "downtime", "reporting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:v_daily_material_summary",
+      "type": "table",
+      "name": "v_daily_material_summary",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1532, 1532],
+      "summary": "Database view aggregating daily material transaction totals for reporting.",
+      "tags": ["database", "view", "material-tracking", "reporting"],
+      "complexity": "simple"
+    },
+    {
+      "id": "table:src/schema.base.sql:v_recent_critical_changes",
+      "type": "table",
+      "name": "v_recent_critical_changes",
+      "filePath": "src/schema.base.sql",
+      "lineRange": [1568, 1568],
+      "summary": "Database view surfacing recent critical audit log changes for monitoring.",
+      "tags": ["database", "view", "audit", "monitoring"],
+      "complexity": "simple"
+    }
+  ],
+  "edges": [
+    { "source": "table:src/schema.base.sql:app_settings", "target": "table:src/schema.base.sql:audit_logs", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:defect_log", "target": "table:src/schema.base.sql:defect_types", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:defect_log", "target": "table:src/schema.base.sql:v_daily_defect_summary", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:downtime_log", "target": "table:src/schema.base.sql:downtime_reasons", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:downtime_log", "target": "table:src/schema.base.sql:v_daily_downtime_summary", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:employee_workstation_assignments", "target": "table:src/schema.base.sql:employees", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:employee_workstation_assignments", "target": "table:src/schema.base.sql:line_plan_workstations", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:employee_workstation_assignments", "target": "table:src/schema.base.sql:process_assignment_history", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:employee_process_assignments", "target": "table:src/schema.base.sql:employee_workstation_assignments", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_daily_plans", "target": "table:src/schema.base.sql:production_lines", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_daily_plans", "target": "table:src/schema.base.sql:products", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_daily_plans", "target": "table:src/schema.base.sql:line_ot_plans", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_plan_workstations", "target": "table:src/schema.base.sql:line_plan_workstation_processes", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_plan_workstations", "target": "table:src/schema.base.sql:employee_workstation_assignments", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_plan_workstations", "target": "table:src/schema.base.sql:line_workstations", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_ot_plans", "target": "table:src/schema.base.sql:line_ot_workstations", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_ot_plans", "target": "table:src/schema.base.sql:line_ot_progress", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_ot_workstations", "target": "table:src/schema.base.sql:line_ot_workstation_processes", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_process_hourly_progress", "target": "table:src/schema.base.sql:product_processes", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:line_process_hourly_progress", "target": "table:src/schema.base.sql:employees", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:product_processes", "target": "table:src/schema.base.sql:products", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:product_processes", "target": "table:src/schema.base.sql:operations", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:worker_adjustments", "target": "table:src/schema.base.sql:worker_departures", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:material_transactions", "target": "table:src/schema.base.sql:v_daily_material_summary", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:material_transactions", "target": "table:src/schema.base.sql:process_material_wip", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:audit_logs", "target": "table:src/schema.base.sql:v_audit_summary", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "table:src/schema.base.sql:audit_logs", "target": "table:src/schema.base.sql:v_recent_critical_changes", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/schema.base.migrations", "target": "table:src/schema.base.sql:employee_workstation_assignments", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/schema.base.migrations", "target": "table:src/schema.base.sql:line_plan_workstations", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/schema.base.migrations", "target": "table:src/schema.base.sql:line_ot_plans", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/schema.base.migrations", "target": "table:src/schema.base.sql:worker_departures", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/schema.base.migrations", "target": "table:src/schema.base.sql:worker_adjustments", "type": "related", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/public/WorkSync_Technical_Report.docx", "target": "table:src/schema.base.sql:employee_workstation_assignments", "type": "documents", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/public/WorkSync_Technical_Report.docx", "target": "table:src/schema.base.sql:line_daily_plans", "type": "documents", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/public/WorkSync_Technical_Report.docx", "target": "table:src/schema.base.sql:line_plan_workstations", "type": "documents", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/public/WorkSync_Technical_Report.docx", "target": "table:src/schema.base.sql:product_processes", "type": "documents", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/public/WorkSync_Technical_Report.docx", "target": "table:src/schema.base.sql:users", "type": "documents", "direction": "forward", "weight": 0.5 },
+    { "source": "file:src/public/WorkSync_Technical_Report.docx", "target": "file:src/schema.base.migrations", "type": "documents", "direction": "forward", "weight": 0.5 }
+  ]
+}

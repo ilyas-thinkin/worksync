@@ -1,0 +1,9 @@
+{
+  "fixedSectionOk": true,
+  "nodesRecovered": 0,
+  "edgesRestored": 0,
+  "crossBatchEdgesAdded": 0,
+  "typesRemapped": 0,
+  "complexityRemapped": 0,
+  "notes": ["merge-batch-graphs.py reported 408 nodes / 441 edges in, 408/441 out — no dedup loss, no dangling edges dropped, no unknown types/complexity values.", "All 22 importMap relationships from scan-result.json have corresponding imports edges in the assembled graph — no cross-batch gaps."]
+}
