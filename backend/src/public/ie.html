@@ -10,6 +10,123 @@
     <link rel="stylesheet" href="css/admin.css">
     <link rel="stylesheet" href="css/shop-floor.css">
     <link rel="stylesheet" href="css/offline.css">
+    <style>
+        /* Low Output Alerts FAB — hardcoded to guarantee visibility */
+        #loa-fab {
+            position: fixed !important;
+            bottom: 84px !important;
+            right: 20px !important;
+            width: 54px !important;
+            height: 54px !important;
+            border-radius: 50% !important;
+            background: #B45309 !important;
+            border: none !important;
+            box-shadow: 0 4px 18px rgba(180,83,9,.45) !important;
+            cursor: pointer !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            z-index: 99999 !important;
+            color: #fff !important;
+            padding: 0 !important;
+        }
+        #loa-fab.loa-fab--alert {
+            background: #B91C1C !important;
+            animation: loaPulse 2s ease-in-out infinite !important;
+        }
+        @keyframes loaPulse {
+            0%,100% { box-shadow: 0 0 0 0 rgba(185,28,28,.5); }
+            50%      { box-shadow: 0 0 0 12px rgba(185,28,28,0); }
+        }
+        #loa-fab svg { width:24px; height:24px; pointer-events:none; }
+        #loa-badge {
+            display: none;
+            position: absolute !important;
+            top: -6px !important;
+            right: -6px !important;
+            background: #fff !important;
+            color: #B91C1C !important;
+            font-size: 10px !important;
+            font-weight: 700 !important;
+            min-width: 18px !important;
+            height: 18px !important;
+            border-radius: 99px !important;
+            align-items: center !important;
+            justify-content: center !important;
+            padding: 0 4px !important;
+            border: 2px solid #B91C1C !important;
+            line-height: 1 !important;
+        }
+        #loa-badge.loa-badge--visible { display: flex !important; }
+        #loa-backdrop {
+            display: none;
+            position: fixed !important;
+            inset: 0 !important;
+            background: rgba(0,0,0,.5) !important;
+            z-index: 100000 !important;
+            align-items: flex-end !important;
+            justify-content: center !important;
+        }
+        #loa-backdrop.active { display: flex !important; }
+        #loa-modal {
+            background: #FFFAF3;
+            border-radius: 18px 18px 0 0;
+            width: 100%;
+            max-width: 700px;
+            max-height: 88dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 -4px 40px rgba(0,0,0,.18);
+        }
+        .loa-modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 20px 14px;
+            border-bottom: 1px solid #e5e0d8;
+            flex-shrink: 0;
+        }
+        .loa-modal-title {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 15px; font-weight: 700; color: #292116;
+        }
+        .loa-modal-title svg { color: #B91C1C; }
+        #loa-modal-close {
+            width: 32px; height: 32px; border-radius: 8px;
+            border: 1px solid #e5e0d8; background: transparent;
+            cursor: pointer; display: flex; align-items: center;
+            justify-content: center; color: #78716C;
+        }
+        #loa-modal-body {
+            overflow-y: auto; flex: 1; padding: 16px;
+            -webkit-overflow-scrolling: touch;
+        }
+        .loa-subtitle { font-size: 13px; color: #78716C; margin: 0 0 12px; }
+        .loa-list { display: flex; flex-direction: column; gap: 12px; }
+        .loa-card { background: #FBF5EA; border: 1px solid #e5e0d8; border-radius: 12px; overflow: hidden; }
+        .loa-card-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 6px; gap: 8px; flex-wrap: wrap; }
+        .loa-emp-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .loa-emp-code { font-weight: 700; font-size: 12px; background: #fff; border: 1px solid #e5e0d8; border-radius: 6px; padding: 2px 8px; }
+        .loa-emp-name { font-size: 13px; font-weight: 600; }
+        .loa-streak-badge { font-size: 11px; font-weight: 700; background: #FEE2E2; color: #B91C1C; border-radius: 99px; padding: 3px 10px; white-space: nowrap; }
+        .loa-card-meta { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 8px; font-size: 11px; color: #78716C; }
+        .loa-meta-item { display: inline-flex; align-items: center; gap: 4px; }
+        .loa-meta-ops { font-style: italic; }
+        .loa-table-wrap { overflow-x: auto; border-top: 1px solid #e5e0d8; }
+        .loa-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .loa-table th { background: #FFFAF3; padding: 6px 12px; text-align: left; font-weight: 600; color: #78716C; border-bottom: 1px solid #e5e0d8; white-space: nowrap; }
+        .loa-table td { padding: 6px 12px; border-bottom: 1px solid #e5e0d8; }
+        .loa-table tr:last-child td { border-bottom: none; }
+        .loa-row-low td { background: #FEF2F2; }
+        .loa-row-low .loa-qty { color: #B91C1C; font-weight: 700; }
+        .loa-row-ok td { background: transparent; }
+        .loa-row-ok .loa-qty { color: #15803D; font-weight: 600; }
+        .loa-empty { display: flex; flex-direction: column; align-items: center; padding: 40px 20px; text-align: center; gap: 8px; color: #78716C; }
+        .loa-empty svg { color: #15803D; opacity: .75; }
+        .loa-empty p { font-size: 15px; font-weight: 600; color: #292116; margin: 0; }
+        .loa-loading { text-align: center; padding: 40px; color: #78716C; font-size: 13px; }
+    </style>
 </head>
 <body>
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
@@ -152,6 +269,45 @@
     <!-- Toast Container -->
     <div class="toast-container" id="toast-container"></div>
 
+    <!-- Low Output Alerts FAB -->
+    <button id="loa-fab" type="button" title="Low Output Alerts" aria-label="Low output alerts"
+            style="position:fixed;bottom:84px;right:20px;width:54px;height:54px;border-radius:50%;background:#B45309;border:none;box-shadow:0 4px 18px rgba(180,83,9,.5);cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:99999;color:#fff;padding:0;flex-shrink:0;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" width="24" height="24" aria-hidden="true"
+             style="pointer-events:none;flex-shrink:0;">
+            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <span id="loa-badge" style="display:none;position:absolute;top:-6px;right:-6px;background:#fff;color:#B91C1C;font-size:10px;font-weight:700;min-width:18px;height:18px;border-radius:99px;align-items:center;justify-content:center;padding:0 4px;border:2px solid #B91C1C;line-height:1;"></span>
+    </button>
+
+    <!-- Low Output Alerts Modal -->
+    <div class="loa-backdrop" id="loa-backdrop">
+        <div class="loa-modal" id="loa-modal">
+            <div class="loa-modal-header">
+                <div class="loa-modal-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    Low Output Alerts
+                </div>
+                <button class="loa-modal-close" id="loa-modal-close" type="button" aria-label="Close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                         width="18" height="18" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="loa-modal-body" id="loa-modal-body">
+                <div class="loa-loading">Loading…</div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bottom Navigation (mobile/tablet only) -->
     <nav class="bottom-nav" id="bottom-nav" aria-label="Quick navigation">
         <a href="#" class="nav-link bottom-nav-item active" data-section="dashboard" aria-label="Dashboard">
@@ -184,5 +340,6 @@
     <script src="js/shop-floor-ux.js"></script>
     <script src="js/optimistic-ui.js"></script>
     <script src="js/admin.js?v=20260414-downtime-menu-1"></script>
+    <script src="js/low-output-alerts.js?v=1"></script>
 </body>
 </html>

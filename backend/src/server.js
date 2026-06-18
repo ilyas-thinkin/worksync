@@ -177,6 +177,9 @@ app.use('/api', (req, res, next) => {
   if (req.path === '/daily-plans' && req.method === 'GET') {
     return requireAnyRole(['admin', 'ie', 'supervisor', 'management'])(req, res, next);
   }
+  if (req.path === '/daily-plans/ot-toggle' && req.method === 'PATCH') {
+    return requireAnyRole(['admin', 'ie', 'supervisor'])(req, res, next);
+  }
   if (req.path.startsWith('/daily-plans') || req.path.startsWith('/ie') || req.path.startsWith('/settings')) {
     return requireAnyRole(['ie', 'admin'])(req, res, next);
   }

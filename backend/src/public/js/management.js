@@ -1843,26 +1843,6 @@ function buildMgmtWorkerEfficiencyGraphs(data) {
                 <h3 class="card-title">Employee Daily Bars</h3>
             </div>
             <div class="card-body">
-                <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
-                    <div style="min-width:180px;">
-                        <label style="font-size:12px;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">Efficiency Filter</label>
-                        <select id="mgmt-graph-eff-band" class="form-control" onchange="setMgmtGraphEffBand(this.value)">
-                            <option value="all" ${_mgmtGraphEffBand === 'all' ? 'selected' : ''}>All</option>
-                            <option value="ge90" ${_mgmtGraphEffBand === 'ge90' ? 'selected' : ''}>90% and above</option>
-                            <option value="80to89" ${_mgmtGraphEffBand === '80to89' ? 'selected' : ''}>80% to 89.9%</option>
-                            <option value="1to79" ${_mgmtGraphEffBand === '1to79' ? 'selected' : ''}>1% to 79.9%</option>
-                            <option value="zero" ${_mgmtGraphEffBand === 'zero' ? 'selected' : ''}>0%</option>
-                        </select>
-                    </div>
-                    <div style="flex:1;min-width:220px;">
-                        <label style="font-size:12px;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">Employee Name / Code</label>
-                        <input id="mgmt-graph-search" class="form-control" type="text" value="${escapeMgmtGraphAttr(_mgmtGraphSearch)}"
-                            placeholder="Search by employee name or code" oninput="setMgmtGraphSearch(this.value)">
-                    </div>
-                    <div style="font-size:12px;color:#64748b;padding-bottom:8px;">
-                        Showing <strong style="color:#0f172a;">${allEmployeeBars.length}</strong> of <strong style="color:#0f172a;">${workedRows.length}</strong> employees
-                    </div>
-                </div>
                 ${buildMgmtGraphAllEmployeeBars(allEmployeeBars)}
             </div>
         </div>
@@ -1984,6 +1964,8 @@ function mgmtGraphMatchesSearch(item) {
 
 function setMgmtGraphEffBand(value) {
     _mgmtGraphEffBand = value || 'all';
+    const sel = document.getElementById('mgmt-graph-eff-band');
+    if (sel) sel.value = _mgmtGraphEffBand;
     renderMgmtWorkerEfficiencyGraphs();
 }
 
@@ -2078,6 +2060,26 @@ async function loadMgmtWorkerEfficiencyGraphs() {
                     </div>
                     <div id="mgmt-graph-emp-list" style="max-height:220px;overflow-y:auto;padding:4px 0;"></div>
                 </div>
+            </div>
+        </div>
+        <div id="mgmt-graph-filter-area" style="display:none;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+            <div style="min-width:180px;">
+                <label style="font-size:12px;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">Efficiency Filter</label>
+                <select id="mgmt-graph-eff-band" class="form-control" onchange="setMgmtGraphEffBand(this.value)">
+                    <option value="all">All</option>
+                    <option value="ge90">90% and above</option>
+                    <option value="80to89">80% to 89.9%</option>
+                    <option value="1to79">1% to 79.9%</option>
+                    <option value="zero">0%</option>
+                </select>
+            </div>
+            <div style="flex:1;min-width:220px;">
+                <label style="font-size:12px;font-weight:700;color:#64748b;display:block;margin-bottom:4px;">Employee Name / Code</label>
+                <input id="mgmt-graph-search" class="form-control" type="text"
+                    placeholder="Search by employee name or code" oninput="setMgmtGraphSearch(this.value)">
+            </div>
+            <div style="font-size:12px;color:#64748b;padding-bottom:8px;">
+                <span id="mgmt-graph-showing-count"></span>
             </div>
         </div>
         <div id="mgmt-graph-content">
@@ -2205,6 +2207,19 @@ function renderMgmtWorkerEfficiencyGraphs() {
         return;
     }
     container.innerHTML = buildMgmtWorkerEfficiencyGraphs({ ..._mgmtGraphData, rows });
+    const filterArea = document.getElementById('mgmt-graph-filter-area');
+    if (filterArea) filterArea.style.display = 'flex';
+    const countEl = document.getElementById('mgmt-graph-showing-count');
+    if (countEl) {
+        const workedRows = rows.filter(row =>
+            _mgmtGraphData.dates.some(date => Number(row.dates?.[date]?.hours_worked || 0) > 0)
+        );
+        const filteredCount = workedRows.filter(row =>
+            mgmtGraphMatchesEffBand(Number(row.overall_eff || 0)) &&
+            mgmtGraphMatchesSearch({ emp_name: row.emp_name, emp_code: row.emp_code })
+        ).length;
+        countEl.innerHTML = `Showing <strong style="color:#0f172a;">${filteredCount}</strong> of <strong style="color:#0f172a;">${workedRows.length}</strong> employees`;
+    }
 }
 
 async function refreshMgmtWorkerIndividualEff() {

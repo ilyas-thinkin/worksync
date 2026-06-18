@@ -2938,6 +2938,8 @@ async function viewProductProcess(productId) {
 
         // Flat list sorted by sequence_number
         const sorted = [...processes].sort((a, b) => a.sequence_number - b.sequence_number);
+        const totalSahHrs = sorted.reduce((sum, p) => sum + parseFloat(p.operation_sah || 0), 0);
+        const totalSamSec = (totalSahHrs * 3600).toFixed(1);
         const tableRows = sorted.map(proc => {
             const samSec = ((parseFloat(proc.operation_sah || 0)) * 3600).toFixed(1);
             return `<tr>
@@ -2994,7 +2996,8 @@ async function viewProductProcess(productId) {
                             <tr><td style="padding:8px 16px;font-weight:600;width:40%;border-bottom:1px solid var(--border);">PRODUCT</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.category || '-'}</td></tr>
                             <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">BUYER</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.buyer_name || '-'}</td></tr>
                             <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">STYLE NO</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.product_code}</td></tr>
-                            <tr><td style="padding:8px 16px;font-weight:600;">DESCRIPTION</td><td style="padding:8px 16px;">${product.product_name}</td></tr>
+                            <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">DESCRIPTION</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.product_name}</td></tr>
+                            <tr><td style="padding:8px 16px;font-weight:600;">TOTAL SAH</td><td style="padding:8px 16px;"><strong>${totalSahHrs.toFixed(4)} hrs</strong><span style="margin-left:10px;font-size:12px;color:var(--text-muted);">(${totalSamSec} sec total SAM)</span></td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -7408,9 +7411,20 @@ async function toggleOTPlan(lineId, enable, date) {
         const result = await res.json();
         if (!result.success) { showToast(result.error || 'Failed to update OT', 'error'); return; }
         showToast(enable ? 'OT enabled' : 'OT disabled', 'success');
-        if (window._dpTab === 'ot') {
-            const date = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
-            loadOtPlanSection(date);
+
+        // Surgical update — replace only this line's card, no full reload
+        const sectionData = window._otSectionData?.[date];
+        const existingCard = document.getElementById(`ot-line-row-${lineId}`);
+        if (existingCard && sectionData) {
+            const plan = sectionData.planMap.get(String(lineId));
+            if (plan) plan.ot_enabled = enable;
+            const line = sectionData.lines.find(l => String(l.id) === String(lineId));
+            const hasPlan = !!plan?.id;
+            existingCard.outerHTML = renderOtLineCard(line, plan, date, hasPlan, enable);
+            if (enable) openOtLineDetail(lineId, date);
+        } else if (window._dpTab === 'ot') {
+            const d = document.getElementById('plan-date')?.value || new Date().toISOString().slice(0, 10);
+            loadOtPlanSection(d);
         } else {
             loadDailyPlanData();
         }
@@ -7433,6 +7447,9 @@ async function loadOtPlanSection(date) {
         if (!result.success) { container.innerHTML = `<div class="alert alert-danger">${result.error}</div>`; return; }
         const { plans, lines } = result.data;
         const planMap = new Map(plans.map(p => [String(p.line_id), p]));
+        // Cache for surgical toggles and back-navigation
+        window._otSectionData = window._otSectionData || {};
+        window._otSectionData[date] = { planMap, lines };
         const renderedLines = isIeMode
             ? lines.filter(line => planMap.has(String(line.id)))
             : lines;
@@ -7440,22 +7457,50 @@ async function loadOtPlanSection(date) {
             container.innerHTML = `<div style="padding:24px;color:#6b7280;">${isIeMode ? 'No saved OT plans found for this date.' : 'No active lines found.'}</div>`;
             return;
         }
-
         container.innerHTML = renderedLines.map(line => {
             const plan = planMap.get(String(line.id));
             const hasPlan = !!plan?.id;
             const otEnabled = plan?.ot_enabled || false;
             return renderOtLineCard(line, plan, date, hasPlan, otEnabled);
         }).join('');
-
-        // Auto-load expanded cards
-        renderedLines.forEach(line => {
-            const plan = planMap.get(String(line.id));
-            if (plan?.ot_enabled) loadOtLineCard(line.id, date);
-        });
+        // No auto-expand — user clicks the row to open the detail view
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
+}
+
+function openOtLineDetail(lineId, date) {
+    const container = document.getElementById('daily-plan-table');
+    if (!container) return;
+    const sectionData = window._otSectionData?.[date];
+    const line = sectionData?.lines.find(l => String(l.id) === String(lineId));
+    const plan = sectionData?.planMap.get(String(lineId));
+    const lineLabel = line ? `${line.line_code} — ${line.line_name}` : `Line ${lineId}`;
+    const leaderBadge = line?.line_leader
+        ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:2px 10px;">${line.line_leader}</span>`
+        : '';
+    const productLabel = plan ? `${plan.product_code || ''} ${plan.product_name || ''}`.trim() : '';
+
+    container.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:10px 16px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;flex-wrap:wrap;">
+        <button onclick="loadOtPlanSection('${date}')"
+            style="padding:6px 14px;background:#fff;color:#7c3aed;border:1px solid #c4b5fd;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+            ← Back
+        </button>
+        <span style="font-weight:700;font-size:15px;color:#1e293b;">${lineLabel}</span>
+        ${leaderBadge}
+        ${productLabel ? `<span style="font-size:12px;color:#7c3aed;background:#ede9fe;border-radius:10px;padding:2px 10px;">${productLabel}</span>` : ''}
+        <span style="background:#7c3aed;color:#fff;border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700;">● OT ON</span>
+        <button onclick="toggleOTPlan(${lineId},false,'${date}')"
+            style="margin-left:auto;padding:5px 14px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
+            Disable OT ✕
+        </button>
+    </div>
+    <div id="ot-card-body-${lineId}" style="padding:0;">
+        <div style="text-align:center;padding:24px;color:#6b7280;">Loading OT plan…</div>
+    </div>`;
+
+    loadOtLineCard(lineId, date);
 }
 
 function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
@@ -7468,7 +7513,7 @@ function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
 
     if (!hasPlan) {
         return `
-        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;opacity:0.55;display:flex;align-items:center;gap:12px;">
+        <div id="ot-line-row-${line.id}" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;opacity:0.55;display:flex;align-items:center;gap:12px;">
             <span style="font-weight:700;font-size:14px;color:#374151;">${line.line_code}</span>
             <span style="font-size:13px;color:#9ca3af;">${line.line_name}</span>
             ${leaderBadge}
@@ -7478,7 +7523,7 @@ function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
 
     if (!otEnabled) {
         return `
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;display:flex;align-items:center;gap:12px;">
+        <div id="ot-line-row-${line.id}" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:10px;display:flex;align-items:center;gap:12px;">
             <span style="font-weight:700;font-size:14px;color:#1e293b;">${line.line_code}</span>
             <span style="font-size:13px;color:#374151;">${line.line_name}</span>
             ${leaderBadge}
@@ -7490,24 +7535,21 @@ function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
         </div>`;
     }
 
-    // OT enabled — expanded card with lazy-loaded body
+    // OT enabled — compact clickable row; details open on click
     return `
-    <div style="background:#fff;border:2px solid #7c3aed;border-radius:10px;margin-bottom:12px;overflow:hidden;">
-        <!-- Card header -->
-        <div style="background:#f5f3ff;padding:12px 18px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #ddd6fe;">
+    <div id="ot-line-row-${line.id}" style="background:#fff;border:2px solid #7c3aed;border-radius:10px;margin-bottom:12px;overflow:hidden;">
+        <div style="background:#f5f3ff;padding:12px 18px;display:flex;align-items:center;gap:12px;cursor:pointer;"
+            onclick="openOtLineDetail(${line.id},'${date}')">
             <span style="font-weight:700;font-size:14px;color:#1e293b;">${line.line_code}</span>
             <span style="font-size:13px;color:#374151;">${line.line_name}</span>
             ${leaderBadge}
             ${productLabel ? `<span style="font-size:12px;color:#6b7280;background:#ede9fe;border-radius:10px;padding:2px 10px;">${productLabel}</span>` : ''}
             <span style="background:#7c3aed;color:#fff;border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700;margin-left:4px;">● OT ON</span>
-            <button onclick="toggleOTPlan(${line.id},false,'${date}')"
-                style="margin-left:auto;padding:5px 14px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
+            <span style="margin-left:auto;font-size:12px;color:#7c3aed;font-weight:600;">View Details →</span>
+            <button onclick="event.stopPropagation();toggleOTPlan(${line.id},false,'${date}')"
+                style="padding:5px 14px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
                 Disable OT ✕
             </button>
-        </div>
-        <!-- Card body — lazy loaded -->
-        <div id="ot-card-body-${line.id}" style="padding:16px;">
-            <div style="text-align:center;padding:24px;color:#6b7280;">Loading OT plan…</div>
         </div>
     </div>`;
 }
@@ -8781,16 +8823,24 @@ async function printDailyPlans() {
                     g.emp_code = p.emp_code || '';
                 }
                 if (hasWs) g.has_ws = true;
+                // A workstation with a manually overridden target uses its own takt, not the line's.
+                if (!g.takt_time_seconds) {
+                    const rowTakt = p.is_custom_takt ? (parseFloat(p.takt_time_seconds || 0) || 0) : 0;
+                    g.takt_time_seconds = rowTakt > 0 ? rowTakt : regTakt;
+                    g.is_custom_takt = !!p.is_custom_takt && rowTakt > 0;
+                }
             });
             groups.forEach(g => {
-                g.reg_eff = (regTakt > 0 && g.has_ws) ? (g.sam / regTakt) * 100 : null;
+                const wsRegTakt   = g.takt_time_seconds > 0 ? g.takt_time_seconds : regTakt;
+                const wsRegTarget = g.is_custom_takt && wsRegTakt > 0 ? (workSecs / wsRegTakt) : target;
+                g.reg_eff = (wsRegTakt > 0 && g.has_ws) ? (g.sam / wsRegTakt) * 100 : null;
                 // Per-workstation OT: use WS override if set, else line OT
                 const wsOtMins = hasLineOT ? ((g.ws && cfg.wsOt[g.ws] != null) ? cfg.wsOt[g.ws] : cfg.otMins) : 0;
                 const otSecs   = wsOtMins * 60;
                 const otTakt   = (otSecs > 0 && otTarget > 0) ? otSecs / otTarget : 0;
                 g.ot_eff    = (hasLineOT && wsOtMins > 0 && otTakt > 0 && g.has_ws) ? (g.sam / otTakt) * 100 : null;
                 g.total_eff = (g.reg_eff != null && g.ot_eff != null)
-                    ? (g.sam * (target + otTarget)) / (workSecs + otSecs) * 100
+                    ? (g.sam * (wsRegTarget + otTarget)) / (workSecs + otSecs) * 100
                     : null;
             });
 

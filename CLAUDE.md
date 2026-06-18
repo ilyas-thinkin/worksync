@@ -4,10 +4,10 @@
 - **Backend**: Node.js (v20) + Express, routes in `backend/src/routes/api.routes.js`
 - **Database**: PostgreSQL 17 — DB: `worksync_db`, user: `worksync_user`
 - **Frontend**: Vanilla JS — `backend/src/public/js/` (admin.js, supervisor.js, management.js)
-- **Server**: systemd service on Raspberry Pi 5 (192.168.1.9)
+- **Server**: PM2 cluster (4 workers, app name `worksync`) on Raspberry Pi 5 (192.168.1.9). The old systemd `worksync.service` was found running redundantly alongside PM2 and was stopped/disabled on 2026-06-18 — PM2 is the only process manager now.
 
 ## Critical Commands
-- **Restart server**: `sudo systemctl restart worksync` — always run after backend changes
+- **Restart server**: `pm2 restart worksync` — always run after backend changes (NOT systemctl; there is no systemd service anymore)
 - **Apply migration**: `PGPASSWORD=worksync_secure_2026 psql -h 127.0.0.1 -U worksync_user -d worksync_db -f <file.sql>`
 - **Migrations folder**: `backend/src/migrations/` — applied manually, latest applied: 022
 

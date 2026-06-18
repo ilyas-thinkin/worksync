@@ -3034,7 +3034,13 @@ async function openOtPlanDetails(lineId, lineName, date, lineCode, options = {})
                         <h3 class="card-title">${lineName} — OT Details</h3>
                         ${otPlanState.inlineSelectionMode ? '' : '<button class="btn btn-secondary btn-sm" onclick="closeOtPlanDetails()">← Back</button>'}
                     </div>
-                    <div class="card-body"><div class="alert alert-info">OT is not enabled for this line on ${date}.</div></div>
+                    <div class="card-body" style="text-align:center;padding:32px 20px;">
+                        <div style="font-size:15px;color:#374151;margin-bottom:16px;">OT is not enabled for this line on ${date}.</div>
+                        <button onclick="toggleOtEnabled(${lineId},'${date}',false)"
+                            style="padding:10px 28px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:700;">
+                            Enable OT ▶
+                        </button>
+                    </div>
                 </div>`;
             return;
         }
@@ -3064,6 +3070,8 @@ function closeOtPlanDetails() {
 function renderOtPlanSection() {
     const area = document.getElementById('ot-summary-area');
     if (!area) return;
+    const savedScrollY = window.scrollY;
+    const restoreScroll = () => window.scrollTo({ top: savedScrollY, behavior: 'instant' });
     const plan = otPlanState.otPlan;
     const workstations = otPlanState.workstations;
     const employees = otPlanState.employees || [];
@@ -3072,7 +3080,7 @@ function renderOtPlanSection() {
 
     const globalMins = plan.global_ot_minutes || 0;
     const globalTarget = plan.computed_ot_target_units ?? plan.ot_target_units ?? 0;
-    const supAuthorized = plan.supervisor_authorized === true;
+    const supAuthorized = true;
     const allAssigned = workstations.every(ws => ws.assigned_emp_name);
     const effColor = e => e == null ? '#9ca3af' : e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
     const mixedSourceState = new Set(workstations.map(ws => `${ws.source_mode}:${ws.source_product_id || ''}`)).size > 1;
@@ -3123,8 +3131,7 @@ function renderOtPlanSection() {
         }).join('');
     };
 
-    const rowColors = ['#ffffff', '#f8fafc'];
-    const rows = workstations.map((ws, wsIdx) => {
+    const cards = workstations.map(ws => {
         const isActive = ws.is_active !== false;
         const samSecs = parseFloat(ws.actual_sam_seconds || 0);
         const wsMins = ws.ot_minutes || 0;
@@ -3141,122 +3148,164 @@ function renderOtPlanSection() {
         const combinedOutput = (parseInt(ws.regular_shift_output_quantity || 0, 10) || 0) + (parseInt(qty || 0, 10) || 0);
         const wsQr = wsQrPath(ws.workstation_code);
         const currEmpLabel = empLabel(ws.assigned_employee_id).replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        const rowBg = rowColors[wsIdx % 2];
-        const dimStyle = isActive ? '' : 'opacity:0.5;';
+        const dimStyle = isActive ? '' : 'opacity:0.55;';
         const sourceProduct = ws.processes?.[0]
             ? `${ws.processes[0].product_code || ''} ${ws.processes[0].product_name || ''}`.trim()
             : (ws.source_mode === 'changeover' ? 'Changeover' : 'Primary');
-        const employeeMode = ws.assigned_employee_id && ws.source_employee_id && String(ws.assigned_employee_id) !== String(ws.source_employee_id)
-            ? 'Changed employee'
-            : 'Same employee';
 
-        return (ws.processes || []).map((p, idx) => {
-            const isFirst = idx === 0;
-            const rs = ws.processes.length > 1 ? ` rowspan="${ws.processes.length}"` : '';
+        const sourceBadge = ws.source_mode === 'changeover'
+            ? `<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:999px;background:#fef3c7;color:#92400e;">CO</span>`
+            : `<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:999px;background:#eff6ff;color:#1d4ed8;">REG</span>`;
+
+        const processRows = (ws.processes || []).map(p => {
             const samSec = (parseFloat(p.operation_sah || 0) * 3600).toFixed(1);
-
-            const wsQrCell = isFirst
-                ? `<td style="text-align:center;vertical-align:middle;padding:4px;"${rs}>${qrThumb(wsQr, ws.workstation_code)}</td>` : '';
-            const cycleCell = isFirst
-                ? `<td style="text-align:center;vertical-align:middle;"${rs}>${samSecs.toFixed(1)}s</td>` : '';
-            const effCell = isFirst
-                ? `<td style="text-align:center;font-weight:700;color:${effColor(eff)};vertical-align:middle;"${rs}>${eff != null ? eff.toFixed(1)+'%' : '—'}</td>` : '';
-            const empCell = isFirst ? `<td${rs} style="vertical-align:middle;padding:6px;">
-                ${supAuthorized
-                    ? `<div class="ot-emp-picker" data-ws="${ws.workstation_code}" data-value="${ws.assigned_employee_id||''}" style="position:relative;">
-                    <div class="ot-emp-display" onclick="otEmpPickerToggle(this.parentElement)"
-                        style="cursor:pointer;padding:5px 8px;border:1px solid #d1d5db;border-radius:6px;
-                               font-size:0.82em;min-width:175px;background:#fff;display:flex;
-                               justify-content:space-between;align-items:center;gap:4px;user-select:none;">
-                        <span class="ot-emp-current-label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${currEmpLabel}</span>
-                        <span style="color:#9ca3af;font-size:10px;flex-shrink:0;">▾</span>
-                    </div>
-                    <div class="ot-emp-dropdown" style="display:none;position:absolute;left:0;top:calc(100% + 3px);
-                         z-index:600;background:#fff;border:1px solid #d1d5db;border-radius:8px;
-                         box-shadow:0 6px 24px rgba(0,0,0,.15);min-width:260px;overflow:hidden;">
-                        <div style="padding:6px 6px 4px;border-bottom:1px solid #f3f4f6;">
-                            <input class="ot-emp-search form-control" style="font-size:0.82em;padding:5px 8px;"
-                                placeholder="🔍 Search by name or code..."
-                                oninput="otEmpPickerFilter(this)" onclick="event.stopPropagation()">
-                        </div>
-                        <div class="ot-emp-options" style="max-height:220px;overflow-y:auto;">
-                            ${empPickerOpts(ws.assigned_employee_id, ws.workstation_code)}
-                        </div>
-                    </div>
-                </div>`
-                    : `<span style="font-size:0.82em;color:#6b7280;padding:5px 8px;display:inline-block;">${currEmpLabel}</span>`
-                }
-            </td>` : '';
-            const statusCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <button type="button"
-                    data-ot-toggle="1"
-                    data-ws-code="${String(ws.workstation_code || '').replace(/"/g, '&quot;')}"
-                    data-make-active="${!isActive ? '1' : '0'}"
-                    class="btn btn-sm"
-                    style="min-width:80px;background:${isActive?'#dcfce7':'#fee2e2'};color:${isActive?'#16a34a':'#dc2626'};border:1px solid ${isActive?'#bbf7d0':'#fecaca'};cursor:pointer;pointer-events:auto;touch-action:manipulation;position:relative;z-index:2;">
-                    ${isActive ? '● Active' : '○ Inactive'}</button>
-            </td>` : '';
-            const otMinCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <input type="number" id="ot-mins-${ws.workstation_code}" min="0" value="${wsMins>0?wsMins:''}"
-                    placeholder="${globalMins}" class="form-control" style="width:60px;display:inline-block;text-align:center;"></td>` : '';
-            const sourceCell = isFirst ? `<td style="vertical-align:middle;"${rs}>
-                <div style="font-size:12px;font-weight:700;color:${ws.source_mode === 'changeover' ? '#92400e' : '#1d4ed8'};">
-                    ${ws.source_mode === 'changeover' ? 'Changeover' : 'Primary'}
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #f3f4f6;">
+                <div style="min-width:0;flex:1;">
+                    <span style="font-size:12px;font-weight:600;color:#374151;">${p.operation_name}</span>
+                    <span style="font-size:10px;color:#9ca3af;margin-left:6px;">${p.operation_code || ''}</span>
                 </div>
-                <div style="font-size:11px;color:#6b7280;">${sourceProduct || '—'}</div>
-                <div style="font-size:11px;color:#7c3aed;margin-top:4px;">${employeeMode}</div>
-            </td>` : '';
-            const targetCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <div style="font-weight:700;color:#111827;">${hourlyTarget ? hourlyTarget.toFixed(2) : '0.00'}</div>
-                <div style="font-size:11px;color:#6b7280;">/ hr</div>
-                <div style="margin-top:6px;font-weight:700;color:#7c3aed;">${wsTarget}</div>
-                <div style="font-size:11px;color:#6b7280;">OT target</div>
-            </td>` : '';
-            const outCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <input type="number" id="ot-qty-${ws.workstation_code}" min="0" value="${qty}" placeholder="0"
-                    class="form-control" style="width:70px;display:inline-block;text-align:center;" ${isActive?'':'disabled'}></td>` : '';
-            const qaCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <input type="number" id="ot-qar-${ws.workstation_code}" min="0" value="${qaRej}" placeholder="0"
-                    class="form-control" style="width:60px;display:inline-block;text-align:center;" ${isActive?'':'disabled'}></td>` : '';
-            const wipCell = isFirst ? `<td style="vertical-align:middle;"${rs}>
-                <div style="font-size:11px;color:#6b7280;">Regular shift <span style="display:inline-flex;align-items:center;gap:4px;background:#eff6ff;color:#1d4ed8;padding:2px 6px;border-radius:999px;font-weight:700;">REG</span></div>
-                <div style="font-size:12px;font-weight:700;color:#1f2937;">Output ${parseInt(ws.regular_shift_output_quantity || 0, 10) || 0}</div>
-                <div style="font-size:12px;font-weight:700;color:#92400e;">WIP ${openingWip}</div>
-                <div style="margin-top:6px;font-size:11px;color:#6b7280;">OT flow <span style="display:inline-flex;align-items:center;gap:4px;background:#f5f3ff;color:#7c3aed;padding:2px 6px;border-radius:999px;font-weight:700;">OT</span></div>
-                <div style="font-size:12px;font-weight:700;color:#7c3aed;">Balance ${balanceQty}</div>
-                <div style="font-size:12px;font-weight:700;color:#15803d;">Closing WIP ${closingWip}</div>
-                <div style="margin-top:6px;font-size:11px;color:#6b7280;">Combined flow</div>
-                <div style="font-size:12px;font-weight:700;color:#111827;">Output ${combinedOutput}</div>
-            </td>` : '';
-            const remCell = isFirst ? `<td style="vertical-align:middle;"${rs}>
-                <input type="text" id="ot-rem-${ws.workstation_code}" value="${remarks}" placeholder="Remarks"
-                    class="form-control" style="min-width:90px;" ${isActive?'':'disabled'}></td>` : '';
-            const saveCell = isFirst ? `<td style="text-align:center;vertical-align:middle;"${rs}>
-                <button id="ot-save-btn-${ws.workstation_code}" onclick="saveOtProgress('${ws.workstation_code}', ${ws.id})"
-                    class="btn btn-primary btn-sm" ${isActive?'':'disabled'}>Save</button></td>` : '';
-
-            return `<tr style="background:${rowBg};${dimStyle}" ${isFirst ? `id="ot-row-${ws.workstation_code}"` : ''}>
-                <td style="text-align:center;font-weight:600;">${p.sequence_number}</td>
-                <td style="font-size:0.82em;">${ws.group_name || '—'}</td>
-                <td style="font-size:0.82em;font-weight:600;">${ws.workstation_code}</td>
-                ${wsQrCell}
-                <td>${p.operation_name}<br><small style="color:#9ca3af;font-size:0.78em;">${p.operation_code || ''}</small></td>
-                <td style="text-align:center;">${samSec}s</td>
-                ${cycleCell}${effCell}
-                <td style="text-align:center;">${parseFloat(p.operation_sah||0).toFixed(4)}</td>
-                ${empCell}${statusCell}${otMinCell}${outCell}${qaCell}${remCell}${saveCell}
-                ${sourceCell}${targetCell}${wipCell}
-            </tr>`;
+                <span style="font-size:11px;color:#6b7280;flex-shrink:0;margin-left:8px;">${samSec}s · ${parseFloat(p.operation_sah||0).toFixed(4)} SAH</span>
+            </div>`;
         }).join('');
+
+        const empPickerHtml = supAuthorized
+            ? `<div class="ot-emp-picker" data-ws="${ws.workstation_code}" data-value="${ws.assigned_employee_id||''}" style="position:relative;">
+                <div class="ot-emp-display" onclick="otEmpPickerToggle(this.parentElement)"
+                    style="cursor:pointer;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;
+                           font-size:13px;background:#fff;display:flex;justify-content:space-between;align-items:center;gap:4px;user-select:none;">
+                    <span class="ot-emp-current-label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${currEmpLabel}</span>
+                    <span style="color:#9ca3af;font-size:10px;flex-shrink:0;">▾</span>
+                </div>
+                <div class="ot-emp-dropdown" style="display:none;position:absolute;left:0;top:calc(100% + 3px);
+                     z-index:600;background:#fff;border:1px solid #d1d5db;border-radius:8px;
+                     box-shadow:0 6px 24px rgba(0,0,0,.15);min-width:260px;overflow:hidden;">
+                    <div style="padding:6px 6px 4px;border-bottom:1px solid #f3f4f6;">
+                        <input class="ot-emp-search form-control" style="font-size:0.82em;padding:5px 8px;"
+                            placeholder="🔍 Search by name or code..."
+                            oninput="otEmpPickerFilter(this)" onclick="event.stopPropagation()">
+                    </div>
+                    <div class="ot-emp-options" style="max-height:220px;overflow-y:auto;">
+                        ${empPickerOpts(ws.assigned_employee_id, ws.workstation_code)}
+                    </div>
+                </div>
+            </div>`
+            : `<div style="font-size:13px;color:#374151;padding:8px 0;">${currEmpLabel}</div>`;
+
+        return `
+        <div id="ot-row-${ws.workstation_code}" style="background:#fff;border:1px solid ${isActive ? '#ddd6fe' : '#e5e7eb'};border-radius:12px;margin-bottom:12px;overflow:hidden;${dimStyle}">
+            <!-- Card header: WS identity + toggle -->
+            <div style="background:${isActive ? '#f5f3ff' : '#f9fafb'};padding:10px 14px;display:flex;align-items:center;gap:10px;">
+                ${wsQr ? `<img src="/${wsQr}" style="width:38px;height:38px;border-radius:6px;border:1px solid #e5e7eb;flex-shrink:0;" onerror="this.style.opacity='0.2'">` : ''}
+                <div style="flex:1;min-width:0;">
+                    <div style="font-weight:700;font-size:15px;color:#1e293b;">${ws.workstation_code}
+                        <span style="font-size:11px;font-weight:400;color:#6b7280;margin-left:6px;">${ws.group_name || ''}</span>
+                        ${sourceBadge}
+                    </div>
+                    ${sourceProduct ? `<div style="font-size:11px;color:#6b7280;margin-top:1px;">${sourceProduct}</div>` : ''}
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                    ${eff != null ? `<span style="font-size:12px;font-weight:700;color:${effColor(eff)};background:${eff>=90?'#f0fdf4':eff>=80?'#fffbeb':'#fef2f2'};padding:3px 8px;border-radius:999px;">${eff.toFixed(1)}%</span>` : ''}
+                    <button type="button"
+                        data-ot-toggle="1"
+                        data-ws-code="${String(ws.workstation_code || '').replace(/"/g,'&quot;')}"
+                        data-make-active="${!isActive ? '1' : '0'}"
+                        style="padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid;
+                               background:${isActive ? '#dcfce7' : '#fee2e2'};color:${isActive ? '#16a34a' : '#dc2626'};
+                               border-color:${isActive ? '#bbf7d0' : '#fecaca'};touch-action:manipulation;position:relative;z-index:2;">
+                        ${isActive ? '● Active' : '○ Inactive'}
+                    </button>
+                </div>
+            </div>
+
+            <div style="padding:12px 14px;">
+                <!-- Employee -->
+                <div style="margin-bottom:12px;">
+                    <div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;">Employee</div>
+                    ${empPickerHtml}
+                </div>
+
+                <!-- Operations -->
+                <div style="margin-bottom:12px;">
+                    <div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;">Operations</div>
+                    <div style="background:#f9fafb;border-radius:8px;padding:6px 10px;">
+                        ${processRows || '<div style="color:#9ca3af;font-size:12px;padding:4px 0;">No processes</div>'}
+                    </div>
+                </div>
+
+                <!-- Stats: cycle / workload / OT min -->
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">
+                    <div style="background:#f8fafc;border-radius:8px;padding:8px;text-align:center;">
+                        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:600;">Cycle</div>
+                        <div style="font-size:14px;font-weight:700;color:#374151;margin-top:3px;">${samSecs.toFixed(1)}s</div>
+                    </div>
+                    <div style="background:#f8fafc;border-radius:8px;padding:8px;text-align:center;">
+                        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:600;">Wkld%</div>
+                        <div style="font-size:14px;font-weight:700;color:${effColor(eff)};margin-top:3px;">${eff != null ? eff.toFixed(1)+'%' : '—'}</div>
+                    </div>
+                    <div style="background:#f8fafc;border-radius:8px;padding:8px;text-align:center;">
+                        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:600;">OT Min</div>
+                        <input type="number" id="ot-mins-${ws.workstation_code}" min="0" value="${wsMins>0?wsMins:''}"
+                            placeholder="${globalMins}" class="form-control"
+                            style="width:100%;margin-top:3px;text-align:center;font-size:13px;padding:4px;">
+                    </div>
+                </div>
+
+                <!-- Target + WIP -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+                    <div style="background:#f5f3ff;border-radius:8px;padding:10px;">
+                        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:600;margin-bottom:4px;">Target</div>
+                        <div style="font-size:11px;color:#6b7280;">${hourlyTarget ? hourlyTarget.toFixed(2) : '0.00'} / hr</div>
+                        <div style="font-size:18px;font-weight:700;color:#7c3aed;line-height:1.2;">${wsTarget}</div>
+                        <div style="font-size:10px;color:#9ca3af;">OT target units</div>
+                    </div>
+                    <div style="background:#f0fdf4;border-radius:8px;padding:10px;">
+                        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:600;margin-bottom:4px;">WIP Flow</div>
+                        <div style="font-size:11px;color:#374151;">Reg out: <strong>${parseInt(ws.regular_shift_output_quantity || 0, 10) || 0}</strong></div>
+                        <div style="font-size:11px;color:#92400e;">Opening WIP: <strong>${openingWip}</strong></div>
+                        <div style="font-size:11px;color:#7c3aed;">Balance: <strong>${balanceQty}</strong></div>
+                        <div style="font-size:11px;color:#15803d;">Closing WIP: <strong>${closingWip}</strong></div>
+                        <div style="font-size:11px;color:#111827;margin-top:2px;border-top:1px solid #dcfce7;padding-top:2px;">Combined: <strong>${combinedOutput}</strong></div>
+                    </div>
+                </div>
+
+                <!-- Output entry -->
+                <div style="background:#f8fafc;border-radius:8px;padding:12px;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                        <div>
+                            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Output</label>
+                            <input type="number" id="ot-qty-${ws.workstation_code}" min="0" value="${qty}" placeholder="0"
+                                class="form-control" style="text-align:center;font-size:16px;" ${isActive ? '' : 'disabled'}>
+                        </div>
+                        <div>
+                            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">QA Rejection</label>
+                            <input type="number" id="ot-qar-${ws.workstation_code}" min="0" value="${qaRej}" placeholder="0"
+                                class="form-control" style="text-align:center;font-size:16px;" ${isActive ? '' : 'disabled'}>
+                        </div>
+                    </div>
+                    <div style="margin-bottom:8px;">
+                        <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Remarks</label>
+                        <input type="text" id="ot-rem-${ws.workstation_code}" value="${remarks}" placeholder="Optional remarks"
+                            class="form-control" ${isActive ? '' : 'disabled'}>
+                    </div>
+                    <button id="ot-save-btn-${ws.workstation_code}"
+                        data-ot-ws-id="${ws.id}"
+                        onclick="${ws.progress?.quantity != null ? `otEditProgress('${ws.workstation_code}')` : `saveOtProgress('${ws.workstation_code}', ${ws.id})`}"
+                        class="btn ${ws.progress?.quantity != null ? '' : 'btn-primary'}"
+                        style="width:100%;padding:11px;font-size:15px;${ws.progress?.quantity != null ? 'background:#f1f5f9;color:#374151;border:1px solid #d1d5db;font-weight:600;' : ''}"
+                        ${isActive ? '' : 'disabled'}>
+                        ${ws.progress?.quantity != null ? 'Edit' : 'Save'}
+                    </button>
+                </div>
+            </div>
+        </div>`;
     }).join('');
 
-    const thS = 'padding:8px 6px;font-size:11px;font-weight:700;color:#6b7280;white-space:nowrap;text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid #e5e7eb;';
     area.innerHTML = `
         <div class="card">
             <div class="card-header" style="flex-wrap:wrap;gap:8px;">
-                <div style="display:flex;align-items:center;gap:12px;">
+                <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;">
                     ${otPlanState.inlineSelectionMode ? '' : '<button class="btn btn-secondary btn-sm" onclick="closeOtPlanDetails()">← Back</button>'}
-                    <div>
+                    <div style="min-width:0;">
                         <h3 class="card-title" style="margin:0;">${lineName} — OT Workstations</h3>
                         <div style="font-size:0.82em;color:#6b7280;margin-top:2px;">
                             ${mixedSourceState ? 'Mixed shift-end state' : `${plan.product_code || ''} ${plan.product_name || ''}`.trim()} &nbsp;·&nbsp; ${otPlanState.date}
@@ -3269,53 +3318,19 @@ function renderOtPlanSection() {
                     <span style="font-size:0.85em;color:#6b7280;">
                         OT Min: <input type="number" id="ot-global-mins" value="${globalMins}" min="0"
                             class="form-control" style="width:70px;display:inline-block;text-align:center;margin:0 4px;">
-                        &nbsp;Derived OT Target: <strong style="color:#7c3aed;">${globalTarget}</strong>
+                        &nbsp;OT Target: <strong style="color:#7c3aed;">${globalTarget}</strong>
                     </span>
                     <button onclick="saveOtGlobalSettings()" class="btn btn-secondary btn-sm">Save Default OT Min</button>
                     <button onclick="saveAllOtMinutes()" class="btn btn-secondary btn-sm">Save WS Minutes</button>
                 </div>
             </div>
-            <div class="card-body" style="padding:0;overflow-x:auto;">
-                ${!supAuthorized ? `<div style="margin:10px 16px 4px;padding:10px 14px;background:#fef9c3;border:1px solid #fde68a;border-radius:8px;display:flex;align-items:center;gap:10px;">
-                    <span style="font-size:18px;">⚠️</span>
-                    <div>
-                        <div style="font-weight:700;color:#92400e;font-size:13px;">Awaiting IE Authorization</div>
-                        <div style="font-size:12px;color:#78350f;">Employee assignment is locked until the IE authorizes OT for this line. Workstation active/inactive can still be controlled here.</div>
-                    </div>
-                </div>` : ''}
-                <p style="font-size:0.82em;color:#6b7280;padding:8px 16px 4px;margin:0;">
-                    OT workstations start inactive by default. Supervisor or IE can activate only the workstations needed for OT; leaving the same employee selected means OT continues with the same person, and changing the picker reassigns OT only.
-                </p>
-                <table style="width:100%;border-collapse:collapse;">
-                    <thead>
-                        <tr style="background:#f8fafc;">
-                            <th style="${thS}text-align:center;">SEQ</th>
-                            <th style="${thS}">GROUP</th>
-                            <th style="${thS}">WORKSTATION</th>
-                            <th style="${thS}text-align:center;">WS QR</th>
-                            <th style="${thS}">OPERATION</th>
-                            <th style="${thS}text-align:center;">PROCESS TIME</th>
-                            <th style="${thS}text-align:center;">CYCLE TIME</th>
-                            <th style="${thS}text-align:center;">WORKLOAD%</th>
-                            <th style="${thS}text-align:center;">SAH</th>
-                            <th style="${thS}">EMPLOYEE</th>
-                            <th style="${thS}text-align:center;">STATUS</th>
-                            <th style="${thS}text-align:center;">OT MIN</th>
-                            <th style="${thS}text-align:center;">OUTPUT</th>
-                            <th style="${thS}text-align:center;">QA REJ</th>
-                            <th style="${thS}">REMARKS</th>
-                            <th style="${thS}text-align:center;">SAVE</th>
-                            <th style="${thS}">SOURCE</th>
-                            <th style="${thS}text-align:center;">TARGET</th>
-                            <th style="${thS}">WIP FLOW</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
+            <div class="card-body" style="padding:12px;">
+                ${cards}
             </div>
         </div>`;
     document.addEventListener('click', otEmpPickerCloseAll);
     bindOtPlanSectionActions();
+    requestAnimationFrame(restoreScroll);
 }
 
 function bindOtPlanSectionActions() {
@@ -3492,10 +3507,12 @@ async function saveOtProgress(wsCode, otWorkstationId) {
             ws.closing_wip_quantity = result.data?.closing_wip_quantity ?? ws.closing_wip_quantity;
         }
         if (btn) {
-            btn.innerHTML = '✓ Saved';
-            btn.style.cssText = 'background:#16a34a;border-color:#16a34a;min-width:72px;';
+            btn.disabled = false;
+            btn.innerHTML = 'Edit';
+            btn.className = 'btn';
+            btn.style.cssText = 'width:100%;padding:11px;font-size:15px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-weight:600;';
+            btn.setAttribute('onclick', `otEditProgress('${wsCode}')`);
         }
-        setTimeout(() => renderOtPlanSection(), 1200);
     } catch (err) {
         if (btn) {
             btn.disabled = false;
@@ -3504,6 +3521,16 @@ async function saveOtProgress(wsCode, otWorkstationId) {
         }
         showToast(err.message, 'error');
     }
+}
+
+function otEditProgress(wsCode) {
+    const btn = document.getElementById('ot-save-btn-' + wsCode);
+    if (!btn) return;
+    const wsId = btn.dataset.otWsId;
+    btn.innerHTML = 'Save';
+    btn.className = 'btn btn-primary';
+    btn.style.cssText = 'width:100%;padding:11px;font-size:15px;';
+    btn.setAttribute('onclick', `saveOtProgress('${wsCode}', ${wsId})`);
 }
 
 function startOtScan(wsCode) {
