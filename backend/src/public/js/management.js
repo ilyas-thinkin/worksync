@@ -1646,6 +1646,42 @@ async function loadMgmtWorkerIndividualEff() {
         </div>
     `;
     await loadMgmtWorkerEfficiencyLineOptions('mgmt-wie-line');
+    const lineSelect = document.getElementById('mgmt-wie-line');
+    if (lineSelect) {
+        lineSelect.addEventListener('change', () => loadMgmtWieEmpListForLine(lineSelect.value));
+    }
+}
+
+async function loadMgmtWieEmpListForLine(lineId) {
+    _mgmtWieSelectedEmps.clear();
+    updateMgmtWieEmpLabel();
+    const list = document.getElementById('mgmt-wie-emp-list');
+    if (!list) return;
+    if (!lineId) {
+        list.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#9ca3af;">Select a line to see employees</div>';
+        return;
+    }
+    try {
+        const r = await fetch(`${API_BASE}/lines/${lineId}/employees`, { credentials: 'include' });
+        const resp = await r.json();
+        if (!resp.success || !resp.data.length) {
+            list.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#9ca3af;">No employees found for this line</div>';
+            return;
+        }
+        list.innerHTML = resp.data.map(emp => {
+            const id = String(emp.id);
+            const label = `${emp.emp_name} (${emp.emp_code})`;
+            return `<label class="mgmt-wie-emp-item" data-id="${id}" data-label="${label}"
+                style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;user-select:none;"
+                onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">
+                <input type="checkbox" data-id="${id}" onchange="toggleMgmtWieEmp('${id}')"
+                    style="width:15px;height:15px;accent-color:#1e40af;cursor:pointer;">
+                <span>${label}</span>
+            </label>`;
+        }).join('');
+    } catch (_) {
+        list.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#dc2626;">Failed to load employees</div>';
+    }
 }
 
 function setMgmtWieMetric(metric) {
@@ -1716,7 +1752,8 @@ function clearAllMgmtWieEmp() {
 function populateMgmtWieEmpList(rows) {
     const empMap = new Map();
     rows.forEach(row => {
-        if (row.employee_id) empMap.set(String(row.employee_id), { code: row.emp_code, name: row.emp_name });
+        const id = row.emp_id ?? row.employee_id;
+        if (id) empMap.set(String(id), { code: row.emp_code, name: row.emp_name });
     });
     const sorted = [...empMap.entries()].sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
     const list = document.getElementById('mgmt-wie-emp-list');
@@ -1738,7 +1775,7 @@ function renderMgmtWieFiltered() {
     if (!container || !_mgmtWieData) return;
     let rows = _mgmtWieData.rows;
     if (_mgmtWieSelectedEmps.size > 0) {
-        rows = rows.filter(row => _mgmtWieSelectedEmps.has(String(row.employee_id)));
+        rows = rows.filter(row => _mgmtWieSelectedEmps.has(String(row.emp_id ?? row.employee_id)));
     }
     if (!rows.length) {
         container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employees.</div></div>';
@@ -2266,7 +2303,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
     const showOutput = metric === 'all' || metric === 'output';
     const showEff = metric === 'all' || metric === 'efficiency';
 
-    const dateCols = (showTarget ? 1 : 0) + (showWip ? 1 : 0) + (showOutput ? 1 : 0) + (showEff ? 1 : 0);
+    const dateCols = (showTarget ? 1 : 0) + (showWip ? 1 : 0) + (showOutput ? 1 : 0) + (showEff ? 1 : 0) + 1;
     const fixedCols = 3;
     const overallCols = (showOutput ? 1 : 0) + (showEff ? 1 : 0);
 
@@ -2280,7 +2317,8 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
         DEP: 'background:#fee2e2;color:#991b1b;',
         PRE: 'background:#eff6ff;color:#1d4ed8;',
         POST: 'background:#f0fdf4;color:#166534;',
-        COMB: 'background:#faf5ff;color:#6b21a8;'
+        COMB: 'background:#faf5ff;color:#6b21a8;',
+        CO: 'background:#fef3c7;color:#92400e;'
     };
     const effColor = eff => {
         if (eff == null) return '#6b7280';
@@ -2289,6 +2327,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
 
     const dateGroupHeaders = dates.map(d => `<th colspan="${dateCols}" style="${thS}">${fmtDate(d)}</th>`).join('');
     const subHeaders = dates.map(() => [
+        `<th style="${thSS}">WORKSTATION</th>`,
         showTarget ? `<th style="${thSS}">TARGET</th>` : '',
         showWip ? `<th style="${thSS}">WIP</th>` : '',
         showOutput ? `<th style="${thSS}">OUTPUT</th>` : '',
@@ -2309,6 +2348,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
 
             if (!cell || !hasWorkedHours) {
                 return [
+                    `<td style="${tcS}color:#6b7280;">-</td>`,
                     showTarget ? blankCell : '',
                     showWip ? blankCell : '',
                     showOutput ? blankCell : '',
@@ -2318,12 +2358,20 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
 
             const wip = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
             const wipColor = wip > 0 ? '#dc2626' : '#16a34a';
+            const hasSourceSplit = cell.primary_output != null && cell.co_output != null;
+            const outputSub = hasSourceSplit ? `<br><span style="font-size:8px;font-weight:600;color:#6b7280;">Pri:${cell.primary_output} CO:${cell.co_output}</span>` : '';
+            const effSub = hasSourceSplit ? `<br><span style="font-size:8px;font-weight:600;color:#6b7280;">Pri:${Number(cell.primary_eff).toFixed(1)}% CO:${Number(cell.co_eff).toFixed(1)}%</span>` : '';
+            const wsCodes = (cell.workstation_codes || '').split(', ').filter(Boolean);
+            const wsCell = wsCodes.length
+                ? wsCodes.map(code => `<span onclick="openMgmtWieWorkstationPopup(${cell.line_id}, '${d}', '${code}')" style="cursor:pointer;color:#1d4ed8;text-decoration:underline;font-weight:600;">${code}</span>`).join(', ')
+                : '-';
 
             return [
+                `<td style="${tcS}">${wsCell}</td>`,
                 showTarget ? `<td style="${tcS}${tS}">${cell.line_target ?? '-'}${tagBadge}</td>` : '',
                 showWip ? `<td style="${tcS}${tS}font-weight:600;color:${wipColor};">${wip}</td>` : '',
-                showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` : '',
-                showEff ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}</td>` : ''
+                showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}${outputSub}</td>` : '',
+                showEff ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}${effSub}</td>` : ''
             ].join('');
         }).join('');
 
@@ -2349,6 +2397,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
             <span><span style="background:#eff6ff;color:#1d4ed8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">PRE</span> Before reassignment</span>
             <span><span style="background:#f0fdf4;color:#166534;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">POST</span> After reassignment</span>
             <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation</span>
+            <span><span style="background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">CO</span> Changeover product</span>
         </div>
         <div style="overflow-x:auto;">
         <table style="border-collapse:collapse;width:max-content;min-width:100%;">
@@ -2371,6 +2420,74 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
         </table>
         </div>
     </div>`;
+}
+
+async function openMgmtWieWorkstationPopup(lineId, workDate, workstationCode) {
+    const modalId = 'mgmt-wie-ws-popup';
+    document.getElementById(modalId)?.remove();
+    const modal = document.createElement('div');
+    modal.id = modalId;
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.5);display:flex;align-items:center;justify-content:center;z-index:3000;padding:20px;';
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:10px;width:600px;max-width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #e5e7eb;flex-shrink:0;">
+                <h3 style="margin:0;font-size:16px;font-weight:700;color:#111827;">${workstationCode} — ${workDate}</h3>
+                <button onclick="document.getElementById('${modalId}').remove()" style="border:none;background:#f3f4f6;color:#374151;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:16px;line-height:1;">✕</button>
+            </div>
+            <div style="padding:16px 18px;overflow-y:auto;">
+                <div id="mgmt-wie-ws-popup-body" style="text-align:center;padding:30px;color:#9ca3af;">Loading...</div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    try {
+        const r = await fetch(`${API_BASE}/worker-individual-efficiency/workstation-processes?line_id=${lineId}&work_date=${workDate}&workstation_code=${encodeURIComponent(workstationCode)}`, { credentials: 'include' });
+        const result = await r.json();
+        const body = document.getElementById('mgmt-wie-ws-popup-body');
+        if (!body) return;
+        if (!result.success) {
+            body.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
+            return;
+        }
+        body.innerHTML = _renderMgmtWieWsProcessGroups(result.data);
+    } catch (err) {
+        const body = document.getElementById('mgmt-wie-ws-popup-body');
+        if (body) body.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function _renderMgmtWieWsProcessGroups(data) {
+    const renderGroup = (label, color, group) => {
+        if (!group) return '';
+        const rows = group.processes.map(p => `
+            <tr>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;text-align:center;">${p.sequence_number ?? '-'}</td>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;">${p.operation_code || '-'}</td>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;">${p.operation_name || '-'}</td>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;text-align:center;">${p.operation_sah ?? '-'}</td>
+            </tr>`).join('');
+        return `
+            <div style="margin-bottom:14px;">
+                <div style="font-size:12px;font-weight:700;color:${color};margin-bottom:4px;">
+                    ${label} — ${group.product_code || ''} ${group.product_name ? `(${group.product_name})` : ''}
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="background:#f1f5f9;">
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;">Seq</th>
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;text-align:left;">Op Code</th>
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;text-align:left;">Op Name</th>
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;">SAH</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+    };
+    const html = renderGroup('Primary', '#1e3a5f', data.primary) + renderGroup('Changeover (CO)', '#92400e', data.co);
+    return html || '<div style="padding:20px;text-align:center;color:#6b7280;">No process details found for this workstation/date.</div>';
 }
 
 function printMgmtWorkerIndividualEff() {

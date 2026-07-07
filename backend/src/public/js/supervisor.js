@@ -580,26 +580,107 @@ function _pickLateReason(wsCode) {
     });
 }
 
+// Asks why the currently linked employee is being replaced.
+// Returns 'absent' | 'reassigned', or false if cancelled.
+function _pickChangeReason(wsCode, occupantName) {
+    return new Promise(resolve => {
+        const existingModal = document.getElementById('change-reason-modal');
+        if (existingModal) existingModal.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'change-reason-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9100;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        const safeName = occupantName || 'the current employee';
+        modal.innerHTML = `
+            <div style="background:#fff;border-radius:12px;padding:24px;max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                <h3 style="margin:0 0 6px;font-size:1rem;font-weight:700;color:#111827;">Replacing ${safeName} — ${wsCode}</h3>
+                <p style="margin:0 0 18px;font-size:13px;color:#6b7280;">Why is <strong>${safeName}</strong> being replaced?</p>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                    <button class="change-reason-btn" data-reason="absent"
+                        style="text-align:left;padding:12px 14px;border:1px solid #fca5a5;border-radius:8px;background:#fef2f2;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#dc2626;">Absent</strong>
+                        <span style="color:#6b7280;font-size:12px;">Not at work today — removed from today's efficiency report</span>
+                    </button>
+                    <button class="change-reason-btn" data-reason="reassigned"
+                        style="text-align:left;padding:12px 14px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#1d4ed8;">Reassigned</strong>
+                        <span style="color:#6b7280;font-size:12px;">Moved to another workstation — keeps their recorded time</span>
+                    </button>
+                    <button id="change-reason-cancel"
+                        style="padding:10px;border:none;background:none;color:#6b7280;cursor:pointer;font-size:13px;margin-top:4px;">
+                        Cancel
+                    </button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+
+        modal.querySelectorAll('.change-reason-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                modal.remove();
+                resolve(btn.dataset.reason);
+            });
+        });
+        document.getElementById('change-reason-cancel').addEventListener('click', () => {
+            modal.remove();
+            resolve(false);
+        });
+    });
+}
+
+function _confirmAbsentOutput(occupantName, totalOutput) {
+    return confirm(
+        `${occupantName || 'This employee'} already has ${totalOutput} pcs recorded today.\n\n` +
+        'If marked absent, this output will no longer be attributed to them in efficiency reports.\n\n' +
+        'Mark absent anyway?'
+    );
+}
+
+// POSTs to /workstation-assignments, handling the 409 replace-reason flow:
+// prompts for absent/reassigned when the server requires it, and for the
+// absent-with-output confirmation. Returns the result JSON, or null if cancelled.
+async function postWorkstationAssignment(body, wsCode) {
+    let payload = { ...body };
+    for (;;) {
+        const res = await fetch(`${API_BASE}/workstation-assignments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const result = await res.json();
+        if (result.success) return result;
+        if (result.error_code === 'change_reason_required') {
+            const reason = await _pickChangeReason(wsCode, result.occupant?.emp_name);
+            if (!reason) return null; // cancelled
+            payload = { ...payload, change_reason: reason };
+            continue;
+        }
+        if (result.error_code === 'absent_output_warning') {
+            if (!_confirmAbsentOutput(result.occupant?.emp_name, result.total_output || 0)) return null;
+            payload = { ...payload, confirm_absent_with_output: true };
+            continue;
+        }
+        return result; // ordinary error — caller shows toast
+    }
+}
+
 // "Link" button handler — confirms the pre-mapped employee without needing a scan
 async function linkMappedEmployee(wsCode, planId, empId, empCode, empName) {
     const lateReason = await _pickLateReason(wsCode);
     if (lateReason === false) return; // cancelled
     try {
         const workDate = morningState.workDate || getSupervisorLocalDate();
-        const res = await fetch(`${API_BASE}/workstation-assignments`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                line_id: morningState.lineId,
-                workstation_code: wsCode,
-                employee_id: empId,
-                work_date: workDate,
-                line_plan_workstation_id: planId,
-                is_linked: true,
-                late_reason: lateReason || undefined
-            })
-        });
-        const result = await res.json();
+        const result = await postWorkstationAssignment({
+            line_id: morningState.lineId,
+            workstation_code: wsCode,
+            employee_id: empId,
+            work_date: workDate,
+            line_plan_workstation_id: planId,
+            is_linked: true,
+            late_reason: lateReason || undefined
+        }, wsCode);
+        if (result === null) return; // cancelled at reason prompt
         if (!result.success) { showToast(result.error || 'Link failed', 'error'); return; }
         showToast(`${empName} linked to ${wsCode}`, 'success');
         await reloadMorningAssignments();
@@ -732,20 +813,16 @@ async function confirmChangeEmployee() {
         const emp = morningState.scannedEmployee;
         const workDate = morningState.workDate || getSupervisorLocalDate();
 
-        const res = await fetch(`${API_BASE}/workstation-assignments`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                line_id: morningState.lineId,
-                workstation_code: morningState.selectedWorkstation,
-                employee_id: emp.id,
-                work_date: workDate,
-                line_plan_workstation_id: morningState.selectedWorkstationPlanId,
-                is_linked: true,
-                late_reason: lateReason || undefined
-            })
-        });
-        const result = await res.json();
+        const result = await postWorkstationAssignment({
+            line_id: morningState.lineId,
+            workstation_code: morningState.selectedWorkstation,
+            employee_id: emp.id,
+            work_date: workDate,
+            line_plan_workstation_id: morningState.selectedWorkstationPlanId,
+            is_linked: true,
+            late_reason: lateReason || undefined
+        }, morningState.selectedWorkstation);
+        if (result === null) return; // cancelled at reason prompt
         if (!result.success) { showToast(result.error || 'Assignment failed', 'error'); return; }
 
         showToast(`${emp.emp_name} assigned to ${morningState.selectedWorkstation}`, 'success');
@@ -1838,18 +1915,14 @@ async function coEmpOptSelect(optEl, wsCode, linePlanWsId) {
     const date = document.getElementById('hourly-date')?.value || '';
     if (!lineId || !date) return;
     try {
-        const r = await fetch(`${API_BASE}/workstation-assignments`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                line_id: lineId,
-                work_date: date,
-                workstation_code: wsCode,
-                line_plan_workstation_id: linePlanWsId || null,
-                employee_id: empId ? parseInt(empId, 10) : null
-            })
-        });
-        const result = await r.json();
+        const result = await postWorkstationAssignment({
+            line_id: lineId,
+            work_date: date,
+            workstation_code: wsCode,
+            line_plan_workstation_id: linePlanWsId || null,
+            employee_id: empId ? parseInt(empId, 10) : null
+        }, wsCode);
+        if (result === null) return; // cancelled at reason prompt
         if (!result.success) throw new Error(result.error || 'Assignment failed');
         document.getElementById('co-emp-modal')?.remove();
         showToast(empId ? `${label} assigned to ${wsCode}` : `Employee cleared from ${wsCode}`, 'success');
@@ -2055,7 +2128,7 @@ function coPickerSelect(optEl) {
     });
 }
 
-async function submitWsChangeoverStart(force = false) {
+async function submitWsChangeoverStart(force = false, changeReason = null, confirmAbsent = false) {
     const { wsCode, date } = coPromptState;
     const lineId = hourlyState.lineId;
     if (!lineId || !date || !wsCode) return;
@@ -2087,6 +2160,8 @@ async function submitWsChangeoverStart(force = false) {
         if (employeeMode === 'change' && selectedEmployeeId) {
             body.employee_id = selectedEmployeeId;
         }
+        if (changeReason) body.change_reason = changeReason;
+        if (confirmAbsent) body.confirm_absent_with_output = true;
 
         const r = await fetch(`${API_BASE}/supervisor/changeover/activate-workstation`, {
             method: 'POST',
@@ -2097,21 +2172,30 @@ async function submitWsChangeoverStart(force = false) {
 
         if (data.target_warning) {
             if (confirm(`${data.message}\n\nProceed with changeover anyway?`)) {
-                await submitWsChangeoverStart(true);
+                await submitWsChangeoverStart(true, changeReason, confirmAbsent);
             }
+            return;
+        }
+
+        if (data.error_code === 'change_reason_required') {
+            const reason = await _pickChangeReason(wsCode, data.occupant?.emp_name);
+            if (!reason) return; // cancelled
+            await submitWsChangeoverStart(force, reason, confirmAbsent);
+            return;
+        }
+        if (data.error_code === 'absent_output_warning') {
+            if (!_confirmAbsentOutput(data.occupant?.emp_name, data.total_output || 0)) return;
+            await submitWsChangeoverStart(force, changeReason, true);
             return;
         }
 
         if (!data.success) { showToast(data.error || 'Failed to activate changeover', 'error'); return; }
         closeWsChangeoverModal();
-        if (data.auto_finalized) {
-            showToast(data.message || `All workstations on SCO — CO product promoted to primary`, 'success');
-        } else if (data.should_finalize) {
-            showToast(`Changeover started for ${wsCode}. All workstations are now on SCO — set the incoming target and convert to primary.`, 'warning');
-        } else {
-            showToast(`Changeover started for ${wsCode}`, 'success');
-        }
+        showToast(`Changeover started for ${wsCode}`, 'success');
         await onHourlyLineChange();
+        if (data.should_finalize) {
+            await finalizeChangeoverPrimary();
+        }
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -2162,7 +2246,7 @@ async function finalizeChangeoverPrimary() {
         showToast('All workstations must switch to CO before promotion', 'error');
         return;
     }
-    if (!confirm('All workstations are now running the CO product.\n\nConvert CO as the primary product now? The previous primary will be archived safely.')) {
+    if (!confirm('All the workstations are in CO - Convert CO to primary and make CO blank for next product?')) {
         return;
     }
 
@@ -2214,7 +2298,7 @@ function renderHourlySummary() {
                 ? `<button class="btn btn-primary btn-sm" style="background:#16a34a;border-color:#16a34a;" onclick="finalizeChangeoverPrimary()" ${hourlyState.finalizePrimaryBusy ? 'disabled' : ''}>${hourlyState.finalizePrimaryBusy ? 'Converting...' : 'Convert CO To Primary'}</button>`
                 : '';
             const finalizeText = finalizeReady
-                ? 'All workstations are now running CO. Supervisor confirmation is required to convert CO as the primary product.'
+                ? 'All the workstations are in CO. Confirm to convert CO to primary and make CO blank for next product.'
                 : `CO workstations switched: ${readyWs}/${totalWs || 0}. CO stays as changeover until every workstation has switched.`;
             changeoverBanner = `
                 <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
@@ -3568,7 +3652,9 @@ function startOtScan(wsCode) {
                 const r2 = await fetch(`${API_BASE}/employees`);
                 const res2 = await r2.json();
                 const employees = res2.data || [];
-                if (payload.id) employee = employees.find(e => e.id === payload.id);
+                if (payload.uuid) employee = employees.find(e => e.uuid === payload.uuid);
+                else if (payload.id) employee = employees.find(e => e.id === payload.id);
+                else if (payload.code) employee = employees.find(e => String(e.emp_code).trim() === String(payload.code).trim());
                 else if (payload.raw) employee = employees.find(e => String(e.emp_code).trim() === String(payload.raw).trim());
                 else if (payload.emp_code) employee = employees.find(e => String(e.emp_code).trim() === String(payload.emp_code).trim());
             }

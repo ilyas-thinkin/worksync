@@ -1766,18 +1766,91 @@ async function loadWorkstationAssignments(lineId, processes, employees) {
     `;
 }
 
+// Asks why the currently linked employee is being replaced (mirrors supervisor.js).
+// Returns 'absent' | 'reassigned', or false if cancelled.
+function _pickChangeReason(wsCode, occupantName) {
+    return new Promise(resolve => {
+        const existingModal = document.getElementById('change-reason-modal');
+        if (existingModal) existingModal.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'change-reason-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9100;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        const safeName = occupantName || 'the current employee';
+        modal.innerHTML = `
+            <div style="background:#fff;border-radius:12px;padding:24px;max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                <h3 style="margin:0 0 6px;font-size:1rem;font-weight:700;color:#111827;">Replacing ${safeName} — ${wsCode}</h3>
+                <p style="margin:0 0 18px;font-size:13px;color:#6b7280;">Why is <strong>${safeName}</strong> being replaced?</p>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                    <button class="change-reason-btn" data-reason="absent"
+                        style="text-align:left;padding:12px 14px;border:1px solid #fca5a5;border-radius:8px;background:#fef2f2;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#dc2626;">Absent</strong>
+                        <span style="color:#6b7280;font-size:12px;">Not at work today — removed from today's efficiency report</span>
+                    </button>
+                    <button class="change-reason-btn" data-reason="reassigned"
+                        style="text-align:left;padding:12px 14px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;cursor:pointer;font-size:14px;">
+                        <strong style="display:block;color:#1d4ed8;">Reassigned</strong>
+                        <span style="color:#6b7280;font-size:12px;">Moved to another workstation — keeps their recorded time</span>
+                    </button>
+                    <button id="change-reason-cancel"
+                        style="padding:10px;border:none;background:none;color:#6b7280;cursor:pointer;font-size:13px;margin-top:4px;">
+                        Cancel
+                    </button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+
+        modal.querySelectorAll('.change-reason-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                modal.remove();
+                resolve(btn.dataset.reason);
+            });
+        });
+        document.getElementById('change-reason-cancel').addEventListener('click', () => {
+            modal.remove();
+            resolve(false);
+        });
+    });
+}
+
+function _confirmAbsentOutput(occupantName, totalOutput) {
+    return confirm(
+        `${occupantName || 'This employee'} already has ${totalOutput} pcs recorded today.\n\n` +
+        'If marked absent, this output will no longer be attributed to them in efficiency reports.\n\n' +
+        'Mark absent anyway?'
+    );
+}
+
 async function saveWorkstationAssignment(lineId, workstationCode, employeeId) {
     try {
-        const response = await fetch(`${API_BASE}/workstation-assignments`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                line_id: lineId,
-                workstation_code: workstationCode,
-                employee_id: employeeId || null
-            })
-        });
-        const result = await response.json();
+        let payload = {
+            line_id: lineId,
+            workstation_code: workstationCode,
+            employee_id: employeeId || null
+        };
+        let result;
+        for (;;) {
+            const response = await fetch(`${API_BASE}/workstation-assignments`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            result = await response.json();
+            if (result.error_code === 'change_reason_required') {
+                const reason = await _pickChangeReason(workstationCode, result.occupant?.emp_name);
+                if (!reason) return; // cancelled
+                payload = { ...payload, change_reason: reason };
+                continue;
+            }
+            if (result.error_code === 'absent_output_warning') {
+                if (!_confirmAbsentOutput(result.occupant?.emp_name, result.total_output || 0)) return;
+                payload = { ...payload, confirm_absent_with_output: true };
+                continue;
+            }
+            break;
+        }
         if (result.success) {
             showToast(`Workstation ${workstationCode} ${employeeId ? 'assigned' : 'unassigned'}`, 'success');
         } else {
@@ -2186,6 +2259,70 @@ async function downloadSelectedEmployeesQrExcel() {
     await downloadEmployeeQrExcelForIds(selectedIds, 'employee_qr_codes');
 }
 
+function printSelectedEmployeesQr() {
+    const selectedIds = new Set([...employeeQrExportSelection].map(String));
+    if (!selectedIds.size) {
+        showToast('Select at least one employee', 'error');
+        return;
+    }
+    const emps = (allEmployees || []).filter(e => selectedIds.has(String(e.id)) && e.qr_code_path);
+    if (!emps.length) {
+        showToast('None of the selected employees have a QR code', 'error');
+        return;
+    }
+    const skipped = selectedIds.size - emps.length;
+    const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const toAbs = u => (/^https?:\/\//i.test(u) ? u : window.location.origin + u);
+
+    const cards = emps.map(e => {
+        const url = esc(toAbs(getEmployeeQrUrl(e.qr_code_path)));
+        return `<div class="qr-card">
+            <img src="${url}" alt="${esc(e.emp_code)}">
+        </div>`;
+    }).join('');
+
+    const win = window.open('', '_blank');
+    if (!win) {
+        showToast('Popup blocked — allow popups to print QR codes', 'error');
+        return;
+    }
+    const timeoutMs = Math.max(8000, emps.length * 15);
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Employee QR Codes</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 8mm; }
+      .qr-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+      .qr-card { border: 1px solid #111; border-radius: 6px; padding: 6px; text-align: center; page-break-inside: avoid; break-inside: avoid; }
+      .qr-card img { width: 100%; height: auto; display: block; }
+      @page { margin: 8mm; }
+    </style></head><body>
+      <div class="qr-grid">${cards}</div>
+      <script>
+        (function(){
+          var imgs = Array.prototype.slice.call(document.images);
+          var pending = imgs.length;
+          var done = false;
+          function go(){ if (done) return; done = true; try { window.focus(); } catch(e){} window.print(); }
+          function tick(){ if (pending <= 0) go(); }
+          imgs.forEach(function(img){
+            if (img.complete) { pending--; }
+            else {
+              img.addEventListener('load', function(){ pending--; tick(); });
+              img.addEventListener('error', function(){ pending--; tick(); });
+            }
+          });
+          tick();
+          setTimeout(go, ${timeoutMs});
+        })();
+      <\/script>
+    </body></html>`);
+    win.document.close();
+
+    if (skipped > 0) {
+        showToast(`${skipped} selected employee(s) have no QR and were skipped`, 'info');
+    }
+}
+
 async function downloadEmployeeQrExcelForIds(employeeIds, filenameBase = 'employee_qr_codes') {
     if (!Array.isArray(employeeIds) || !employeeIds.length) {
         showToast('Select at least one employee', 'error');
@@ -2236,6 +2373,7 @@ function buildEmployeeRows(employees, showActions) {
             <td>${emp.designation || '-'}</td>
             <td>${Number(emp.manpower_factor || 1).toFixed(2)}</td>
             <td>${formatEmployeeWork(emp) || '-'}</td>
+            <td>${emp.employment_status === 'temporary' ? '<span class="badge badge-warning">Temporary</span>' : '<span class="badge badge-success">Permanent</span>'}</td>
             <td>${emp.qr_code_path ? '<span class="badge badge-success">Yes</span>' : '<span class="badge badge-warning">No</span>'}</td>
             <td><span class="badge ${emp.is_active ? 'badge-success' : 'badge-danger'}">${emp.is_active ? 'Active' : 'Inactive'}</span></td>
             <td>
@@ -2246,6 +2384,7 @@ function buildEmployeeRows(employees, showActions) {
                     <div class="action-btns">
                         <button class="btn btn-secondary btn-sm" onclick='showEmployeeWorkModal(${JSON.stringify(emp)})'>Assign Work</button>
                         <button class="btn btn-secondary btn-sm" onclick='showEmployeeModal(${JSON.stringify(emp)})'>Edit</button>
+                        ${emp.employment_status === 'temporary' ? `<button class="btn btn-primary btn-sm" onclick='showMakePermanentModal(${JSON.stringify(emp)})'>Make Permanent</button>` : ''}
                         <button class="btn btn-danger btn-sm" onclick="deleteEmployee(${emp.id})">Delete</button>
                     </div>
                 </td>
@@ -2287,6 +2426,12 @@ function renderEmployeesTable(employees) {
                 <p class="page-subtitle">Manage workforce and their assignments</p>
             </div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="printSelectedEmployeesQr()">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6v-8z"/>
+                    </svg>
+                    Print QR Codes
+                </button>
                 <button class="btn btn-secondary" onclick="downloadSelectedEmployeesQrExcel()">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v10m0 0l-4-4m4 4l4-4M5 19h14"/>
@@ -2333,6 +2478,7 @@ function renderEmployeesTable(employees) {
                                 <th>Designation</th>
                                 <th>MP</th>
                                 <th>Current Work</th>
+                                <th>Type</th>
                                 <th>QR Code</th>
                                 <th>Status</th>
                                 <th>View QR</th>
@@ -2395,7 +2541,10 @@ function showEmployeeModal(emp = null) {
                 <form id="employee-form">
                     <div class="form-group">
                         <label class="form-label">Employee Code *</label>
-                        <input type="text" class="form-control" name="emp_code" value="${emp?.emp_code || ''}" required>
+                        <input type="text" class="form-control" name="emp_code" value="${emp?.emp_code || ''}" required
+                            style="text-transform:uppercase;" pattern="[A-Z0-9]+"
+                            title="Uppercase letters and numbers only (no spaces or symbols)"
+                            oninput="this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '')">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Employee Name *</label>
@@ -2409,6 +2558,15 @@ function showEmployeeModal(emp = null) {
                         <label class="form-label">MP Override</label>
                         <input type="number" class="form-control" name="manpower_factor" min="0.1" step="0.1" value="${emp?.manpower_factor || 1}">
                     </div>
+                    ${!isEdit ? `
+                    <div class="form-group">
+                        <label class="form-label">Employment Type</label>
+                        <select class="form-control" name="employment_status">
+                            <option value="permanent" selected>Permanent</option>
+                            <option value="temporary">Temporary</option>
+                        </select>
+                    </div>
+                    ` : ''}
                     ${isEdit ? `
                     <div class="form-group">
                         <label class="form-label">Status</label>
@@ -2585,6 +2743,72 @@ async function saveEmployee(id) {
         if (result.success) {
             showToast('Employee saved successfully', 'success');
             closeModal('employee-modal');
+            loadEmployees();
+        } else {
+            showToast(result.error, 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function showMakePermanentModal(emp) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-backdrop';
+    modal.id = 'make-permanent-modal';
+    modal.innerHTML = `
+        <div class="modal" style="max-width: 420px;">
+            <div class="modal-header">
+                <h3 class="modal-title">Make Permanent - ${emp.emp_code}</h3>
+                <button class="modal-close" onclick="closeModal('make-permanent-modal')">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--secondary); font-size: 14px; margin-bottom: 14px;">
+                    ${emp.emp_name} keeps the exact same QR badge — the scannable code itself
+                    is unchanged. Only the code printed below the name updates to the new
+                    permanent code, and all existing records for this employee are preserved.
+                </p>
+                <form id="make-permanent-form">
+                    <div class="form-group">
+                        <label class="form-label">New Permanent Code *</label>
+                        <input type="text" class="form-control" name="new_emp_code" required
+                            style="text-transform:uppercase;" placeholder="e.g. P1042"
+                            oninput="this.value = this.value.toUpperCase()">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('make-permanent-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="makeEmployeePermanent(${emp.id})">Confirm</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    setTimeout(() => modal.classList.add('active'), 10);
+}
+
+async function makeEmployeePermanent(id) {
+    const form = document.getElementById('make-permanent-form');
+    const newEmpCode = new FormData(form).get('new_emp_code');
+    if (!newEmpCode || !/^[A-Z0-9]+$/.test(newEmpCode)) {
+        showToast('Enter a valid code (letters/numbers only)', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/employees/${id}/make-permanent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_emp_code: newEmpCode })
+        });
+        const result = await response.json();
+        if (result.success) {
+            showToast('Employee converted to permanent', 'success');
+            closeModal('make-permanent-modal');
             loadEmployees();
         } else {
             showToast(result.error, 'error');
@@ -10870,7 +11094,7 @@ function clearAllWieEmp() {
 
 function _wiePopulateEmpList(rows) {
     const empMap = new Map();
-    rows.forEach(r => { if (r.employee_id) empMap.set(String(r.employee_id), { code: r.emp_code, name: r.emp_name }); });
+    rows.forEach(r => { const id = r.emp_id ?? r.employee_id; if (id) empMap.set(String(id), { code: r.emp_code, name: r.emp_name }); });
     const sorted = [...empMap.entries()].sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
     const list = document.getElementById('wie-emp-list');
     if (!list) return;
@@ -10899,7 +11123,7 @@ function _wieRenderFiltered() {
     const container = document.getElementById('wie-content');
     if (!container || !_wieData) return;
     let rows = _wieData.rows;
-    if (_wieSelectedEmps.size > 0) rows = rows.filter(r => _wieSelectedEmps.has(String(r.employee_id)));
+    if (_wieSelectedEmps.size > 0) rows = rows.filter(r => _wieSelectedEmps.has(String(r.emp_id ?? r.employee_id)));
     if (!rows.length) {
         container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employees.</div></div>';
         return;
@@ -10951,7 +11175,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
     const showOutput = metric === 'all' || metric === 'output';
     const showEff    = metric === 'all' || metric === 'efficiency';
 
-    const dateCols   = (showTarget?1:0) + (showWip?1:0) + (showOutput?1:0) + (showEff?1:0);
+    const dateCols   = (showTarget?1:0) + (showWip?1:0) + (showOutput?1:0) + (showEff?1:0) + 1;
     const fixedCols  = 3;
     const overallCols = (showOutput?1:0) + (showEff?1:0);
     const anyHasOt   = rows.some(r => r.has_ot);
@@ -10963,7 +11187,8 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
         'DEP':  'background:#fee2e2;color:#991b1b;',
         'PRE':  'background:#eff6ff;color:#1d4ed8;',
         'POST': 'background:#f0fdf4;color:#166534;',
-        'COMB': 'background:#faf5ff;color:#6b21a8;'
+        'COMB': 'background:#faf5ff;color:#6b21a8;',
+        'CO':   'background:#fef3c7;color:#92400e;'
     };
     const effColor = eff => {
         if (eff == null) return '#6b7280';
@@ -10975,6 +11200,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
     ).join('');
 
     const subHeaders = dates.map(() => [
+        `<th style="${thSS}">WORKSTATION</th>`,
         showTarget ? `<th style="${thSS}">TARGET</th>` : '',
         showWip    ? `<th style="${thSS}">WIP</th>`    : '',
         showOutput ? `<th style="${thSS}">OUTPUT</th>` : '',
@@ -11002,17 +11228,26 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             const effC    = effColor(effVal);
             const blank   = `<td style="${tcS}">-</td>`;
             if (!cell || !hasWorked) return [
+                `<td style="${tcS}color:#6b7280;">-</td>`,
                 showTarget ? blank : '',
                 showWip    ? blank : '',
                 showOutput ? blank : '',
                 showEff    ? `<td style="${tcS}color:#6b7280;">-</td>` : '',
             ].join('');
             const wip      = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
+            const hasSourceSplit = cell.primary_output != null && cell.co_output != null;
+            const outputSub = hasSourceSplit ? `<br><span style="font-size:8px;font-weight:600;color:#6b7280;">Pri:${cell.primary_output} CO:${cell.co_output}</span>` : '';
+            const effSub    = hasSourceSplit ? `<br><span style="font-size:8px;font-weight:600;color:#6b7280;">Pri:${Number(cell.primary_eff).toFixed(1)}% CO:${Number(cell.co_eff).toFixed(1)}%</span>` : '';
+            const wsCodes   = (cell.workstation_codes || '').split(', ').filter(Boolean);
+            const wsCell    = wsCodes.length
+                ? wsCodes.map(code => `<span onclick="openWieWorkstationPopup(${cell.line_id}, '${d}', '${code}')" style="cursor:pointer;color:#1d4ed8;text-decoration:underline;font-weight:600;">${code}</span>`).join(', ')
+                : '-';
             return [
+                `<td style="${tcS}">${wsCell}</td>`,
                 showTarget ? `<td style="${tcS}${tS}">${cell.line_target ?? '-'}${tagBadge}</td>` : '',
                 showWip    ? `<td style="${tcS}${tS}font-weight:600;color:${wip > 0 ? '#dc2626' : '#16a34a'};">${wip}</td>` : '',
-                showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}</td>` : '',
-                showEff    ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effVal.toFixed(1)}%</td>` : '',
+                showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}${outputSub}</td>` : '',
+                showEff    ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effVal.toFixed(1)}%${effSub}</td>` : '',
             ].join('');
         }).join('');
 
@@ -11025,6 +11260,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             const hasOtDay = otAvail > 0 || (otOut != null && otOut > 0);
             const blank   = `<td style="${tcS}background:#fff7ed;">—</td>`;
             if (!hasOtDay) return [
+                blank,
                 showTarget ? blank : '',
                 showWip    ? blank : '',
                 showOutput ? blank : '',
@@ -11032,6 +11268,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             ].join('');
             const otEffC  = effColor(otEff);
             return [
+                `<td style="${tcS}background:#fff7ed;">—</td>`,
                 showTarget ? `<td style="${tcS}background:#fff7ed;">${cell?.ot_target ?? '—'}</td>` : '',
                 showWip    ? `<td style="${tcS}background:#fff7ed;">—</td>` : '',
                 showOutput ? `<td style="${tcS}background:#fff7ed;font-weight:700;">${otOut ?? 0}</td>` : '',
@@ -11050,6 +11287,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             const hasOtDay  = parseFloat(cell?.ot_available_hours || 0) > 0 || otOut > 0;
             const blank = `<td style="${tcS}background:#f0fdf4;">—</td>`;
             if (!hasWorked && !hasOtDay) return [
+                blank,
                 showTarget ? blank : '',
                 showWip    ? blank : '',
                 showOutput ? blank : '',
@@ -11057,6 +11295,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             ].join('');
             const combOut = regOut + otOut;
             return [
+                `<td style="${tcS}background:#f0fdf4;">—</td>`,
                 showTarget ? `<td style="${tcS}background:#f0fdf4;">${cell?.line_target ?? '—'}</td>` : '',
                 showWip    ? `<td style="${tcS}background:#f0fdf4;">—</td>` : '',
                 showOutput ? `<td style="${tcS}background:#f0fdf4;font-weight:700;">Reg:${regOut}<br>OT:${otOut}</td>` : '',
@@ -11114,6 +11353,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             <span><span style="background:#f0fdf4;color:#166534;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">POST</span> After reassignment</span>
             <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation</span>
             <span><span style="background:#fff7ed;color:#92400e;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">OT</span> Overtime row</span>
+            <span><span style="background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">CO</span> Changeover product</span>
         </div>
         <div style="overflow-x:auto;">
         <table style="border-collapse:collapse;width:max-content;min-width:100%;">
@@ -11136,6 +11376,74 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
         </table>
         </div>
     </div>`;
+}
+
+async function openWieWorkstationPopup(lineId, workDate, workstationCode) {
+    const modalId = 'wie-ws-popup';
+    document.getElementById(modalId)?.remove();
+    const modal = document.createElement('div');
+    modal.id = modalId;
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.5);display:flex;align-items:center;justify-content:center;z-index:3000;padding:20px;';
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:10px;width:600px;max-width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.25);">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #e5e7eb;flex-shrink:0;">
+                <h3 style="margin:0;font-size:16px;font-weight:700;color:#111827;">${workstationCode} — ${workDate}</h3>
+                <button onclick="document.getElementById('${modalId}').remove()" style="border:none;background:#f3f4f6;color:#374151;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:16px;line-height:1;">✕</button>
+            </div>
+            <div style="padding:16px 18px;overflow-y:auto;">
+                <div id="wie-ws-popup-body" style="text-align:center;padding:30px;color:#9ca3af;">Loading...</div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    try {
+        const r = await fetch(`${API_BASE}/worker-individual-efficiency/workstation-processes?line_id=${lineId}&work_date=${workDate}&workstation_code=${encodeURIComponent(workstationCode)}`);
+        const result = await r.json();
+        const body = document.getElementById('wie-ws-popup-body');
+        if (!body) return;
+        if (!result.success) {
+            body.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
+            return;
+        }
+        body.innerHTML = _renderWieWsProcessGroups(result.data);
+    } catch (err) {
+        const body = document.getElementById('wie-ws-popup-body');
+        if (body) body.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+    }
+}
+
+function _renderWieWsProcessGroups(data) {
+    const renderGroup = (label, color, group) => {
+        if (!group) return '';
+        const rows = group.processes.map(p => `
+            <tr>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;text-align:center;">${p.sequence_number ?? '-'}</td>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;">${p.operation_code || '-'}</td>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;">${p.operation_name || '-'}</td>
+                <td style="padding:4px 6px;border:1px solid #e5e7eb;text-align:center;">${p.operation_sah ?? '-'}</td>
+            </tr>`).join('');
+        return `
+            <div style="margin-bottom:14px;">
+                <div style="font-size:12px;font-weight:700;color:${color};margin-bottom:4px;">
+                    ${label} — ${group.product_code || ''} ${group.product_name ? `(${group.product_name})` : ''}
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="background:#f1f5f9;">
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;">Seq</th>
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;text-align:left;">Op Code</th>
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;text-align:left;">Op Name</th>
+                            <th style="padding:4px 6px;border:1px solid #e5e7eb;">SAH</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+    };
+    const html = renderGroup('Primary', '#1e3a5f', data.primary) + renderGroup('Changeover (CO)', '#92400e', data.co);
+    return html || '<div style="padding:20px;text-align:center;color:#6b7280;">No process details found for this workstation/date.</div>';
 }
 
 function printWorkerIndividualEff() {

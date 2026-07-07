@@ -464,6 +464,154 @@ async function clearEmployeeAssignmentConflicts(db, employeeId, workDate, isOver
     return result.rows;
 }
 
+// Handles the "why is this linked employee being replaced?" decision when a
+// different employee takes over a workstation mid-day.
+//   - 'reassigned': keep current behaviour (history window closed, kept) so the
+//     employee's windows merge into one efficiency-report row when they relink.
+//   - 'absent': delete the employee's assignment-history rows for this line+date
+//     (removes them from efficiency reports) and upsert employee_attendance with
+//     status='absent' for the date. If output is already recorded in their
+//     windows, requires confirmAbsentWithOutput.
+// Only applies to flows replacing a LINKED occupant: POST /workstation-assignments
+// and the changeover activate/revert routes. Intentionally NOT applied to OT flows
+// (OT rows are never linked → no history rows), admin/IE bulk planning saves
+// (pre-shift, keep 'reassigned' semantics), unassign/unlink routes, and the
+// worker-departure/adjustment system (has its own reason flow).
+// Call INSIDE the caller's transaction BEFORE closeHistoryForWorkstationAssignmentIfNeeded
+// (for 'absent' that call then no-ops since the open history row is already deleted).
+// Caller must ROLLBACK and respond 409 for non-'ok' statuses.
+async function handleReplacedEmployeeReason(db, {
+    lineId,
+    workDate,
+    workstationCode,
+    isOvertime = false,
+    nextEmployeeId = null,
+    changeReason = null,
+    confirmAbsentWithOutput = false
+}) {
+    if (!lineId || !workDate || !workstationCode || !nextEmployeeId) {
+        return { status: 'ok', occupant: null, changeReason: null };
+    }
+    const occupantResult = await db.query(
+        `SELECT ewa.employee_id, ewa.is_linked, e.emp_code, e.emp_name
+         FROM employee_workstation_assignments ewa
+         JOIN employees e ON e.id = ewa.employee_id
+         WHERE ewa.line_id = $1
+           AND ewa.work_date = $2
+           AND ewa.workstation_code = $3
+           AND ewa.is_overtime = $4
+         LIMIT 1`,
+        [lineId, workDate, workstationCode, !!isOvertime]
+    );
+    const occupantRow = occupantResult.rows[0];
+    if (!occupantRow || !occupantRow.employee_id || occupantRow.is_linked !== true) {
+        return { status: 'ok', occupant: null, changeReason: null };
+    }
+    const occupantId = parseInt(occupantRow.employee_id, 10);
+    if (occupantId === parseInt(nextEmployeeId, 10)) {
+        return { status: 'ok', occupant: null, changeReason: null };
+    }
+    const occupant = {
+        employee_id: occupantId,
+        emp_code: occupantRow.emp_code,
+        emp_name: occupantRow.emp_name
+    };
+    if (!changeReason) {
+        return { status: 'reason_required', occupant };
+    }
+    if (changeReason === 'reassigned') {
+        return { status: 'ok', occupant, changeReason };
+    }
+
+    // changeReason === 'absent'
+    // Output detection mirrors the efficiency-report join in getEmployeeProgressForWindow
+    // (history row → line_plan_workstations via LATERAL → processes → hourly progress,
+    // per-workstation-per-hour MAX(quantity) dedupe within the row's hour window).
+    const outputResult = await db.query(
+        `WITH wins AS (
+             SELECT hist.line_id,
+                    hist.work_date,
+                    hist.effective_from_hour,
+                    COALESCE(hist.effective_to_hour, 999) AS to_hour,
+                    ws.id AS ws_id
+             FROM employee_workstation_assignment_history hist
+             LEFT JOIN LATERAL (
+                 SELECT ws_match.id
+                 FROM line_plan_workstations ws_match
+                 WHERE (
+                         hist.line_plan_workstation_id IS NOT NULL
+                         AND ws_match.id = hist.line_plan_workstation_id
+                       )
+                    OR (
+                         hist.line_plan_workstation_id IS NULL
+                         AND ws_match.line_id = hist.line_id
+                         AND ws_match.work_date = hist.work_date
+                         AND ws_match.workstation_code = hist.workstation_code
+                       )
+                 ORDER BY
+                     CASE
+                         WHEN hist.line_plan_workstation_id IS NOT NULL
+                          AND ws_match.id = hist.line_plan_workstation_id THEN 0
+                         ELSE 1
+                     END,
+                     ws_match.id DESC
+                 LIMIT 1
+             ) ws ON true
+             WHERE hist.line_id = $1
+               AND hist.work_date = $2
+               AND hist.employee_id = $3
+               AND hist.is_overtime = false
+         ),
+         ws_hour AS (
+             SELECT w.ws_id,
+                    lph.hour_slot,
+                    MAX(lph.quantity) AS qty
+             FROM wins w
+             JOIN line_plan_workstation_processes wproc ON wproc.workstation_id = w.ws_id
+             JOIN line_process_hourly_progress lph
+               ON lph.process_id = wproc.product_process_id
+              AND lph.line_id = w.line_id
+              AND lph.work_date = w.work_date
+              AND lph.hour_slot BETWEEN w.effective_from_hour AND w.to_hour
+             GROUP BY w.ws_id, lph.hour_slot
+         )
+         SELECT COALESCE(SUM(qty), 0)::int AS total_output FROM ws_hour`,
+        [lineId, workDate, occupantId]
+    );
+    const totalOutput = parseInt(outputResult.rows[0]?.total_output, 10) || 0;
+    if (totalOutput > 0 && !confirmAbsentWithOutput) {
+        return { status: 'output_confirm_required', occupant, totalOutput };
+    }
+
+    // Absent on this line+date: remove all their history rows here (regular + OT)
+    // so reports no longer list them. Other lines' history is untouched — if they
+    // worked another line earlier, 'reassigned' was the correct answer.
+    const deleteResult = await db.query(
+        `DELETE FROM employee_workstation_assignment_history
+         WHERE line_id = $1 AND work_date = $2 AND employee_id = $3
+         RETURNING id`,
+        [lineId, workDate, occupantId]
+    );
+    // 'absent' is a used employee_attendance.status value (varchar, no CHECK constraint);
+    // attendance is global for the date, in/out times left untouched.
+    await db.query(
+        `INSERT INTO employee_attendance (employee_id, attendance_date, status, notes)
+         VALUES ($1, $2, 'absent', $3)
+         ON CONFLICT (employee_id, attendance_date)
+         DO UPDATE SET status = 'absent',
+                       notes = COALESCE(employee_attendance.notes || ' | ', '') || EXCLUDED.notes,
+                       updated_at = NOW()`,
+        [occupantId, workDate, `Marked absent by supervisor — replaced at ${workstationCode} (line ${lineId})`]
+    );
+    return {
+        status: 'ok',
+        occupant,
+        changeReason,
+        deletedHistoryCount: deleteResult.rows.length,
+        totalOutput
+    };
+}
+
 async function findEmployeeAssignmentConflicts(db, employeeIds, workDate, isOvertime, keepLineId, keepWorkstationCodes = []) {
     const normalizedEmployeeIds = (employeeIds || [])
         .map(id => parseInt(id, 10))
@@ -1578,8 +1726,14 @@ const formatHourRangeLabel = (hourSlot) => {
     return `${ord} hour (${start}-${end})`;
 };
 
-async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = null, endHour = null, isOvertime = false, hoursDenom = 1 } = {}) {
+async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = null, endHour = null, isOvertime = false, hoursDenom = 1, splitBySource = false } = {}) {
     const useOt = !!isOvertime;
+    const totalsSourceSelect = splitBySource
+        ? `, source_product_id, STRING_AGG(DISTINCT workstation_code, ', ' ORDER BY workstation_code) AS workstation_codes`
+        : '';
+    const totalsSourceGroup = splitBySource ? ', source_product_id' : '';
+    const outerSourceField = splitBySource ? 'et.source_product_id' : 'ca.source_product_id';
+    const outerWsCodesField = splitBySource ? 'et.workstation_codes' : 'NULL';
     const workstationTable = useOt ? 'line_ot_workstations' : 'line_plan_workstations';
     const processJoin = useOt
         ? `LEFT JOIN line_ot_workstation_processes wproc ON wproc.ot_workstation_id = a.workstation_id`
@@ -1704,6 +1858,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     a.workstation_number,
                     a.group_name,
                     a.actual_sam_seconds,
+                    a.source_product_id,
                     COALESCE(SUM(wh.hour_output), 0) AS total_output,
                     COALESCE(SUM(wh.hour_rejection), 0) AS total_rejection,
                     COALESCE(SUM((wh.hour_output * a.actual_sam_seconds) / 3600.0), 0) AS total_sah_hours,
@@ -1713,16 +1868,16 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                ON wh.workstation_id = a.workstation_id
               AND wh.hour_slot >= a.effective_from_hour
               AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
-             GROUP BY a.history_id, a.employee_id, a.workstation_id, a.workstation_code, a.workstation_number, a.group_name, a.actual_sam_seconds
+             GROUP BY a.history_id, a.employee_id, a.workstation_id, a.workstation_code, a.workstation_number, a.group_name, a.actual_sam_seconds, a.source_product_id
          ),
          employee_totals AS (
-             SELECT employee_id,
+             SELECT employee_id${totalsSourceSelect},
                     COALESCE(SUM(total_output), 0) AS total_output,
                     COALESCE(SUM(total_rejection), 0) AS total_rejection,
                     COALESCE(SUM(total_sah_hours), 0) AS total_sah_hours,
                     MAX(last_updated) AS last_updated
              FROM assignment_stats
-             GROUP BY employee_id
+             GROUP BY employee_id${totalsSourceGroup}
          ),
          current_assignment AS (
              SELECT DISTINCT ON (employee_id)
@@ -1749,7 +1904,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                 ca.takt_time_seconds,
                 ca.is_custom_takt,
                 ca.actual_sam_seconds,
-                ca.source_product_id,
+                ${outerSourceField} AS source_product_id,
+                ${outerWsCodesField} AS workstation_codes,
                 COALESCE(et.total_output, 0) AS total_output,
                 COALESCE(et.total_rejection, 0) AS total_rejection,
                 COALESCE(et.total_sah_hours, 0) AS total_sah_hours,
@@ -1777,6 +1933,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
             manpower_factor: parseFloat(row.manpower_factor || 1) || 1,
             workstation_id: row.workstation_id,
             workstation_code: row.workstation_code,
+            workstation_codes: row.workstation_codes || null,
             workstation_number: row.workstation_number != null ? parseInt(row.workstation_number, 10) : null,
             group_name: row.group_name || '',
             takt_time_seconds: parseFloat(row.takt_time_seconds || 0),
@@ -1795,12 +1952,12 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
     });
 }
 
-async function getHourlyEmployeeProgress(db, lineId, workDate, hourSlot, isOvertime = false) {
-    return getEmployeeProgressForWindow(db, lineId, workDate, { exactHour: hourSlot, isOvertime, hoursDenom: 1 });
+async function getHourlyEmployeeProgress(db, lineId, workDate, hourSlot, isOvertime = false, { splitBySource = false } = {}) {
+    return getEmployeeProgressForWindow(db, lineId, workDate, { exactHour: hourSlot, isOvertime, hoursDenom: 1, splitBySource });
 }
 
-async function getCumulativeEmployeeProgress(db, lineId, workDate, endHour, isOvertime = false, hoursDenom = 1) {
-    return getEmployeeProgressForWindow(db, lineId, workDate, { endHour, isOvertime, hoursDenom });
+async function getCumulativeEmployeeProgress(db, lineId, workDate, endHour, isOvertime = false, hoursDenom = 1, { splitBySource = false } = {}) {
+    return getEmployeeProgressForWindow(db, lineId, workDate, { endHour, isOvertime, hoursDenom, splitBySource });
 }
 
 // Returns Map<employeeId(int), personal_hoursDenom> for employees who departed mid-day on lineId/workDate.
@@ -4997,6 +5154,25 @@ router.get('/lines/:lineId/workstations', async (req, res) => {
     }
 });
 
+// GET /lines/:lineId/employees — distinct employees ever assigned to this line (from EWA history)
+router.get('/lines/:lineId/employees', async (req, res) => {
+    const lineId = parseInt(req.params.lineId, 10);
+    if (!Number.isFinite(lineId)) return res.status(400).json({ success: false, error: 'Invalid lineId' });
+    try {
+        const result = await pool.query(
+            `SELECT DISTINCT e.id, e.emp_code, e.emp_name
+             FROM employee_workstation_assignments ewa
+             JOIN employees e ON e.id = ewa.employee_id
+             WHERE ewa.line_id = $1
+             ORDER BY e.emp_name, e.emp_code`,
+            [lineId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // POST /lines/:lineId/workstations/generate-qr — generate (or regenerate) 100 workstation QR codes
 router.post('/lines/:lineId/workstations/generate-qr', async (req, res) => {
     const { lineId } = req.params;
@@ -5449,18 +5625,96 @@ router.get('/employees/:id/work-options', async (req, res) => {
 });
 
 router.post('/employees', validateBody(schemas.employee.partial()), async (req, res) => {
-    const { emp_code, emp_name, designation, default_line_id, manpower_factor } = req.body;
+    const { emp_code, emp_name, designation, default_line_id, manpower_factor, employment_status } = req.body;
+    const status = employment_status === 'temporary' ? 'temporary' : 'permanent';
+    const permanentFrom = status === 'permanent' ? new Date().toISOString().slice(0, 10) : null;
     try {
         const result = await pool.query(
-            `INSERT INTO employees (emp_code, emp_name, designation, default_line_id, manpower_factor, is_active)
-             VALUES ($1, $2, $3, $4, $5, true) RETURNING *`,
-            [emp_code, emp_name, designation, default_line_id, manpower_factor || 1]
+            `INSERT INTO employees (emp_code, emp_name, designation, default_line_id, manpower_factor, is_active, employment_status, permanent_from)
+             VALUES ($1, $2, $3, $4, $5, true, $6, $7) RETURNING *`,
+            [emp_code, emp_name, designation, default_line_id, manpower_factor || 1, status, permanentFrom]
         );
         await qrUtils.generateEmployeeQrById(result.rows[0].id);
         realtime.broadcast('data_change', { entity: 'employees', action: 'create', id: result.rows[0].id });
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
+        if (err.code === '23514' && err.constraint === 'emp_code_format') {
+            return res.status(400).json({ success: false, error: 'Employee code must contain only uppercase letters and numbers (no spaces or symbols)' });
+        }
+        if (err.code === '23505') {
+            return res.status(409).json({ success: false, error: 'Employee code already exists' });
+        }
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Convert a temporary employee to permanent: assigns a brand-new permanent code.
+// The QR badge (file, scannable payload, and printed label) is left completely
+// untouched — same physical badge continues to be used before and after conversion.
+// All history is preserved since the underlying employees.id row never changes.
+router.post('/employees/:id/make-permanent', async (req, res) => {
+    const { id } = req.params;
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Admin or IE access required' });
+    }
+    const { new_emp_code } = req.body || {};
+    if (!new_emp_code || typeof new_emp_code !== 'string' || !/^[A-Z0-9]+$/.test(new_emp_code)) {
+        return res.status(400).json({ success: false, error: 'new_emp_code is required and must match ^[A-Z0-9]+$' });
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const empResult = await client.query('SELECT * FROM employees WHERE id = $1 FOR UPDATE', [id]);
+        const employee = empResult.rows[0];
+        if (!employee) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Employee not found' });
+        }
+        if (employee.employment_status === 'permanent') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: 'Employee is already permanent' });
+        }
+
+        const dupCheck = await client.query(
+            'SELECT id FROM employees WHERE emp_code = $1 AND id != $2',
+            [new_emp_code, id]
+        );
+        if (dupCheck.rowCount > 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: 'new_emp_code is already in use' });
+        }
+
+        await client.query(
+            `INSERT INTO employee_code_history (employee_id, old_emp_code, new_emp_code, changed_by)
+             VALUES ($1, $2, $3, $4)`,
+            [id, employee.emp_code, new_emp_code, req.user?.id || null]
+        );
+
+        const updateResult = await client.query(
+            `UPDATE employees
+             SET emp_code = $1, employment_status = 'permanent', permanent_from = CURRENT_DATE, updated_at = NOW(), updated_by = $2
+             WHERE id = $3 RETURNING *`,
+            [new_emp_code, req.user?.id || null, id]
+        );
+
+        await client.query('COMMIT');
+
+        // Update ONLY the printed code line on the existing QR SVG — the QR matrix
+        // (scannable graphic) and name line are left byte-identical. This is not a
+        // regeneration: same file, same scannable payload, just the code text below
+        // the name so a reprint reflects the new permanent code.
+        await qrUtils.updateEmployeeQrCodeLabel(id, new_emp_code);
+
+        await logAudit('employees', id, 'make_permanent', updateResult.rows[0], employee, req);
+        realtime.broadcast('data_change', { entity: 'employees', action: 'update', id: Number(id) });
+
+        res.json({ success: true, data: updateResult.rows[0] });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -5480,6 +5734,12 @@ router.put('/employees/:id', async (req, res) => {
         realtime.broadcast('data_change', { entity: 'employees', action: 'update', id: result.rows[0]?.id || id });
         res.json({ success: true, data: result.rows[0] });
     } catch (err) {
+        if (err.code === '23514' && err.constraint === 'emp_code_format') {
+            return res.status(400).json({ success: false, error: 'Employee code must contain only uppercase letters and numbers (no spaces or symbols)' });
+        }
+        if (err.code === '23505') {
+            return res.status(409).json({ success: false, error: 'Employee code already exists' });
+        }
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -6584,13 +6844,17 @@ router.put('/process-assignments/workspace', async (req, res) => {
 // WORKSTATION ASSIGNMENTS (Workstation -> Employee) — date-aware
 // ============================================================================
 router.post('/workstation-assignments', async (req, res) => {
-    const { line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided, is_linked, late_reason } = req.body;
+    const { line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided, is_linked, late_reason, change_reason, confirm_absent_with_output } = req.body;
     if (!line_id || !workstation_code) {
         return res.status(400).json({ success: false, error: 'line_id and workstation_code are required' });
     }
     const validLateReasons = ['linking_took_time', 'meeting', 'permission', 'other'];
     if (late_reason && !validLateReasons.includes(late_reason)) {
         return res.status(400).json({ success: false, error: 'Invalid late_reason' });
+    }
+    const validChangeReasons = ['absent', 'reassigned'];
+    if (change_reason && !validChangeReasons.includes(change_reason)) {
+        return res.status(400).json({ success: false, error: 'Invalid change_reason' });
     }
     const date = work_date || new Date().toISOString().slice(0, 10);
     const matQty = (material_provided !== undefined && material_provided !== null) ? parseInt(material_provided, 10) : null;
@@ -6599,6 +6863,7 @@ router.post('/workstation-assignments', async (req, res) => {
     try {
         await client.query('BEGIN');
         let displacedWorkstations = [];
+        let reasonOutcome = null;
 
         // Compute attendance_start when linking
         let linkedAt = null;
@@ -6612,6 +6877,27 @@ router.post('/workstation-assignments', async (req, res) => {
             attendanceStart = creditFullShift
                 ? new Date(`${date}T${inTime}:00`)
                 : linkedAt;
+        }
+
+        // line_plan_workstation_id is cached client-side and goes stale whenever the
+        // workstation plan is re-saved (plan save deletes+reinserts with new ids).
+        // Re-resolve against the current row for this workstation rather than trusting
+        // a stale id and hitting the FK constraint at INSERT time.
+        let resolvedLinePlanWorkstationId = line_plan_workstation_id || null;
+        if (resolvedLinePlanWorkstationId) {
+            const staleCheck = await client.query(
+                `SELECT id FROM line_plan_workstations WHERE id = $1`,
+                [resolvedLinePlanWorkstationId]
+            );
+            if (staleCheck.rows.length === 0) {
+                const freshRow = await client.query(
+                    `SELECT id FROM line_plan_workstations
+                     WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3
+                     ORDER BY id DESC LIMIT 1`,
+                    [line_id, date, workstation_code]
+                );
+                resolvedLinePlanWorkstationId = freshRow.rows[0]?.id || null;
+            }
         }
 
         if (employee_id) {
@@ -6628,6 +6914,34 @@ router.post('/workstation-assignments', async (req, res) => {
             const effectiveLinkedAt = linked ? linkedAt : (existingEwa?.linked_at || null);
             const effectiveAttendanceStart = linked ? attendanceStart : (existingEwa?.attendance_start || null);
             const effectiveLateReason = linked ? (late_reason || null) : (existingEwa?.late_reason || null);
+
+            reasonOutcome = await handleReplacedEmployeeReason(client, {
+                lineId: line_id,
+                workDate: date,
+                workstationCode: workstation_code,
+                isOvertime: false,
+                nextEmployeeId: employee_id,
+                changeReason: change_reason || null,
+                confirmAbsentWithOutput: confirm_absent_with_output === true
+            });
+            if (reasonOutcome.status !== 'ok') {
+                await client.query('ROLLBACK');
+                if (reasonOutcome.status === 'reason_required') {
+                    return res.status(409).json({
+                        success: false,
+                        error_code: 'change_reason_required',
+                        error: `Workstation ${workstation_code} is linked to ${reasonOutcome.occupant.emp_name}. Send change_reason ('absent' or 'reassigned').`,
+                        occupant: reasonOutcome.occupant
+                    });
+                }
+                return res.status(409).json({
+                    success: false,
+                    error_code: 'absent_output_warning',
+                    error: `${reasonOutcome.occupant.emp_name} already has ${reasonOutcome.totalOutput} pcs recorded today. Resend with confirm_absent_with_output=true to mark absent anyway.`,
+                    occupant: reasonOutcome.occupant,
+                    total_output: reasonOutcome.totalOutput
+                });
+            }
 
             await closeHistoryForWorkstationAssignmentIfNeeded(client, {
                 lineId: line_id,
@@ -6653,7 +6967,7 @@ router.post('/workstation-assignments', async (req, res) => {
                                late_reason            = CASE WHEN EXCLUDED.is_linked THEN EXCLUDED.late_reason ELSE employee_workstation_assignments.late_reason END,
                                attendance_start       = CASE WHEN EXCLUDED.is_linked THEN EXCLUDED.attendance_start ELSE employee_workstation_assignments.attendance_start END,
                                assigned_at            = NOW()`,
-                [line_id, workstation_code, employee_id, date, line_plan_workstation_id || null,
+                [line_id, workstation_code, employee_id, date, resolvedLinePlanWorkstationId,
                  effectiveLinked, effectiveLinkedAt, effectiveLateReason, effectiveAttendanceStart]
             );
             await syncAssignmentHistoryForCurrentRow(client, {
@@ -6661,7 +6975,7 @@ router.post('/workstation-assignments', async (req, res) => {
                 workDate: date,
                 workstationCode: workstation_code,
                 employeeId: employee_id,
-                linePlanWorkstationId: line_plan_workstation_id || null,
+                linePlanWorkstationId: resolvedLinePlanWorkstationId,
                 isOvertime: false,
                 isLinked: effectiveLinked,
                 linkedAt: effectiveLinkedAt,
@@ -6685,6 +6999,23 @@ router.post('/workstation-assignments', async (req, res) => {
         }
         await client.query('COMMIT');
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date: date });
+        if (reasonOutcome?.occupant && reasonOutcome?.changeReason) {
+            logAudit('employee_workstation_assignments', 0,
+                reasonOutcome.changeReason === 'absent' ? 'replace_absent' : 'replace_reassigned',
+                {
+                    line_id,
+                    work_date: date,
+                    workstation_code,
+                    old_employee_id: reasonOutcome.occupant.employee_id,
+                    new_employee_id: employee_id,
+                    change_reason: reasonOutcome.changeReason,
+                    deleted_history_count: reasonOutcome.deletedHistoryCount || 0,
+                    total_output: reasonOutcome.totalOutput || 0
+                }, null, req).catch(() => {});
+            if (reasonOutcome.changeReason === 'absent') {
+                realtime.broadcast('data_change', { entity: 'attendance', action: 'update', employee_id: reasonOutcome.occupant.employee_id, date });
+            }
+        }
         res.json({
             success: true,
             data: {
@@ -9552,28 +9883,34 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             lineId = requestedLineId;
             summaryLineCode = detailPlan?.line_code || summaryLineCode;
             if (requestedProductMode === 'changeover') {
-                if (!detailPlan.incoming_product_id) {
-                    // First changeover upload from line-details can bootstrap incoming product/target from template.
-                    const incomingProductCode = normalizeCode(productCode);
-                    if (!incomingProductCode) {
-                        throw new Error('Product Code is required (row 6) to enable changeover upload.');
-                    }
-                    const incomingProductName = String(productName || incomingProductCode).trim();
-                    const incomingProductResult = await client.query(
-                        `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
-                         VALUES ($1, $2, $3, $4, true)
-                         ON CONFLICT (product_code) DO UPDATE
-                           SET product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), products.product_name),
-                               buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
-                               plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month),
-                               is_active = true,
-                               updated_at = NOW()
-                         RETURNING id, product_code`,
-                        [incomingProductCode, incomingProductName, buyerName, planMonth]
-                    );
-                    detailPlan.incoming_product_id = incomingProductResult.rows[0]?.id || null;
-                    detailPlan.incoming_product_code = incomingProductResult.rows[0]?.product_code || incomingProductCode;
+                // Always resolve the changeover product from the uploaded template's
+                // Product Code (row 6). This bootstraps the incoming product on the
+                // first upload AND replaces it when a different changeover style is
+                // uploaded later — previously an already-set incoming_product_id was
+                // never updated, so a new style silently re-used the old one.
+                const incomingProductCode = effectiveProdCode;
+                if (!incomingProductCode) {
+                    throw new Error('Product Code is required (row 6) to enable changeover upload.');
                 }
+                if (detailPlan.primary_product_code &&
+                    normalizeCode(detailPlan.primary_product_code) === normalizeCode(incomingProductCode)) {
+                    throw new Error('Changeover product must be different from the primary product.');
+                }
+                const incomingProductName = String(productName || incomingProductCode).trim();
+                const incomingProductResult = await client.query(
+                    `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
+                     VALUES ($1, $2, $3, $4, true)
+                     ON CONFLICT (product_code) DO UPDATE
+                       SET product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), products.product_name),
+                           buyer_name = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
+                           plan_month = COALESCE(EXCLUDED.plan_month, products.plan_month),
+                           is_active = true,
+                           updated_at = NOW()
+                     RETURNING id, product_code`,
+                    [incomingProductCode, incomingProductName, buyerName, planMonth]
+                );
+                detailPlan.incoming_product_id = incomingProductResult.rows[0]?.id || null;
+                detailPlan.incoming_product_code = incomingProductResult.rows[0]?.product_code || incomingProductCode;
                 productId = parseInt(detailPlan.incoming_product_id, 10);
                 if (!productId) {
                     throw new Error('Unable to resolve changeover product from uploaded template.');
@@ -9582,9 +9919,10 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                     ? targetUnits
                     : (parseInt(detailPlan.incoming_target_units || 0, 10) || 0);
                 summaryProductCode = detailPlan.incoming_product_code || summaryProductCode;
-                if (!effectiveTargetUnits || effectiveTargetUnits <= 0) {
-                    throw new Error('Incoming target units must be greater than 0 before uploading the changeover plan.');
-                }
+                // Allow a 0 incoming target so the changeover style can be uploaded/saved
+                // now and the IE can set the target later. Takt time falls back to 0 when
+                // the target is 0 (handled in the takt-time calc below).
+                effectiveTargetUnits = Math.max(0, effectiveTargetUnits || 0);
                 await client.query(
                     `UPDATE line_daily_plans
                      SET incoming_product_id = $3,
@@ -10377,6 +10715,40 @@ const parseSupervisorQr = (payload) => {
         return { id: numeric };
     }
     return { raw };
+};
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Resolves an employee from a parsed employee-QR payload. New QRs carry a
+// permanent `uuid` (never changes, even across temp->permanent conversion).
+// Older QRs (issued before the uuid field existed) carry `id` instead — those
+// keep working forever since we never regenerate existing employees' QR files.
+// `code`/`raw` remain a last-resort fallback for any other legacy payload shape.
+const resolveEmployeeFromQrPayload = async (parsed) => {
+    if (!parsed) return null;
+    if (parsed.uuid && UUID_PATTERN.test(parsed.uuid)) {
+        const r = await pool.query(
+            `SELECT id, emp_code, emp_name FROM employees WHERE uuid = $1 AND is_active = true`,
+            [parsed.uuid]
+        );
+        if (r.rows[0]) return r.rows[0];
+    }
+    if (parsed.id) {
+        const r = await pool.query(
+            `SELECT id, emp_code, emp_name FROM employees WHERE id = $1 AND is_active = true`,
+            [parsed.id]
+        );
+        if (r.rows[0]) return r.rows[0];
+    }
+    const rawCode = parsed.code || parsed.emp_code || parsed.raw;
+    if (rawCode) {
+        const r = await pool.query(
+            `SELECT id, emp_code, emp_name FROM employees WHERE emp_code = $1 AND is_active = true`,
+            [rawCode]
+        );
+        if (r.rows[0]) return r.rows[0];
+    }
+    return null;
 };
 
 // Helper: get both active product IDs for a line on a date
@@ -11391,15 +11763,19 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 }
             }
 
+            // Vacant workstations (nobody assigned) can never be switched to CO, so they
+            // shouldn't block the "all workstations converted" gate — nothing is produced
+            // there regardless of which product it's nominally attributed to.
+            const staffedWorkstations = workstations.filter(ws => ws.assigned_employee_id);
             return res.json({
                 success: true,
                 data: flatProcesses,
                 workstation_plan: workstations,
                 has_plan: true,
                 ...sharedFields,
-                total_workstation_count: workstations.length,
-                changeover_ready_workstation_count: workstations.filter(ws => ws.ws_changeover_active).length,
-                can_finalize_primary: !!incomingId && workstations.length > 0 && workstations.every(ws => ws.ws_changeover_active)
+                total_workstation_count: staffedWorkstations.length,
+                changeover_ready_workstation_count: staffedWorkstations.filter(ws => ws.ws_changeover_active).length,
+                can_finalize_primary: !!incomingId && staffedWorkstations.length > 0 && staffedWorkstations.every(ws => ws.ws_changeover_active)
             });
         }
 
@@ -11629,10 +12005,15 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         employee_id,
         employee_mode,
         feed_given,
-        feed_quantity
+        feed_quantity,
+        change_reason,
+        confirm_absent_with_output
     } = req.body;
     if (!line_id || !work_date || !workstation_code)
         return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
+    if (change_reason && !['absent', 'reassigned'].includes(change_reason)) {
+        return res.status(400).json({ success: false, error: 'Invalid change_reason' });
+    }
     if (!CHANGEOVER_ENABLED)
         return res.status(403).json({ success: false, error: 'Changeover is disabled' });
     try {
@@ -11742,9 +12123,38 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         });
         const groupIdentifier = ws.incoming_group_name || ws.primary_group_name || workstation_code;
 
+        let reasonOutcome = null;
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
+
+            reasonOutcome = await handleReplacedEmployeeReason(client, {
+                lineId: line_id,
+                workDate: work_date,
+                workstationCode: workstation_code,
+                isOvertime: false,
+                nextEmployeeId,
+                changeReason: change_reason || null,
+                confirmAbsentWithOutput: confirm_absent_with_output === true
+            });
+            if (reasonOutcome.status !== 'ok') {
+                await client.query('ROLLBACK');
+                if (reasonOutcome.status === 'reason_required') {
+                    return res.status(409).json({
+                        success: false,
+                        error_code: 'change_reason_required',
+                        error: `Workstation ${workstation_code} is linked to ${reasonOutcome.occupant.emp_name}. Send change_reason ('absent' or 'reassigned').`,
+                        occupant: reasonOutcome.occupant
+                    });
+                }
+                return res.status(409).json({
+                    success: false,
+                    error_code: 'absent_output_warning',
+                    error: `${reasonOutcome.occupant.emp_name} already has ${reasonOutcome.totalOutput} pcs recorded today. Resend with confirm_absent_with_output=true to mark absent anyway.`,
+                    occupant: reasonOutcome.occupant,
+                    total_output: reasonOutcome.totalOutput
+                });
+            }
 
             await client.query(
                 `UPDATE line_plan_workstations
@@ -11878,43 +12288,32 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
             client.release();
         }
 
-        // Auto-promote SCO product to primary when ALL workstations have switched to SCO
-        let autoFinalized = false;
+        // Never auto-promote silently — always require supervisor confirmation once every
+        // *staffed* workstation has switched to CO (see should_finalize below, surfaced via
+        // POST /supervisor/changeover/finalize-primary). Vacant workstations (no employee
+        // assigned) can never be switched, so they don't count toward the gate.
         let shouldFinalize = false;
         try {
-            const [allWsRes, planCheckRes] = await Promise.all([
-                pool.query(
-                    `SELECT COUNT(*) FILTER (WHERE ws_changeover_active = true) AS co_count,
-                            COUNT(*) AS total
-                     FROM line_plan_workstations
-                     WHERE line_id = $1 AND work_date = $2 AND product_id = (
-                         SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2
-                     )`,
-                    [line_id, work_date]
-                ),
-                pool.query(
-                    `SELECT incoming_target_units FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
-                    [line_id, work_date]
-                )
-            ]);
+            const allWsRes = await pool.query(
+                `SELECT COUNT(*) FILTER (WHERE lpw.ws_changeover_active = true) AS co_count,
+                        COUNT(*) AS total
+                 FROM line_plan_workstations lpw
+                 JOIN employee_workstation_assignments ewa
+                   ON ewa.line_id = lpw.line_id
+                  AND ewa.work_date = lpw.work_date
+                  AND ewa.workstation_code = lpw.workstation_code
+                  AND ewa.is_overtime = false
+                  AND ewa.employee_id IS NOT NULL
+                 WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = (
+                     SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2
+                 )`,
+                [line_id, work_date]
+            );
             const total = parseInt(allWsRes.rows[0]?.total || 0, 10);
             const coCount = parseInt(allWsRes.rows[0]?.co_count || 0, 10);
-            const incomingTarget = parseInt(planCheckRes.rows[0]?.incoming_target_units || 0, 10);
-            if (total > 0 && coCount === total) {
-                if (incomingTarget > 0) {
-                    try {
-                        await performChangeoverPromotion(line_id, work_date, req.user?.id || null);
-                        autoFinalized = true;
-                    } catch (promoteErr) {
-                        // Already promoted or other non-fatal reason
-                        console.warn('[auto-promote] skipped:', promoteErr.message);
-                    }
-                } else {
-                    shouldFinalize = true;
-                }
-            }
+            shouldFinalize = total > 0 && coCount === total;
         } catch (checkErr) {
-            console.warn('[auto-promote check] error:', checkErr.message);
+            console.warn('[changeover finalize check] error:', checkErr.message);
         }
 
         realtime.broadcast('data_change', {
@@ -11922,18 +12321,27 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         });
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date });
-        if (autoFinalized) {
-            realtime.broadcast('data_change', { entity: 'changeover', action: 'finalized_primary', line_id, work_date });
-            if (work_date === new Date().toISOString().slice(0, 10)) {
-                realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
+        if (reasonOutcome?.occupant && reasonOutcome?.changeReason) {
+            logAudit('employee_workstation_assignments', 0,
+                reasonOutcome.changeReason === 'absent' ? 'replace_absent' : 'replace_reassigned',
+                {
+                    line_id,
+                    work_date,
+                    workstation_code,
+                    old_employee_id: reasonOutcome.occupant.employee_id,
+                    new_employee_id: nextEmployeeId,
+                    change_reason: reasonOutcome.changeReason,
+                    deleted_history_count: reasonOutcome.deletedHistoryCount || 0,
+                    total_output: reasonOutcome.totalOutput || 0,
+                    context: 'changeover_activate_workstation'
+                }, null, req).catch(() => {});
+            if (reasonOutcome.changeReason === 'absent') {
+                realtime.broadcast('data_change', { entity: 'attendance', action: 'update', employee_id: reasonOutcome.occupant.employee_id, date: work_date });
             }
         }
         res.json({
             success: true,
-            message: autoFinalized
-                ? `Changeover activated for ${workstation_code} — all workstations on SCO, promoted to primary`
-                : `Changeover activated for workstation ${workstation_code}`,
-            auto_finalized: autoFinalized,
+            message: `Changeover activated for workstation ${workstation_code}`,
             should_finalize: shouldFinalize,
             data: {
                 workstation_code,
@@ -11955,9 +12363,12 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
 // Existing CO progress remains under the CO process IDs; only the live assignment
 // pointer and effective workstation source are switched back to primary.
 router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
-    const { line_id, work_date, workstation_code, employee_id } = req.body;
+    const { line_id, work_date, workstation_code, employee_id, change_reason, confirm_absent_with_output } = req.body;
     if (!line_id || !work_date || !workstation_code) {
         return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
+    }
+    if (change_reason && !['absent', 'reassigned'].includes(change_reason)) {
+        return res.status(400).json({ success: false, error: 'Invalid change_reason' });
     }
     if (!CHANGEOVER_ENABLED) {
         return res.status(403).json({ success: false, error: 'Changeover is disabled' });
@@ -12034,9 +12445,38 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
         const materialProvided = parseInt(currentAssignment?.material_provided || 0, 10) || 0;
         const groupIdentifier = ws.primary_group_name || ws.incoming_group_name || workstation_code;
 
+        let reasonOutcome = null;
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
+
+            reasonOutcome = await handleReplacedEmployeeReason(client, {
+                lineId: line_id,
+                workDate: work_date,
+                workstationCode: workstation_code,
+                isOvertime: false,
+                nextEmployeeId,
+                changeReason: change_reason || null,
+                confirmAbsentWithOutput: confirm_absent_with_output === true
+            });
+            if (reasonOutcome.status !== 'ok') {
+                await client.query('ROLLBACK');
+                if (reasonOutcome.status === 'reason_required') {
+                    return res.status(409).json({
+                        success: false,
+                        error_code: 'change_reason_required',
+                        error: `Workstation ${workstation_code} is linked to ${reasonOutcome.occupant.emp_name}. Send change_reason ('absent' or 'reassigned').`,
+                        occupant: reasonOutcome.occupant
+                    });
+                }
+                return res.status(409).json({
+                    success: false,
+                    error_code: 'absent_output_warning',
+                    error: `${reasonOutcome.occupant.emp_name} already has ${reasonOutcome.totalOutput} pcs recorded today. Resend with confirm_absent_with_output=true to mark absent anyway.`,
+                    occupant: reasonOutcome.occupant,
+                    total_output: reasonOutcome.totalOutput
+                });
+            }
 
             await client.query(
                 `UPDATE line_plan_workstations
@@ -12167,6 +12607,24 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
         });
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
         realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, workstation_code, work_date });
+        if (reasonOutcome?.occupant && reasonOutcome?.changeReason) {
+            logAudit('employee_workstation_assignments', 0,
+                reasonOutcome.changeReason === 'absent' ? 'replace_absent' : 'replace_reassigned',
+                {
+                    line_id,
+                    work_date,
+                    workstation_code,
+                    old_employee_id: reasonOutcome.occupant.employee_id,
+                    new_employee_id: nextEmployeeId,
+                    change_reason: reasonOutcome.changeReason,
+                    deleted_history_count: reasonOutcome.deletedHistoryCount || 0,
+                    total_output: reasonOutcome.totalOutput || 0,
+                    context: 'changeover_revert_workstation'
+                }, null, req).catch(() => {});
+            if (reasonOutcome.changeReason === 'absent') {
+                realtime.broadcast('data_change', { entity: 'attendance', action: 'update', employee_id: reasonOutcome.occupant.employee_id, date: work_date });
+            }
+        }
         res.json({
             success: true,
             message: `Workstation ${workstation_code} switched back to the primary product`,
@@ -12235,10 +12693,15 @@ async function performChangeoverPromotion(lineId, workDate, userId) {
             fail(409, 'Primary promotion has already been completed for this line/date');
 
         const primaryWsResult = await client.query(
-            `SELECT id, workstation_code, ws_changeover_active
-             FROM line_plan_workstations
-             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
-             ORDER BY workstation_number, workstation_code FOR UPDATE`,
+            `SELECT lpw.id, lpw.workstation_code, lpw.ws_changeover_active, ewa.employee_id
+             FROM line_plan_workstations lpw
+             LEFT JOIN employee_workstation_assignments ewa
+               ON ewa.line_id = lpw.line_id
+              AND ewa.work_date = lpw.work_date
+              AND ewa.workstation_code = lpw.workstation_code
+              AND ewa.is_overtime = false
+             WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
+             ORDER BY lpw.workstation_number, lpw.workstation_code FOR UPDATE OF lpw`,
             [lineId, workDate, previousPrimaryProductId]
         );
         if (primaryWsResult.rowCount === 0) fail(400, 'No primary workstation plan exists for this line/date');
@@ -12261,8 +12724,10 @@ async function performChangeoverPromotion(lineId, workDate, userId) {
         if (missingIncoming.length > 0)
             fail(400, `Missing changeover workstation mapping for: ${missingIncoming.join(', ')}`);
 
+        // Vacant workstations (no employee assigned) can never be switched to CO, so they
+        // don't block promotion — only staffed workstations must have switched.
         const pendingWorkstations = primaryWsResult.rows
-            .filter(row => row.ws_changeover_active !== true)
+            .filter(row => row.employee_id != null && row.ws_changeover_active !== true)
             .map(row => row.workstation_code);
         if (pendingWorkstations.length > 0)
             fail(400, `All workstations must switch to CO before promotion. Pending: ${pendingWorkstations.join(', ')}`);
@@ -12436,24 +12901,7 @@ router.post('/supervisor/resolve-employee-by-qr', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid employee QR payload' });
     }
     try {
-        let employee = null;
-        if (parsed.id) {
-            const r = await pool.query(
-                `SELECT id, emp_code, emp_name FROM employees WHERE id = $1 AND is_active = true`,
-                [parsed.id]
-            );
-            employee = r.rows[0] || null;
-        }
-        if (!employee) {
-            const rawCode = parsed.code || parsed.emp_code || parsed.raw;
-            if (rawCode) {
-                const r = await pool.query(
-                    `SELECT id, emp_code, emp_name FROM employees WHERE emp_code = $1 AND is_active = true`,
-                    [rawCode]
-                );
-                employee = r.rows[0] || null;
-            }
-        }
+        const employee = await resolveEmployeeFromQrPayload(parsed);
         if (!employee) {
             return res.status(404).json({ success: false, error: 'Employee not found' });
         }
@@ -12475,32 +12923,11 @@ router.post('/supervisor/resolve-employee', async (req, res) => {
     }
 
     try {
-        let employeeId = employeeParsed.id;
-        let employee = null;
-        if (!employeeId) {
-            const rawCode = employeeParsed.code || employeeParsed.emp_code || employeeParsed.raw;
-            if (!rawCode) {
-                return res.status(400).json({ success: false, error: 'Invalid employee QR payload' });
-            }
-            const empResult = await pool.query(
-                `SELECT id, emp_code, emp_name FROM employees WHERE emp_code = $1 AND is_active = true`,
-                [rawCode]
-            );
-            employee = empResult.rows[0];
-            if (!employee) {
-                return res.status(404).json({ success: false, error: 'Employee not found' });
-            }
-            employeeId = employee.id;
-        } else {
-            const empResult = await pool.query(
-                `SELECT id, emp_code, emp_name FROM employees WHERE id = $1 AND is_active = true`,
-                [employeeId]
-            );
-            employee = empResult.rows[0];
-            if (!employee) {
-                return res.status(404).json({ success: false, error: 'Employee not found' });
-            }
+        const employee = await resolveEmployeeFromQrPayload(employeeParsed);
+        if (!employee) {
+            return res.status(404).json({ success: false, error: 'Employee not found' });
         }
+        const employeeId = employee.id;
 
         const assignmentResult = await pool.query(
             `SELECT process_id FROM employee_process_assignments WHERE line_id = $1 AND employee_id = $2`,
@@ -12796,32 +13223,11 @@ router.post('/supervisor/assign', async (req, res) => {
     try {
         const process = await resolveProcessForLine(line_id, { id: process_id, type: 'process' }, effectiveDate);
 
-        let employeeId = employeeParsed.id;
-        let employee = null;
-        if (!employeeId) {
-            const rawCode = employeeParsed.code || employeeParsed.emp_code || employeeParsed.raw;
-            if (!rawCode) {
-                return res.status(400).json({ success: false, error: 'Invalid employee QR payload' });
-            }
-            const empResult = await pool.query(
-                `SELECT id, emp_code, emp_name FROM employees WHERE emp_code = $1 AND is_active = true`,
-                [rawCode]
-            );
-            employee = empResult.rows[0];
-            if (!employee) {
-                return res.status(404).json({ success: false, error: 'Employee not found' });
-            }
-            employeeId = employee.id;
-        } else {
-            const empResult = await pool.query(
-                `SELECT id, emp_code, emp_name FROM employees WHERE id = $1 AND is_active = true`,
-                [employeeId]
-            );
-            employee = empResult.rows[0];
-            if (!employee) {
-                return res.status(404).json({ success: false, error: 'Employee not found' });
-            }
+        const employee = await resolveEmployeeFromQrPayload(employeeParsed);
+        if (!employee) {
+            return res.status(404).json({ success: false, error: 'Employee not found' });
         }
+        const employeeId = employee.id;
 
         const currentAssignmentResult = await pool.query(
             `SELECT employee_id FROM employee_process_assignments WHERE line_id = $1 AND process_id = $2`,
@@ -13067,12 +13473,16 @@ router.post('/supervisor/scan', async (req, res) => {
 
     const employeeParsed = parseSupervisorQr(employee_qr);
     const processParsed = parseSupervisorQr(process_qr);
-    if (!employeeParsed || !employeeParsed.id || !processParsed || !processParsed.id) {
+    if (!employeeParsed || (!employeeParsed.uuid && !employeeParsed.id) || !processParsed || !processParsed.id) {
         return res.status(400).json({ success: false, error: 'Invalid QR payload' });
     }
 
     try {
-        const employeeId = employeeParsed.id;
+        const employee = await resolveEmployeeFromQrPayload(employeeParsed);
+        if (!employee) {
+            return res.status(404).json({ success: false, error: 'Employee not found' });
+        }
+        const employeeId = employee.id;
         const process = await resolveProcessForLine(line_id, processParsed);
         const processId = process.id;
 
@@ -15695,29 +16105,61 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                 : Math.min(8, shiftHours);
 
             const targetRes = await pool.query(
-                `SELECT COALESCE(ldp.target_units, p.target_qty, 0) AS target_units
+                `SELECT COALESCE(ldp.target_units, p.target_qty, 0) AS target_units,
+                        COALESCE(ldp.incoming_target_units, ip.target_qty, 0) AS incoming_target_units
                  FROM line_plan_workstations lpw
                  LEFT JOIN line_daily_plans ldp ON ldp.line_id = lpw.line_id AND ldp.work_date = lpw.work_date
                  LEFT JOIN products p ON p.id = COALESCE(ldp.product_id, lpw.product_id)
+                 LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
                  WHERE lpw.line_id = $1 AND lpw.work_date = $2
                    AND (ldp.product_id IS NULL OR lpw.product_id = ldp.product_id)
                  LIMIT 1`,
                 [lid, date]
             );
             const targetUnits = parseInt(targetRes.rows[0]?.target_units || 0, 10) || 0;
+            const coTargetUnits = parseInt(targetRes.rows[0]?.incoming_target_units || 0, 10) || 0;
 
-            const [rawEmpProgress, empDepartureMap] = await Promise.all([
+            const [rawEmpProgress, rawSplitEmpProgress, empDepartureMap] = await Promise.all([
                 getCumulativeEmployeeProgress(pool, lid, date, null, false, liveHoursForDate),
+                getCumulativeEmployeeProgress(pool, lid, date, null, false, liveHoursForDate, { splitBySource: true }),
                 getDepartureHourDenomMap(pool, lid, date)
             ]);
             const empProgress = applyDepartureEfficiency(rawEmpProgress, empDepartureMap);
+            const splitEmpProgress = applyDepartureEfficiency(rawSplitEmpProgress, empDepartureMap);
+
+            // Bucket the split rows per employee into primary vs CO so a day-cell can show
+            // both when a workstation ran primary for part of the day then changed over.
+            const mergeWsCodes = (a, b) => [...new Set([...(a || '').split(', ').filter(Boolean), ...(b || '').split(', ').filter(Boolean)])].join(', ');
+            const splitByEmp = new Map();
+            for (const row of splitEmpProgress) {
+                const bucket = splitByEmp.get(row.id) || { primary: null, co: null };
+                if (row.is_changeover) {
+                    bucket.co = {
+                        output: (bucket.co?.output || 0) + row.total_output,
+                        eff: (bucket.co?.eff || 0) + row.efficiency_percent,
+                        ws: mergeWsCodes(bucket.co?.ws, row.workstation_codes)
+                    };
+                } else {
+                    bucket.primary = {
+                        output: (bucket.primary?.output || 0) + row.total_output,
+                        eff: (bucket.primary?.eff || 0) + row.efficiency_percent,
+                        ws: mergeWsCodes(bucket.primary?.ws, row.workstation_codes)
+                    };
+                }
+                splitByEmp.set(row.id, bucket);
+            }
+
             for (const emp of empProgress) {
+                const baseTarget = (emp.is_changeover && coTargetUnits > 0) ? coTargetUnits : targetUnits;
                 const workstationTarget = (emp.is_custom_takt && parseFloat(emp.takt_time_seconds || 0) > 0 && shiftWorkingSeconds > 0)
                     ? Math.max(0, Math.round(computeTargetUnitsFromTakt(emp.takt_time_seconds, shiftWorkingSeconds)))
-                    : targetUnits;
+                    : baseTarget;
                 const entry = getEmpEntry(emp.id, emp.emp_code, emp.emp_name);
                 const personalHours = empDepartureMap.get(emp.id) || liveHoursForDate;
                 const earnedHours = (emp.efficiency_percent * personalHours) / 100;
+                const split = splitByEmp.get(emp.id);
+                const hasBothSources = !!(split?.primary && split?.co);
+                const dayWsCodes = mergeWsCodes(split?.primary?.ws, split?.co?.ws) || emp.workstation_code || null;
                 const existingCell = entry.dates[date];
                 if (existingCell) {
                     // Employee worked on more than one line this same day (e.g. a mid-day line
@@ -15727,13 +16169,27 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                     existingCell.output += emp.total_output;
                     existingCell.hours_worked += personalHours;
                     existingCell._earned_hours = (existingCell._earned_hours || 0) + earnedHours;
+                    existingCell.tag = (existingCell.tag === 'CO' || emp.is_changeover) ? 'CO' : existingCell.tag;
+                    existingCell.workstation_codes = mergeWsCodes(existingCell.workstation_codes, dayWsCodes);
+                    if (hasBothSources) {
+                        existingCell.primary_output = (existingCell.primary_output || 0) + split.primary.output;
+                        existingCell.primary_eff = (existingCell.primary_eff || 0) + split.primary.eff;
+                        existingCell.co_output = (existingCell.co_output || 0) + split.co.output;
+                        existingCell.co_eff = (existingCell.co_eff || 0) + split.co.eff;
+                    }
                 } else {
                     entry.dates[date] = {
                         line_target: workstationTarget,
                         wip: workstationTarget,
                         output: emp.total_output,
                         eff: emp.efficiency_percent,
-                        tag: null,
+                        tag: emp.is_changeover ? 'CO' : null,
+                        line_id: lid,
+                        workstation_codes: dayWsCodes,
+                        primary_output: hasBothSources ? split.primary.output : undefined,
+                        primary_eff: hasBothSources ? split.primary.eff : undefined,
+                        co_output: hasBothSources ? split.co.output : undefined,
+                        co_eff: hasBothSources ? split.co.eff : undefined,
                         hours_worked: personalHours,
                         _earned_hours: earnedHours
                     };
@@ -15839,6 +16295,70 @@ router.get('/worker-individual-efficiency', async (req, res) => {
         });
 
         res.json({ success: true, data: { dates, rows, shift_hours: shiftHours } });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// GET /api/worker-individual-efficiency/workstation-processes?line_id=&work_date=&workstation_code=
+// Read-only lookup of a workstation's process/operation details for a specific historical date,
+// split into primary vs CO groups (a physical workstation keeps the same code across a changeover —
+// only its product_id differs between the primary and incoming/CO plan rows).
+router.get('/worker-individual-efficiency/workstation-processes', async (req, res) => {
+    const { line_id, work_date, workstation_code } = req.query;
+    if (!line_id || !work_date || !workstation_code) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
+    }
+    try {
+        const planResult = await pool.query(
+            `SELECT incoming_product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+            [line_id, work_date]
+        );
+        const incomingProductId = planResult.rows[0]?.incoming_product_id
+            ? parseInt(planResult.rows[0].incoming_product_id, 10)
+            : null;
+
+        const result = await pool.query(
+            `SELECT lpw.product_id, p.product_code, p.product_name,
+                    o.operation_code, o.operation_name, pp.operation_sah, pp.sequence_number
+             FROM line_plan_workstations lpw
+             JOIN products p ON p.id = lpw.product_id
+             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             JOIN operations o ON o.id = pp.operation_id
+             WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.workstation_code = $3
+             ORDER BY lpw.product_id, pp.sequence_number`,
+            [line_id, work_date, workstation_code]
+        );
+
+        const groups = new Map();
+        for (const row of result.rows) {
+            const pid = parseInt(row.product_id, 10);
+            if (!groups.has(pid)) {
+                groups.set(pid, {
+                    product_id: pid,
+                    product_code: row.product_code,
+                    product_name: row.product_name,
+                    is_changeover: !!incomingProductId && pid === incomingProductId,
+                    processes: []
+                });
+            }
+            groups.get(pid).processes.push({
+                sequence_number: row.sequence_number,
+                operation_code: row.operation_code,
+                operation_name: row.operation_name,
+                operation_sah: row.operation_sah
+            });
+        }
+        const groupList = [...groups.values()];
+        res.json({
+            success: true,
+            data: {
+                workstation_code,
+                primary: groupList.find(g => !g.is_changeover) || null,
+                co: groupList.find(g => g.is_changeover) || null
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

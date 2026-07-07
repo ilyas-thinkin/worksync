@@ -51,7 +51,8 @@ const employeeSchema = z.object({
     emp_code: empCode,
     emp_name: z.string().min(1).max(100),
     line_id: positiveInt.nullable().optional(),
-    is_active: z.boolean().optional()
+    is_active: z.boolean().optional(),
+    employment_status: z.enum(['temporary', 'permanent']).optional()
 });
 
 const attendanceSchema = z.object({

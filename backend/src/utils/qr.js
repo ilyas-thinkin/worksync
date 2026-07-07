@@ -63,9 +63,36 @@ async function writeQrWithLabel(filePath, payload, label1, label2) {
     await fs.writeFile(filePath, finalSvg, 'utf8');
 }
 
+// Updates ONLY the printed code line (label2) on an employee's existing QR SVG,
+// in place. The QR matrix (the scannable graphic) and the name line are left
+// byte-identical — this does not regenerate the QR, it edits the existing file's
+// text so a reprint shows the new code under the same badge.
+async function updateEmployeeQrCodeLabel(id, newCode) {
+    const filename = `${id}.svg`;
+    const fullPath = path.join(dirs.employees, filename);
+
+    let svgString;
+    try {
+        svgString = await fs.readFile(fullPath, 'utf8');
+    } catch (err) {
+        if (err.code === 'ENOENT') return false;
+        throw err;
+    }
+
+    const labelPattern = /(<text[^>]*font-weight="normal"[^>]*>)([^<]*)(<\/text>)/;
+    if (!labelPattern.test(svgString)) return false;
+
+    const updatedSvg = svgString.replace(labelPattern, (match, open, _oldText, close) => {
+        return `${open}${escXml(newCode)}${close}`;
+    });
+
+    await fs.writeFile(fullPath, updatedSvg, 'utf8');
+    return true;
+}
+
 async function generateEmployeeQrById(id) {
     const result = await pool.query(
-        'SELECT id, emp_code, emp_name FROM employees WHERE id = $1',
+        'SELECT id, emp_code, emp_name, uuid FROM employees WHERE id = $1',
         [id]
     );
     const employee = result.rows[0];
@@ -76,8 +103,7 @@ async function generateEmployeeQrById(id) {
     const fullPath = path.join(dirs.employees, filename);
     const payload = {
         type: 'employee',
-        id: employee.id,
-        code: employee.emp_code,
+        uuid: employee.uuid,
         name: employee.emp_name
     };
 
@@ -151,6 +177,7 @@ async function generateWorkstationQrForLine(lineId) {
 
 module.exports = {
     generateEmployeeQrById,
+    updateEmployeeQrCodeLabel,
     generateLineQrById,
     generateWorkstationQrForLine
 };
