@@ -1777,6 +1777,23 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
     params.push(windowEndHour);
     const windowEndIndex = params.length;
 
+    // Ghost-row safety net (cumulative views only): an employee whose windows on this
+    // line+date are ALL closed and produced zero output was replaced/unlinked without
+    // ever working here (absent no-show, wrong "reassigned" choice, plan re-save swap,
+    // cross-line move) — drop them from the report. Workers with a recorded mid-day
+    // departure stay visible. Not applied to exact-hour views, where a still-working
+    // employee replaced later that day would wrongly match on a zero-output hour.
+    const ghostRowFilter = Number.isFinite(exactHour)
+        ? ''
+        : `WHERE NOT (
+               et.all_windows_closed
+               AND COALESCE(et.total_output, 0) = 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM worker_departures wd
+                   WHERE wd.line_id = $1 AND wd.work_date = $2 AND wd.employee_id = et.employee_id
+               )
+           )`;
+
     const result = await db.query(
         `WITH assignments AS (
              SELECT hist.id AS history_id,
@@ -1784,6 +1801,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     hist.workstation_code,
                     hist.line_plan_workstation_id,
                     hist.effective_from_hour,
+                    (hist.effective_to_hour IS NOT NULL) AS window_closed,
                     COALESCE(hist.effective_to_hour, 999) AS effective_to_hour,
                     ws.id AS workstation_id,
                     ws.workstation_number,
@@ -1859,6 +1877,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     a.group_name,
                     a.actual_sam_seconds,
                     a.source_product_id,
+                    a.window_closed,
                     COALESCE(SUM(wh.hour_output), 0) AS total_output,
                     COALESCE(SUM(wh.hour_rejection), 0) AS total_rejection,
                     COALESCE(SUM((wh.hour_output * a.actual_sam_seconds) / 3600.0), 0) AS total_sah_hours,
@@ -1868,13 +1887,14 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                ON wh.workstation_id = a.workstation_id
               AND wh.hour_slot >= a.effective_from_hour
               AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
-             GROUP BY a.history_id, a.employee_id, a.workstation_id, a.workstation_code, a.workstation_number, a.group_name, a.actual_sam_seconds, a.source_product_id
+             GROUP BY a.history_id, a.employee_id, a.workstation_id, a.workstation_code, a.workstation_number, a.group_name, a.actual_sam_seconds, a.source_product_id, a.window_closed
          ),
          employee_totals AS (
              SELECT employee_id${totalsSourceSelect},
                     COALESCE(SUM(total_output), 0) AS total_output,
                     COALESCE(SUM(total_rejection), 0) AS total_rejection,
                     COALESCE(SUM(total_sah_hours), 0) AS total_sah_hours,
+                    BOOL_AND(window_closed) AS all_windows_closed,
                     MAX(last_updated) AS last_updated
              FROM assignment_stats
              GROUP BY employee_id${totalsSourceGroup}
@@ -1913,6 +1933,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
          FROM employee_totals et
          JOIN employees e ON e.id = et.employee_id
          LEFT JOIN current_assignment ca ON ca.employee_id = et.employee_id
+         ${ghostRowFilter}
          ORDER BY ca.workstation_number NULLS LAST, ca.workstation_code, e.emp_code`,
         params
     );
