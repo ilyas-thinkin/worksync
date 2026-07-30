@@ -5478,13 +5478,14 @@ router.post('/employees/qr-export', async (req, res) => {
             ? await pool.query(
                 `SELECT id, emp_name, emp_code, qr_code_path
                  FROM employees
-                 WHERE id = ANY($1::int[])
+                 WHERE id = ANY($1::int[]) AND is_active = true
                  ORDER BY emp_code`,
                 [requestedIds]
             )
             : await pool.query(
                 `SELECT id, emp_name, emp_code, qr_code_path
                  FROM employees
+                 WHERE is_active = true
                  ORDER BY emp_code`
             );
 

@@ -2272,10 +2272,9 @@ function printSelectedEmployeesQr() {
     }
     const skipped = selectedIds.size - emps.length;
     const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    const toAbs = u => (/^https?:\/\//i.test(u) ? u : window.location.origin + u);
 
     const cards = emps.map(e => {
-        const url = esc(toAbs(getEmployeeQrUrl(e.qr_code_path)));
+        const url = esc(toAbsoluteQrUrl(getEmployeeQrUrl(e.qr_code_path)));
         return `<div class="qr-card">
             <img src="${url}" alt="${esc(e.emp_code)}">
         </div>`;
@@ -2359,6 +2358,117 @@ async function downloadEmployeeQrExcelForIds(employeeIds, filenameBase = 'employ
     }
 }
 
+function sanitizeQrFileName(name) {
+    return String(name || 'employee').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'employee';
+}
+
+async function employeeQrToJpegBlob(emp) {
+    const url = toAbsoluteQrUrl(getEmployeeQrUrl(emp.qr_code_path));
+    const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error(`Failed to load QR image for ${emp.emp_code}`));
+        image.src = url;
+    });
+    // The QR SVG is a square code (width === its own height) with a name/code
+    // label appended below it. Crop to the top square to get just the QR,
+    // with no name or ID text baked into the image.
+    const scale = 3;
+    const srcSide = img.naturalWidth || 200;
+    const side = srcSide * scale;
+    const canvas = document.createElement('canvas');
+    canvas.width = side;
+    canvas.height = side;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, side, side);
+    ctx.drawImage(img, 0, 0, srcSide, srcSide, 0, 0, side, side);
+    return await new Promise((resolve, reject) => {
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('JPG encode failed')), 'image/jpeg', 0.92);
+    });
+}
+
+async function downloadSelectedEmployeeQrImages() {
+    const selectedIds = new Set([...employeeQrExportSelection].map(String));
+    if (!selectedIds.size) {
+        showToast('Select at least one employee', 'error');
+        return;
+    }
+
+    const selected = (allEmployees || []).filter(e => selectedIds.has(String(e.id)));
+    const withQr = selected.filter(e => e.qr_code_path);
+    const activeEmps = withQr.filter(e => e.is_active);
+    const inactiveSkipped = withQr.length - activeEmps.length;
+    const noQrSkipped = selected.length - withQr.length;
+
+    if (!activeEmps.length) {
+        showToast('None of the selected employees are active with a QR code', 'error');
+        return;
+    }
+
+    if (!window.showDirectoryPicker) {
+        showToast('Your browser cannot pick a save folder (needs Chrome or Edge). Falling back to individual downloads.', 'info');
+        for (const emp of activeEmps) {
+            try {
+                const blob = await employeeQrToJpegBlob(emp);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${sanitizeQrFileName(emp.emp_code)}.jpg`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                // ignore individual failures, continue with the rest
+            }
+        }
+        showToast(`Downloaded ${activeEmps.length} QR image(s) to your Downloads folder`, 'success');
+        return;
+    }
+
+    let rootHandle;
+    try {
+        rootHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    } catch (err) {
+        if (err.name === 'AbortError') return;
+        showToast('Could not access the selected folder: ' + err.message, 'error');
+        return;
+    }
+
+    const folderName = `employee_qr_codes_${new Date().toISOString().slice(0, 10)}`;
+    let targetHandle;
+    try {
+        targetHandle = await rootHandle.getDirectoryHandle(folderName, { create: true });
+    } catch (err) {
+        showToast('Could not create folder: ' + err.message, 'error');
+        return;
+    }
+
+    let saved = 0;
+    let failed = 0;
+    for (const emp of activeEmps) {
+        try {
+            const blob = await employeeQrToJpegBlob(emp);
+            const fileHandle = await targetHandle.getFileHandle(`${sanitizeQrFileName(emp.emp_code)}.jpg`, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            saved++;
+        } catch (err) {
+            failed++;
+        }
+    }
+
+    const skipNotes = [];
+    if (inactiveSkipped > 0) skipNotes.push(`${inactiveSkipped} inactive`);
+    if (noQrSkipped > 0) skipNotes.push(`${noQrSkipped} without QR`);
+    if (failed > 0) skipNotes.push(`${failed} failed`);
+    let message = `Saved ${saved} QR image(s) to "${folderName}"`;
+    if (skipNotes.length) message += ` (skipped ${skipNotes.join(', ')})`;
+    showToast(message, failed > 0 ? 'info' : 'success');
+}
+
 function buildEmployeeRows(employees, showActions) {
     return employees.map((emp, index) => `
         <tr>
@@ -2437,6 +2547,12 @@ function renderEmployeesTable(employees) {
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v10m0 0l-4-4m4 4l4-4M5 19h14"/>
                     </svg>
                     Download QR Excel
+                </button>
+                <button class="btn btn-secondary" onclick="downloadSelectedEmployeeQrImages()">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M14 8h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                    </svg>
+                    Download QR Images (JPG)
                 </button>
                 ${showActions ? `
                     <button class="btn btn-primary" onclick="showEmployeeModal()">
@@ -2586,6 +2702,10 @@ function showEmployeeModal(emp = null) {
     `;
     document.body.appendChild(modal);
     setTimeout(() => modal.classList.add('active'), 10);
+}
+
+function toAbsoluteQrUrl(u) {
+    return /^https?:\/\//i.test(u) ? u : window.location.origin + u;
 }
 
 function getEmployeeQrUrl(qrPath) {
