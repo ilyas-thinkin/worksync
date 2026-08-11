@@ -1216,6 +1216,20 @@ function formatHourlyRange(hourSlot) {
     return supHourLabel(hourSlot);
 }
 
+// Entries for an hour slot are only editable until the end of the following hour
+// (e.g. the 09:00-10:00 slot locks at 11:00) — mirrors the backend check in
+// POST /supervisor/progress.
+function hourlyEntryCutoffLabel(hourSlot) {
+    return `${String(hourSlot + 2).padStart(2, '0')}:00`;
+}
+
+function isHourEntryLocked(hourSlot, dateStr) {
+    if (!dateStr) return false;
+    const cutoffHour = hourSlot + 2;
+    const cutoff = new Date(`${dateStr}T${String(cutoffHour).padStart(2, '0')}:00:00`);
+    return !Number.isNaN(cutoff.getTime()) && Date.now() >= cutoff.getTime();
+}
+
 function buildReasonSelectHTML(existingReason, isCombined) {
     // If existingReason is not in our known list and not WORKSTATION COMBINED, it was an "Other" free-text entry
     const knownReasons = isCombined ? ['WORKSTATION COMBINED', ...SHORTFALL_REASONS] : SHORTFALL_REASONS;
@@ -1294,7 +1308,7 @@ function checkHourPendingReasons(hour) {
             );
             if (progress) {
                 const qty = parseInt(progress.quantity || 0, 10);
-                if (qty > 0 && qty < hourlyTarget && !progress.shortfall_reason) {
+                if (qty < hourlyTarget && !progress.shortfall_reason) {
                     violations.push(ws.workstation_code);
                 }
             }
@@ -1308,7 +1322,7 @@ function checkHourPendingReasons(hour) {
             );
             if (progress) {
                 const qty = parseInt(progress.quantity || 0, 10);
-                if (qty > 0 && qty < hourlyTarget && !progress.shortfall_reason) {
+                if (qty < hourlyTarget && !progress.shortfall_reason) {
                     violations.push(p.workstation_code || p.operation_name || `Process ${p.id}`);
                 }
             }
@@ -2378,7 +2392,8 @@ function renderHourlySummary() {
             const progress = hourlyState.progressData.find(
                 d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour
             );
-            const output = progress ? parseInt(progress.quantity || 0) : 0;
+            const hasEntry = !!progress;
+            const output = hasEntry ? parseInt(progress.quantity || 0) : 0;
             const reason = progress?.shortfall_reason || '';
 
             const wsStatus = ws.ws_status || 'active';
@@ -2403,7 +2418,7 @@ function renderHourlySummary() {
             const coProcessList = (ws.co_processes || []).map(p => p.operation_name).join(', ');
             const showCoProcessList = !!(coProcessList && hasChangeover && (hourlyState.changeoverUiEnabled || hourlyState.changeoverActive || isWsChangeover));
             const workloadColor = ws.workload_pct >= 90 ? '#16a34a' : ws.workload_pct >= 80 ? '#d97706' : '#dc2626';
-            const needsReason = output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
+            const needsReason = hasEntry && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
 
             // Block hourly input if no daily plan, no employee assigned, or employee not mapped
             const noDailyPlan = !hourlyState.hasDailyPlan;
@@ -2425,13 +2440,13 @@ function renderHourlySummary() {
                 statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">VACANT</span>`;
             } else if (needsReason) {
                 statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#9888; Needs Reason</span>`;
-            } else if (output > 0 && wsHourlyTarget > 0 && output < wsHourlyTarget) {
+            } else if (hasEntry && wsHourlyTarget > 0 && output < wsHourlyTarget) {
                 statusBadge = `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Below target</span>`;
-            } else if (output > 0 && output >= wsHourlyTarget) {
+            } else if (hasEntry && output >= wsHourlyTarget) {
                 statusBadge = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">On track</span>`;
             }
 
-            const outputColor = output > 0 ? (output >= wsHourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
+            const outputColor = hasEntry ? (output >= wsHourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
 
             // Footer buttons — block if no daily plan, no employee, not mapped, or vacant
             const enterOutputBtn = noDailyPlan
@@ -2442,7 +2457,7 @@ function renderHourlySummary() {
                         ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Morning section">&#128683; Not Assigned</button>`
                         : notMapped
                             ? `<button class="btn ws-card-action" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:not-allowed;" disabled title="Employee assigned but not mapped — supervisor must link in Mapping section">&#128279; Map Employee</button>`
-                            : output > 0
+                            : hasEntry
                                 ? `<button class="btn btn-secondary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">&#9998; Edit</button>`
                                 : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
@@ -2463,7 +2478,7 @@ function renderHourlySummary() {
                     onclick="promptWsChangeover(this)">&#8652; CO${_coHint}</button>`;
             }
 
-            const reasonLine = reason && output > 0 && output < wsHourlyTarget
+            const reasonLine = reason && hasEntry && output < wsHourlyTarget
                 ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
                 : '';
             const flow = flowMetrics.get(getWorkstationFlowKey(ws)) || { availableInput: 0, cumulativeOutput: 0, wip: 0 };
@@ -2529,7 +2544,7 @@ function renderHourlySummary() {
                             </div>
                             <div class="ws-kpi-box">
                                 <div class="ws-kpi-label">Output</div>
-                                <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
+                                <div class="ws-kpi-val" style="color:${outputColor};">${hasEntry ? output : '–'}</div>
                             </div>
                         </div>
                         ${flowLine}
@@ -2581,34 +2596,35 @@ function renderHourlySummary() {
         const progress = hourlyState.progressData.find(
             d => parseInt(d.process_id) === p.id && parseInt(d.hour_slot) === hour
         );
-        const output = progress ? parseInt(progress.quantity || 0) : 0;
+        const hasEntry = !!progress;
+        const output = hasEntry ? parseInt(progress.quantity || 0) : 0;
         const reason = progress?.shortfall_reason || '';
         const workerHtml = p.assigned_emp_name
             ? `${p.assigned_emp_code} – ${p.assigned_emp_name}`
             : '<span style="color:#dc2626;">Unassigned</span>';
 
-        const needsReason = output > 0 && hourlyTarget > 0 && output < hourlyTarget && !reason;
-        const outputColor = output > 0 ? (output >= hourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
+        const needsReason = hasEntry && hourlyTarget > 0 && output < hourlyTarget && !reason;
+        const outputColor = hasEntry ? (output >= hourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
 
         let statusBadge = '';
         if (!p.assigned_emp_name) {
             statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Not Assigned</span>`;
         } else if (needsReason) {
             statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#9888; Needs Reason</span>`;
-        } else if (output > 0 && output < hourlyTarget) {
+        } else if (hasEntry && output < hourlyTarget) {
             statusBadge = `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Below target</span>`;
-        } else if (output >= hourlyTarget && output > 0) {
+        } else if (hasEntry && output >= hourlyTarget) {
             statusBadge = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">On track</span>`;
         }
 
-        const reasonLine = reason && output > 0 && output < hourlyTarget
+        const reasonLine = reason && hasEntry && output < hourlyTarget
             ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
             : '';
 
         const procNoEmployee = !p.assigned_emp_name;
         const procEnterBtn = procNoEmployee
             ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Mapping">&#128683; Not Assigned</button>`
-            : output > 0
+            : hasEntry
                 ? `<button class="btn btn-secondary ws-card-action" onclick="openHourlyEntry(${p.id})">&#9998; Edit</button>`
                 : `<button class="btn btn-primary ws-card-action" onclick="openHourlyEntry(${p.id})">Enter Output</button>`;
 
@@ -2634,7 +2650,7 @@ function renderHourlySummary() {
                         </div>
                         <div class="ws-kpi-box">
                             <div class="ws-kpi-label">Output</div>
-                            <div class="ws-kpi-val" style="color:${outputColor};">${output || '–'}</div>
+                            <div class="ws-kpi-val" style="color:${outputColor};">${hasEntry ? output : '–'}</div>
                         </div>
                     </div>
                     ${reasonLine}
@@ -2744,6 +2760,25 @@ function openHourlyEntry(processId) {
         ? `${process.assigned_emp_code} – ${process.assigned_emp_name}`
         : 'Unassigned';
 
+    const entryDate = document.getElementById('hourly-date')?.value;
+    if (isHourEntryLocked(hour, entryDate)) {
+        footer.innerHTML = `
+            <div class="hourly-inline-entry" style="width:100%;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <div style="font-weight:700;font-size:14px;">${process.workstation_code || process.group_name || ''} — Locked</div>
+                        <div style="font-size:12px;color:#6b7280;">Hour: ${formatHourlyRange(hour)} &nbsp;|&nbsp; Output entered: ${existing ? existingOutput : '–'}</div>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="cancelHourlyEntry()">Close</button>
+                </div>
+                <div style="margin-top:8px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#991b1b;">
+                    &#128274; Entries for this hour closed at ${hourlyEntryCutoffLabel(hour)} and can no longer be edited.
+                </div>
+            </div>`;
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return;
+    }
+
     footer.innerHTML = `
         <div class="hourly-inline-entry" style="width:100%;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -2755,9 +2790,9 @@ function openHourlyEntry(processId) {
             </div>
 
             <label class="form-label">Output Quantity</label>
-            <input type="number" class="form-control output-qty-input" id="hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="0" style="margin-bottom:10px;">
+            <input type="number" class="form-control output-qty-input" id="hourly-output-qty" min="0" value="${existing ? existingOutput : ''}" placeholder="0" style="margin-bottom:10px;">
 
-            <div id="hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
+            <div id="hourly-reason-section" style="margin-bottom:10px; display:${existing && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
                 <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
                 ${buildReasonSelectHTML(existingReason, false)}
                 <div id="hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
@@ -2776,8 +2811,9 @@ function openHourlyEntry(processId) {
     outputInput?.focus();
 
     outputInput?.addEventListener('input', () => {
-        const val = parseInt(outputInput.value || 0, 10);
-        const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
+        const raw = outputInput.value;
+        const val = parseInt(raw || 0, 10);
+        const showReason = raw !== '' && hourlyTarget > 0 && val < hourlyTarget;
         document.getElementById('hourly-reason-section').style.display = showReason ? 'block' : 'none';
         document.getElementById('hourly-reason-warning').style.display = 'none';
     });
@@ -2815,6 +2851,25 @@ function openWorkstationHourlyEntry(workstationPlanId) {
         ? `${ws.assigned_emp_code} – ${ws.assigned_emp_name}`
         : '<span style="color:#dc2626;">Unassigned</span>';
 
+    const entryDate = document.getElementById('hourly-date')?.value;
+    if (isHourEntryLocked(hour, entryDate)) {
+        footer.innerHTML = `
+            <div class="hourly-inline-entry" style="width:100%;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <div style="font-weight:700;font-size:14px;">${ws.workstation_code} — Locked</div>
+                        <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${formatHourlyRange(hour)} &nbsp;|&nbsp; Output entered: ${existing ? existingOutput : '–'}</div>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="cancelHourlyEntry()">Close</button>
+                </div>
+                <div style="margin-top:8px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#991b1b;">
+                    &#128274; Entries for this hour closed at ${hourlyEntryCutoffLabel(hour)} and can no longer be edited.
+                </div>
+            </div>`;
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return;
+    }
+
     footer.innerHTML = `
         <div class="hourly-inline-entry" style="width:100%;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -2827,13 +2882,13 @@ function openWorkstationHourlyEntry(workstationPlanId) {
             <div style="font-size:11px;color:#9ca3af;margin-bottom:10px;">${processList}</div>
 
             <label class="form-label">Output Quantity</label>
-            <input type="number" class="form-control output-qty-input" id="hourly-output-qty" min="0" value="${existingOutput || ''}" placeholder="0" style="margin-bottom:10px;">
+            <input type="number" class="form-control output-qty-input" id="hourly-output-qty" min="0" value="${existing ? existingOutput : ''}" placeholder="0" style="margin-bottom:10px;">
 
             ${isCombined ? `<div style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#5b21b6;">
                 &#9888; This workstation is combined — WORKSTATION COMBINED is available as a reason.
             </div>` : ''}
 
-            <div id="hourly-reason-section" style="margin-bottom:10px; display:${existingOutput > 0 && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
+            <div id="hourly-reason-section" style="margin-bottom:10px; display:${existing && hourlyTarget > 0 && existingOutput < hourlyTarget ? 'block' : 'none'};">
                 <label class="form-label" style="color:#dc2626;font-weight:700;">Reason for Shortfall (Required)</label>
                 ${buildReasonSelectHTML(existingReason, isCombined)}
                 <div id="hourly-reason-warning" style="display:none;color:#dc2626;font-weight:600;margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:6px;border:1px solid #fecaca;">
@@ -2852,8 +2907,9 @@ function openWorkstationHourlyEntry(workstationPlanId) {
     outputInput?.focus();
 
     outputInput?.addEventListener('input', () => {
-        const val = parseInt(outputInput.value || 0, 10);
-        const showReason = hourlyTarget > 0 && val > 0 && val < hourlyTarget;
+        const raw = outputInput.value;
+        const val = parseInt(raw || 0, 10);
+        const showReason = raw !== '' && hourlyTarget > 0 && val < hourlyTarget;
         document.getElementById('hourly-reason-section').style.display = showReason ? 'block' : 'none';
         document.getElementById('hourly-reason-warning').style.display = 'none';
     });
@@ -2875,7 +2931,7 @@ async function saveWorkstationHourlyOutput() {
     if (!lineId || !date || !hour) { showToast('Line, date and hour are required', 'error'); return; }
     if (output < 0) { showToast('Output must be 0 or more', 'error'); return; }
 
-    const isShortfall = hourlyTarget > 0 && output > 0 && output < hourlyTarget;
+    const isShortfall = hourlyTarget > 0 && output < hourlyTarget;
     if (isShortfall && !reason) {
         if (warningEl) warningEl.style.display = 'block';
         showToast('Please select a shortfall reason', 'error');
@@ -2906,6 +2962,10 @@ async function saveWorkstationHourlyOutput() {
             body: JSON.stringify(payload)
         });
         const result = await response.json();
+        if (response.status === 401) {
+            showToast('Session expired. Please reload the page and sign in again.', 'error');
+            return;
+        }
         if (!response.ok && result.output_warning && result.requires_confirmation) {
             const shouldContinue = confirm(result.message || 'This output exceeds the current control limits. Do you want to continue?');
             if (!shouldContinue) return;
@@ -2958,7 +3018,7 @@ async function saveHourlyOutput() {
         return;
     }
 
-    const isShortfall = hourlyTarget > 0 && output > 0 && output < hourlyTarget;
+    const isShortfall = hourlyTarget > 0 && output < hourlyTarget;
     if (isShortfall && !reason) {
         if (warningEl) warningEl.style.display = 'block';
         showToast('Please select a shortfall reason', 'error');
@@ -2983,6 +3043,10 @@ async function saveHourlyOutput() {
             })
         });
         const result = await response.json();
+        if (response.status === 401) {
+            showToast('Session expired. Please reload the page and sign in again.', 'error');
+            return;
+        }
         if (!result.success) {
             showToast(result.error || 'Failed to save output', 'error');
             return;

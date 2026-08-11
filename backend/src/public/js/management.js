@@ -2303,7 +2303,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
     const showOutput = metric === 'all' || metric === 'output';
     const showEff = metric === 'all' || metric === 'efficiency';
 
-    const dateCols = (showTarget ? 1 : 0) + (showWip ? 1 : 0) + (showOutput ? 1 : 0) + (showEff ? 1 : 0) + 1;
+    const dateCols = (showTarget ? 1 : 0) + (showWip ? 1 : 0) + (showOutput ? 1 : 0) + (showEff ? 1 : 0) + 3;
     const fixedCols = 3;
     const overallCols = (showOutput ? 1 : 0) + (showEff ? 1 : 0);
 
@@ -2322,7 +2322,8 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
     };
     const effColor = eff => {
         if (eff == null) return '#6b7280';
-        return eff >= 90 ? '#16a34a' : eff >= 80 ? '#d97706' : '#dc2626';
+        const rounded = Math.round(eff * 10) / 10;
+        return rounded >= 90 ? '#16a34a' : rounded >= 80 ? '#d97706' : '#dc2626';
     };
 
     const dateGroupHeaders = dates.map(d => `<th colspan="${dateCols}" style="${thS}">${fmtDate(d)}</th>`).join('');
@@ -2331,7 +2332,9 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
         showTarget ? `<th style="${thSS}">TARGET</th>` : '',
         showWip ? `<th style="${thSS}">WIP</th>` : '',
         showOutput ? `<th style="${thSS}">OUTPUT</th>` : '',
-        showEff ? `<th style="${thSS}">EFF%</th>` : ''
+        `<th style="${thSS}">ACHIEVED%</th>`,
+        showEff ? `<th style="${thSS}">EFF%</th>` : '',
+        `<th style="${thSS}">DOWNFALL REASON</th>`
     ].join('')).join('');
 
     const dataRows = rows.map((row, idx) => {
@@ -2352,7 +2355,9 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
                     showTarget ? blankCell : '',
                     showWip ? blankCell : '',
                     showOutput ? blankCell : '',
-                    showEff ? `<td style="${tcS}font-weight:600;color:#6b7280;">-</td>` : ''
+                    `<td style="${tcS}color:#6b7280;">-</td>`,
+                    showEff ? `<td style="${tcS}font-weight:600;color:#6b7280;">-</td>` : '',
+                    `<td style="${tdS}color:#6b7280;">-</td>`
                 ].join('');
             }
 
@@ -2365,13 +2370,19 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
             const wsCell = wsCodes.length
                 ? wsCodes.map(code => `<span onclick="openMgmtWieWorkstationPopup(${cell.line_id}, '${d}', '${code}')" style="cursor:pointer;color:#1d4ed8;text-decoration:underline;font-weight:600;">${code}</span>`).join(', ')
                 : '-';
+            const target = Number(cell.line_target) || 0;
+            const achievedVal = target > 0 ? Math.round(((cell.output ?? 0) / target) * 1000) / 10 : null;
+            const achievedC = achievedVal == null ? '#6b7280' : effColor(achievedVal);
+            const reasonTxt = cell.reason || '-';
 
             return [
                 `<td style="${tcS}">${wsCell}</td>`,
                 showTarget ? `<td style="${tcS}${tS}">${cell.line_target ?? '-'}${tagBadge}</td>` : '',
                 showWip ? `<td style="${tcS}${tS}font-weight:600;color:${wipColor};">${wip}</td>` : '',
                 showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}${outputSub}</td>` : '',
-                showEff ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}${effSub}</td>` : ''
+                `<td style="${tcS}${tS}font-weight:600;color:${achievedC};">${achievedVal == null ? '-' : achievedVal.toFixed(1) + '%'}</td>`,
+                showEff ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effTxt}${effSub}</td>` : '',
+                `<td style="${tdS}${tS}font-size:10px;" title="${reasonTxt.replace(/"/g, '&quot;')}">${reasonTxt}</td>`
             ].join('');
         }).join('');
 

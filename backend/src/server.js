@@ -32,6 +32,47 @@ if (FORCE_HTTPS) {
   });
 }
 
+// --- Basic Auth gate for the public Cloudflare quick tunnel ---
+// worksync-quick-tunnel.service exposes this app on an anonymous, unauthenticated
+// *.trycloudflare.com URL. Requests arriving over that hostname must pass HTTP
+// Basic Auth before reaching anything else, on top of WorkSync's normal
+// role/password login. LAN access via nginx (any other Host header) is untouched.
+const TUNNEL_HOST_SUFFIX = '.trycloudflare.com';
+const TUNNEL_BASIC_AUTH_USER = process.env.TUNNEL_BASIC_AUTH_USER || '';
+const TUNNEL_BASIC_AUTH_PASS = process.env.TUNNEL_BASIC_AUTH_PASS || '';
+
+const timingSafeStringEqual = (a, b) => {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA); // keep timing consistent with the match path
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+};
+
+if (TUNNEL_BASIC_AUTH_USER && TUNNEL_BASIC_AUTH_PASS) {
+  app.use((req, res, next) => {
+    const host = (req.headers.host || '').toLowerCase();
+    if (!host.endsWith(TUNNEL_HOST_SUFFIX)) return next();
+
+    const [scheme, encoded] = (req.headers.authorization || '').split(' ');
+    if (scheme === 'Basic' && encoded) {
+      const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+      const sepIdx = decoded.indexOf(':');
+      const user = sepIdx >= 0 ? decoded.slice(0, sepIdx) : decoded;
+      const pass = sepIdx >= 0 ? decoded.slice(sepIdx + 1) : '';
+      if (timingSafeStringEqual(user, TUNNEL_BASIC_AUTH_USER) && timingSafeStringEqual(pass, TUNNEL_BASIC_AUTH_PASS)) {
+        return next();
+      }
+    }
+    res.setHeader('WWW-Authenticate', 'Basic realm="WorkSync Remote Access", charset="UTF-8"');
+    return res.status(401).send('Authentication required');
+  });
+} else {
+  console.warn('⚠️  TUNNEL_BASIC_AUTH_USER/PASS not set — the public tunnel (if running) has no extra protection.');
+}
+
 const AUTH_SECRET = process.env.AUTH_SECRET || process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const AUTH_COOKIE = 'worksync_auth';
 const requireEnv = (name) => {
@@ -106,12 +147,23 @@ const buildAuthCookie = (token, req, { clear = false } = {}) => {
   return parts.join('; ');
 };
 
+// Slide the session forward once a token is past its half-life, so an active
+// user never gets logged out mid-shift while a truly idle session still expires.
+const renewTokenIfHalfExpired = (payload, req, res) => {
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.iat && now - payload.iat > TOKEN_MAX_AGE_SEC / 2) {
+    const freshToken = signToken({ role: payload.role });
+    res.setHeader('Set-Cookie', buildAuthCookie(freshToken, req));
+  }
+};
+
 const requireRole = (role) => (req, res, next) => {
   const cookies = parseCookies(req.headers.cookie || '');
   const payload = verifyToken(cookies[AUTH_COOKIE]);
   if (!payload || payload.role !== role) {
     return res.status(401).redirect('/');
   }
+  renewTokenIfHalfExpired(payload, req, res);
   req.user = payload;
   next();
 };
@@ -122,6 +174,7 @@ const requireAnyRole = (roles) => (req, res, next) => {
   if (!payload || (roles && !roles.includes(payload.role))) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
+  renewTokenIfHalfExpired(payload, req, res);
   req.user = payload;
   next();
 };

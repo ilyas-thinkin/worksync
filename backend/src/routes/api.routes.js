@@ -1858,7 +1858,9 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     lph.hour_slot,
                     MAX(lph.quantity) AS hour_output,
                     MAX(lph.qa_rejection) AS hour_rejection,
-                    MAX(lph.updated_at) AS hour_updated
+                    MAX(lph.updated_at) AS hour_updated,
+                    STRING_AGG(DISTINCT lph.shortfall_reason, '; ')
+                        FILTER (WHERE lph.shortfall_reason IS NOT NULL AND lph.shortfall_reason <> '') AS hour_reason
              FROM assignments a
              ${processJoin}
              LEFT JOIN line_process_hourly_progress lph
@@ -1881,7 +1883,9 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     COALESCE(SUM(wh.hour_output), 0) AS total_output,
                     COALESCE(SUM(wh.hour_rejection), 0) AS total_rejection,
                     COALESCE(SUM((wh.hour_output * a.actual_sam_seconds) / 3600.0), 0) AS total_sah_hours,
-                    MAX(wh.hour_updated) AS last_updated
+                    MAX(wh.hour_updated) AS last_updated,
+                    STRING_AGG(DISTINCT wh.hour_reason, '; ')
+                        FILTER (WHERE wh.hour_reason IS NOT NULL AND wh.hour_reason <> '') AS reasons
              FROM assignments a
              LEFT JOIN ws_hour wh
                ON wh.workstation_id = a.workstation_id
@@ -1895,7 +1899,9 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     COALESCE(SUM(total_rejection), 0) AS total_rejection,
                     COALESCE(SUM(total_sah_hours), 0) AS total_sah_hours,
                     BOOL_AND(window_closed) AS all_windows_closed,
-                    MAX(last_updated) AS last_updated
+                    MAX(last_updated) AS last_updated,
+                    STRING_AGG(DISTINCT reasons, '; ')
+                        FILTER (WHERE reasons IS NOT NULL AND reasons <> '') AS reasons
              FROM assignment_stats
              GROUP BY employee_id${totalsSourceGroup}
          ),
@@ -1929,7 +1935,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                 COALESCE(et.total_output, 0) AS total_output,
                 COALESCE(et.total_rejection, 0) AS total_rejection,
                 COALESCE(et.total_sah_hours, 0) AS total_sah_hours,
-                et.last_updated
+                et.last_updated,
+                et.reasons
          FROM employee_totals et
          JOIN employees e ON e.id = et.employee_id
          LEFT JOIN current_assignment ca ON ca.employee_id = et.employee_id
@@ -1968,7 +1975,8 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
             total_output: output,
             total_rejection: parseInt(row.total_rejection || 0, 10),
             efficiency_percent: efficiency,
-            last_updated: row.last_updated
+            last_updated: row.last_updated,
+            shortfall_reasons: row.reasons || null
         };
     });
 }
@@ -5096,7 +5104,7 @@ router.post('/daily-plans/copy', async (req, res) => {
                 );
             }
 
-            // Recompute SAM/workload from the copied processes' CURRENT operation_sah rather than
+            // Recompute SEC/workload from the copied processes' CURRENT operation_sah rather than
             // carrying forward the source day's possibly stale snapshot (the takt/custom-takt is preserved).
             if (srcProcs.rows.length > 0) {
                 const sahResult = await client.query(
@@ -5984,7 +5992,7 @@ router.get('/products/upload-template', async (req, res) => {
         const operations = operationsResult.rows;
         const operationCount = Math.max(operations.length, 1);
 
-        // Columns: SEQ | PROCESS CODE (auto) | SELECT OPERATION | SAM (seconds)
+        // Columns: SEQ | PROCESS CODE (auto) | SELECT OPERATION | SEC (seconds)
         ws.columns = [
             { width: 12 }, { width: 18 }, { width: 45 }, { width: 18 }
         ];
@@ -6033,7 +6041,7 @@ router.get('/products/upload-template', async (req, res) => {
         });
 
         // Table header (row 6)
-        const tableHeaders = ['SEQ', 'PROCESS CODE (auto)', 'SELECT OPERATION', 'SAM (seconds)'];
+        const tableHeaders = ['SEQ', 'PROCESS CODE (auto)', 'SELECT OPERATION', 'SEC (seconds)'];
         const headerRow = ws.getRow(6);
         tableHeaders.forEach((h, i) => {
             const cell = headerRow.getCell(i + 1);
@@ -6062,7 +6070,7 @@ router.get('/products/upload-template', async (req, res) => {
             cfg.getCell(i + 1, 3).value = `${op.operation_code} | ${op.operation_name}`;
         });
 
-        // Example data rows (rows 7+): [SEQ, combinedOperation, SAM_seconds]
+        // Example data rows (rows 7+): [SEQ, combinedOperation, SEC_seconds]
         const exampleData = [
             ['1', 'TOP PASTING', 28],
             ['2', 'KIMLON PASTING', 22],
@@ -6132,7 +6140,7 @@ router.get('/products/upload-template', async (req, res) => {
             '   - SELECT OPERATION: Choose from the dropdown for existing processes or type a new process name manually.',
             '     * Existing process selection auto-fills the process code.',
             '     * New typed process names are allowed. Upload will create a new process code for them.',
-            '   - SAM (seconds): Standard Allowed Minutes in seconds for this process.',
+            '   - SEC (seconds): Standard Allowed Minutes in seconds for this process.',
             '     * Example: 45 means 45 seconds per unit.',
             '     * Leave blank if unknown (can be updated later).',
             '',
@@ -6902,25 +6910,30 @@ router.post('/workstation-assignments', async (req, res) => {
         }
 
         // line_plan_workstation_id is cached client-side and goes stale whenever the
-        // workstation plan is re-saved (plan save deletes+reinserts with new ids).
-        // Re-resolve against the current row for this workstation rather than trusting
-        // a stale id and hitting the FK constraint at INSERT time.
-        let resolvedLinePlanWorkstationId = line_plan_workstation_id || null;
-        if (resolvedLinePlanWorkstationId) {
-            const staleCheck = await client.query(
-                `SELECT id FROM line_plan_workstations WHERE id = $1`,
-                [resolvedLinePlanWorkstationId]
-            );
-            if (staleCheck.rows.length === 0) {
-                const freshRow = await client.query(
-                    `SELECT id FROM line_plan_workstations
-                     WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3
-                     ORDER BY id DESC LIMIT 1`,
-                    [line_id, date, workstation_code]
-                );
-                resolvedLinePlanWorkstationId = freshRow.rows[0]?.id || null;
-            }
-        }
+        // workstation plan is re-saved (plan save deletes+reinserts with new ids), and also
+        // when changeover is activated for this workstation — the assignment must then point
+        // at the incoming product's plan row, not the primary one, or output entry for this
+        // workstation will find no employee (it looks up ewa by that id). So always resolve
+        // fresh against current state rather than trusting the client-supplied id.
+        const currentWsResult = await client.query(
+            `SELECT primary_ws.id AS primary_id, primary_ws.ws_changeover_active, incoming_ws.id AS incoming_id
+             FROM line_plan_workstations primary_ws
+             LEFT JOIN line_daily_plans ldp
+                ON ldp.line_id = primary_ws.line_id AND ldp.work_date = primary_ws.work_date
+             LEFT JOIN line_plan_workstations incoming_ws
+                ON incoming_ws.line_id = primary_ws.line_id
+               AND incoming_ws.work_date = primary_ws.work_date
+               AND incoming_ws.product_id = ldp.incoming_product_id
+               AND regexp_replace(incoming_ws.workstation_code, '[^0-9]', '', 'g') = regexp_replace(primary_ws.workstation_code, '[^0-9]', '', 'g')
+             WHERE primary_ws.line_id = $1 AND primary_ws.work_date = $2 AND primary_ws.workstation_code = $3
+               AND (ldp.product_id IS NULL OR primary_ws.product_id = ldp.product_id)
+             ORDER BY primary_ws.id DESC LIMIT 1`,
+            [line_id, date, workstation_code]
+        );
+        const currentWs = currentWsResult.rows[0];
+        const resolvedLinePlanWorkstationId = currentWs
+            ? (currentWs.ws_changeover_active && currentWs.incoming_id ? currentWs.incoming_id : currentWs.primary_id)
+            : (line_plan_workstation_id || null);
 
         if (employee_id) {
             // Read existing EWA to preserve linked state when caller doesn't explicitly link
@@ -7407,7 +7420,7 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
             newWsMappedIds.push(mappedId);
             insertedProcessCount += 1;
         }
-        // Recompute SAM/workload from the mapped processes' CURRENT operation_sah rather than
+        // Recompute SEC/workload from the mapped processes' CURRENT operation_sah rather than
         // blindly carrying forward the source day's snapshot — keeps carry-forward in sync when
         // SAH values change after a plan was first saved (the takt/custom-takt itself is preserved).
         const freshSam = newWsMappedIds.reduce((sum, pid) => sum + (targetSahById.get(pid) || 0) * 3600, 0);
@@ -8995,7 +9008,7 @@ router.get('/workstation-plan/template', async (req, res) => {
         });
 
         // Table header row 5
-        const tableHeaders = ['GROUP', 'WORKSTATION', 'OPERATION NAME', 'SAM (seconds)', 'EMPLOYEE CODE'];
+        const tableHeaders = ['GROUP', 'WORKSTATION', 'OPERATION NAME', 'SEC (seconds)', 'EMPLOYEE CODE'];
         const headerRow = ws.getRow(5);
         tableHeaders.forEach((h, i) => {
             const cell = headerRow.getCell(i + 1);
@@ -9045,7 +9058,7 @@ router.get('/workstation-plan/template', async (req, res) => {
             '   - GROUP: Optional group label (e.g., Group 1, Group 2). Groups are for visual organization.',
             '   - WORKSTATION: Workstation code (e.g., WS01, WS02). Multiple rows with same workstation = multiple processes in that workstation.',
             '   - OPERATION NAME: Must match a process in the product\'s process list (case-insensitive).',
-            '   - SAM (seconds): Optional. If provided, updates the process SAM value.',
+            '   - SEC (seconds): Optional. If provided, updates the process SEC value.',
             '   - EMPLOYEE CODE: Optional. Assigns the employee to this workstation.',
             '',
             '3. IMPORTANT NOTES:',
@@ -9180,13 +9193,13 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
             const rows = wsRowsMap.get(wsCode);
             const groupName = rows[0].group_name;
 
-            // Calculate SAM for this workstation
+            // Calculate SEC for this workstation
             let actualSam = 0;
             const validRows = [];
             for (const row of rows) {
                 const pp = ppByName.get(row.operation_name.toUpperCase());
                 if (!pp) continue;
-                // Update SAM if provided in Excel
+                // Update SEC if provided in Excel
                 if (row.sam_seconds !== null && row.sam_seconds > 0) {
                     const newSah = row.sam_seconds / 3600;
                     await client.query(
@@ -13693,6 +13706,19 @@ router.post('/supervisor/progress', async (req, res) => {
     if (!adminOverride && await isLineClosed(line_id, work_date)) {
         return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
     }
+    // Entries for an hour slot (e.g. 09:00-10:00) are only editable until the end of the
+    // following hour (11:00) — one hour of grace after the slot closes, then it locks.
+    if (!adminOverride) {
+        const cutoffHour = hourValue + 2;
+        const cutoff = new Date(`${work_date}T${String(cutoffHour).padStart(2, '0')}:00:00`);
+        if (Number.isFinite(cutoff.getTime()) && Date.now() >= cutoff.getTime()) {
+            const rangeLabel = `${String(hourValue).padStart(2, '0')}:00-${String(hourValue + 1).padStart(2, '0')}:00`;
+            return res.status(403).json({
+                success: false,
+                error: `Output entry for the ${rangeLabel} hour is locked (entries were only allowed until ${String(cutoffHour).padStart(2, '0')}:00)`
+            });
+        }
+    }
     try {
         // New model: workstation_plan_id — fan out to all processes in this workstation
         if (workstation_plan_id) {
@@ -15755,7 +15781,7 @@ router.get('/efficiency-report', async (req, res) => {
                 }
             }
 
-            // Pick the right plan WS ID and SAM based on whether CO was active at this hour
+            // Pick the right plan WS ID and SEC based on whether CO was active at this hour
             const effectiveSam = coActiveAtHour
                 ? parseFloat(ws.actual_sam_seconds || 0)
                 : parseFloat(ws.primary_actual_sam_seconds || 0);
@@ -16152,6 +16178,7 @@ router.get('/worker-individual-efficiency', async (req, res) => {
             // Bucket the split rows per employee into primary vs CO so a day-cell can show
             // both when a workstation ran primary for part of the day then changed over.
             const mergeWsCodes = (a, b) => [...new Set([...(a || '').split(', ').filter(Boolean), ...(b || '').split(', ').filter(Boolean)])].join(', ');
+            const mergeReasons = (a, b) => [...new Set([...(a || '').split('; ').filter(Boolean), ...(b || '').split('; ').filter(Boolean)])].join('; ') || null;
             const splitByEmp = new Map();
             for (const row of splitEmpProgress) {
                 const bucket = splitByEmp.get(row.id) || { primary: null, co: null };
@@ -16193,6 +16220,7 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                     existingCell._earned_hours = (existingCell._earned_hours || 0) + earnedHours;
                     existingCell.tag = (existingCell.tag === 'CO' || emp.is_changeover) ? 'CO' : existingCell.tag;
                     existingCell.workstation_codes = mergeWsCodes(existingCell.workstation_codes, dayWsCodes);
+                    existingCell.reason = mergeReasons(existingCell.reason, emp.shortfall_reasons);
                     if (hasBothSources) {
                         existingCell.primary_output = (existingCell.primary_output || 0) + split.primary.output;
                         existingCell.primary_eff = (existingCell.primary_eff || 0) + split.primary.eff;
@@ -16208,6 +16236,7 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                         tag: emp.is_changeover ? 'CO' : null,
                         line_id: lid,
                         workstation_codes: dayWsCodes,
+                        reason: emp.shortfall_reasons || null,
                         primary_output: hasBothSources ? split.primary.output : undefined,
                         primary_eff: hasBothSources ? split.primary.eff : undefined,
                         co_output: hasBothSources ? split.co.output : undefined,

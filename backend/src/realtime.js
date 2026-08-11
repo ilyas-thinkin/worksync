@@ -101,12 +101,6 @@ function startDbListener() {
                 if (payload.entity === 'production_lines' && payload.id) {
                     qr.generateLineQrById(payload.id).catch(() => {});
                 }
-                if (payload.entity === 'product_processes' && payload.id) {
-                    qr.generateProcessQrById(payload.id).catch(() => {});
-                }
-                if (payload.entity === 'operations' && payload.id) {
-                    qr.generateOperationQrById(payload.id).catch(() => {});
-                }
             }
             broadcast('data_change', payload);
         } catch (err) {

@@ -3341,7 +3341,7 @@ async function viewProductProcess(productId) {
                             <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">BUYER</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.buyer_name || '-'}</td></tr>
                             <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">STYLE NO</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.product_code}</td></tr>
                             <tr><td style="padding:8px 16px;font-weight:600;border-bottom:1px solid var(--border);">DESCRIPTION</td><td style="padding:8px 16px;border-bottom:1px solid var(--border);">${product.product_name}</td></tr>
-                            <tr><td style="padding:8px 16px;font-weight:600;">TOTAL SAH</td><td style="padding:8px 16px;"><strong>${totalSahHrs.toFixed(4)} hrs</strong><span style="margin-left:10px;font-size:12px;color:var(--text-muted);">(${totalSamSec} sec total SAM)</span></td></tr>
+                            <tr><td style="padding:8px 16px;font-weight:600;">TOTAL SAH</td><td style="padding:8px 16px;"><strong>${totalSahHrs.toFixed(4)} hrs</strong><span style="margin-left:10px;font-size:12px;color:var(--text-muted);">(${totalSamSec} SEC total)</span></td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -3361,7 +3361,7 @@ async function viewProductProcess(productId) {
                                 <tr>
                                     <th style="text-align:center;">Seq</th>
                                     <th>Process Details</th>
-                                    <th style="text-align:center;">SAM (sec)</th>
+                                    <th style="text-align:center;">SEC (sec)</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -3530,7 +3530,7 @@ function showAddProcessModal(productId) {
                         <input type="number" class="form-control" name="sequence_number" min="1" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">SAM (seconds)</label>
+                        <label class="form-label">SEC (seconds)</label>
                         <input type="number" class="form-control" name="sam_seconds" min="0" step="0.1" placeholder="e.g. 12.5">
                     </div>
                 </form>
@@ -3580,7 +3580,7 @@ async function saveProcess() {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
 
-    // Convert SAM seconds to operation_sah (hours)
+    // Convert SEC seconds to operation_sah (hours)
     if (data.sam_seconds !== undefined) {
         data.operation_sah = data.sam_seconds ? (parseFloat(data.sam_seconds) / 3600).toFixed(6) : null;
         delete data.sam_seconds;
@@ -3632,7 +3632,7 @@ function editProcess(proc, productId) {
                         <input type="number" class="form-control" name="sequence_number" min="1" value="${proc.sequence_number}" required>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">SAM (seconds)</label>
+                        <label class="form-label">SEC (seconds)</label>
                         <input type="number" class="form-control" name="sam_seconds" min="0" step="0.1" value="${currentSamSec}">
                     </div>
                 </form>
@@ -3652,7 +3652,7 @@ async function updateProcess(processId, productId) {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
 
-    // Convert SAM seconds to operation_sah (hours)
+    // Convert SEC seconds to operation_sah (hours)
     if (data.sam_seconds !== undefined) {
         data.operation_sah = data.sam_seconds ? (parseFloat(data.sam_seconds) / 3600).toFixed(6) : null;
         delete data.sam_seconds;
@@ -4434,6 +4434,8 @@ async function submitPlanUpload(options = {}) {
         return;
     }
 
+    const snapshotBefore = typeof options.getStateSnapshot === 'function' ? options.getStateSnapshot() : null;
+
     // Persist options so conflict handlers can read them without re-passing
     window._pendingUploadOptions = options;
 
@@ -4585,7 +4587,46 @@ async function submitPlanUpload(options = {}) {
         }
 
     } catch (err) {
-        resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${err.message}</div>`;
+        // fetch() throws a plain TypeError ("Failed to fetch") when the browser loses the
+        // connection at the network level. That can happen *after* the server already
+        // finished and responded (e.g. a flaky link on a large upload) \u2014 the error looks
+        // identical to a real failure even though nothing actually failed. Before reporting
+        // a failure, check whether the server-side state actually moved.
+        const isNetworkError = err instanceof TypeError;
+        if (isNetworkError && typeof options.getStateSnapshot === 'function' && typeof options.onSuccess === 'function') {
+            resultDiv.innerHTML = '<div style="color:#6b7280;font-size:13px;">Connection interrupted. Checking whether the upload completed on the server\u2026</div>';
+            try {
+                await options.onSuccess();
+                const snapshotAfter = options.getStateSnapshot();
+                if (snapshotAfter !== null && snapshotAfter !== snapshotBefore) {
+                    resultDiv.innerHTML = `
+                        <div style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;border-radius:6px;padding:12px 14px;font-size:13px;">
+                            <strong>&#10003; Upload completed</strong><br>
+                            The browser lost the connection before it could confirm, but the server finished processing and the plan has changed. The view below has been refreshed \u2014 please verify it matches your upload.
+                        </div>`;
+                    btn.style.display = 'none';
+                    let closeBtn = document.getElementById('plan-upload-close-success-btn');
+                    if (!closeBtn) {
+                        closeBtn = document.createElement('button');
+                        closeBtn.id = 'plan-upload-close-success-btn';
+                        closeBtn.textContent = 'Close';
+                        closeBtn.className = 'btn btn-primary';
+                        closeBtn.style.cssText = 'padding:8px 18px;background:#1d6f42;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;';
+                        closeBtn.onclick = () => document.getElementById('plan-upload-modal')?.remove();
+                        btn.parentElement?.appendChild(closeBtn);
+                    }
+                    closeBtn.style.display = '';
+                    return;
+                }
+            } catch (_) {
+                // Verification itself failed (server unreachable) \u2014 fall through to the
+                // generic error below, which is accurate in that case.
+            }
+        }
+        const suffix = isNetworkError
+            ? ' \u2014 could not confirm whether the upload completed. Check the plan before re-uploading to avoid duplicates.'
+            : '';
+        resultDiv.innerHTML = `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;font-size:13px;">\u26a0\ufe0f ${err.message}${suffix}</div>`;
         btn.disabled = false;
         btn.textContent = uploadButtonLabel;
     }
@@ -5362,6 +5403,21 @@ function ldOpenPlanUploadModal() {
                 line_id: lineId,
                 work_date: date,
                 product_mode: normalizedMode
+            },
+            getStateSnapshot: () => {
+                const d = (_ldData && _ldData.lineId === lineId) ? _ldData.data : null;
+                if (!d) return null;
+                return isChangeoverMode
+                    ? JSON.stringify({
+                        incoming_product_id: d.incoming_product_id,
+                        incoming_target_units: d.incoming_target_units,
+                        changeover_sequence: d.changeover_sequence
+                    })
+                    : JSON.stringify({
+                        product_id: d.product?.id,
+                        target_units: d.target_units,
+                        process_count: Array.isArray(d.processes) ? d.processes.length : null
+                    });
             }
         };
     };
@@ -5650,7 +5706,7 @@ const ldHourLabel = (hour) => {
     return `${ord} hour (${ldHourRange(hour)})`;
 };
 
-// Group processes by workstation code, computing SAM sum + workload per group.
+// Group processes by workstation code, computing SEC sum + workload per group.
 // If a workstation is not assigned (blank), treat each process separately (no summing).
 function _buildWsGroups(processes, taktSecs, useOT) {
     const groups = [];
@@ -8090,7 +8146,7 @@ function fillOtLineCard(lineId, date, data) {
                             <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;">WS</th>
                             <th style="padding:8px 10px;font-size:11px;color:#6b7280;">Group</th>
                             <th style="padding:8px 10px;font-size:11px;color:#6b7280;">Processes</th>
-                            <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">SAM</th>
+                            <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">SEC</th>
                             <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">OT Min<br><span style="font-weight:400;font-size:10px;">(0=global)</span></th>
                             <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">Wkld%</th>
                             <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;">Status</th>
@@ -8428,7 +8484,7 @@ function openOtLayoutEditor(lineId, date) {
                             <th style="padding:8px;font-size:11px;color:#6b7280;text-align:left;border-bottom:2px solid #e5e7eb;">SEQ</th>
                             <th style="padding:8px;font-size:11px;color:#6b7280;text-align:left;border-bottom:2px solid #e5e7eb;">CODE</th>
                             <th style="padding:8px;font-size:11px;color:#6b7280;text-align:left;border-bottom:2px solid #e5e7eb;">NAME</th>
-                            <th style="padding:8px;font-size:11px;color:#6b7280;text-align:center;border-bottom:2px solid #e5e7eb;">SAM</th>
+                            <th style="padding:8px;font-size:11px;color:#6b7280;text-align:center;border-bottom:2px solid #e5e7eb;">SEC</th>
                             <th style="padding:8px;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb;">WS</th>
                             <th style="padding:8px;font-size:11px;color:#6b7280;border-bottom:2px solid #e5e7eb;">Group</th>
                         </tr>
@@ -9428,7 +9484,7 @@ function renderOTPlanDetails(panel, lineId, date, data) {
                                 <th style="padding:10px 8px;font-size:11px;color:#6b7280;">WS</th>
                                 <th style="padding:10px 8px;font-size:11px;color:#6b7280;">Group</th>
                                 <th style="padding:10px 8px;font-size:11px;color:#6b7280;">Processes</th>
-                                <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;">SAM (s)</th>
+                                <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;">SEC (s)</th>
                                 <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;">OT Min<br><span style="font-weight:400;">(0=global)</span></th>
                                 <th style="padding:10px 8px;font-size:11px;color:#6b7280;">Employee</th>
                                 <th style="padding:10px 8px;text-align:center;font-size:11px;color:#6b7280;">Workload%</th>
@@ -9661,7 +9717,7 @@ function renderPlanHistoryCards(lines, date) {
                                 <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">WS</th>
                                 <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Group</th>
                                 <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Processes</th>
-                                <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;font-weight:600;">SAM (s)</th>
+                                <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;font-weight:600;">SEC (s)</th>
                                 <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;font-weight:600;">Workload%</th>
                                 <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Employee</th>
                             </tr>
@@ -10480,10 +10536,10 @@ function _buildEfficiencyTable(data, selectedHour) {
     const hourlyEffColor = hourlyEff === null ? '#6b7280' : hourlyEff >= 90 ? '#16a34a' : hourlyEff >= 80 ? '#d97706' : '#dc2626';
     const hourlyEffText = hourlyEff === null ? 'N/A' : hourlyEff.toFixed(2) + '%';
     const hourlyLineFormula = usesCombinedChangeoverEfficiency
-        ? '<strong>Hourly Line Eff%</strong> = SUM(WS Hourly Output x WS SAM) / 3600 / Manpower x 100'
+        ? '<strong>Hourly Line Eff%</strong> = SUM(WS Hourly Output x WS SEC) / 3600 / Manpower x 100'
         : '<strong>Hourly Line Eff%</strong> = (Last WS Hourly Output × Style SAH) ÷ Manpower × 100';
     const liveLineFormula = usesCombinedChangeoverEfficiency
-        ? '<strong>Live Line Eff%</strong> = SUM(WS Live Output x WS SAM) / 3600 / (Manpower x Live Hours) x 100'
+        ? '<strong>Live Line Eff%</strong> = SUM(WS Live Output x WS SEC) / 3600 / (Manpower x Live Hours) x 100'
         : '<strong>Live Line Eff%</strong> = (Last WS Live Output × Style SAH) ÷ (Manpower × Live Hours) × 100';
 
     // Formula explanations
@@ -10491,11 +10547,11 @@ function _buildEfficiencyTable(data, selectedHour) {
         <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:11px;color:#374151;line-height:1.8;">
             <strong style="font-size:12px;">Efficiency Formulas</strong>
             <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:6px;">
-                <span><strong>Hourly WS Eff%</strong> = (Hourly Output × WS SAM) ÷ 3600 × 100</span>
-                <span><strong>Live WS Eff%</strong> = (Live Output × WS SAM) ÷ (Live Hours × 3600) × 100</span>
+                <span><strong>Hourly WS Eff%</strong> = (Hourly Output × WS SEC) ÷ 3600 × 100</span>
+                <span><strong>Live WS Eff%</strong> = (Live Output × WS SEC) ÷ (Live Hours × 3600) × 100</span>
                 <span>${hourlyLineFormula}</span>
                 <span>${liveLineFormula}</span>
-                <span style="color:#6b7280;font-style:italic;">SAM = Cycle Time in seconds &nbsp;|&nbsp; Style SAH = Total SAH for all processes</span>
+                <span style="color:#6b7280;font-style:italic;">SEC = Cycle Time in seconds &nbsp;|&nbsp; Style SAH = Total SAH for all processes</span>
             </div>
         </div>`;
 
@@ -11295,7 +11351,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
     const showOutput = metric === 'all' || metric === 'output';
     const showEff    = metric === 'all' || metric === 'efficiency';
 
-    const dateCols   = (showTarget?1:0) + (showWip?1:0) + (showOutput?1:0) + (showEff?1:0) + 1;
+    const dateCols   = (showTarget?1:0) + (showWip?1:0) + (showOutput?1:0) + (showEff?1:0) + 3;
     const fixedCols  = 3;
     const overallCols = (showOutput?1:0) + (showEff?1:0);
     const anyHasOt   = rows.some(r => r.has_ot);
@@ -11312,7 +11368,8 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
     };
     const effColor = eff => {
         if (eff == null) return '#6b7280';
-        return eff >= 90 ? '#16a34a' : eff >= 80 ? '#d97706' : '#dc2626';
+        const rounded = Math.round(eff * 10) / 10;
+        return rounded >= 90 ? '#16a34a' : rounded >= 80 ? '#d97706' : '#dc2626';
     };
 
     const dateGroupHeaders = dates.map(d =>
@@ -11324,7 +11381,9 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
         showTarget ? `<th style="${thSS}">TARGET</th>` : '',
         showWip    ? `<th style="${thSS}">WIP</th>`    : '',
         showOutput ? `<th style="${thSS}">OUTPUT</th>` : '',
+        `<th style="${thSS}">ACHIEVED%</th>`,
         showEff    ? `<th style="${thSS}">EFF%</th>`   : '',
+        `<th style="${thSS}">DOWNFALL REASON</th>`,
     ].join('')).join('');
 
     const dataRows = rows.flatMap((row, idx) => {
@@ -11352,7 +11411,9 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
                 showTarget ? blank : '',
                 showWip    ? blank : '',
                 showOutput ? blank : '',
+                `<td style="${tcS}color:#6b7280;">-</td>`,
                 showEff    ? `<td style="${tcS}color:#6b7280;">-</td>` : '',
+                `<td style="${tdS}color:#6b7280;">-</td>`,
             ].join('');
             const wip      = Math.max(0, (cell.wip ?? 0) - (cell.output ?? 0));
             const hasSourceSplit = cell.primary_output != null && cell.co_output != null;
@@ -11362,12 +11423,18 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             const wsCell    = wsCodes.length
                 ? wsCodes.map(code => `<span onclick="openWieWorkstationPopup(${cell.line_id}, '${d}', '${code}')" style="cursor:pointer;color:#1d4ed8;text-decoration:underline;font-weight:600;">${code}</span>`).join(', ')
                 : '-';
+            const target    = Number(cell.line_target) || 0;
+            const achievedVal = target > 0 ? Math.round(((cell.output ?? 0) / target) * 1000) / 10 : null;
+            const achievedC = achievedVal == null ? '#6b7280' : effColor(achievedVal);
+            const reasonTxt = cell.reason || '-';
             return [
                 `<td style="${tcS}">${wsCell}</td>`,
                 showTarget ? `<td style="${tcS}${tS}">${cell.line_target ?? '-'}${tagBadge}</td>` : '',
                 showWip    ? `<td style="${tcS}${tS}font-weight:600;color:${wip > 0 ? '#dc2626' : '#16a34a'};">${wip}</td>` : '',
                 showOutput ? `<td style="${tcS}${tS}">${cell.output ?? 0}${outputSub}</td>` : '',
+                `<td style="${tcS}${tS}font-weight:600;color:${achievedC};">${achievedVal == null ? '-' : achievedVal.toFixed(1) + '%'}</td>`,
                 showEff    ? `<td style="${tcS}${tS}font-weight:600;color:${effC};">${effVal.toFixed(1)}%${effSub}</td>` : '',
+                `<td style="${tdS}${tS}font-size:10px;" title="${reasonTxt.replace(/"/g, '&quot;')}">${reasonTxt}</td>`,
             ].join('');
         }).join('');
 
@@ -11384,7 +11451,9 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
                 showTarget ? blank : '',
                 showWip    ? blank : '',
                 showOutput ? blank : '',
+                blank,
                 showEff    ? blank  : '',
+                blank,
             ].join('');
             const otEffC  = effColor(otEff);
             return [
@@ -11392,7 +11461,9 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
                 showTarget ? `<td style="${tcS}background:#fff7ed;">${cell?.ot_target ?? '—'}</td>` : '',
                 showWip    ? `<td style="${tcS}background:#fff7ed;">—</td>` : '',
                 showOutput ? `<td style="${tcS}background:#fff7ed;font-weight:700;">${otOut ?? 0}</td>` : '',
+                `<td style="${tcS}background:#fff7ed;">—</td>`,
                 showEff    ? `<td style="${tcS}background:#fff7ed;font-weight:600;color:${otEffC};">${otEff != null ? otEff.toFixed(1) + '%' : '—'}</td>` : '',
+                `<td style="${tcS}background:#fff7ed;">—</td>`,
             ].join('');
         }).join('') : '';
 
@@ -11411,7 +11482,9 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
                 showTarget ? blank : '',
                 showWip    ? blank : '',
                 showOutput ? blank : '',
+                blank,
                 showEff    ? blank  : '',
+                blank,
             ].join('');
             const combOut = regOut + otOut;
             return [
@@ -11419,7 +11492,9 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
                 showTarget ? `<td style="${tcS}background:#f0fdf4;">${cell?.line_target ?? '—'}</td>` : '',
                 showWip    ? `<td style="${tcS}background:#f0fdf4;">—</td>` : '',
                 showOutput ? `<td style="${tcS}background:#f0fdf4;font-weight:700;">Reg:${regOut}<br>OT:${otOut}</td>` : '',
+                `<td style="${tcS}background:#f0fdf4;">—</td>`,
                 showEff    ? `<td style="${tcS}background:#f0fdf4;font-size:10px;"><div style="color:${effColor(regEff)};">Reg:${regEff.toFixed(1)}%</div><div style="color:${effColor(otEff)};">OT:${otEff != null ? otEff.toFixed(1) + '%' : '—'}</div></td>` : '',
+                `<td style="${tcS}background:#f0fdf4;">—</td>`,
             ].join('');
         }).join('') : '';
 
