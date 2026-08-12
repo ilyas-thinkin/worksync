@@ -52,6 +52,21 @@ function normalizeWsCode(code) {
     return m ? parseInt(m[1], 10) : String(code || '').toUpperCase().trim();
 }
 
+// Canonical *stored* form for workstation codes: "WS" + zero-padded number (WS01…WS98).
+// Plans, assignments, progress and departures are joined on exact code equality in
+// many queries, so a human typing "WS010" / "W10" / "ws10" / "10" for the same
+// physical workstation must not create a second, non-matching identity — that silently
+// breaks the employee lookup on those joins. Apply this wherever a workstation code
+// enters the system from a user (Excel template cell or request body).
+// Codes with no trailing number (e.g. "SPARE") are passed through upper-cased.
+function canonicalWsCode(code) {
+    const raw = String(code || '').trim();
+    if (!raw) return '';
+    const m = raw.match(/(\d+)$/);
+    if (!m) return raw.toUpperCase();
+    return `WS${String(parseInt(m[1], 10)).padStart(2, '0')}`;
+}
+
 function normalizePlanMonth(value) {
     if (value === null || value === undefined) return null;
 
@@ -6874,7 +6889,9 @@ router.put('/process-assignments/workspace', async (req, res) => {
 // WORKSTATION ASSIGNMENTS (Workstation -> Employee) — date-aware
 // ============================================================================
 router.post('/workstation-assignments', async (req, res) => {
-    const { line_id, workstation_code, employee_id, work_date, line_plan_workstation_id, material_provided, is_linked, late_reason, change_reason, confirm_absent_with_output } = req.body;
+    const { line_id, workstation_code: rawWorkstationCode, employee_id, work_date, line_plan_workstation_id, material_provided, is_linked, late_reason, change_reason, confirm_absent_with_output } = req.body;
+    // Store the canonical form so this assignment matches the plan on exact-code joins.
+    const workstation_code = canonicalWsCode(rawWorkstationCode);
     if (!line_id || !workstation_code) {
         return res.status(400).json({ success: false, error: 'line_id and workstation_code are required' });
     }
@@ -8660,7 +8677,7 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
         // Group rows by workstation_code — preserve insertion order
         const wsMap = new Map();
         rows.forEach(row => {
-            const wsCode = (row.workstation_code || '').trim();
+            const wsCode = canonicalWsCode(row.workstation_code);
             if (!wsCode) return;
             if (!wsMap.has(wsCode)) {
                 wsMap.set(wsCode, {
@@ -8872,7 +8889,7 @@ router.patch('/lines/:lineId/workstation-plan/employees', async (req, res) => {
             ? await getRegularAssignmentStateByEmployee(client, work_date)
             : new Map();
         for (const a of assignments) {
-            const wsCode = (a.workstation_code || '').trim();
+            const wsCode = canonicalWsCode(a.workstation_code);
             if (!wsCode) continue;
             const empId = a.employee_id ? parseInt(a.employee_id, 10) : null;
             const isSkipped = isOT && !!a.is_skipped; // only relevant for OT
@@ -9146,7 +9163,7 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
             const row = sheet.getRow(r);
             const opName = String(row.getCell(3).value || '').trim();
             if (!opName) continue;
-            const wsCode = String(row.getCell(2).value || '').trim();
+            const wsCode = canonicalWsCode(row.getCell(2).value);
             if (!wsCode) continue;
             dataRows.push({
                 group_name: String(row.getCell(1).value || '').trim() || null,
@@ -9876,13 +9893,30 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                 [effectiveProdCode]
             );
             if (prodCheck.rows[0]) {
+                // The same product code often runs on more than one line at once (extra
+                // orders), each with its own target and workstation/process breakdown.
+                // That is not really "the same product record" — suggest a line-scoped
+                // copy so this line gets its own product/process rows instead of
+                // colliding with whatever the other line already has configured.
+                const suggestedBase = `${effectiveProdCode}-${lineCode}`;
+                let suggestedCopyCode = suggestedBase;
+                for (let suffix = 2; suffix <= 20; suffix++) {
+                    const dupeCheck = await pool.query(
+                        `SELECT 1 FROM products WHERE product_code = $1 LIMIT 1`,
+                        [suggestedCopyCode]
+                    );
+                    if (!dupeCheck.rows[0]) break;
+                    suggestedCopyCode = `${suggestedBase}-${suffix}`;
+                }
                 return res.status(409).json({
                     success: false,
                     code: 'PRODUCT_EXISTS',
                     product_code: prodCheck.rows[0].product_code,
                     existing_product_name: prodCheck.rows[0].product_name,
                     uploaded_product_name: productName,
-                    is_new_code: !!overrideCode
+                    is_new_code: !!overrideCode,
+                    line_code: lineCode,
+                    suggested_copy_code: suggestedCopyCode
                 });
             }
         }
@@ -10099,7 +10133,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             const taktTimeSeconds = getCellNum(rowNum, 8); // H: TAKT TIME
             if (!sah || sah <= 0) continue;         // skip rows with no process time entered
             // If workstation is blank, auto-assign a sequential one so partially filled templates still upload.
-            const wsCode = rawWsCode ? rawWsCode.toUpperCase() : `WS${String(autoSeq).padStart(2, '0')}`;
+            const wsCode = rawWsCode ? canonicalWsCode(rawWsCode) : `WS${String(autoSeq).padStart(2, '0')}`;
             let empName = suppressTemplateEmployeeAssignments ? '' : getCellStr(rowNum, 12);   // L: SELECT EMPLOYEE (combined "CODE | NAME" or plain)
             const empPipe = empName.indexOf(' | ');
             if (empPipe !== -1) empName = empName.slice(empPipe + 3).trim();

@@ -4498,28 +4498,32 @@ async function submitPlanUpload(options = {}) {
             const nameNote = sameNames
                 ? `<strong>${data.product_code}</strong>`
                 : `<strong>${data.product_code}</strong> (currently named <em>${data.existing_product_name}</em>, upload has <em>${data.uploaded_product_name}</em>)`;
+            const lineNote = data.line_code ? ` for <strong>${data.line_code}</strong>` : '';
+            const suggestedCode = data.suggested_copy_code || `${data.product_code}-COPY`;
             resultDiv.innerHTML = `
                 <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
-                    <div style="font-weight:600;margin-bottom:6px;">⚠ Product already exists</div>
-                    <div style="margin-bottom:12px;">Product ${nameNote} is already in the system. How would you like to proceed?</div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                        <button onclick="_planUploadUseExistingProduct()" style="padding:7px 14px;background:#d97706;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Use existing product</button>
-                        <button onclick="_planUploadShowNewProductInput()" style="padding:7px 14px;background:#1d4ed8;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Create new product</button>
-                        <button onclick="_planUploadCancel()" style="padding:7px 14px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                    <div style="font-weight:600;margin-bottom:6px;">Product code already used on another line</div>
+                    <div style="margin-bottom:12px;">
+                        Product ${nameNote} is already set up${lineNote ? ' on a different line' : ''}. That's expected when the same
+                        product runs on more than one line at once — each line can have its own target and workstation/process breakdown,
+                        so this shouldn't be treated as a mistake or blocked as a duplicate.
                     </div>
-                    <div id="plan-upload-new-product-input" style="display:none;margin-top:12px;border-top:1px solid #fcd34d;padding-top:12px;">
-                        <div style="margin-bottom:8px;font-weight:600;">Create new product:</div>
+                    <div style="background:#fff;border:1px solid #fcd34d;border-radius:6px;padding:10px 12px;margin-bottom:10px;">
+                        <div style="font-weight:600;margin-bottom:6px;">Recommended: save this as a separate copy${lineNote}</div>
+                        <div style="font-size:12px;color:#78716c;margin-bottom:8px;">This creates its own product record so its target/processes never affect the other line.</div>
                         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <div>
-                                <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:3px;">Enter a different product code</label>
-                                <input id="plan-upload-new-product-code" type="text" placeholder="e.g. ABC-002"
-                                    style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;width:160px;">
-                            </div>
-                            <div style="display:flex;flex-direction:column;gap:6px;margin-top:auto;">
-                                <button onclick="_planUploadCreateWithNewCode()" style="padding:7px 14px;background:#1d4ed8;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Create with new code</button>
-                                <button onclick="_planUploadReplaceExistingProduct()" style="padding:7px 14px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Replace existing product</button>
-                            </div>
+                            <input id="plan-upload-new-product-code" type="text" value="${suggestedCode}"
+                                style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;width:180px;">
+                            <button onclick="_planUploadCreateWithNewCode()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;">Yes, save as copy &amp; upload</button>
                         </div>
+                    </div>
+                    <div style="font-size:12px;color:#92400e;margin-bottom:6px;">
+                        The two options below reuse the <em>same</em> product record — they replace its entire workstation/process list, which affects every line currently using it. Only use them if that's really what you want.
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button onclick="_planUploadUseExistingProduct()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;font-size:12px;cursor:pointer;">Use existing product (replaces its processes)</button>
+                        <button onclick="_planUploadReplaceExistingProduct()" style="padding:6px 12px;background:#f3f4f6;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;font-size:12px;cursor:pointer;">Replace existing product entirely</button>
+                        <button onclick="_planUploadCancel()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
                     </div>
                 </div>`;
             return;
@@ -4641,10 +4645,6 @@ function _planUploadUseExistingProduct() {
 }
 function _planUploadReplaceExistingProduct() {
     submitPlanUpload({ ...window._pendingUploadOptions, confirm_product: 'replace' });
-}
-function _planUploadShowNewProductInput() {
-    const panel = document.getElementById('plan-upload-new-product-input');
-    if (panel) panel.style.display = '';
 }
 function _planUploadCreateWithNewCode() {
     const codeInput = document.getElementById('plan-upload-new-product-code');
