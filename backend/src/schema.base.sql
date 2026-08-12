@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict uDD8TmQQ0HVgLHNCZHdbJQBrffwDhHsSWDjWpiehYsc5JdTcZRbaBs9bFUGjFtB
+\restrict rGXwdajbBxKGCZZRauLv57TU0fkgu1q6cFks0Dm9DMeLLXUJH1JxN2v1ZQ6pG4k
 
 -- Dumped from database version 17.7 (Debian 17.7-0+deb13u1)
 -- Dumped by pg_dump version 17.7 (Debian 17.7-0+deb13u1)
@@ -18,6 +18,44 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Name: canonical_ws_code(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.canonical_ws_code(code text) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    AS $_$
+DECLARE
+  trimmed text;
+  digits  text;
+BEGIN
+  IF code IS NULL THEN
+    RETURN NULL;
+  END IF;
+  trimmed := btrim(code);
+  IF trimmed = '' THEN
+    RETURN trimmed;
+  END IF;
+  digits := (regexp_match(trimmed, '(\d+)$'))[1];
+  IF digits IS NULL THEN
+    RETURN upper(trimmed);
+  END IF;
+  digits := digits::bigint::text;   -- strips leading zeros: '010' -> '10'
+  IF length(digits) < 2 THEN
+    digits := lpad(digits, 2, '0');
+  END IF;
+  RETURN 'WS' || digits;
+END;
+$_$;
+
+
+--
+-- Name: FUNCTION canonical_ws_code(code text); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.canonical_ws_code(code text) IS 'Canonical stored form for workstation codes: WS + zero-padded number (WS01..WS98). Mirrors canonicalWsCode() in api.routes.js.';
+
 
 --
 -- Name: log_material_transaction(); Type: FUNCTION; Schema: public; Owner: -
@@ -98,6 +136,35 @@ $$;
 
 
 --
+-- Name: trg_canonicalize_adjustment_ws_codes(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.trg_canonicalize_adjustment_ws_codes() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  NEW.from_workstation_code   := canonical_ws_code(NEW.from_workstation_code);
+  NEW.vacant_workstation_code := canonical_ws_code(NEW.vacant_workstation_code);
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: trg_canonicalize_workstation_code(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.trg_canonicalize_workstation_code() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  NEW.workstation_code := canonical_ws_code(NEW.workstation_code);
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: update_modified_column(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -166,6 +233,46 @@ CREATE SEQUENCE public.audit_logs_id_seq
 --
 
 ALTER SEQUENCE public.audit_logs_id_seq OWNED BY public.audit_logs.id;
+
+
+--
+-- Name: changeover_primary_promotions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.changeover_primary_promotions (
+    id integer NOT NULL,
+    line_id integer NOT NULL,
+    work_date date NOT NULL,
+    previous_primary_product_id integer,
+    new_primary_product_id integer,
+    previous_primary_target_units integer DEFAULT 0 NOT NULL,
+    new_primary_target_units integer DEFAULT 0 NOT NULL,
+    promoted_at timestamp with time zone DEFAULT now() NOT NULL,
+    promoted_by integer,
+    snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT changeover_primary_promotions_new_target_nonneg CHECK ((new_primary_target_units >= 0)),
+    CONSTRAINT changeover_primary_promotions_prev_target_nonneg CHECK ((previous_primary_target_units >= 0))
+);
+
+
+--
+-- Name: changeover_primary_promotions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.changeover_primary_promotions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: changeover_primary_promotions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.changeover_primary_promotions_id_seq OWNED BY public.changeover_primary_promotions.id;
 
 
 --
@@ -367,6 +474,40 @@ ALTER SEQUENCE public.employee_attendance_id_seq OWNED BY public.employee_attend
 
 
 --
+-- Name: employee_code_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.employee_code_history (
+    id integer NOT NULL,
+    employee_id integer NOT NULL,
+    old_emp_code character varying(50) NOT NULL,
+    new_emp_code character varying(50) NOT NULL,
+    changed_at timestamp with time zone DEFAULT now() NOT NULL,
+    changed_by integer
+);
+
+
+--
+-- Name: employee_code_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.employee_code_history_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: employee_code_history_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.employee_code_history_id_seq OWNED BY public.employee_code_history.id;
+
+
+--
 -- Name: employee_process_assignments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -397,6 +538,49 @@ CREATE SEQUENCE public.employee_process_assignments_id_seq
 --
 
 ALTER SEQUENCE public.employee_process_assignments_id_seq OWNED BY public.employee_process_assignments.id;
+
+
+--
+-- Name: employee_workstation_assignment_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.employee_workstation_assignment_history (
+    id integer NOT NULL,
+    line_id integer NOT NULL,
+    work_date date NOT NULL,
+    employee_id integer NOT NULL,
+    workstation_code character varying(100) NOT NULL,
+    is_overtime boolean DEFAULT false NOT NULL,
+    effective_from_hour integer NOT NULL,
+    effective_to_hour integer,
+    linked_at timestamp with time zone,
+    attendance_start timestamp with time zone,
+    late_reason character varying(30),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    line_plan_workstation_id integer,
+    CONSTRAINT employee_workstation_assignment_history_check CHECK (((effective_to_hour IS NULL) OR (effective_to_hour >= effective_from_hour)))
+);
+
+
+--
+-- Name: employee_workstation_assignment_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.employee_workstation_assignment_history_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: employee_workstation_assignment_history_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.employee_workstation_assignment_history_id_seq OWNED BY public.employee_workstation_assignment_history.id;
 
 
 --
@@ -486,7 +670,11 @@ CREATE TABLE public.employees (
     created_by integer,
     updated_by integer,
     manpower_factor numeric DEFAULT 1 NOT NULL,
+    employment_status character varying(20) DEFAULT 'permanent'::character varying NOT NULL,
+    permanent_from date,
+    uuid uuid DEFAULT gen_random_uuid() NOT NULL,
     CONSTRAINT emp_code_format CHECK (((emp_code)::text ~ '^[A-Z0-9]+$'::text)),
+    CONSTRAINT employees_employment_status_check CHECK (((employment_status)::text = ANY ((ARRAY['temporary'::character varying, 'permanent'::character varying])::text[]))),
     CONSTRAINT employees_manpower_factor_check CHECK ((manpower_factor > (0)::numeric))
 );
 
@@ -583,6 +771,18 @@ CREATE SEQUENCE public.line_daily_metrics_id_seq
 --
 
 ALTER SEQUENCE public.line_daily_metrics_id_seq OWNED BY public.line_daily_metrics.id;
+
+
+--
+-- Name: line_daily_plan_delete_markers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.line_daily_plan_delete_markers (
+    line_id integer NOT NULL,
+    work_date date NOT NULL,
+    deleted_by integer,
+    deleted_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
 
 
 --
@@ -747,7 +947,11 @@ CREATE TABLE public.line_ot_progress (
     remarks text,
     employee_id integer,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    opening_wip_quantity integer DEFAULT 0 NOT NULL,
+    ot_target_units integer DEFAULT 0 NOT NULL,
+    balance_quantity integer DEFAULT 0 NOT NULL,
+    closing_wip_quantity integer DEFAULT 0 NOT NULL
 );
 
 
@@ -813,11 +1017,18 @@ CREATE TABLE public.line_ot_workstations (
     workstation_code character varying(50) NOT NULL,
     workstation_number integer,
     group_name character varying(100),
-    is_active boolean DEFAULT true NOT NULL,
+    is_active boolean DEFAULT false NOT NULL,
     ot_minutes integer DEFAULT 0 NOT NULL,
     actual_sam_seconds numeric(10,2) DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    source_line_plan_workstation_id integer,
+    source_product_id integer,
+    source_mode character varying(20) DEFAULT 'primary'::character varying NOT NULL,
+    source_hourly_target numeric(10,2) DEFAULT 0 NOT NULL,
+    source_employee_id integer,
+    regular_shift_output_quantity integer DEFAULT 0 NOT NULL,
+    regular_shift_wip_quantity integer DEFAULT 0 NOT NULL
 );
 
 
@@ -894,7 +1105,8 @@ CREATE TABLE public.line_plan_workstations (
     is_ot_skipped boolean DEFAULT false NOT NULL,
     ws_changeover_active boolean DEFAULT false NOT NULL,
     ws_changeover_started_at timestamp with time zone,
-    co_employee_id integer
+    co_employee_id integer,
+    is_custom_takt boolean DEFAULT false
 );
 
 
@@ -1037,6 +1249,46 @@ CREATE SEQUENCE public.line_workstations_id_seq
 --
 
 ALTER SEQUENCE public.line_workstations_id_seq OWNED BY public.line_workstations.id;
+
+
+--
+-- Name: material_feed_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.material_feed_events (
+    id integer NOT NULL,
+    product_id integer NOT NULL,
+    line_id integer NOT NULL,
+    work_date date NOT NULL,
+    group_name character varying(100) NOT NULL,
+    workstation_code character varying(100) NOT NULL,
+    feed_quantity integer NOT NULL,
+    exceeds_order_quantity boolean DEFAULT false NOT NULL,
+    override_reason text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT material_feed_events_quantity_nonneg CHECK ((feed_quantity >= 0))
+);
+
+
+--
+-- Name: material_feed_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.material_feed_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: material_feed_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.material_feed_events_id_seq OWNED BY public.material_feed_events.id;
 
 
 --
@@ -1301,18 +1553,6 @@ CREATE TABLE public.production_day_locks (
     locked_by integer,
     locked_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     notes text
-);
-
-
---
--- Name: line_daily_plan_delete_markers; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.line_daily_plan_delete_markers (
-    line_id integer NOT NULL,
-    work_date date NOT NULL,
-    deleted_by integer,
-    deleted_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 
@@ -1702,10 +1942,71 @@ ALTER SEQUENCE public.workspaces_id_seq OWNED BY public.workspaces.id;
 
 
 --
+-- Name: workstation_changeover_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workstation_changeover_events (
+    id integer NOT NULL,
+    line_id integer NOT NULL,
+    work_date date NOT NULL,
+    workstation_code character varying(100) NOT NULL,
+    primary_workstation_id integer,
+    incoming_workstation_id integer,
+    primary_product_id integer,
+    incoming_product_id integer,
+    primary_employee_id integer,
+    changeover_employee_id integer,
+    same_employee boolean DEFAULT false NOT NULL,
+    feed_given boolean DEFAULT false NOT NULL,
+    feed_quantity integer DEFAULT 0 NOT NULL,
+    primary_output_quantity integer DEFAULT 0 NOT NULL,
+    primary_target_quantity integer DEFAULT 0 NOT NULL,
+    primary_balance_quantity integer DEFAULT 0 NOT NULL,
+    primary_pending_wip integer DEFAULT 0 NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    started_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT workstation_changeover_events_balance_nonneg CHECK ((primary_balance_quantity >= 0)),
+    CONSTRAINT workstation_changeover_events_feed_nonneg CHECK ((feed_quantity >= 0)),
+    CONSTRAINT workstation_changeover_events_output_nonneg CHECK ((primary_output_quantity >= 0)),
+    CONSTRAINT workstation_changeover_events_target_nonneg CHECK ((primary_target_quantity >= 0)),
+    CONSTRAINT workstation_changeover_events_wip_nonneg CHECK ((primary_pending_wip >= 0))
+);
+
+
+--
+-- Name: workstation_changeover_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.workstation_changeover_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: workstation_changeover_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.workstation_changeover_events_id_seq OWNED BY public.workstation_changeover_events.id;
+
+
+--
 -- Name: audit_logs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.audit_logs ALTER COLUMN id SET DEFAULT nextval('public.audit_logs_id_seq'::regclass);
+
+
+--
+-- Name: changeover_primary_promotions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.changeover_primary_promotions ALTER COLUMN id SET DEFAULT nextval('public.changeover_primary_promotions_id_seq'::regclass);
 
 
 --
@@ -1744,10 +2045,24 @@ ALTER TABLE ONLY public.employee_attendance ALTER COLUMN id SET DEFAULT nextval(
 
 
 --
+-- Name: employee_code_history id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_code_history ALTER COLUMN id SET DEFAULT nextval('public.employee_code_history_id_seq'::regclass);
+
+
+--
 -- Name: employee_process_assignments id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.employee_process_assignments ALTER COLUMN id SET DEFAULT nextval('public.employee_process_assignments_id_seq'::regclass);
+
+
+--
+-- Name: employee_workstation_assignment_history id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_workstation_assignment_history ALTER COLUMN id SET DEFAULT nextval('public.employee_workstation_assignment_history_id_seq'::regclass);
 
 
 --
@@ -1856,6 +2171,13 @@ ALTER TABLE ONLY public.line_workstations ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: material_feed_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.material_feed_events ALTER COLUMN id SET DEFAULT nextval('public.material_feed_events_id_seq'::regclass);
+
+
+--
 -- Name: material_transactions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1933,6 +2255,13 @@ ALTER TABLE ONLY public.workspaces ALTER COLUMN id SET DEFAULT nextval('public.w
 
 
 --
+-- Name: workstation_changeover_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events ALTER COLUMN id SET DEFAULT nextval('public.workstation_changeover_events_id_seq'::regclass);
+
+
+--
 -- Name: app_settings app_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1946,6 +2275,22 @@ ALTER TABLE ONLY public.app_settings
 
 ALTER TABLE ONLY public.audit_logs
     ADD CONSTRAINT audit_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: changeover_primary_promotions changeover_primary_promotions_line_date_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.changeover_primary_promotions
+    ADD CONSTRAINT changeover_primary_promotions_line_date_unique UNIQUE (line_id, work_date);
+
+
+--
+-- Name: changeover_primary_promotions changeover_primary_promotions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.changeover_primary_promotions
+    ADD CONSTRAINT changeover_primary_promotions_pkey PRIMARY KEY (id);
 
 
 --
@@ -2005,6 +2350,14 @@ ALTER TABLE ONLY public.employee_attendance
 
 
 --
+-- Name: employee_code_history employee_code_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_code_history
+    ADD CONSTRAINT employee_code_history_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: employee_process_assignments employee_process_assignments_employee_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2029,6 +2382,14 @@ ALTER TABLE ONLY public.employee_process_assignments
 
 
 --
+-- Name: employee_workstation_assignment_history employee_workstation_assignment_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_workstation_assignment_history
+    ADD CONSTRAINT employee_workstation_assignment_history_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: employee_workstation_assignments employee_workstation_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2050,6 +2411,14 @@ ALTER TABLE ONLY public.employees
 
 ALTER TABLE ONLY public.employees
     ADD CONSTRAINT employees_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: employees employees_uuid_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employees
+    ADD CONSTRAINT employees_uuid_key UNIQUE (uuid);
 
 
 --
@@ -2082,6 +2451,14 @@ ALTER TABLE ONLY public.line_daily_metrics
 
 ALTER TABLE ONLY public.line_daily_metrics
     ADD CONSTRAINT line_daily_metrics_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_daily_plan_delete_markers
+    ADD CONSTRAINT line_daily_plan_delete_markers_pkey PRIMARY KEY (line_id, work_date);
 
 
 --
@@ -2237,6 +2614,14 @@ ALTER TABLE ONLY public.line_workstations
 
 
 --
+-- Name: material_feed_events material_feed_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.material_feed_events
+    ADD CONSTRAINT material_feed_events_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: material_transactions material_transactions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2290,14 +2675,6 @@ ALTER TABLE ONLY public.product_processes
 
 ALTER TABLE ONLY public.production_day_locks
     ADD CONSTRAINT production_day_locks_pkey PRIMARY KEY (work_date);
-
-
---
--- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.line_daily_plan_delete_markers
-    ADD CONSTRAINT line_daily_plan_delete_markers_pkey PRIMARY KEY (line_id, work_date);
 
 
 --
@@ -2413,6 +2790,22 @@ ALTER TABLE ONLY public.workspaces
 
 
 --
+-- Name: workstation_changeover_events workstation_changeover_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_unique UNIQUE (line_id, work_date, workstation_code);
+
+
+--
 -- Name: idx_assignment_history_employee; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2497,17 +2890,17 @@ CREATE INDEX idx_audit_logs_user ON public.audit_logs USING btree (changed_by);
 
 
 --
+-- Name: idx_changeover_primary_promotions_line_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_changeover_primary_promotions_line_date ON public.changeover_primary_promotions USING btree (line_id, work_date);
+
+
+--
 -- Name: idx_day_locks_date; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_day_locks_date ON public.production_day_locks USING btree (work_date);
-
-
---
--- Name: idx_line_daily_plan_delete_markers_work_date; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_line_daily_plan_delete_markers_work_date ON public.line_daily_plan_delete_markers USING btree (work_date);
 
 
 --
@@ -2623,6 +3016,13 @@ CREATE INDEX idx_downtime_reasons_code ON public.downtime_reasons USING btree (r
 
 
 --
+-- Name: idx_employee_code_history_employee; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_employee_code_history_employee ON public.employee_code_history USING btree (employee_id);
+
+
+--
 -- Name: idx_employees_emp_code; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2665,6 +3065,34 @@ CREATE UNIQUE INDEX idx_ewa_line_date_ws_ot ON public.employee_workstation_assig
 
 
 --
+-- Name: idx_ewah_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ewah_active ON public.employee_workstation_assignment_history USING btree (work_date, is_overtime, effective_to_hour);
+
+
+--
+-- Name: idx_ewah_emp_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ewah_emp_date ON public.employee_workstation_assignment_history USING btree (employee_id, work_date, is_overtime, effective_from_hour);
+
+
+--
+-- Name: idx_ewah_line_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ewah_line_date ON public.employee_workstation_assignment_history USING btree (line_id, work_date, is_overtime, workstation_code, effective_from_hour);
+
+
+--
+-- Name: idx_ewah_line_plan_ws; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ewah_line_plan_ws ON public.employee_workstation_assignment_history USING btree (line_plan_workstation_id);
+
+
+--
 -- Name: idx_group_wip_line_date; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2704,6 +3132,13 @@ CREATE INDEX idx_line_daily_metrics_date ON public.line_daily_metrics USING btre
 --
 
 CREATE INDEX idx_line_daily_metrics_line_date ON public.line_daily_metrics USING btree (line_id, work_date);
+
+
+--
+-- Name: idx_line_daily_plan_delete_markers_work_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_line_daily_plan_delete_markers_work_date ON public.line_daily_plan_delete_markers USING btree (work_date);
 
 
 --
@@ -2774,6 +3209,20 @@ CREATE INDEX idx_lpwp_process ON public.line_plan_workstation_processes USING bt
 --
 
 CREATE INDEX idx_lpwp_workstation ON public.line_plan_workstation_processes USING btree (workstation_id);
+
+
+--
+-- Name: idx_material_feed_events_line_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_material_feed_events_line_date ON public.material_feed_events USING btree (line_id, work_date);
+
+
+--
+-- Name: idx_material_feed_events_product; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_material_feed_events_product ON public.material_feed_events USING btree (product_id, work_date);
 
 
 --
@@ -2882,6 +3331,13 @@ CREATE INDEX idx_products_code ON public.products USING btree (product_code);
 
 
 --
+-- Name: idx_products_target_qty; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_products_target_qty ON public.products USING btree (target_qty);
+
+
+--
 -- Name: idx_shift_closures_date; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2952,10 +3408,80 @@ CREATE INDEX idx_workspaces_line ON public.workspaces USING btree (line_id);
 
 
 --
+-- Name: idx_ws_changeover_events_line_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ws_changeover_events_line_date ON public.workstation_changeover_events USING btree (line_id, work_date);
+
+
+--
 -- Name: uq_product_sequence; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_product_sequence ON public.product_processes USING btree (product_id, sequence_number) WHERE (is_active = true);
+
+
+--
+-- Name: employee_workstation_assignment_history canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.employee_workstation_assignment_history FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
+
+
+--
+-- Name: employee_workstation_assignments canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.employee_workstation_assignments FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
+
+
+--
+-- Name: line_ot_workstations canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.line_ot_workstations FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
+
+
+--
+-- Name: line_plan_workstations canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.line_plan_workstations FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
+
+
+--
+-- Name: material_feed_events canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.material_feed_events FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
+
+
+--
+-- Name: product_processes canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.product_processes FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
+
+
+--
+-- Name: worker_adjustments canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.worker_adjustments FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_adjustment_ws_codes();
+
+
+--
+-- Name: worker_departures canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.worker_departures FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
+
+
+--
+-- Name: workstation_changeover_events canonicalize_ws_code; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER canonicalize_ws_code BEFORE INSERT OR UPDATE ON public.workstation_changeover_events FOR EACH ROW EXECUTE FUNCTION public.trg_canonicalize_workstation_code();
 
 
 --
@@ -3033,6 +3559,38 @@ CREATE TRIGGER update_downtime_log_modtime BEFORE UPDATE ON public.downtime_log 
 --
 
 CREATE TRIGGER update_downtime_reasons_modtime BEFORE UPDATE ON public.downtime_reasons FOR EACH ROW EXECUTE FUNCTION public.update_modified_column();
+
+
+--
+-- Name: changeover_primary_promotions changeover_primary_promotions_line_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.changeover_primary_promotions
+    ADD CONSTRAINT changeover_primary_promotions_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
+
+
+--
+-- Name: changeover_primary_promotions changeover_primary_promotions_new_primary_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.changeover_primary_promotions
+    ADD CONSTRAINT changeover_primary_promotions_new_primary_product_id_fkey FOREIGN KEY (new_primary_product_id) REFERENCES public.products(id) ON DELETE SET NULL;
+
+
+--
+-- Name: changeover_primary_promotions changeover_primary_promotions_previous_primary_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.changeover_primary_promotions
+    ADD CONSTRAINT changeover_primary_promotions_previous_primary_product_id_fkey FOREIGN KEY (previous_primary_product_id) REFERENCES public.products(id) ON DELETE SET NULL;
+
+
+--
+-- Name: changeover_primary_promotions changeover_primary_promotions_promoted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.changeover_primary_promotions
+    ADD CONSTRAINT changeover_primary_promotions_promoted_by_fkey FOREIGN KEY (promoted_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -3124,6 +3682,14 @@ ALTER TABLE ONLY public.employee_attendance
 
 
 --
+-- Name: employee_code_history employee_code_history_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_code_history
+    ADD CONSTRAINT employee_code_history_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES public.employees(id) ON DELETE CASCADE;
+
+
+--
 -- Name: employee_process_assignments employee_process_assignments_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3145,6 +3711,30 @@ ALTER TABLE ONLY public.employee_process_assignments
 
 ALTER TABLE ONLY public.employee_process_assignments
     ADD CONSTRAINT employee_process_assignments_process_id_fkey FOREIGN KEY (process_id) REFERENCES public.product_processes(id) ON DELETE CASCADE;
+
+
+--
+-- Name: employee_workstation_assignment_history employee_workstation_assignment_h_line_plan_workstation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_workstation_assignment_history
+    ADD CONSTRAINT employee_workstation_assignment_h_line_plan_workstation_id_fkey FOREIGN KEY (line_plan_workstation_id) REFERENCES public.line_plan_workstations(id) ON DELETE SET NULL;
+
+
+--
+-- Name: employee_workstation_assignment_history employee_workstation_assignment_history_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_workstation_assignment_history
+    ADD CONSTRAINT employee_workstation_assignment_history_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES public.employees(id) ON DELETE CASCADE;
+
+
+--
+-- Name: employee_workstation_assignment_history employee_workstation_assignment_history_line_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_workstation_assignment_history
+    ADD CONSTRAINT employee_workstation_assignment_history_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
 
 
 --
@@ -3217,6 +3807,22 @@ ALTER TABLE ONLY public.line_daily_metrics
 
 ALTER TABLE ONLY public.line_daily_metrics
     ADD CONSTRAINT line_daily_metrics_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_deleted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_daily_plan_delete_markers
+    ADD CONSTRAINT line_daily_plan_delete_markers_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_line_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_daily_plan_delete_markers
+    ADD CONSTRAINT line_daily_plan_delete_markers_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
 
 
 --
@@ -3340,6 +3946,22 @@ ALTER TABLE ONLY public.line_ot_workstations
 
 
 --
+-- Name: line_ot_workstations line_ot_workstations_source_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_ot_workstations
+    ADD CONSTRAINT line_ot_workstations_source_employee_id_fkey FOREIGN KEY (source_employee_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: line_ot_workstations line_ot_workstations_source_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.line_ot_workstations
+    ADD CONSTRAINT line_ot_workstations_source_product_id_fkey FOREIGN KEY (source_product_id) REFERENCES public.products(id);
+
+
+--
 -- Name: line_plan_workstation_processes line_plan_workstation_processes_product_process_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3425,6 +4047,30 @@ ALTER TABLE ONLY public.line_shift_closures
 
 ALTER TABLE ONLY public.line_workstations
     ADD CONSTRAINT line_workstations_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
+
+
+--
+-- Name: material_feed_events material_feed_events_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.material_feed_events
+    ADD CONSTRAINT material_feed_events_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: material_feed_events material_feed_events_line_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.material_feed_events
+    ADD CONSTRAINT material_feed_events_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
+
+
+--
+-- Name: material_feed_events material_feed_events_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.material_feed_events
+    ADD CONSTRAINT material_feed_events_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
 
 
 --
@@ -3540,22 +4186,6 @@ ALTER TABLE ONLY public.production_day_locks
 
 
 --
--- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_deleted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.line_daily_plan_delete_markers
-    ADD CONSTRAINT line_daily_plan_delete_markers_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES public.users(id) ON DELETE SET NULL;
-
-
---
--- Name: line_daily_plan_delete_markers line_daily_plan_delete_markers_line_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.line_daily_plan_delete_markers
-    ADD CONSTRAINT line_daily_plan_delete_markers_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
-
-
---
 -- Name: worker_adjustments worker_adjustments_departure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3604,7 +4234,72 @@ ALTER TABLE ONLY public.workspaces
 
 
 --
+-- Name: workstation_changeover_events workstation_changeover_events_changeover_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_changeover_employee_id_fkey FOREIGN KEY (changeover_employee_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_incoming_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_incoming_product_id_fkey FOREIGN KEY (incoming_product_id) REFERENCES public.products(id) ON DELETE SET NULL;
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_incoming_workstation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_incoming_workstation_id_fkey FOREIGN KEY (incoming_workstation_id) REFERENCES public.line_plan_workstations(id) ON DELETE SET NULL;
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_line_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_line_id_fkey FOREIGN KEY (line_id) REFERENCES public.production_lines(id) ON DELETE CASCADE;
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_primary_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_primary_employee_id_fkey FOREIGN KEY (primary_employee_id) REFERENCES public.employees(id) ON DELETE SET NULL;
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_primary_product_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_primary_product_id_fkey FOREIGN KEY (primary_product_id) REFERENCES public.products(id) ON DELETE SET NULL;
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_primary_workstation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_primary_workstation_id_fkey FOREIGN KEY (primary_workstation_id) REFERENCES public.line_plan_workstations(id) ON DELETE SET NULL;
+
+
+--
+-- Name: workstation_changeover_events workstation_changeover_events_started_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workstation_changeover_events
+    ADD CONSTRAINT workstation_changeover_events_started_by_fkey FOREIGN KEY (started_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict uDD8TmQQ0HVgLHNCZHdbJQBrffwDhHsSWDjWpiehYsc5JdTcZRbaBs9bFUGjFtB
+\unrestrict rGXwdajbBxKGCZZRauLv57TU0fkgu1q6cFks0Dm9DMeLLXUJH1JxN2v1ZQ6pG4k
+

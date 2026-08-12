@@ -30,4 +30,16 @@
 030_co_employee_assignment.sql
 031_ot_supervisor_auth.sql
 032_attendance_link_tracking.sql
+033_employee_workstation_assignment_history.sql
 033_working_hours.sql
+034_workstation_changeover_events.sql
+035_ot_workstation_flow.sql
+036_daily_plan_delete_markers.sql
+037_changeover_primary_promotions.sql
+038_material_feed_events.sql
+039_ot_workstations_default_inactive.sql
+040_custom_takt_flag.sql
+041_employee_temp_to_permanent.sql
+042_employee_uuid.sql
+043_canonicalize_workstation_codes.sql
+044_enforce_canonical_workstation_codes.sql
