@@ -2571,8 +2571,20 @@ router.get('/daily-plans', async (req, res) => {
              WHERE pl.is_active = true
              ORDER BY pl.line_name`
         );
+        // Always include every line's own currently-assigned primary/changeover product for this
+        // date even if it's been marked inactive elsewhere — otherwise these dropdowns silently
+        // drop the selected <option>, fall back to showing "None"/blank, and the next Save
+        // submits that empty value, wiping out a real, in-use plan (see line-process-details for
+        // the same fix applied to the Line Details overlay).
+        const inUseProductIds = [
+            ...plansResult.rows.map(p => p.product_id),
+            ...plansResult.rows.map(p => p.incoming_product_id)
+        ].filter(Boolean);
         const productsResult = await pool.query(
-            `SELECT id, product_code, product_name, target_qty, plan_month FROM products WHERE is_active = true ORDER BY product_code`
+            `SELECT id, product_code, product_name, target_qty, plan_month FROM products
+             WHERE is_active = true OR id = ANY($1::int[])
+             ORDER BY product_code`,
+            [inUseProductIds]
         );
         res.json({
             success: true,
@@ -2953,12 +2965,19 @@ router.patch('/daily-plans/overtime', async (req, res) => {
 // :lineId = target line. from_line_id defaults to :lineId (same-line copy).
 router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) => {
     const toLineId = req.params.lineId;
-    const { from_date, to_date, product_id, from_line_id, copy_employees, force_reassign } = req.body;
+    const {
+        from_date, to_date, product_id, from_line_id, copy_employees, force_reassign,
+        product_mode,               // 'primary' (default) | 'changeover' — which slot on the TARGET day to write into
+        employee_workstation_codes  // optional array of workstation_code — when present, only these get an employee copied
+    } = req.body;
     if (!from_date || !to_date || !product_id) {
         return res.status(400).json({ success: false, error: 'from_date, to_date, product_id required' });
     }
     const fromLineId = from_line_id || toLineId;
+    const isChangeoverTarget = product_mode === 'changeover';
     const shouldCopyEmployees = !(copy_employees === false || copy_employees === 'false');
+    const hasCodesFilter = Array.isArray(employee_workstation_codes);
+    const codesFilterSet = hasCodesFilter ? new Set(employee_workstation_codes.map(String)) : null;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -2970,16 +2989,37 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             [fromLineId, from_date]
         );
         const targetPlan = await client.query(
-            `SELECT ldp.product_id, ldp.id, p.product_code, p.product_name
-             FROM line_daily_plans ldp
-             JOIN products p ON p.id = ldp.product_id
-             WHERE ldp.line_id=$1 AND ldp.work_date=$2`,
+            `SELECT id, product_id, incoming_product_id
+             FROM line_daily_plans
+             WHERE line_id=$1 AND work_date=$2`,
             [toLineId, to_date]
         );
         if (!targetPlan.rows[0]) {
             await client.query('ROLLBACK');
             return res.status(400).json({ success: false, error: `Target line has no daily plan set for ${to_date}. Set a product and target first.` });
         }
+
+        // Resolve which product slot on the target day this copy actually writes into.
+        // Previously this always used the PRIMARY product_id, silently mis-copying into the
+        // wrong slot whenever the caller intended a changeover-plan copy.
+        let targetProductId;
+        if (isChangeoverTarget) {
+            targetProductId = targetPlan.rows[0].incoming_product_id;
+            if (!targetProductId) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ success: false, error: `No changeover style selected for ${to_date} yet. Choose or upload a changeover style first, then copy the plan into it.` });
+            }
+        } else {
+            targetProductId = targetPlan.rows[0].product_id;
+        }
+
+        // A changeover keeps the same physical operator at a workstation code — the person
+        // who should staff a copied changeover workstation is whoever the TARGET line already
+        // has there, not whoever staffs the equivalent code on the SOURCE line. That only
+        // matters cross-line; a same-line copy already reads its own assignments either way.
+        const useTargetLineForEmployees = isChangeoverTarget && String(fromLineId) !== String(toLineId);
+        const empSourceLineId = useTargetLineForEmployees ? toLineId : fromLineId;
+        const empSourceDate = useTargetLineForEmployees ? to_date : from_date;
 
         if (shouldCopyEmployees && !(force_reassign === true || force_reassign === 'true')) {
             const sourceEmpResult = await client.query(
@@ -2989,12 +3029,15 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
                    AND work_date = $2
                    AND is_overtime = false
                    AND employee_id IS NOT NULL`,
-                [fromLineId, from_date]
+                [empSourceLineId, empSourceDate]
             );
-            const keepCodes = sourceEmpResult.rows.map(row => row.workstation_code).filter(Boolean);
+            const selectedEmpRows = hasCodesFilter
+                ? sourceEmpResult.rows.filter(row => codesFilterSet.has(String(row.workstation_code)))
+                : sourceEmpResult.rows;
+            const keepCodes = selectedEmpRows.map(row => row.workstation_code).filter(Boolean);
             const conflicts = await findEmployeeAssignmentConflicts(
                 client,
-                sourceEmpResult.rows.map(row => row.employee_id),
+                selectedEmpRows.map(row => row.employee_id),
                 to_date,
                 false,
                 toLineId,
@@ -3020,7 +3063,10 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             }
         }
 
-        if (sourcePlan.rows[0] && targetPlan.rows[0]?.id) {
+        // Auto-carry the daily target forward only for the primary slot — the changeover slot
+        // keeps whatever target the IE has already set in "Changeover Target" to avoid guessing
+        // which of the source day's numbers (primary vs incoming) should apply.
+        if (!isChangeoverTarget && sourcePlan.rows[0] && targetPlan.rows[0]?.id) {
             await client.query(
                 `UPDATE line_daily_plans
                  SET target_units = $3,
@@ -3036,8 +3082,12 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
         }
 
         const copied = await copyWorkstationPlanFromDate(fromLineId, from_date, toLineId, to_date, product_id, client, {
-            targetProductId: targetPlan.rows[0].product_id,
-            copyEmployees: shouldCopyEmployees
+            targetProductId,
+            copyEmployees: shouldCopyEmployees,
+            employeeWorkstationCodes: codesFilterSet,
+            employeeSourceLineId: empSourceLineId,
+            employeeSourceDate: empSourceDate,
+            isChangeoverCopy: isChangeoverTarget
         });
         if (!copied) {
             await client.query('ROLLBACK');
@@ -3050,7 +3100,7 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             success: true,
             copied_from: from_date,
             from_line_id: fromLineId,
-            target_product_id: targetPlan.rows[0].product_id,
+            target_product_id: targetProductId,
             copied_employees: shouldCopyEmployees
         });
     } catch (err) {
@@ -3079,20 +3129,27 @@ router.get('/lines/:lineId/workstation-plan/latest-date', async (req, res) => {
 // GET /lines/:lineId/workstation-plan/preview?date=X&product_id=Y — workstation summary for copy-plan preview modal
 router.get('/lines/:lineId/workstation-plan/preview', async (req, res) => {
     const { lineId } = req.params;
-    const { date, product_id } = req.query;
+    const { date, product_id, employee_source_line_id, employee_source_date } = req.query;
     if (!date) return res.status(400).json({ success: false, error: 'date required' });
     try {
         const previewProductId = product_id ? parseInt(product_id, 10) : null;
         if (product_id && !previewProductId) {
             return res.status(400).json({ success: false, error: 'invalid product_id' });
         }
-        const wsParams = previewProductId ? [lineId, date, previewProductId] : [lineId, date];
+        // Normally the shown employee is whoever's assigned on THIS (source) line/date. When
+        // previewing a cross-line changeover copy, the caller instead passes the TARGET line's
+        // id/date here — a changeover keeps the same physical operator at a workstation code,
+        // so the person who should show up is whoever the destination line already has staffing
+        // that code, not whoever staffs the equivalent code on the source line.
+        const empLineId = employee_source_line_id || lineId;
+        const empDate = employee_source_date || date;
+        const wsParams = previewProductId ? [lineId, date, previewProductId, empLineId, empDate] : [lineId, date, empLineId, empDate];
         const wsRes = await pool.query(
             `SELECT w.id, w.workstation_code, w.workstation_number, w.group_name, w.product_id,
                     e.emp_code, e.emp_name
              FROM line_plan_workstations w
              LEFT JOIN employee_workstation_assignments ewa
-                 ON ewa.line_id = w.line_id AND ewa.work_date = w.work_date
+                 ON ewa.line_id = $${previewProductId ? 4 : 3} AND ewa.work_date = $${previewProductId ? 5 : 4}
                  AND ewa.workstation_code = w.workstation_code AND ewa.is_overtime = false
              LEFT JOIN employees e ON e.id = ewa.employee_id
              WHERE w.line_id = $1 AND w.work_date = $2
@@ -6272,11 +6329,11 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
                  updated_at = NOW(), updated_by = $4 WHERE id = $5`,
                 [description, buyerName || null, productCategory || null, req.user?.id || null, productId]
             );
-            await client.query(
-                'UPDATE product_processes SET is_active = false, updated_at = NOW() WHERE product_id = $1',
-                [productId]
-            );
-            // No sequence shifting needed — uq_product_sequence is a partial index (WHERE is_active = true)
+            // Existing rows are matched by sequence_number and UPDATEd in place below, instead of
+            // being deactivated here and replaced with fresh ids — this style's process list is
+            // shared across every line currently running it (via line_plan_workstation_processes),
+            // so swapping in new ids on every re-upload silently orphaned every other line's
+            // workstation-process links, making their workstations render as if deleted.
         } else {
             productAction = 'created';
             const insertResult = await client.query(
@@ -6293,6 +6350,15 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
         const operationCacheByCode = {};
         const operationCacheByName = {};
         let autoSeq = 1;
+
+        const existingPpRows = await client.query(
+            `SELECT id, sequence_number FROM product_processes WHERE product_id = $1 ORDER BY is_active DESC, id DESC`,
+            [productId]
+        );
+        const existingPpBySeq = new Map();
+        for (const r of existingPpRows.rows) {
+            if (!existingPpBySeq.has(r.sequence_number)) existingPpBySeq.set(r.sequence_number, r);
+        }
 
         for (const row of processRows) {
             const processNameUpper = row.process_name.toUpperCase();
@@ -6356,25 +6422,40 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
             if (operationCode) operationCacheByCode[String(operationCode).trim().toUpperCase()] = { id: operationId, operation_code: operationCode, is_active: true };
             operationCacheByName[processNameUpper] = { id: operationId, operation_code: operationCode, is_active: true };
 
-            const inserted = await client.query(
-                `INSERT INTO product_processes
-                 (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds,
-                  manpower_required, is_active, created_by)
-                 VALUES ($1, $2, $3, $4, $5, 1, false, $6)
-                 RETURNING id`,
-                [productId, operationId, sequenceNumber, operationSah, Math.round(row.sam_seconds), req.user?.id || null]
-            );
-            insertedProcessIds.push(parseInt(inserted.rows[0].id, 10));
+            const existingPp = existingPpBySeq.get(sequenceNumber);
+            let ppId;
+            if (existingPp) {
+                await client.query(
+                    `UPDATE product_processes
+                     SET operation_id = $2, operation_sah = $3, cycle_time_seconds = $4,
+                         is_active = true, updated_at = NOW(), updated_by = $5
+                     WHERE id = $1`,
+                    [existingPp.id, operationId, operationSah, Math.round(row.sam_seconds), req.user?.id || null]
+                );
+                ppId = existingPp.id;
+            } else {
+                const inserted = await client.query(
+                    `INSERT INTO product_processes
+                     (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds,
+                      manpower_required, is_active, created_by)
+                     VALUES ($1, $2, $3, $4, $5, 1, true, $6)
+                     RETURNING id`,
+                    [productId, operationId, sequenceNumber, operationSah, Math.round(row.sam_seconds), req.user?.id || null]
+                );
+                ppId = parseInt(inserted.rows[0].id, 10);
+            }
+            insertedProcessIds.push(ppId);
             autoSeq++;
         }
 
-        // Activate only the rows inserted by this upload; older rows stay inactive.
+        // Sequence numbers no longer present in this upload — deactivate them, but never
+        // delete, so any other line's line_plan_workstation_processes FK stays valid.
         if (insertedProcessIds.length) {
             await client.query(
                 `UPDATE product_processes
-                 SET is_active = true
-                 WHERE id = ANY($1::int[])`,
-                [insertedProcessIds]
+                 SET is_active = false, updated_at = NOW()
+                 WHERE product_id = $1 AND NOT (id = ANY($2::int[]))`,
+                [productId, insertedProcessIds]
             );
         }
 
@@ -7262,43 +7343,63 @@ async function syncProductProcessListFromSource(sourceProductId, targetProductId
         throw new Error('Source product has no active process list to copy.');
     }
 
-    await db.query(
-        `UPDATE product_processes
-         SET is_active = false, updated_at = NOW()
-         WHERE product_id = $1 AND is_active = true`,
+    // Match existing target rows by sequence_number and UPDATE them in place instead of
+    // deactivating everything and inserting fresh ids — targetProductId's process list may
+    // already be in use elsewhere (another line's line_plan_workstation_processes), and
+    // swapping in new ids silently orphaned those references, making their workstations
+    // render as if their processes had vanished.
+    const existingRows = await db.query(
+        `SELECT id, sequence_number FROM product_processes WHERE product_id = $1 ORDER BY is_active DESC, id DESC`,
         [targetProductId]
     );
+    const existingBySeq = new Map();
+    for (const r of existingRows.rows) {
+        if (!existingBySeq.has(r.sequence_number)) existingBySeq.set(r.sequence_number, r);
+    }
 
-    const insertedIds = [];
+    const keptIds = [];
     for (const proc of sourceProcs.rows) {
-        const insertRes = await db.query(
-            `INSERT INTO product_processes
-               (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
-             VALUES ($1, $2, $3, $4, $5, $6, false, $7)
-             RETURNING id`,
-            [
-                targetProductId,
-                proc.operation_id,
-                proc.sequence_number,
-                proc.operation_sah,
-                proc.cycle_time_seconds,
-                proc.manpower_required,
-                proc.osm_checked
-            ]
-        );
-        insertedIds.push(insertRes.rows[0].id);
+        const existing = existingBySeq.get(proc.sequence_number);
+        let ppId;
+        if (existing) {
+            await db.query(
+                `UPDATE product_processes
+                 SET operation_id = $2, operation_sah = $3, cycle_time_seconds = $4,
+                     manpower_required = $5, osm_checked = $6, is_active = true, updated_at = NOW()
+                 WHERE id = $1`,
+                [existing.id, proc.operation_id, proc.operation_sah, proc.cycle_time_seconds, proc.manpower_required, proc.osm_checked]
+            );
+            ppId = existing.id;
+        } else {
+            const insertRes = await db.query(
+                `INSERT INTO product_processes
+                   (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
+                 VALUES ($1, $2, $3, $4, $5, $6, true, $7)
+                 RETURNING id`,
+                [
+                    targetProductId,
+                    proc.operation_id,
+                    proc.sequence_number,
+                    proc.operation_sah,
+                    proc.cycle_time_seconds,
+                    proc.manpower_required,
+                    proc.osm_checked
+                ]
+            );
+            ppId = insertRes.rows[0].id;
+        }
+        keptIds.push(ppId);
     }
 
-    if (insertedIds.length) {
+    if (keptIds.length) {
         await db.query(
-            `UPDATE product_processes
-             SET is_active = true
-             WHERE id = ANY($1::int[])`,
-            [insertedIds]
+            `UPDATE product_processes SET is_active = false, updated_at = NOW()
+             WHERE product_id = $1 AND NOT (id = ANY($2::int[]))`,
+            [targetProductId, keptIds]
         );
     }
 
-    return { copied: true, count: insertedIds.length };
+    return { copied: true, count: keptIds.length };
 }
 
 // Helper: copy a workstation plan from one date to another, optionally carrying employees too.
@@ -7310,7 +7411,11 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
         targetProductId = sourceProductId,
         copyEmployees = true,
         copyChangeoverState = false,
-        carriedChangeoverStartAt = null
+        carriedChangeoverStartAt = null,
+        employeeWorkstationCodes = null,   // optional Set<string> — restrict which workstations get an employee copied
+        employeeSourceLineId = fromLineId, // which line's employee_workstation_assignments to read from
+        employeeSourceDate = fromDate,     // which date's employee_workstation_assignments to read from
+        isChangeoverCopy = false           // true when targetProductId is the TARGET's changeover slot
     } = options;
     const db = client || pool;
     // Find source workstations
@@ -7374,15 +7479,20 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
 
     const takeFirstUnused = (ids = []) => ids.find(id => !usedTargetProcessIds.has(id)) || null;
 
-    // Fetch source employee assignments BEFORE deleting anything (cascade would wipe them on self-copy)
+    // Fetch employee assignments BEFORE deleting anything (cascade would wipe them on self-copy).
+    // Normally reads the SOURCE line/date; for a cross-line changeover copy the caller instead
+    // points this at the TARGET line/date, since the operator who should staff a changeover
+    // workstation is whoever the destination line already has there — not whoever staffs the
+    // equivalent code on the source line.
     const empByWsCode = {};
     if (copyEmployees) {
         const srcEmps = await db.query(
             `SELECT workstation_code, employee_id FROM employee_workstation_assignments
              WHERE line_id=$1 AND work_date=$2 AND is_overtime=false AND employee_id IS NOT NULL`,
-            [fromLineId, fromDate]
+            [employeeSourceLineId, employeeSourceDate]
         );
         for (const ea of srcEmps.rows) {
+            if (employeeWorkstationCodes && !employeeWorkstationCodes.has(String(ea.workstation_code))) continue;
             empByWsCode[ea.workstation_code] = {
                 employee_id: ea.employee_id
             };
@@ -7397,6 +7507,14 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
 
     let insertedProcessCount = 0;
     for (const ws of srcWs.rows) {
+        // The Changeover view reads co_employee_id, not employee_workstation_assignments (that's
+        // the regular/live assignment table) — so a changeover copy must set co_employee_id to the
+        // resolved employee (which already accounts for cross-line inheritance) or the new
+        // workstation will show "Not Assigned" even though the ewa row was written correctly.
+        // Non-changeover copies keep the old behavior of carrying the source row's own value.
+        const newCoEmployeeId = isChangeoverCopy
+            ? (copyEmployees ? (empByWsCode[ws.workstation_code]?.employee_id || null) : null)
+            : (ws.co_employee_id || null);
         const newWs = await db.query(
             `INSERT INTO line_plan_workstations
                (line_id, work_date, product_id, workstation_number, workstation_code,
@@ -7404,7 +7522,7 @@ async function copyWorkstationPlanFromDate(fromLineId, fromDate, toLineId, toDat
                 is_custom_takt, ws_changeover_active, ws_changeover_started_at)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
             [toLineId, toDate, targetProductId, ws.workstation_number, ws.workstation_code,
-             ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name, ws.co_employee_id || null,
+             ws.takt_time_seconds, ws.actual_sam_seconds, ws.workload_pct, ws.group_name, newCoEmployeeId,
              !!ws.is_custom_takt,
              copyChangeoverState ? ws.ws_changeover_active === true : false,
              copyChangeoverState && ws.ws_changeover_active === true
@@ -8446,8 +8564,16 @@ router.get('/lines/:lineId/line-process-details', async (req, res) => {
             `SELECT id, emp_code, emp_name, qr_code_path FROM employees WHERE is_active = true ORDER BY emp_code`
         );
 
+        // Always include this line's own currently-assigned primary/changeover products even if
+        // they've been marked inactive elsewhere (e.g. hidden from the Styles list) — otherwise
+        // the dropdown here silently drops the selected <option>, the <select> falls back to
+        // showing "None", and the next "Update Plan" click submits that empty value, wiping out
+        // a real, in-use changeover/primary assignment.
         const productsResult = await pool.query(
-            `SELECT id, product_code, product_name FROM products WHERE is_active = true ORDER BY product_code`
+            `SELECT id, product_code, product_name FROM products
+             WHERE is_active = true OR id = ANY($1::int[])
+             ORDER BY product_code`,
+            [[product_id, incoming_product_id].filter(Boolean)]
         );
 
         // All employee–workstation assignments for this date (factory-wide, for exclusivity enforcement).
@@ -10391,16 +10517,26 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             }
         }
 
-        // Deactivate all existing product_processes for this product.
-        // uq_product_sequence is a PARTIAL unique index (WHERE is_active = true), so deactivated
-        // rows do not participate in uniqueness checks — no sequence shifting needed.
-        await client.query(
-            `UPDATE product_processes SET is_active = false WHERE product_id = $1`,
+        // product_processes is a SHARED list per product_id — the same style can be running on
+        // multiple lines at once (e.g. as each line's primary or changeover plan), and every one
+        // of those lines' line_plan_workstation_processes rows point at these ids. The old logic
+        // here deactivated every existing row and always INSERTed fresh ones, which permanently
+        // orphaned any other line's workstation-process links the moment anyone re-uploaded this
+        // style from a different line — their workstations would render with zero processes,
+        // i.e. looked "deleted". Fix: match by sequence_number and UPDATE in place so existing
+        // ids (and therefore every other line's references to them) survive the re-upload.
+        const existingPpRows = await client.query(
+            `SELECT id, sequence_number FROM product_processes WHERE product_id = $1 ORDER BY is_active DESC, id DESC`,
             [productId]
         );
+        const existingPpBySeq = new Map();
+        for (const r of existingPpRows.rows) {
+            if (!existingPpBySeq.has(r.sequence_number)) existingPpBySeq.set(r.sequence_number, r);
+        }
 
         // Upsert operations + product_processes.
         // Blank opCode means the process is new and should get a fresh operation code.
+        const keptPpIds = [];
         for (const row of dataRows) {
             if (!row.opId) {
                 let resolvedOperation = null;
@@ -10436,31 +10572,35 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             // OSM checked: true only when the upload marks the box as checked.
             row.osmChecked = isOsmCheckedValue(row.osm);
 
-            // Insert one product_process row per Excel row so repeated operations are preserved.
-            const ppInsert = await client.query(
-                `INSERT INTO product_processes
-                   (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
-                 VALUES ($1, $2, $3, $4, $5, 1, false, $6) RETURNING id`,
-                [productId, row.opId, row.seq, row.sah, Math.round(row.sah * 3600), row.osmChecked]
-            );
-            row.ppId = ppInsert.rows[0].id;
+            const existingPp = existingPpBySeq.get(row.seq);
+            if (existingPp) {
+                await client.query(
+                    `UPDATE product_processes
+                     SET operation_id = $2, operation_sah = $3, cycle_time_seconds = $4,
+                         osm_checked = $5, is_active = true, updated_at = NOW(), updated_by = $6
+                     WHERE id = $1`,
+                    [existingPp.id, row.opId, row.sah, Math.round(row.sah * 3600), row.osmChecked, req.user?.id || null]
+                );
+                row.ppId = existingPp.id;
+            } else {
+                const ppInsert = await client.query(
+                    `INSERT INTO product_processes
+                       (product_id, operation_id, sequence_number, operation_sah, cycle_time_seconds, manpower_required, is_active, osm_checked)
+                     VALUES ($1, $2, $3, $4, $5, 1, true, $6) RETURNING id`,
+                    [productId, row.opId, row.seq, row.sah, Math.round(row.sah * 3600), row.osmChecked]
+                );
+                row.ppId = ppInsert.rows[0].id;
+            }
+            keptPpIds.push(row.ppId);
         }
 
-        // Batch-update sequences (all rows are still inactive → partial index not enforced → no conflicts).
-        if (dataRows.length) {
-            const seqValues = dataRows.map(r => `(${r.ppId}, ${r.seq})`).join(', ');
+        // Sequence numbers no longer present in this upload (the process list shrank) —
+        // deactivate them, but never delete, so any remaining FK references stay valid.
+        if (keptPpIds.length) {
             await client.query(
-                `UPDATE product_processes AS pp
-                 SET sequence_number = v.seq
-                 FROM (VALUES ${seqValues}) AS v(id, seq)
-                 WHERE pp.id = v.id`
-            );
-
-            // Activate all rows in this upload in one shot — sequences are final, no conflicts.
-            const activePpIds = dataRows.map(r => r.ppId);
-            await client.query(
-                `UPDATE product_processes SET is_active = true WHERE id = ANY($1)`,
-                [activePpIds]
+                `UPDATE product_processes SET is_active = false, updated_at = NOW()
+                 WHERE product_id = $1 AND NOT (id = ANY($2::int[]))`,
+                [productId, keptPpIds]
             );
         }
 

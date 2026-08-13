@@ -1154,7 +1154,8 @@ const hourlyState = {
     totalWorkstationCount: 0,
     changeoverReadyWorkstationCount: 0,
     canFinalizePrimary: false,
-    finalizePrimaryBusy: false
+    finalizePrimaryBusy: false,
+    finalizePromptShown: false
 };
 
 const SHORTFALL_REASONS = [
@@ -1556,6 +1557,7 @@ async function onHourlyLineChange() {
         hourlyState.changeoverReadyWorkstationCount = 0;
         hourlyState.canFinalizePrimary = false;
         hourlyState.finalizePrimaryBusy = false;
+        hourlyState.finalizePromptShown = false;
         container.innerHTML = '';
         return;
     }
@@ -1586,6 +1588,7 @@ async function onHourlyLineChange() {
         hourlyState.changeoverReadyWorkstationCount = result.changeover_ready_workstation_count || 0;
         hourlyState.canFinalizePrimary = result.can_finalize_primary === true;
         hourlyState.finalizePrimaryBusy = false;
+        if (!hourlyState.canFinalizePrimary) hourlyState.finalizePromptShown = false;
         // Restore changeoverUiEnabled from sessionStorage (survives reload, not cross-day)
         const coKey = `co_ui_enabled_${lineId}_${date}`;
         hourlyState.changeoverUiEnabledKey = coKey;
@@ -1612,6 +1615,7 @@ async function onHourlyLineChange() {
         hourlyState.changeoverReadyWorkstationCount = 0;
         hourlyState.canFinalizePrimary = false;
         hourlyState.finalizePrimaryBusy = false;
+        hourlyState.finalizePromptShown = false;
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     }
 }
@@ -2206,10 +2210,9 @@ async function submitWsChangeoverStart(force = false, changeReason = null, confi
         if (!data.success) { showToast(data.error || 'Failed to activate changeover', 'error'); return; }
         closeWsChangeoverModal();
         showToast(`Changeover started for ${wsCode}`, 'success');
+        // onHourlyLineChange() re-fetches can_finalize_primary; renderHourlySummary() auto-shows
+        // the "convert CO to primary" prompt the moment every workstation has switched.
         await onHourlyLineChange();
-        if (data.should_finalize) {
-            await finalizeChangeoverPrimary();
-        }
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -2252,16 +2255,50 @@ function enableHourlyChangeover() {
     renderHourlySummary();
 }
 
+// Auto-prompt shown the moment every staffed workstation has switched to CO —
+// no button needs to be pressed to surface it, it just appears with a single OK.
+function showFinalizeChangeoverPrompt() {
+    if (document.getElementById('co-finalize-modal')) return;
+    hourlyState.finalizePromptShown = true;
+
+    const modal = document.createElement('div');
+    modal.id = 'co-finalize-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3200;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:24px;width:min(420px,95vw);box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center;">
+            <div style="font-size:32px;margin-bottom:8px;">&#8652;</div>
+            <h3 style="margin:0 0 10px;font-size:16px;font-weight:700;color:#111827;">All Workstations in CO</h3>
+            <p style="margin:0 0 20px;font-size:13px;color:#4b5563;line-height:1.5;">
+                Every workstation has switched to changeover. Convert CO to primary and make CO blank for the next product.
+            </p>
+            <button id="co-finalize-ok-btn" class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;min-width:120px;" onclick="confirmFinalizeChangeoverPrimary()">OK</button>
+        </div>`;
+    document.body.appendChild(modal);
+}
+
+function closeFinalizeChangeoverPrompt() {
+    document.getElementById('co-finalize-modal')?.remove();
+}
+
+async function confirmFinalizeChangeoverPrimary() {
+    const okBtn = document.getElementById('co-finalize-ok-btn');
+    if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Converting...'; }
+    const success = await finalizeChangeoverPrimary();
+    if (success) {
+        closeFinalizeChangeoverPrompt();
+    } else if (okBtn) {
+        okBtn.disabled = false;
+        okBtn.textContent = 'OK';
+    }
+}
+
 async function finalizeChangeoverPrimary() {
     const lineId = hourlyState.lineId;
     const workDate = document.getElementById('hourly-date')?.value || '';
-    if (!lineId || !workDate || hourlyState.finalizePrimaryBusy) return;
+    if (!lineId || !workDate || hourlyState.finalizePrimaryBusy) return false;
     if (!hourlyState.canFinalizePrimary) {
         showToast('All workstations must switch to CO before promotion', 'error');
-        return;
-    }
-    if (!confirm('All the workstations are in CO - Convert CO to primary and make CO blank for next product?')) {
-        return;
+        return false;
     }
 
     hourlyState.finalizePrimaryBusy = true;
@@ -2281,10 +2318,12 @@ async function finalizeChangeoverPrimary() {
         }
         showToast(result.message || 'CO converted as primary product', 'success');
         await onHourlyLineChange();
+        return true;
     } catch (err) {
         hourlyState.finalizePrimaryBusy = false;
         renderHourlySummary();
         showToast(err.message, 'error');
+        return false;
     }
 }
 
@@ -2293,6 +2332,12 @@ function renderHourlySummary() {
     const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
     const hourlyTarget = hourlyState.hourlyTarget;
     const date = document.getElementById('hourly-date')?.value || '';
+
+    // The moment every staffed workstation has switched to CO, prompt automatically —
+    // no "Convert CO To Primary" button needs to be pressed to trigger this.
+    if (hourlyState.canFinalizePrimary && !hourlyState.finalizePrimaryBusy && !hourlyState.finalizePromptShown) {
+        showFinalizeChangeoverPrompt();
+    }
 
     // Changeover completion banner (shown when changeover is planned)
     let changeoverBanner = '';
@@ -2308,12 +2353,11 @@ function renderHourlySummary() {
             const coTargetMet = coPct >= 100;
             const coPctColor = coTargetMet ? '#16a34a' : coPct >= 80 ? '#d97706' : '#6b7280';
             const coBarWidth = Math.min(coPct, 100);
-            const finalizeButton = finalizeReady
-                ? `<button class="btn btn-primary btn-sm" style="background:#16a34a;border-color:#16a34a;" onclick="finalizeChangeoverPrimary()" ${hourlyState.finalizePrimaryBusy ? 'disabled' : ''}>${hourlyState.finalizePrimaryBusy ? 'Converting...' : 'Convert CO To Primary'}</button>`
-                : '';
-            const finalizeText = finalizeReady
-                ? 'All the workstations are in CO. Confirm to convert CO to primary and make CO blank for next product.'
-                : `CO workstations switched: ${readyWs}/${totalWs || 0}. CO stays as changeover until every workstation has switched.`;
+            const finalizeText = hourlyState.finalizePrimaryBusy
+                ? 'Converting CO to primary...'
+                : finalizeReady
+                    ? 'All the workstations are in CO. Convert CO to primary and make CO blank for next product.'
+                    : `CO workstations switched: ${readyWs}/${totalWs || 0}. CO stays as changeover until every workstation has switched.`;
             changeoverBanner = `
                 <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
                     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
@@ -2333,7 +2377,6 @@ function renderHourlySummary() {
                     </div>
                     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
                         <span style="font-size:12px;color:${finalizeReady ? '#166534' : '#6b7280'};">${finalizeText}</span>
-                        ${finalizeButton ? `<span style="margin-left:auto;">${finalizeButton}</span>` : ''}
                     </div>
                     <div style="background:#ede9fe;border-radius:4px;height:6px;overflow:hidden;">
                         <div style="background:${coTargetMet ? '#16a34a' : '#7c3aed'};height:100%;width:${coBarWidth}%;transition:width 0.4s;"></div>

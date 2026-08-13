@@ -2969,8 +2969,12 @@ async function loadProducts() {
         ]);
         const productsResult = await productsResponse.json();
         const linesResult = await linesResponse.json();
-        const products = productsResult.data;
+        const allProducts = productsResult.data;
         allLines = linesResult.data;
+
+        const showInactive = window._showInactiveProducts === true;
+        const inactiveCount = allProducts.filter(p => !p.is_active).length;
+        const products = showInactive ? allProducts : allProducts.filter(p => p.is_active);
 
         content.innerHTML = `
             <div class="page-header">
@@ -2985,6 +2989,11 @@ async function loadProducts() {
                         </svg>
                         Add Style
                     </button>
+                    ${inactiveCount > 0 ? `
+                    <button class="btn btn-secondary" onclick="window._showInactiveProducts = ${!showInactive}; loadProducts();">
+                        ${showInactive ? 'Hide Inactive Styles' : `Show Inactive Styles (${inactiveCount})`}
+                    </button>
+                    ` : ''}
                     <button class="btn btn-secondary" onclick="downloadProductTemplate()">
                         <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3"/>
@@ -3961,13 +3970,18 @@ function showToast(message, type = 'success') {
                 : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>'}
         </svg>
         <span>${message}</span>
+        <button type="button" class="toast-close" aria-label="Close" onclick="this.closest('.toast').remove()">&#10005;</button>
     `;
     container.appendChild(toast);
 
-    setTimeout(() => {
-        toast.style.animation = 'slideIn 0.3s ease reverse';
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    // Errors stay on screen until the user closes them; success/warning still auto-dismiss.
+    if (type !== 'error') {
+        setTimeout(() => {
+            if (!toast.isConnected) return;
+            toast.style.animation = 'slideIn 0.3s ease reverse';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
 }
 
 // ============================================================================
@@ -5066,10 +5080,10 @@ async function loadDailyPlanData() {
 // ============================================================================
 let _ldData = null; // { lineId, date, data }
 
-function _ldResolveCopyProductId(lineId) {
+function _ldResolveCopyProductId(lineId, explicitMode) {
     const primaryId = _ldData?.data?.product?.id || _ldData?.data?.product_id || '';
     const incomingId = _ldData?.data?.incoming_product_id || '';
-    const mode = window._ldProductMode?.[lineId] || 'primary';
+    const mode = explicitMode || window._ldProductMode?.[lineId] || 'primary';
     if (mode === 'changeover' && incomingId) {
         return _ldData?.changeoverData?.product?.id || incomingId || '';
     }
@@ -5226,11 +5240,18 @@ function closeLineDetailsPage() {
 
 // ── Copy Plan Modal ─────────────────────────────────────────────────────────
 
-async function ldOpenCopyPlanModal() {
+async function ldOpenCopyPlanModal(explicitMode) {
     const btn = document.getElementById('ld-copy-plan-btn');
-    const lineId    = btn?.dataset.lineId    || (_ldData?.lineId    || '');
-    const toDate    = btn?.dataset.toDate    || (_ldData?.date      || '');
-    const productId = btn?.dataset.productId || '';
+    const lineId = btn?.dataset.lineId || (_ldData?.lineId || '');
+    const toDate = btn?.dataset.toDate || (_ldData?.date || '');
+    const mode = explicitMode || window._ldProductMode?.[lineId] || 'primary';
+    const isChangeover = mode === 'changeover';
+
+    if (isChangeover && !_ldData?.data?.incoming_product_id) {
+        showToast('Choose or upload a changeover style first, then use Copy Plan to bring in workstations/employees from another date.', 'error');
+        return;
+    }
+    const productId = _ldResolveCopyProductId(lineId, mode);
 
     let modal = document.getElementById('ld-copy-plan-modal');
     if (!modal) {
@@ -5239,6 +5260,7 @@ async function ldOpenCopyPlanModal() {
         modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:center;justify-content:center;';
         document.body.appendChild(modal);
     }
+    modal.dataset.mode = mode;
 
     // Default source date = yesterday relative to toDate
     const _td = new Date(toDate + 'T00:00:00');
@@ -5262,7 +5284,10 @@ async function ldOpenCopyPlanModal() {
     modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:28px 28px 24px;width:min(640px,96vw);max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.18);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
-                <h3 style="margin:0;font-size:1.05rem;font-weight:700;color:#1e293b;">&#128203; Copy Plan from Date</h3>
+                <h3 style="margin:0;font-size:1.05rem;font-weight:700;color:#1e293b;">
+                    &#128203; Copy Plan from Date
+                    <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:8px;vertical-align:middle;${isChangeover ? 'background:#fef3c7;color:#92400e;' : 'background:#eff6ff;color:#1d4ed8;'}">${isChangeover ? 'CHANGEOVER (SCO)' : 'DAILY PLAN'}</span>
+                </h3>
                 <button onclick="ldCloseCopyPlanModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280;line-height:1;">&#10005;</button>
             </div>
             <div style="margin-bottom:14px;">
@@ -5275,17 +5300,13 @@ async function ldOpenCopyPlanModal() {
                 <label style="font-size:13px;font-weight:600;color:#374151;white-space:nowrap;">Copy from date:</label>
                 <input type="date" id="ld-cpm-source-date" value="${defaultSource}" max="${toDate}"
                     style="font-size:13px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;flex:1;min-width:140px;">
-                <button onclick="ldPreviewCopyPlan('${lineId}','${toDate}','${productId}')"
+                <button onclick="ldPreviewCopyPlan('${lineId}','${toDate}','${productId}','${mode}')"
                     style="font-size:13px;padding:7px 18px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;">
                     Preview Plan
                 </button>
             </div>
+            <div id="ld-cpm-source-mode"></div>
             <div id="ld-cpm-preview" style="min-height:60px;"></div>
-            <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;color:#374151;font-weight:600;">
-                <input type="checkbox" id="ld-cpm-copy-employees" checked>
-                Copy and assign employees
-            </label>
-            <div style="font-size:12px;color:#6b7280;margin-top:4px;">Uncheck this to copy only the workstation layout and process mapping.</div>
             <div id="ld-cpm-actions" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px;"></div>
         </div>`;
     modal.style.display = 'flex';
@@ -5365,10 +5386,10 @@ async function ldDownloadPlanTemplate() {
     }
 }
 
-function ldOpenPlanUploadModal() {
+function ldOpenPlanUploadModal(forcedMode) {
     const lineId = _ldData?.lineId;
     const date = _ldData?.date;
-    const mode = ldGetCurrentTemplateMode(lineId);
+    const mode = forcedMode || ldGetCurrentTemplateMode(lineId);
     if (!lineId || !date) { showToast('Open line details first', 'error'); return; }
     if (!mode) { showToast('Switch to Regular view to upload a plan template', 'error'); return; }
 
@@ -5453,7 +5474,7 @@ function ldOpenPlanUploadModal() {
     });
 }
 
-async function ldPreviewCopyPlan(lineId, toDate, productId) {
+async function ldPreviewCopyPlan(lineId, toDate, productId, mode = 'primary', sourceProductId = null, sourceSlot = null) {
     const sourceLineId = document.getElementById('ld-cpm-source-line')?.value || lineId;
     const sourceDate = document.getElementById('ld-cpm-source-date')?.value;
     const sourceLineLabel = document.getElementById('ld-cpm-source-line')?.selectedOptions?.[0]?.textContent || '';
@@ -5462,13 +5483,64 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
 
     const previewEl  = document.getElementById('ld-cpm-preview');
     const actionsEl  = document.getElementById('ld-cpm-actions');
+    const sourceModeEl = document.getElementById('ld-cpm-source-mode');
     if (!previewEl) return;
 
     previewEl.innerHTML = '<div style="text-align:center;padding:24px;color:#6b7280;font-size:13px;">Loading preview…</div>';
     if (actionsEl) actionsEl.style.display = 'none';
 
     try {
+        // If the caller didn't already pin down which of the source line's plans to use
+        // (its Daily Plan or its Changeover/SCO plan — a line can have both live at once
+        // during an active changeover), look it up and let the IE pick explicitly instead
+        // of silently guessing which workstations belong to which product.
+        let resolvedProductId = sourceProductId;
+        let resolvedSlot = sourceSlot;
+        if (sourceModeEl) {
+            const dpRes = await fetch(`/api/daily-plans?date=${encodeURIComponent(sourceDate)}`);
+            const dpData = await dpRes.json();
+            const sourceRow = (dpData?.data?.plans || []).find(p => String(p.line_id) === String(sourceLineId));
+            const hasPrimary = !!sourceRow?.product_id;
+            const hasIncoming = !!sourceRow?.incoming_product_id;
+            if (hasPrimary && hasIncoming) {
+                const primaryLabel = [sourceRow.product_code, sourceRow.product_name].filter(Boolean).join(' — ');
+                const incomingLabel = [sourceRow.incoming_product_code, sourceRow.incoming_product_name].filter(Boolean).join(' — ');
+                if (!resolvedProductId) {
+                    resolvedSlot = mode === 'changeover' ? 'changeover' : 'primary';
+                    resolvedProductId = resolvedSlot === 'changeover' ? sourceRow.incoming_product_id : sourceRow.product_id;
+                }
+                sourceModeEl.innerHTML = `
+                    <div style="margin-bottom:14px;">
+                        <label style="display:block;font-size:12px;font-weight:700;color:#374151;margin-bottom:6px;">This line has two plans on ${sourceDate} — copy from which one?</label>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <button type="button" onclick="ldPreviewCopyPlan('${lineId}','${toDate}','${productId}','${mode}','${sourceRow.product_id}','primary')"
+                                style="font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:600;text-align:left;${resolvedSlot === 'primary' ? 'background:#3b82f6;color:#fff;border:1px solid #3b82f6;' : 'background:#fff;color:#374151;border:1px solid #d1d5db;'}">
+                                Daily Plan<br><span style="font-weight:400;font-size:11px;">${primaryLabel || `#${sourceRow.product_id}`}</span>
+                            </button>
+                            <button type="button" onclick="ldPreviewCopyPlan('${lineId}','${toDate}','${productId}','${mode}','${sourceRow.incoming_product_id}','changeover')"
+                                style="font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:600;text-align:left;${resolvedSlot === 'changeover' ? 'background:#f59e0b;color:#fff;border:1px solid #f59e0b;' : 'background:#fff;color:#374151;border:1px solid #d1d5db;'}">
+                                Changeover (SCO)<br><span style="font-weight:400;font-size:11px;">${incomingLabel || `#${sourceRow.incoming_product_id}`}</span>
+                            </button>
+                        </div>
+                    </div>`;
+            } else {
+                sourceModeEl.innerHTML = '';
+                if (!resolvedProductId) {
+                    resolvedProductId = hasPrimary ? sourceRow.product_id : (hasIncoming ? sourceRow.incoming_product_id : null);
+                    resolvedSlot = hasIncoming && !hasPrimary ? 'changeover' : 'primary';
+                }
+            }
+        }
+
         const params = new URLSearchParams({ date: sourceDate });
+        if (resolvedProductId) params.set('product_id', resolvedProductId);
+        // Cross-line changeover copy: show the TARGET line's own current employees, since that's
+        // who will actually end up assigned (a changeover keeps the same physical operator).
+        const isCrossLineChangeover = mode === 'changeover' && String(sourceLineId) !== String(lineId);
+        if (isCrossLineChangeover) {
+            params.set('employee_source_line_id', lineId);
+            params.set('employee_source_date', toDate);
+        }
         const res  = await fetch(`/api/lines/${sourceLineId}/workstation-plan/preview?${params.toString()}`);
         const data = await res.json();
 
@@ -5487,7 +5559,8 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
         const osmChecked = data.workstations.reduce((s, w) => s + w.osm_checked_count, 0);
         const previewProductLabel = [data.product_code, data.product_name].filter(Boolean).join(' ') || `Product #${data.product_id}`;
 
-        // Build table rows (group by group_name for readability)
+        // Build table rows (group by group_name for readability) — each row with an employee
+        // gets a checkbox so the IE can choose exactly which employees to bring over.
         let rows = '';
         let lastGroup = null;
         for (const w of data.workstations) {
@@ -5495,6 +5568,9 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                 ? `<td rowspan="1" style="font-size:11px;font-weight:700;color:#6b7280;padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;">${w.group_name || '—'}</td>`
                 : `<td style="font-size:11px;color:#9ca3af;padding:5px 8px;border:1px solid #e5e7eb;">${w.group_name || '—'}</td>`;
             lastGroup = w.group_name;
+            const chkCell = w.employee
+                ? `<input type="checkbox" class="ld-cpm-emp-chk" data-ws="${w.workstation_code}" onchange="ldUpdateCpmSelectedCount()">`
+                : `<input type="checkbox" disabled title="No employee assigned on the source date">`;
             const empCell = w.employee
                 ? `<span style="color:#166534;font-weight:600;">${w.employee}</span>`
                 : `<span style="color:#9ca3af;">—</span>`;
@@ -5502,6 +5578,7 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                 ? `<span style="color:#2563eb;">${w.osm_checked_count}/${w.process_count} ✓</span>`
                 : `<span style="color:#d1d5db;">${w.process_count}</span>`;
             rows += `<tr>
+                <td style="padding:5px 8px;border:1px solid #e5e7eb;text-align:center;">${chkCell}</td>
                 <td style="font-size:12px;font-weight:600;padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;">${w.workstation_code}</td>
                 ${groupCell}
                 <td style="font-size:12px;padding:5px 8px;border:1px solid #e5e7eb;">${empCell}</td>
@@ -5516,6 +5593,10 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                     <strong style="color:#0f172a;">Product:</strong> ${previewProductLabel}
                 </div>
             </div>
+            ${isCrossLineChangeover ? `
+            <div style="margin-bottom:12px;padding:8px 12px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;font-size:12px;color:#1d4ed8;">
+                Employees below are the <strong>current line's</strong> own workers at each workstation code — not ${sourceLineLabel || 'the source line'}'s. A changeover keeps the same person at the same physical workstation.
+            </div>` : ''}
             <div style="margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap;">
                 <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:8px 16px;text-align:center;">
                     <div style="font-size:20px;font-weight:700;color:#166534;">${totalWs}</div>
@@ -5538,10 +5619,18 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                     <div style="font-size:11px;color:#6b7280;">OSM ✓</div>
                 </div>
             </div>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap;">
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#374151;">
+                    <input type="checkbox" id="ld-cpm-select-all" onchange="ldToggleAllCpmEmployees(this)">
+                    Select all employees to copy
+                </label>
+                <span id="ld-cpm-selected-count" style="font-size:12px;color:#6b7280;"></span>
+            </div>
             <div style="max-height:280px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;">
                 <table style="width:100%;border-collapse:collapse;font-size:12px;">
                     <thead style="position:sticky;top:0;background:#f9fafb;">
                         <tr>
+                            <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:center;font-size:11px;color:#374151;">Copy</th>
                             <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Workstation</th>
                             <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Group</th>
                             <th style="padding:7px 8px;border:1px solid #e5e7eb;text-align:left;font-size:11px;color:#374151;">Employee</th>
@@ -5551,7 +5640,10 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
-            </div>`;
+            </div>
+            <div style="font-size:11px;color:#6b7280;margin-top:4px;">Workstation layout and processes always copy in full. Uncheck an employee to leave that workstation unassigned instead of carrying the employee over.</div>`;
+
+        ldUpdateCpmSelectedCount();
 
         // Use the product_id from the SOURCE plan (returned by preview endpoint)
         // This ensures the copy query finds the right workstations regardless of
@@ -5564,7 +5656,7 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
                     Copying from <strong>${sourceLineLabel || sourceLineId}</strong> on <strong>${sourceDate}</strong> → target date <strong>${toDate}</strong>. This will overwrite any existing plan for ${toDate}.
                 </span>
                 <button onclick="ldCloseCopyPlanModal()" style="padding:7px 18px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:13px;">Cancel</button>
-                <button onclick="ldExecuteCopyPlan('${lineId}','${sourceLineId}','${sourceDate}','${toDate}','${sourcePlanProductId}')"
+                <button onclick="ldExecuteCopyPlan('${lineId}','${sourceLineId}','${sourceDate}','${toDate}','${sourcePlanProductId}','${mode}')"
                     style="padding:7px 20px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">
                     &#128203; Confirm Copy
                 </button>`;
@@ -5574,13 +5666,40 @@ async function ldPreviewCopyPlan(lineId, toDate, productId) {
     }
 }
 
-async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId) {
+// Master "Select all employees to copy" checkbox — toggles every per-row employee checkbox
+function ldToggleAllCpmEmployees(masterCheckbox) {
+    document.querySelectorAll('.ld-cpm-emp-chk').forEach(chk => { chk.checked = masterCheckbox.checked; });
+    ldUpdateCpmSelectedCount();
+}
+
+// Keeps the "N of M selected" label and the master checkbox's checked/indeterminate state in sync
+function ldUpdateCpmSelectedCount() {
+    const rowChecks = Array.from(document.querySelectorAll('.ld-cpm-emp-chk'));
+    const checkedCount = rowChecks.filter(chk => chk.checked).length;
+    const countEl = document.getElementById('ld-cpm-selected-count');
+    if (countEl) countEl.textContent = rowChecks.length ? `${checkedCount} of ${rowChecks.length} employees selected` : '';
+    const masterChk = document.getElementById('ld-cpm-select-all');
+    if (masterChk) {
+        masterChk.checked = rowChecks.length > 0 && checkedCount === rowChecks.length;
+        masterChk.indeterminate = checkedCount > 0 && checkedCount < rowChecks.length;
+    }
+}
+
+async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId, mode = 'primary') {
     try {
-        const copyEmployees = document.getElementById('ld-cpm-copy-employees')?.checked !== false;
+        const rowChecks = Array.from(document.querySelectorAll('.ld-cpm-emp-chk'));
+        const selectedWsCodes = rowChecks.filter(chk => chk.checked).map(chk => chk.dataset.ws);
+        // No employee rows at all (bare layout copy) vs. rows existed but IE unchecked all of them —
+        // both end up copying zero employees; copy_employees=false skips the assignment step entirely.
+        const copyEmployees = selectedWsCodes.length > 0;
+        const basePayload = {
+            from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId,
+            copy_employees: copyEmployees, product_mode: mode, employee_workstation_codes: selectedWsCodes
+        };
         let res = await fetch(`/api/lines/${lineId}/workstation-plan/copy-from-date`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId, copy_employees: copyEmployees })
+            body: JSON.stringify(basePayload)
         });
         let result = await res.json();
         if (result.requires_confirmation && copyEmployees) {
@@ -5589,21 +5708,21 @@ async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId
             );
             const message = `${lines.join('\n')}\n\nDo you want to unassign them from there and reassign them to this line and workstation?`;
             if (!confirm(message)) {
-                showToast('Please uncheck "Copy and assign employees" and continue if you do not want to reassign them.', 'error');
+                showToast('Uncheck those employees above and try again if you do not want to reassign them.', 'error');
                 return;
             }
             res = await fetch(`/api/lines/${lineId}/workstation-plan/copy-from-date`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ from_date: fromDate, to_date: toDate, product_id: productId, from_line_id: fromLineId, copy_employees: copyEmployees, force_reassign: true })
+                body: JSON.stringify({ ...basePayload, force_reassign: true })
             });
             result = await res.json();
         }
         if (!result.success) { showToast(result.error, 'error'); return; }
         ldCloseCopyPlanModal();
-        showToast(copyEmployees ? `Plan and employees copied from ${fromDate}` : `Plan copied from ${fromDate}`, 'success');
-        // Reload line details — use the target plan's product_id (from _ldData) for the reload query
-        const reloadProductId = _ldData?.data?.product?.id || productId;
+        showToast(copyEmployees ? `Plan copied from ${fromDate} (${selectedWsCodes.length} employee${selectedWsCodes.length === 1 ? '' : 's'} carried over)` : `Plan copied from ${fromDate}`, 'success');
+        // Reload line details — use the target plan's primary product_id for the base reload query
+        const reloadProductId = _ldData?.data?.product?.id || (mode === 'primary' ? productId : '');
         const content = document.getElementById('ld-overlay-content');
         if (content) {
             content.innerHTML = '<div style="text-align:center;padding:40px;color:#6b7280;">Reloading…</div>';
@@ -5613,7 +5732,6 @@ async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId
             const d = await r.json();
             if (d.success) {
                 if (_ldData) _ldData.data = d.data;
-                const mode = window._ldProductMode?.[lineId] || 'primary';
                 const incomingId = _ldData?.data?.incoming_product_id;
                 const incomingTarget = _ldData?.data?.incoming_target_units || 0;
                 if (mode === 'changeover' && incomingId) {
@@ -5624,6 +5742,10 @@ async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId
                     const d2 = await r2.json();
                     if (d2.success && _ldData) _ldData.changeoverData = d2.data;
                 }
+                // Switch the visible tab to whichever slot was just copied into, so the IE
+                // immediately sees the result instead of the plan changing behind the scenes.
+                if (!window._ldProductMode) window._ldProductMode = {};
+                window._ldProductMode[lineId] = mode;
                 _ldSyncCopyPlanButton(lineId);
                 renderLineDetailsContent(content, lineId, toDate, d.data);
             } else {
@@ -6801,8 +6923,17 @@ function renderLineDetailsContent(panel, lineId, date, data) {
     panel.innerHTML = `
         <!-- Plan Settings Card -->
         <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 18px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
-            <div style="flex:1;min-width:200px;">
+            <div style="flex:1;min-width:220px;">
                 <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Daily Plan Style</label>
+                ${is_locked ? '' : `
+                <div style="display:flex;gap:5px;margin-bottom:5px;">
+                    <button type="button" onclick="ldOpenCopyPlanModal('primary')" title="Copy the workstation layout, processes and employees from another line/date into the Daily Plan"
+                        style="font-size:11px;padding:3px 9px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:5px;cursor:pointer;font-weight:600;">Copy Plan</button>
+                    <button type="button" onclick="document.getElementById('ld-product-${lineId}').focus(); document.getElementById('ld-product-${lineId}').showPicker?.();" title="Pick a style from the list below"
+                        style="font-size:11px;padding:3px 9px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:5px;cursor:pointer;font-weight:600;">Select</button>
+                    <button type="button" onclick="ldOpenPlanUploadModal('primary')" title="Upload the Daily Plan from an Excel template"
+                        style="font-size:11px;padding:3px 9px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:5px;cursor:pointer;font-weight:600;">Upload Plan</button>
+                </div>`}
                 <select id="ld-product-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
                     ${productOpts}
                 </select>
@@ -6811,8 +6942,18 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Daily Plan Target</label>
                 <input type="number" id="ld-target-${lineId}" class="form-control" style="font-size:0.88em;width:90px;" value="${planPrimaryTarget}" min="0" ${lockedAttr}>
             </div>
-            <div style="flex:1;min-width:200px;">
-                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Plan Style</label>
+            <div style="flex:1;min-width:220px;">
+                <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Plan Style (SCO)</label>
+                ${is_locked ? '' : `
+                <div style="display:flex;gap:5px;margin-bottom:5px;">
+                    <button type="button" onclick="${incoming_product_id ? `ldOpenCopyPlanModal('changeover')` : `showToast('Choose or upload a changeover style first, then Copy Plan can bring in workstations/employees from another date.','error')`}"
+                        title="${incoming_product_id ? 'Copy the workstation layout, processes and employees from another line/date into the Changeover (SCO) plan' : 'Select a changeover style first'}"
+                        style="font-size:11px;padding:3px 9px;border-radius:5px;cursor:pointer;font-weight:600;${incoming_product_id ? 'background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;' : 'background:#f3f4f6;color:#9ca3af;border:1px solid #e5e7eb;'}">Copy Plan</button>
+                    <button type="button" onclick="document.getElementById('ld-incoming-${lineId}').focus(); document.getElementById('ld-incoming-${lineId}').showPicker?.();" title="Pick a style from the list below"
+                        style="font-size:11px;padding:3px 9px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:5px;cursor:pointer;font-weight:600;">Select</button>
+                    <button type="button" onclick="ldOpenPlanUploadModal('changeover')" title="Upload the Changeover (SCO) plan from an Excel template"
+                        style="font-size:11px;padding:3px 9px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:5px;cursor:pointer;font-weight:600;">Upload Plan</button>
+                </div>`}
                 <select id="ld-incoming-${lineId}" class="form-control" style="font-size:0.88em;" ${lockedAttr}>
                     ${incomingOpts}
                 </select>
@@ -7190,6 +7331,16 @@ async function saveLdPlanSettings(lineId) {
     if (incomingProductId && parseInt(incomingProductId, 10) === productId) {
         showToast('Changeover product must be different from the primary product', 'error');
         return;
+    }
+    // Guard against silently wiping an existing changeover assignment: if the dropdown is
+    // showing empty/None but the loaded plan actually has a changeover product set, that
+    // almost always means the dropdown lost its selected <option> (e.g. the style got hidden
+    // elsewhere) rather than the IE intentionally clearing it — confirm before saving null.
+    if (!incomingProductId && _ldData?.data?.incoming_product_id) {
+        const currentLabel = document.getElementById(`ld-incoming-${lineId}`)?.selectedOptions?.[0]?.textContent || '';
+        if (!confirm(`This will remove the current changeover style${currentLabel ? ` (dropdown shows "${currentLabel}")` : ''} from this line's plan. Continue?`)) {
+            return;
+        }
     }
 
     try {
@@ -7596,7 +7747,19 @@ async function saveDailyPlan(lineId) {
             if (changeoverEnabled) {
                 const newInc = incomingProductId || null;
                 const oldInc = existing.incoming_product_id ? String(existing.incoming_product_id) : null;
-                if (String(newInc) !== String(oldInc)) changed.incoming_product_id = newInc;
+                if (String(newInc) !== String(oldInc)) {
+                    // Guard against silently wiping an existing changeover assignment: an empty
+                    // dropdown when the plan actually has a changeover product set almost always
+                    // means the dropdown lost its selected <option> (e.g. the style got hidden
+                    // elsewhere), not that this was intentionally cleared — confirm first.
+                    if (!newInc && oldInc) {
+                        const currentLabel = document.getElementById(`plan-incoming-${lineId}`)?.selectedOptions?.[0]?.textContent || '';
+                        if (!confirm(`This will remove the current changeover style${currentLabel ? ` (dropdown shows "${currentLabel}")` : ''} from this line's plan. Continue?`)) {
+                            return;
+                        }
+                    }
+                    changed.incoming_product_id = newInc;
+                }
                 if (incomingTargetUnits !== parseInt(existing.incoming_target_units || 0, 10)) changed.incoming_target_units = incomingTargetUnits;
             }
             if (!Object.keys(changed).length) {

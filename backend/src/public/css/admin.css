@@ -975,6 +975,19 @@ textarea {
 .toast-error { border-left: 4px solid var(--danger); }
 .toast-warning { border-left: 4px solid var(--warning); }
 
+.toast-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted, #6b7280);
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.toast-close:hover { color: var(--text, #111827); }
+
 /* ================================
    Loading States
    ================================ */
