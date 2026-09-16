@@ -13,7 +13,7 @@ module.exports = {
 
     // Ensure runtime directories exist after the repo update.
     postPull: [
-      'mkdir -p logs reports qrcodes backups backend/logs'
+      'mkdir -p logs reports qrcodes uploads/line-leaders backups backend/logs'
     ],
 
     postDependencies: [],
@@ -28,7 +28,7 @@ module.exports = {
 
   rollback: {
     postCodeRestore: [
-      'mkdir -p logs reports qrcodes backups backend/logs'
+      'mkdir -p logs reports qrcodes uploads/line-leaders backups backend/logs'
     ],
 
     postDependencies: [],

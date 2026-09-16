@@ -113,6 +113,7 @@ echo "=== Step 3: Creating Directory Structure ==="
 mkdir -p "$DATA_MOUNT/postgresql"
 mkdir -p "$DATA_MOUNT/worksync/reports"
 mkdir -p "$DATA_MOUNT/worksync/qrcodes"
+mkdir -p "$DATA_MOUNT/worksync/uploads/line-leaders"
 mkdir -p "$DATA_MOUNT/worksync/logs"
 mkdir -p "$DATA_MOUNT/worksync/backups"
 mkdir -p "$DATA_MOUNT/tmp"
@@ -142,7 +143,7 @@ echo ""
 echo "=== Step 5: Moving WorkSync Data ==="
 
 # Copy existing data
-for dir in reports qrcodes logs backups; do
+for dir in reports qrcodes uploads logs backups; do
     if [ -d "$WORKSYNC_DIR/$dir" ] && [ "$(ls -A $WORKSYNC_DIR/$dir 2>/dev/null)" ]; then
         echo "Copying $dir..."
         rsync -av "$WORKSYNC_DIR/$dir/" "$DATA_MOUNT/worksync/$dir/"
@@ -154,7 +155,7 @@ chown -R "$WORKSYNC_USER:$WORKSYNC_USER" "$DATA_MOUNT/worksync"
 
 # Create symlinks
 echo "Creating symlinks..."
-for dir in reports qrcodes logs backups; do
+for dir in reports qrcodes uploads logs backups; do
     rm -rf "$WORKSYNC_DIR/$dir"
     ln -sf "$DATA_MOUNT/worksync/$dir" "$WORKSYNC_DIR/$dir"
 done

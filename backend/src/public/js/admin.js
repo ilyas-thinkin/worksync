@@ -5,6 +5,42 @@ function escHtml(str) {
     return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Line supervisor (line leader) avatar ────────────────────────────────────
+// The photo is optional. Without one a line still needs a recognisable marker on the
+// dashboards, so fall back to the leader's initials and, failing that, a neutral dash.
+function leaderInitials(name) {
+    const parts = String(name || '').replace(/[^A-Za-z ]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '';
+    return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+// size is the pixel diameter. Used at 28px in tables and 44px in detail headers.
+function leaderAvatarHtml(line, size = 28) {
+    const name = line?.line_leader || '';
+    const photo = line?.line_leader_photo || '';
+    const title = name ? ` title="${escHtml(name)}"` : '';
+    const base = `width:${size}px;height:${size}px;border-radius:50%;flex:0 0 auto;`
+        + 'display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;';
+    if (photo) {
+        return `<img src="${escHtml(photo)}" alt="${escHtml(name || 'Line supervisor')}"${title}`
+            + ` style="${base}object-fit:cover;border:1px solid #d1d5db;background:#f3f4f6;">`;
+    }
+    const initials = leaderInitials(name);
+    return `<span${title} style="${base}background:#e8f5ee;color:#1d6f42;border:1px solid #86efac;`
+        + `font-weight:700;font-size:${Math.max(9, Math.round(size * 0.38))}px;">${escHtml(initials || '\u2014')}</span>`;
+}
+
+// Avatar + name, the pairing every line list uses.
+function leaderBadgeHtml(line, size = 28) {
+    const name = line?.line_leader || '';
+    return '<span style="display:inline-flex;align-items:center;gap:8px;">'
+        + leaderAvatarHtml(line, size)
+        + (name
+            ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;">${escHtml(name)}</span>`
+            : '<span style="color:#9ca3af;font-size:12px;">No supervisor set</span>')
+        + '</span>';
+}
+
 // Current active section
 let currentSection = 'dashboard';
 let currentView = { type: 'section', section: 'dashboard' };
@@ -156,6 +192,9 @@ async function loadSection(section) {
             break;
         case 'worker-individual-eff':
             await loadWorkerIndividualEff();
+            break;
+        case 'hourly-report':
+            await loadHourlyReport();
             break;
         case 'downtime':
             await loadDowntimeReport();
@@ -913,6 +952,7 @@ async function loadDashboard() {
                                 <thead>
                                     <tr>
                                         <th>Line</th>
+                                        <th>Supervisor</th>
                                         <th>Style</th>
                                         <th>Target</th>
                                         <th>Output</th>
@@ -1014,6 +1054,7 @@ async function loadLines() {
                                     <th>ID</th>
                                     <th>Code</th>
                                     <th>Name</th>
+                                    <th>Supervisor</th>
                                     <th>Hall</th>
                                     <th>Style</th>
                                     <th>Target</th>
@@ -1022,12 +1063,13 @@ async function loadLines() {
                             </thead>
                             <tbody>
                                 ${lines.length === 0 ? `
-                                    <tr><td colspan="7" class="text-center" style="padding:40px;">No production lines found.</td></tr>
+                                    <tr><td colspan="8" class="text-center" style="padding:40px;">No production lines found.</td></tr>
                                 ` : lines.map(line => `
                                     <tr>
                                         <td>${line.id}</td>
                                         <td><strong>${line.line_code}</strong></td>
                                         <td>${line.line_name}</td>
+                                        <td>${leaderBadgeHtml(line)}</td>
                                         <td>${line.hall_location || '-'}</td>
                                         <td>${line.current_product_code ? `${line.current_product_code} - ${line.current_product_name || ''}` : '-'}</td>
                                         <td>${line.current_product_code ? (line.target_units || 0) : '-'}</td>
@@ -1167,6 +1209,7 @@ async function adminLoadLineMetrics() {
     body.innerHTML = metrics.map(row => `
         <tr>
             <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
+            <td>${leaderBadgeHtml(row)}</td>
             <td>
                 ${row.product_code || '-'} ${row.product_name || ''}
                 ${row.changeover ? `<div style="margin-top:2px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;">CHANGEOVER</span><div style="font-size:11px;color:#92400e;margin-top:2px;">Incoming: ${row.incoming_product_code}</div></div>` : ''}
@@ -1248,8 +1291,88 @@ async function adminLoadFinalStatus() {
     `).join('');
 }
 
+// The photo is staged in the browser and only sent once the line itself is saved: a brand
+// new line has no id to upload against until POST /lines comes back.
+let pendingLeaderPhotoFile = null;
+let pendingLeaderPhotoRemoval = false;
+const LEADER_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+
+function onLeaderPhotoPicked(input) {
+    const note = document.getElementById('leader-photo-note');
+    const file = input.files && input.files[0];
+    if (note) note.textContent = '';
+    if (!file) return;
+    if (!/\.(jpe?g|png)$/i.test(file.name) || !['image/jpeg', 'image/jpg', 'image/png'].includes(file.type)) {
+        if (note) note.textContent = 'Only JPG, JPEG or PNG images are allowed.';
+        input.value = '';
+        return;
+    }
+    if (file.size > LEADER_PHOTO_MAX_BYTES) {
+        if (note) note.textContent = 'Photo is too large. Maximum size is 5MB.';
+        input.value = '';
+        return;
+    }
+    pendingLeaderPhotoFile = file;
+    pendingLeaderPhotoRemoval = false;
+    const preview = document.getElementById('leader-photo-preview');
+    if (preview) {
+        const url = URL.createObjectURL(file);
+        preview.innerHTML = `<img src="${url}" alt="Supervisor photo preview"
+            style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid #d1d5db;">`;
+        preview.querySelector('img').onload = () => URL.revokeObjectURL(url);
+    }
+    const removeBtn = document.getElementById('leader-photo-remove');
+    if (removeBtn) removeBtn.style.display = '';
+    if (note) note.textContent = 'Photo will be saved when you save the line.';
+}
+
+function clearLeaderPhoto() {
+    pendingLeaderPhotoFile = null;
+    pendingLeaderPhotoRemoval = true;
+    const input = document.getElementById('leader-photo-input');
+    if (input) input.value = '';
+    const preview = document.getElementById('leader-photo-preview');
+    const nameField = document.querySelector('#line-form [name="line_leader"]');
+    if (preview) preview.innerHTML = leaderAvatarHtml({ line_leader: nameField?.value || '' }, 64);
+    const removeBtn = document.getElementById('leader-photo-remove');
+    if (removeBtn) removeBtn.style.display = 'none';
+    const note = document.getElementById('leader-photo-note');
+    if (note) note.textContent = 'Photo will be removed when you save the line.';
+}
+
+// Sends the staged photo change. Returns an error message, or null when there was
+// nothing to do or it worked — a photo failure must not lose the saved line itself.
+async function commitLeaderPhoto(lineId) {
+    if (!lineId) return null;
+    try {
+        if (pendingLeaderPhotoFile) {
+            const body = new FormData();
+            body.append('photo', pendingLeaderPhotoFile);
+            const response = await fetch(`${API_BASE}/lines/${lineId}/leader-photo`, {
+                method: 'POST', body, credentials: 'include'
+            });
+            const result = await response.json();
+            if (!result.success) return result.error || 'Could not save the supervisor photo';
+        } else if (pendingLeaderPhotoRemoval) {
+            const response = await fetch(`${API_BASE}/lines/${lineId}/leader-photo`, {
+                method: 'DELETE', credentials: 'include'
+            });
+            const result = await response.json();
+            if (!result.success) return result.error || 'Could not remove the supervisor photo';
+        }
+    } catch (err) {
+        return err.message;
+    } finally {
+        pendingLeaderPhotoFile = null;
+        pendingLeaderPhotoRemoval = false;
+    }
+    return null;
+}
+
 async function showLineModal(line = null) {
     const isEdit = line !== null;
+    pendingLeaderPhotoFile = null;
+    pendingLeaderPhotoRemoval = false;
     // Fetch active products for dropdown
     let products = [];
     try {
@@ -1285,6 +1408,29 @@ async function showLineModal(line = null) {
                     <div class="form-group">
                         <label class="form-label">Hall Location</label>
                         <input type="text" class="form-control" name="hall_location" value="${line?.hall_location || ''}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Line Supervisor</label>
+                        <input type="text" class="form-control" name="line_leader" placeholder="Supervisor name"
+                               value="${escHtml(line?.line_leader || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Supervisor Photo <span style="font-weight:400;color:#9ca3af;">(optional)</span></label>
+                        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                            <div id="leader-photo-preview" style="flex:0 0 auto;">${leaderAvatarHtml(line, 64)}</div>
+                            <div style="flex:1 1 200px;min-width:180px;">
+                                <input type="file" id="leader-photo-input" accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+                                       class="form-control" style="padding:6px;"
+                                       onchange="onLeaderPhotoPicked(this)">
+                                <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap;">
+                                    <span style="font-size:11px;color:#9ca3af;">JPG, JPEG or PNG · max 5MB</span>
+                                    <button type="button" id="leader-photo-remove" class="btn btn-secondary btn-sm"
+                                            onclick="clearLeaderPhoto()"
+                                            style="${line?.line_leader_photo ? '' : 'display:none;'}">Remove photo</button>
+                                </div>
+                                <div id="leader-photo-note" style="font-size:11px;color:#b45309;margin-top:4px;"></div>
+                            </div>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Style</label>
@@ -1341,7 +1487,11 @@ async function saveLine(id) {
 
         const result = await response.json();
         if (result.success) {
-            showToast('Line saved successfully', 'success');
+            const photoError = await commitLeaderPhoto(id || result.data?.id);
+            showToast(
+                photoError ? `Line saved, but the photo failed: ${photoError}` : 'Line saved successfully',
+                photoError ? 'error' : 'success'
+            );
             closeModal('line-modal');
             loadLines();
         } else {
@@ -4474,7 +4624,10 @@ async function submitPlanUpload(options = {}) {
         fd.append('duplicate_assignments', JSON.stringify(options.duplicateAssignments));
     if (options.skipMissingEmployees) fd.append('skip_missing_employees', 'true');
     if (options.confirm_line)    fd.append('confirm_line', 'true');
+    if (options.confirm_new_line) fd.append('confirm_new_line', 'true');
+    if (options.use_line_id)     fd.append('use_line_id', String(options.use_line_id));
     if (options.confirm_product) fd.append('confirm_product', options.confirm_product);
+    if (options.confirm_plan_product) fd.append('confirm_plan_product', options.confirm_plan_product);
     if (options.new_product_code) fd.append('new_product_code', options.new_product_code);
     if (options.extraFields && typeof options.extraFields === 'object') {
         Object.entries(options.extraFields).forEach(([key, value]) => {
@@ -4537,6 +4690,69 @@ async function submitPlanUpload(options = {}) {
                     <div style="display:flex;gap:8px;flex-wrap:wrap;">
                         <button onclick="_planUploadUseExistingProduct()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;font-size:12px;cursor:pointer;">Use existing product (replaces its processes)</button>
                         <button onclick="_planUploadReplaceExistingProduct()" style="padding:6px 12px;background:#f3f4f6;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;font-size:12px;cursor:pointer;">Replace existing product entirely</button>
+                        <button onclick="_planUploadCancel()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
+                    </div>
+                </div>`;
+            return;
+        }
+
+        // --- Line code in the file matches no existing line ---
+        if (r.status === 409 && data.code === 'LINE_NOT_FOUND') {
+            btn.disabled = false;
+            btn.textContent = uploadButtonLabel;
+            const lines = Array.isArray(data.existing_lines) ? data.existing_lines : [];
+            const optionsHtml = lines.map(l => {
+                const label = l.line_name && l.line_name !== l.line_code
+                    ? `${l.line_code} — ${l.line_name}`
+                    : l.line_code;
+                return `<option value="${l.id}">${label}</option>`;
+            }).join('');
+            resultDiv.innerHTML = `
+                <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
+                    <div style="font-weight:600;margin-bottom:6px;">&#9888; Line "${data.line_code}" is not in the system</div>
+                    <div style="margin-bottom:12px;">
+                        The LINE CODE in this file does not match any existing line. Choose where this plan should go —
+                        otherwise it would be parked on a brand-new line and the line you are watching would not change.
+                    </div>
+                    <div style="background:#fff;border:1px solid #fcd34d;border-radius:6px;padding:10px 12px;margin-bottom:10px;">
+                        <div style="font-weight:600;margin-bottom:6px;">Upload to an existing line</div>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <select id="plan-upload-target-line" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;min-width:220px;">
+                                ${optionsHtml}
+                            </select>
+                            <button onclick="_planUploadUseExistingLine()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;">Upload to this line</button>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button onclick="_planUploadCreateNewLine()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;font-size:12px;cursor:pointer;">Create "${data.line_code}" as a new line</button>
+                        <button onclick="_planUploadCancel()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
+                    </div>
+                </div>`;
+            return;
+        }
+
+        // --- File's product code differs from the product already planned for this line/date ---
+        if (r.status === 409 && data.code === 'PLAN_PRODUCT_MISMATCH') {
+            btn.disabled = false;
+            btn.textContent = uploadButtonLabel;
+            resultDiv.innerHTML = `
+                <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
+                    <div style="font-weight:600;margin-bottom:6px;">&#9888; This file is for a different product</div>
+                    <div style="margin-bottom:12px;">
+                        The file's PRODUCT CODE is <strong>${data.upload_product_code}</strong>, but
+                        ${data.line_code ? `<strong>${data.line_code}</strong> ` : ''}on <strong>${data.work_date}</strong>
+                        is currently planned as <strong>${data.plan_product_code}</strong>.
+                    </div>
+                    <div style="background:#fff;border:1px solid #fcd34d;border-radius:6px;padding:10px 12px;margin-bottom:10px;">
+                        <div style="font-weight:600;margin-bottom:6px;">Recommended: change this day's plan to ${data.upload_product_code}</div>
+                        <div style="font-size:12px;color:#78716c;margin-bottom:8px;">The plan for this line and date switches to the uploaded style. ${data.plan_product_code} is left untouched.</div>
+                        <button onclick="_planUploadSwitchPlanProduct()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;">Yes, switch to ${data.upload_product_code}</button>
+                    </div>
+                    <div style="font-size:12px;color:#92400e;margin-bottom:6px;">
+                        The option below overwrites <strong>${data.plan_product_code}</strong>'s entire process list with the contents of this file, on every line and every date that uses it. Only use it if the file's PRODUCT CODE is the typo.
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button onclick="_planUploadKeepPlanProduct()" style="padding:6px 12px;background:#f3f4f6;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;font-size:12px;cursor:pointer;">Overwrite ${data.plan_product_code} with this file</button>
                         <button onclick="_planUploadCancel()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
                     </div>
                 </div>`;
@@ -4669,6 +4885,24 @@ function _planUploadCreateWithNewCode() {
         return;
     }
     submitPlanUpload({ ...window._pendingUploadOptions, confirm_product: null, new_product_code: newCode });
+}
+function _planUploadUseExistingLine() {
+    const sel = document.getElementById('plan-upload-target-line');
+    const lineId = (sel?.value || '').trim();
+    if (!lineId) {
+        sel?.focus();
+        return;
+    }
+    submitPlanUpload({ ...window._pendingUploadOptions, use_line_id: lineId });
+}
+function _planUploadCreateNewLine() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_new_line: true });
+}
+function _planUploadSwitchPlanProduct() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_plan_product: 'switch' });
+}
+function _planUploadKeepPlanProduct() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_plan_product: 'keep' });
 }
 function _planUploadCancel() {
     const uploadButtonLabel = window._pendingUploadOptions?.uploadButtonLabel || 'Upload';
@@ -5007,7 +5241,7 @@ async function loadDailyPlanData() {
                                     ${incomingOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ INCOMING OVER +${(incomingCum - incomingOQ).toLocaleString()}</span>` : incomingComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ INCOMING COMPLETE</span>' : ''}
                                 </td>
                                 <td>
-                                    ${line.line_leader ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;">${line.line_leader}</span>` : '<span style="color:#9ca3af;font-size:12px;">—</span>'}
+                                    ${leaderBadgeHtml(line)}
                                 </td>
                                 <td onclick="event.stopPropagation()">
                                     <select class="form-control" id="plan-product-${line.id}" ${locked ? 'disabled' : ''}>
@@ -5084,16 +5318,13 @@ function _ldResolveCopyProductId(lineId, explicitMode) {
     const primaryId = _ldData?.data?.product?.id || _ldData?.data?.product_id || '';
     const incomingId = _ldData?.data?.incoming_product_id || '';
     const mode = explicitMode || window._ldProductMode?.[lineId] || 'primary';
-    if (mode === 'changeover' && incomingId) {
+    if (mode === 'changeover') {
+        // Deliberately no fall back to the primary id — a changeover copy into a line that
+        // has no SCO style yet must not carry the line's own Daily Plan product into the
+        // payload. The real source product comes from the preview response anyway.
         return _ldData?.changeoverData?.product?.id || incomingId || '';
     }
     return primaryId || incomingId || '';
-}
-
-function _ldSyncCopyPlanButton(lineId) {
-    const cpBtn = document.getElementById('ld-copy-plan-btn');
-    if (!cpBtn) return;
-    cpBtn.dataset.productId = _ldResolveCopyProductId(lineId) || '';
 }
 
 async function toggleLineDetails(lineId) {
@@ -5132,7 +5363,6 @@ async function openLineDetailsPage(lineId, date, productId, target) {
                 <span id="ld-overlay-title" style="font-weight:700;font-size:1rem;">Line Details</span>
                 <span style="color:#6b7280;font-size:0.85em;margin-left:10px;">Date: ${date}</span>
             </div>
-            <button id="ld-copy-plan-btn" style="font-size:12px;padding:5px 14px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldOpenCopyPlanModal()">&#128203; Copy Plan</button>
             <button id="ld-download-template-btn" style="font-size:12px;padding:5px 14px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldDownloadPlanTemplate()">Download Template</button>
             <button id="ld-upload-template-btn" style="font-size:12px;padding:5px 14px;background:#f0fdf4;color:#1d6f42;border:1px solid #bbf7d0;border-radius:6px;cursor:pointer;white-space:nowrap;font-weight:600;" onclick="ldOpenPlanUploadModal()">Upload Template</button>
             <div style="margin-left:auto;display:flex;align-items:center;gap:5px;flex-shrink:0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:5px 10px;">
@@ -5187,18 +5417,11 @@ async function openLineDetailsPage(lineId, date, productId, target) {
                 titleEl.insertAdjacentElement('afterend', badge);
             }
         }
-        // Store resolved line/date on the copy-plan button for modal use
-        const cpBtn = document.getElementById('ld-copy-plan-btn');
-        if (cpBtn) {
-            cpBtn.dataset.lineId = lineId;
-            cpBtn.dataset.toDate = date;
-        }
         const dlBtn = document.getElementById('ld-download-template-btn');
         if (dlBtn) {
             dlBtn.dataset.lineId = lineId;
             dlBtn.dataset.toDate = date;
         }
-        _ldSyncCopyPlanButton(lineId);
 
         // Add OT tab buttons if OT is enabled for this plan
         const headerBar = overlay.querySelector('div[style*="sticky"]');
@@ -5241,16 +5464,13 @@ function closeLineDetailsPage() {
 // ── Copy Plan Modal ─────────────────────────────────────────────────────────
 
 async function ldOpenCopyPlanModal(explicitMode) {
-    const btn = document.getElementById('ld-copy-plan-btn');
-    const lineId = btn?.dataset.lineId || (_ldData?.lineId || '');
-    const toDate = btn?.dataset.toDate || (_ldData?.date || '');
+    const lineId = _ldData?.lineId || '';
+    const toDate = _ldData?.date || '';
     const mode = explicitMode || window._ldProductMode?.[lineId] || 'primary';
     const isChangeover = mode === 'changeover';
 
-    if (isChangeover && !_ldData?.data?.incoming_product_id) {
-        showToast('Choose or upload a changeover style first, then use Copy Plan to bring in workstations/employees from another date.', 'error');
-        return;
-    }
+    // A missing changeover style is no longer a blocker: copying into an empty SCO slot
+    // adopts the source plan's style as the line's changeover style.
     const productId = _ldResolveCopyProductId(lineId, mode);
 
     let modal = document.getElementById('ld-copy-plan-modal');
@@ -5720,7 +5940,11 @@ async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId
         }
         if (!result.success) { showToast(result.error, 'error'); return; }
         ldCloseCopyPlanModal();
-        showToast(copyEmployees ? `Plan copied from ${fromDate} (${selectedWsCodes.length} employee${selectedWsCodes.length === 1 ? '' : 's'} carried over)` : `Plan copied from ${fromDate}`, 'success');
+        const empNote = copyEmployees ? ` (${selectedWsCodes.length} employee${selectedWsCodes.length === 1 ? '' : 's'} carried over)` : '';
+        // Say it out loud when the copy set the line's changeover style, so the IE understands
+        // why the SCO dropdown and target just filled themselves in.
+        const bootstrapNote = result.changeover_bootstrapped ? ' — changeover style set from the copied plan' : '';
+        showToast(`Plan copied from ${fromDate}${empNote}${bootstrapNote}`, 'success');
         // Reload line details — use the target plan's primary product_id for the base reload query
         const reloadProductId = _ldData?.data?.product?.id || (mode === 'primary' ? productId : '');
         const content = document.getElementById('ld-overlay-content');
@@ -5746,7 +5970,6 @@ async function ldExecuteCopyPlan(lineId, fromLineId, fromDate, toDate, productId
                 // immediately sees the result instead of the plan changing behind the scenes.
                 if (!window._ldProductMode) window._ldProductMode = {};
                 window._ldProductMode[lineId] = mode;
-                _ldSyncCopyPlanButton(lineId);
                 renderLineDetailsContent(content, lineId, toDate, d.data);
             } else {
                 content.innerHTML = `<div style="text-align:center;padding:40px;color:#ef4444;">${d.error || 'Failed to reload'}</div>`;
@@ -6946,9 +7169,9 @@ function renderLineDetailsContent(panel, lineId, date, data) {
                 <label style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px;">Changeover Plan Style (SCO)</label>
                 ${is_locked ? '' : `
                 <div style="display:flex;gap:5px;margin-bottom:5px;">
-                    <button type="button" onclick="${incoming_product_id ? `ldOpenCopyPlanModal('changeover')` : `showToast('Choose or upload a changeover style first, then Copy Plan can bring in workstations/employees from another date.','error')`}"
-                        title="${incoming_product_id ? 'Copy the workstation layout, processes and employees from another line/date into the Changeover (SCO) plan' : 'Select a changeover style first'}"
-                        style="font-size:11px;padding:3px 9px;border-radius:5px;cursor:pointer;font-weight:600;${incoming_product_id ? 'background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;' : 'background:#f3f4f6;color:#9ca3af;border:1px solid #e5e7eb;'}">Copy Plan</button>
+                    <button type="button" onclick="ldOpenCopyPlanModal('changeover')"
+                        title="Copy the workstation layout, processes and employees from another line/date into the Changeover (SCO) plan${incoming_product_id ? '' : '. No changeover style is set yet — copying will adopt the style from the plan you copy.'}"
+                        style="font-size:11px;padding:3px 9px;border-radius:5px;cursor:pointer;font-weight:600;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;">Copy Plan</button>
                     <button type="button" onclick="document.getElementById('ld-incoming-${lineId}').focus(); document.getElementById('ld-incoming-${lineId}').showPicker?.();" title="Pick a style from the list below"
                         style="font-size:11px;padding:3px 9px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:5px;cursor:pointer;font-weight:600;">Select</button>
                     <button type="button" onclick="ldOpenPlanUploadModal('changeover')" title="Upload the Changeover (SCO) plan from an Excel template"
@@ -7282,7 +7505,6 @@ async function switchLdOTProduct(lineId, mode) {
             _ldData.changeoverData = r.data;
         } catch (err) { showToast(err.message, 'error'); return; }
     }
-    _ldSyncCopyPlanButton(lineId);
     renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
 }
 
@@ -7313,7 +7535,6 @@ async function switchLdProduct(lineId, mode) {
         } catch (err) { showToast(err.message, 'error'); return; }
     }
 
-    _ldSyncCopyPlanButton(lineId);
     renderLineDetailsContent(panel, lineId, _ldData.date, _ldData.data);
 }
 
@@ -7706,9 +7927,18 @@ async function saveLineDetails(lineId) {
 async function saveDailyPlan(lineId) {
     const date = document.getElementById('plan-date').value;
     const productId = document.getElementById(`plan-product-${lineId}`).value;
-    const targetUnits = parseInt(document.getElementById(`plan-target-${lineId}`).value || '0', 10);
+    // An empty box means "I did not touch this", not "zero". Reading it as 0 is what silently
+    // wiped a live daily target and blanked the TV board, so blank is now carried as null and
+    // dropped from the PATCH below. A typed 0 still goes through, and still gets confirmed.
+    const readTarget = (id) => {
+        const raw = (document.getElementById(id)?.value ?? '').trim();
+        if (!raw) return null;
+        const parsed = parseInt(raw, 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+    const targetUnits = readTarget(`plan-target-${lineId}`);
     const incomingProductId = document.getElementById(`plan-incoming-${lineId}`).value || null;
-    const incomingTargetUnits = parseInt(document.getElementById(`plan-incoming-target-${lineId}`).value || '0', 10);
+    const incomingTargetUnits = readTarget(`plan-incoming-target-${lineId}`);
     if (!productId) {
         showToast('Select a product for the line', 'error');
         return;
@@ -7730,9 +7960,9 @@ async function saveDailyPlan(lineId) {
                     line_id: lineId,
                     product_id: productId,
                     work_date: date,
-                    target_units: targetUnits,
+                    target_units: targetUnits ?? 0,
                     incoming_product_id: changeoverEnabled ? incomingProductId : null,
-                    incoming_target_units: changeoverEnabled ? incomingTargetUnits : 0
+                    incoming_target_units: changeoverEnabled ? (incomingTargetUnits ?? 0) : 0
                 })
             });
             const result = await response.json();
@@ -7743,7 +7973,9 @@ async function saveDailyPlan(lineId) {
             // Plan exists — only PATCH changed fields
             const changed = {};
             if (String(productId) !== String(existing.product_id)) changed.product_id = productId;
-            if (targetUnits !== parseInt(existing.target_units || 0, 10)) changed.target_units = targetUnits;
+            if (targetUnits !== null && targetUnits !== parseInt(existing.target_units || 0, 10)) {
+                changed.target_units = targetUnits;
+            }
             if (changeoverEnabled) {
                 const newInc = incomingProductId || null;
                 const oldInc = existing.incoming_product_id ? String(existing.incoming_product_id) : null;
@@ -7760,35 +7992,49 @@ async function saveDailyPlan(lineId) {
                     }
                     changed.incoming_product_id = newInc;
                 }
-                if (incomingTargetUnits !== parseInt(existing.incoming_target_units || 0, 10)) changed.incoming_target_units = incomingTargetUnits;
+                if (incomingTargetUnits !== null && incomingTargetUnits !== parseInt(existing.incoming_target_units || 0, 10)) {
+                    changed.incoming_target_units = incomingTargetUnits;
+                }
             }
             if (!Object.keys(changed).length) {
                 showToast('No changes detected', 'info');
                 return;
             }
-            const response = await fetch('/api/daily-plans', {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ line_id: lineId, work_date: date, ...changed })
-            });
-            const result = await response.json();
+            // The server refuses two destructive edits until they are confirmed: zeroing a target
+            // that currently holds a real number, and a product change that resets SCO stations.
+            // Each answer is kept in `flags` so confirming one does not drop the other on retry.
+            const flags = {};
+            const sendPatch = async () => {
+                const res = await fetch('/api/daily-plans', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ line_id: lineId, work_date: date, ...changed, ...flags })
+                });
+                return res.json();
+            };
+
+            let result = await sendPatch();
+            if (!result.success && result.zero_target_warning) {
+                const rows = (result.zeroed_targets || [])
+                    .map(t => `• ${t.field === 'target_units' ? 'Daily target' : 'Changeover target'}: ${t.previous} → 0`)
+                    .join('\n');
+                const proceed = confirm(
+                    `This will set a target that is currently in use to 0:\n\n${rows}\n\n` +
+                    `The line's TV board will show no day target, and every station without its own ` +
+                    `takt will show "–" instead of an hourly target.\n\nContinue anyway?`
+                );
+                if (!proceed) return;
+                flags.force_zero_target = true;
+                result = await sendPatch();
+            }
             if (!result.success && result.sco_warning) {
                 const proceed = confirm(
                     `Warning: ${result.sco_count} workstation${result.sco_count !== 1 ? 's are' : ' is'} currently in SCO (changeover) mode on this line.\n\n` +
                     `Changing the primary product will reset their changeover state.\n\nContinue anyway?`
                 );
                 if (!proceed) return;
-                const r2 = await fetch('/api/daily-plans', {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ line_id: lineId, work_date: date, ...changed, force_sco_override: true })
-                });
-                const result2 = await r2.json();
-                if (!result2.success) { showToast(result2.error, 'error'); return; }
-                if (result2.cap_warning) showToast(`⚠ ${result2.cap_warning}`, 'warning');
-                else showToast(`Updated: ${Object.keys(changed).join(', ').replace(/_/g, ' ')}`, 'success');
-                loadDailyPlanData();
-                return;
+                flags.force_sco_override = true;
+                result = await sendPatch();
             }
             if (!result.success) { showToast(result.error, 'error'); return; }
             if (result.cap_warning) showToast(`⚠ ${result.cap_warning}`, 'warning');
@@ -8039,8 +8285,8 @@ function openOtLineDetail(lineId, date) {
     const line = sectionData?.lines.find(l => String(l.id) === String(lineId));
     const plan = sectionData?.planMap.get(String(lineId));
     const lineLabel = line ? `${line.line_code} — ${line.line_name}` : `Line ${lineId}`;
-    const leaderBadge = line?.line_leader
-        ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:2px 10px;">${line.line_leader}</span>`
+    const leaderBadge = line?.line_leader || line?.line_leader_photo
+        ? `<span style="display:inline-flex;align-items:center;gap:8px;color:#1d6f42;font-weight:600;font-size:13px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:2px 10px 2px 3px;">${leaderAvatarHtml(line, 24)}${escHtml(line.line_leader || '')}</span>`
         : '';
     const productLabel = plan ? `${plan.product_code || ''} ${plan.product_name || ''}`.trim() : '';
 
@@ -8070,8 +8316,8 @@ function renderOtLineCard(line, plan, date, hasPlan, otEnabled) {
     const productLabel = plan ? `${plan.product_code || ''} ${plan.product_name || ''}`.trim() : '';
     const targetLabel  = plan ? `${plan.target_units || 0} units` : '';
 
-    const leaderBadge = line.line_leader
-        ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:2px 10px;">${line.line_leader}</span>`
+    const leaderBadge = line.line_leader || line.line_leader_photo
+        ? `<span style="display:inline-flex;align-items:center;gap:8px;color:#1d6f42;font-weight:600;font-size:13px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:2px 10px 2px 3px;">${leaderAvatarHtml(line, 24)}${escHtml(line.line_leader || '')}</span>`
         : '';
 
     if (!hasPlan) {
@@ -11092,6 +11338,7 @@ function downloadEfficiencyExcel() {
 // ============================================================================
 let _wieData = null;
 let _wieMetric = 'all'; // 'all' | 'efficiency' | 'target' | 'output'
+let _wieSort = 'none'; // 'none' | 'eff_asc' | 'eff_desc'
 
 async function loadWieLineOptions() {
     const select = document.getElementById('wie-line');
@@ -11114,6 +11361,7 @@ async function loadWorkerIndividualEff() {
     const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
     _wieData = null;
     _wieMetric = 'all';
+    _wieSort = 'none';
     content.innerHTML = `
         <div class="page-header">
             <div>
@@ -11152,6 +11400,15 @@ async function loadWorkerIndividualEff() {
                 <button id="wie-btn-wip"        onclick="setWieMetric('wip')"        style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">WIP</button>
                 <button id="wie-btn-output"     onclick="setWieMetric('output')"     style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Output</button>
                 <button id="wie-btn-efficiency" onclick="setWieMetric('efficiency')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Efficiency</button>
+            </div>
+            <div>
+                <label for="wie-sort" style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Sort</label>
+                <select id="wie-sort" onchange="setWieSort(this.value)"
+                    style="min-width:200px;padding:7px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">
+                    <option value="none">Default order</option>
+                    <option value="eff_asc">Efficiency: Low &rarr; High</option>
+                    <option value="eff_desc">Efficiency: High &rarr; Low</option>
+                </select>
             </div>
             <div style="position:relative;" id="wie-emp-picker">
                 <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Employee</label>
@@ -11458,11 +11715,25 @@ document.addEventListener('click', e => {
     }
 });
 
+function setWieSort(mode) {
+    _wieSort = mode;
+    _wieRenderFiltered();
+}
+
+function _wieSortRows(rows) {
+    if (_wieSort !== 'eff_asc' && _wieSort !== 'eff_desc') return rows;
+    const effOf = r => { const v = Number(r.overall_eff); return Number.isFinite(v) ? v : 0; };
+    const dir = _wieSort === 'eff_asc' ? 1 : -1;
+    return [...rows].sort((a, b) =>
+        (effOf(a) - effOf(b)) * dir || (a.emp_name || '').localeCompare(b.emp_name || ''));
+}
+
 function _wieRenderFiltered() {
     const container = document.getElementById('wie-content');
     if (!container || !_wieData) return;
     let rows = _wieData.rows;
     if (_wieSelectedEmps.size > 0) rows = rows.filter(r => _wieSelectedEmps.has(String(r.emp_id ?? r.employee_id)));
+    rows = _wieSortRows(rows);
     if (!rows.length) {
         container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employees.</div></div>';
         return;
@@ -11852,6 +12123,421 @@ function downloadWorkerIndividualEffExcel() {
         <head><meta charset="UTF-8">
         <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
         <x:ExcelWorksheet><x:Name>Worker Efficiency</x:Name>
+        <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+        </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+        <style>
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #999; padding: 4px 6px; font-size: 10px; font-family: Arial, sans-serif; }
+            th { background: #1e3a5f; color: #fff; font-weight: bold; }
+        </style>
+        </head><body>${area.innerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ============================================================================
+// HOURLY REPORT (per-employee, one line + one date)
+// ============================================================================
+let _hrData   = null;      // last API payload
+let _hrSort   = 'none';    // 'none' | 'eff_asc' | 'eff_desc'
+let _hrMetric = 'all';     // 'all' | 'output' | 'efficiency'
+let _hrSearch = '';
+
+async function loadHourlyReportLineOptions() {
+    const select = document.getElementById('hr-line');
+    if (!select) return;
+    try {
+        const r = await fetch(`${API_BASE}/lines`, { credentials: 'include' });
+        const result = await r.json();
+        if (!result.success) return;
+        const active = result.data.filter(line => line.is_active);
+        select.innerHTML = active
+            .map(line => `<option value="${line.id}">${escHtml(line.line_name)} (${escHtml(line.line_code)})</option>`)
+            .join('');
+    } catch (_) { /* ignore */ }
+}
+
+async function loadHourlyReport() {
+    const content = document.getElementById('main-content');
+    const today = new Date().toISOString().slice(0, 10);
+    _hrData = null;
+    _hrSort = 'none';
+    _hrMetric = 'all';
+    _hrSearch = '';
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">Hourly Report</h1>
+                <p class="page-subtitle">Per-worker output &amp; efficiency, hour by hour</p>
+            </div>
+            <div class="ie-actions" style="flex-wrap:wrap;gap:8px;">
+                <div class="ie-date">
+                    <label for="hr-line">Line</label>
+                    <select id="hr-line" class="form-control" style="min-width:200px;"></select>
+                </div>
+                <div class="ie-date">
+                    <label for="hr-date">Date</label>
+                    <input type="date" id="hr-date" value="${today}">
+                </div>
+                <button class="btn btn-primary" onclick="refreshHourlyReport()">Load</button>
+                <button class="btn btn-secondary" onclick="printHourlyReport()">&#9113; Print</button>
+                <button class="btn btn-secondary" onclick="downloadHourlyReportExcel()" style="background:#1d6f42;color:#fff;border-color:#1d6f42;">&#8595; Excel</button>
+            </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+            <div style="display:flex;gap:4px;background:#f3f4f6;border-radius:8px;padding:3px;">
+                <button id="hr-btn-all"        onclick="setHrMetric('all')"        style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#1e40af;color:#fff;">All</button>
+                <button id="hr-btn-output"     onclick="setHrMetric('output')"     style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Output</button>
+                <button id="hr-btn-efficiency" onclick="setHrMetric('efficiency')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Efficiency</button>
+            </div>
+            <div>
+                <label for="hr-sort" style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Sort</label>
+                <select id="hr-sort" onchange="setHrSort(this.value)"
+                    style="min-width:200px;padding:7px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">
+                    <option value="none">Default order</option>
+                    <option value="eff_asc">Efficiency: Low &rarr; High</option>
+                    <option value="eff_desc">Efficiency: High &rarr; Low</option>
+                </select>
+            </div>
+            <div>
+                <label for="hr-search" style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Worker</label>
+                <input type="text" id="hr-search" placeholder="Search name or code..." oninput="filterHrRows()"
+                    style="min-width:220px;padding:7px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+            </div>
+        </div>
+        <div id="hr-content" style="overflow-x:auto;">
+            <div style="text-align:center;padding:60px;color:#9ca3af;">Select a line and date, then click <strong>Load</strong>.</div>
+        </div>
+    `;
+    await loadHourlyReportLineOptions();
+}
+
+function setHrSort(mode) {
+    _hrSort = mode;
+    _hrRenderFiltered();
+}
+
+function _hrSortRows(rows) {
+    if (_hrSort !== 'eff_asc' && _hrSort !== 'eff_desc') return rows;
+    const effOf = r => { const v = Number(r.cumulative?.efficiency_percent); return Number.isFinite(v) ? v : 0; };
+    const dir = _hrSort === 'eff_asc' ? 1 : -1;
+    return [...rows].sort((a, b) =>
+        (effOf(a) - effOf(b)) * dir || (a.emp_name || '').localeCompare(b.emp_name || ''));
+}
+
+function setHrMetric(metric) {
+    _hrMetric = metric;
+    ['all', 'output', 'efficiency'].forEach(m => {
+        const btn = document.getElementById(`hr-btn-${m}`);
+        if (!btn) return;
+        btn.style.background = m === metric ? '#1e40af' : 'transparent';
+        btn.style.color      = m === metric ? '#fff'    : '#374151';
+    });
+    _hrRenderFiltered();
+}
+
+function filterHrRows() {
+    _hrSearch = (document.getElementById('hr-search')?.value || '').trim().toLowerCase();
+    _hrRenderFiltered();
+}
+
+function _hrRenderFiltered() {
+    const container = document.getElementById('hr-content');
+    if (!container || !_hrData) return;
+    // Keep the horizontal scroll position across a live refresh, or the grid snaps
+    // back to the 1st hour every 30 seconds while the user is reading the 6th.
+    const savedScrollLeft = container.scrollLeft;
+    let rows = _hrData.rows;
+    if (_hrSearch) {
+        rows = rows.filter(r =>
+            (r.emp_name || '').toLowerCase().includes(_hrSearch) ||
+            (r.emp_code || '').toLowerCase().includes(_hrSearch));
+    }
+    rows = _hrSortRows(rows);
+    if (!rows.length) {
+        container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No workers match this search.</div></div>';
+        return;
+    }
+    container.innerHTML = _buildHourlyReportTable({ ..._hrData, rows }, _hrMetric);
+    container.scrollLeft = savedScrollLeft;
+}
+
+async function refreshHourlyReport() {
+    const lineId = document.getElementById('hr-line')?.value;
+    const date   = document.getElementById('hr-date')?.value;
+    const container = document.getElementById('hr-content');
+    if (!container) return;
+    if (!lineId || !date) {
+        container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">Select a line and a date, then click <strong>Load</strong>.</div></div>';
+        return;
+    }
+    const isInitialLoad = !container.querySelector('table');
+    if (isInitialLoad) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner" style="display:inline-block;"></div></div>';
+    }
+    try {
+        const params = new URLSearchParams({ line_id: lineId, date });
+        const r = await fetch(`${API_BASE}/hourly-report?${params.toString()}`, { credentials: 'include' });
+        const resp = await r.json();
+        if (!resp.success) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">${escHtml(resp.error || 'Failed to load')}</div></div>`;
+            return;
+        }
+        if (!resp.data.rows.length) {
+            container.innerHTML = `<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No workers found for this line on ${escHtml(date)}.</div></div>`;
+            return;
+        }
+        _hrData = resp.data;
+        _hrRenderFiltered();
+    } catch (err) {
+        container.innerHTML = `<div class="card"><div class="card-body" style="color:#dc2626;">Error: ${escHtml(err.message)}</div></div>`;
+        return;
+    }
+    // Only poll a shift that is still running. Leaving the timer armed on a past date
+    // would hammer a report whose numbers can no longer change.
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (date === todayStr) {
+        setAdminLiveReportTimer(() => refreshHourlyReport(), 'hr-print-area');
+    } else if (window._adminLiveReportTimer) {
+        clearInterval(window._adminLiveReportTimer);
+        window._adminLiveReportTimer = null;
+    }
+}
+
+// Renders one hour's cells. `reached` comes from the payload's hours[] so an hour the
+// shift has not got to yet is visibly different from one nobody entered.
+function _hrCell(cell, reached, metric, tcS, effColor, departedAfter) {
+    const showOut = metric === 'all' || metric === 'output';
+    const showEff = metric === 'all' || metric === 'efficiency';
+    const pack = (out, eff) => [showOut ? out : '', showEff ? eff : ''].join('');
+
+    if (!reached) {
+        const b = `<td style="${tcS}background:#f9fafb;color:#d1d5db;">&middot;</td>`;
+        return pack(b, b);
+    }
+    if (departedAfter) {
+        const b = `<td style="${tcS}background:#fee2e2;color:#991b1b;font-size:10px;">n/a</td>`;
+        return pack(b, b);
+    }
+    if (!cell || !cell.entered) {
+        // No progress row for this hour — a blank, not a zero. Showing 0% here would
+        // brand every un-entered hour as a failing worker.
+        const b = `<td style="${tcS}color:#6b7280;">&ndash;</td>`;
+        return pack(b, b);
+    }
+    const coBg   = cell.is_changeover ? 'background:#fef3c7;' : '';
+    const target = Number(cell.target) || 0;
+    const output = Number(cell.output) || 0;
+    const outC   = target > 0 ? (output >= target ? '#16a34a' : '#dc2626') : '#111827';
+    const eff    = Number(cell.efficiency_percent) || 0;
+    const title  = [
+        cell.workstation_code ? `WS ${cell.workstation_code}` : '',
+        target > 0 ? `target ${target}` : '',
+        cell.reason || ''
+    ].filter(Boolean).join(' · ').replace(/"/g, '&quot;');
+    return pack(
+        `<td style="${tcS}${coBg}font-weight:${output === 0 ? '700' : '600'};color:${outC};" title="${title}">${output}</td>`,
+        `<td style="${tcS}${coBg}font-weight:600;color:${effColor(eff)};">${eff.toFixed(1)}%</td>`
+    );
+}
+
+function _buildHourlyReportTable(data, metric = 'all') {
+    const { line, date, hours, plan, rows, has_ot: hasOt, is_locked: isLocked, is_closed: isClosed } = data;
+    const thS  = 'background:#1e3a5f;color:#fff;padding:6px 5px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;font-weight:700;';
+    const thSS = 'background:#1e3a5f;color:#fff;padding:4px 4px;text-align:center;white-space:nowrap;font-size:10px;border:1px solid #0f2744;';
+    const tdS  = 'padding:4px 5px;border:1px solid #9ca3af;font-size:11px;';
+    const tcS  = tdS + 'text-align:center;';
+
+    const showOut = metric === 'all' || metric === 'output';
+    const showEff = metric === 'all' || metric === 'efficiency';
+    const subCols = (showOut ? 1 : 0) + (showEff ? 1 : 0);
+    const fixedCols = 5; // S.No | WORKER | ID NO | WS | TGT/HR
+
+    const effColor = eff => {
+        if (eff == null) return '#6b7280';
+        const rounded = Math.round(eff * 10) / 10;
+        return rounded >= 90 ? '#16a34a' : rounded >= 80 ? '#d97706' : '#dc2626';
+    };
+    const dash = `<td style="${tcS}color:#6b7280;">&mdash;</td>`;
+
+    // ── Header: hour groups over OUT | EFF% sub-columns ─────────────────
+    const hourGroupHeaders = hours.map(h =>
+        `<th colspan="${subCols}" style="${thS}">${h.ordinal.toUpperCase()} HOUR<br><span style="font-weight:400;font-size:9px;">${h.label.replace(/^.*\(|\)$/g, '')}</span></th>`
+    ).join('');
+    const otGroupHeader = hasOt ? `<th colspan="${subCols}" style="${thS}background:#92400e;border-color:#78350f;">OT<br><span style="font-weight:400;font-size:9px;">whole day</span></th>` : '';
+
+    const subPair = `${showOut ? `<th style="${thSS}">OUT</th>` : ''}${showEff ? `<th style="${thSS}">EFF%</th>` : ''}`;
+    const subHeaders = hours.map(() => subPair).join('') + (hasOt ? subPair : '');
+
+    // ── Line-level hourly target band ───────────────────────────────────
+    const bandTgt = plan.line_hourly_target || 0;
+    const bandCo  = plan.line_co_hourly_target || 0;
+    const bandLabel = bandTgt > 0
+        ? (bandCo > 0 ? `${bandTgt} <span style="font-weight:400;">(CO ${bandCo})</span>` : String(bandTgt))
+        : '&ndash;';
+    const targetBand = `
+        <tr style="background:#dbeafe;">
+            <td colspan="${fixedCols}" style="${tdS}font-weight:700;color:#1e3a8a;">TARGET / HOUR &nbsp;<span style="font-weight:400;font-size:10px;">(line)</span></td>
+            ${hours.map(() => `<td colspan="${subCols}" style="${tcS}font-weight:700;color:#1e3a8a;">${bandLabel}</td>`).join('')}
+            ${hasOt ? `<td colspan="${subCols}" style="${tcS}color:#1e3a8a;">&mdash;</td>` : ''}
+            <td colspan="3" style="${tcS}font-weight:700;color:#1e3a8a;">${plan.target_units || '&ndash;'} <span style="font-weight:400;font-size:10px;">/ day</span></td>
+            <td style="${tdS}background:#dbeafe;"></td>
+        </tr>`;
+
+    // ── Data rows ───────────────────────────────────────────────────────
+    const dataRows = rows.map((row, idx) => {
+        const cum = row.cumulative || {};
+        const cumEff = Number.isFinite(Number(cum.efficiency_percent)) ? Number(cum.efficiency_percent) : null;
+
+        const badges = [
+            row.is_changeover ? '<span style="display:inline-block;padding:0 4px;border-radius:3px;font-size:9px;font-weight:700;background:#fef3c7;color:#92400e;margin-left:4px;">CO</span>' : '',
+            row.departed      ? '<span style="display:inline-block;padding:0 4px;border-radius:3px;font-size:9px;font-weight:700;background:#fee2e2;color:#991b1b;margin-left:4px;">DEP</span>' : '',
+            row.ot_only       ? '<span style="display:inline-block;padding:0 4px;border-radius:3px;font-size:9px;font-weight:700;background:#ede9fe;color:#5b21b6;margin-left:4px;">OT ONLY</span>' : ''
+        ].join('');
+        const movedCodes = [...new Set(hours.map(h => row.hours[h.hour_slot]?.workstation_code).filter(Boolean))];
+        const movedMark = row.moved_mid_day
+            ? `<span title="Moved: ${movedCodes.join(' → ')}" style="color:#6b21a8;font-weight:700;margin-left:4px;cursor:help;">&#8646;</span>`
+            : '';
+
+        const wsCell = row.workstation_code
+            ? `<span onclick="openWieWorkstationPopup(${line.id}, '${date}', '${row.workstation_code}')" style="cursor:pointer;color:#1d4ed8;text-decoration:underline;font-weight:600;">${escHtml(row.workstation_code)}</span>${movedMark}`
+            : '&ndash;';
+
+        const hourCells = hours.map(h => {
+            const cell = row.hours[h.hour_slot];
+            const departedAfter = row.departed && row.departure_hour != null && h.hour_slot > row.departure_hour;
+            return _hrCell(cell, h.reached, metric, tcS, effColor, departedAfter);
+        }).join('');
+
+        const otCells = hasOt
+            ? (row.ot
+                ? `${showOut ? `<td style="${tcS}background:#fff7ed;font-weight:700;">${row.ot.output}</td>` : ''}${showEff ? `<td style="${tcS}background:#fff7ed;font-weight:600;color:${effColor(row.ot.efficiency_percent)};">${row.ot.efficiency_percent != null ? row.ot.efficiency_percent.toFixed(1) + '%' : '&mdash;'}</td>` : ''}`
+                : `${showOut ? `<td style="${tcS}background:#fff7ed;color:#6b7280;">&mdash;</td>` : ''}${showEff ? `<td style="${tcS}background:#fff7ed;color:#6b7280;">&mdash;</td>` : ''}`)
+            : '';
+
+        const reasonTxt = cum.reason || '';
+        return `<tr>
+            <td style="${tcS}font-weight:600;">${idx + 1}</td>
+            <td style="${tdS}font-weight:600;white-space:nowrap;">${escHtml(row.emp_name || '-')}${badges}</td>
+            <td style="${tcS}">${escHtml(row.emp_code || '-')}</td>
+            <td style="${tcS}">${wsCell}</td>
+            <td style="${tcS}font-weight:600;">${row.hourly_target || '&ndash;'}</td>
+            ${hourCells}
+            ${otCells}
+            <td style="${tcS}background:#f8fafc;">${cum.target || '&ndash;'}</td>
+            <td style="${tcS}background:#f8fafc;font-weight:700;">${cum.output ?? 0}</td>
+            <td style="${tcS}background:#f8fafc;font-weight:700;color:${effColor(cumEff)};">${cumEff != null ? cumEff.toFixed(1) + '%' : '&mdash;'}</td>
+            <td style="${tdS}font-size:10px;" title="${reasonTxt.replace(/"/g, '&quot;')}">${escHtml(reasonTxt) || '&ndash;'}</td>
+        </tr>`;
+    }).join('');
+
+    const banners = [
+        isLocked ? '<span style="background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;">DAY LOCKED &mdash; figures are final</span>' : '',
+        isClosed ? '<span style="background:#fee2e2;color:#991b1b;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;">LINE CLOSED this date</span>' : ''
+    ].filter(Boolean).join(' ');
+
+    return `
+    <div id="hr-print-area">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+            <div style="font-size:17px;font-weight:700;letter-spacing:0.5px;">HOURLY REPORT &mdash; ${escHtml(line.line_name)} <span style="font-weight:400;font-size:13px;color:#6b7280;">${escHtml(date)}</span></div>
+            <div style="display:flex;gap:8px;align-items:center;">${banners}</div>
+        </div>
+        <div style="font-size:11px;color:#374151;margin-bottom:8px;">
+            ${plan.product_code ? `Product <strong>${escHtml(plan.product_code)}</strong>` : 'No plan for this date'}
+            ${plan.incoming_product_code ? ` &nbsp;&middot;&nbsp; Changeover <strong>${escHtml(plan.incoming_product_code)}</strong>` : ''}
+            &nbsp;&middot;&nbsp; Day target <strong>${plan.target_units || 0}</strong>
+            &nbsp;&middot;&nbsp; Hourly target <strong>${plan.line_hourly_target || 0}</strong>
+            &nbsp;&middot;&nbsp; Shift ${escHtml(plan.in_time || '')}&ndash;${escHtml(plan.out_time || '')} (${plan.working_hours}h)
+        </div>
+        <div style="font-size:10px;margin-bottom:8px;display:flex;gap:14px;flex-wrap:wrap;color:#374151;">
+            <span><strong>&ndash;</strong> nothing entered that hour</span>
+            <span><strong style="color:#dc2626;">0</strong> entered as zero</span>
+            <span><span style="color:#d1d5db;font-weight:700;">&middot;</span> hour not reached yet</span>
+            <span><span style="background:#fee2e2;color:#991b1b;padding:1px 4px;border-radius:3px;font-weight:700;">n/a</span> after departure</span>
+            <span><span style="color:#6b21a8;font-weight:700;">&#8646;</span> moved workstation mid-day</span>
+            <span><span style="background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;font-weight:700;">CO</span> changeover product</span>
+            <span>Efficiency is SAH-earned; the target is takt-derived &mdash; they differ when SAM &ne; takt.</span>
+        </div>
+        <div style="overflow-x:auto;">
+        <table style="border-collapse:collapse;width:max-content;min-width:100%;">
+            <thead>
+                <tr>
+                    <th colspan="${fixedCols}" style="${thS}">WORKER</th>
+                    ${hourGroupHeaders}
+                    ${otGroupHeader}
+                    <th colspan="3" style="${thS}">CUMULATIVE</th>
+                    <th rowspan="2" style="${thS}">DOWNFALL REASON</th>
+                </tr>
+                <tr>
+                    <th style="${thSS}">S.NO</th>
+                    <th style="${thSS}">WORKER NAME</th>
+                    <th style="${thSS}">ID NO</th>
+                    <th style="${thSS}">WS</th>
+                    <th style="${thSS}">TGT/HR</th>
+                    ${subHeaders}
+                    <th style="${thSS}">TGT</th>
+                    <th style="${thSS}">OUT</th>
+                    <th style="${thSS}">EFF%</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${targetBand}
+                ${dataRows}
+            </tbody>
+        </table>
+        </div>
+    </div>`;
+}
+
+function printHourlyReport() {
+    const area = document.getElementById('hr-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.onload = () => {
+        const doc = iframe.contentDocument;
+        const clone = area.cloneNode(true);
+        clone.querySelectorAll('table').forEach(t => {
+            t.style.borderCollapse = 'collapse';
+            t.style.width = '100%';
+            t.style.fontSize = '9px';
+        });
+        clone.querySelectorAll('th, td').forEach(el => {
+            el.style.border = '1px solid #333';
+            el.style.padding = '3px 4px';
+        });
+        doc.open();
+        doc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+            <title>Hourly Report</title>
+            <style>
+                * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+                body { font-family: Arial, sans-serif; margin: 10px; }
+                @media print { @page { size: A3 landscape; margin: 8mm; } }
+            </style></head><body>${clone.innerHTML}</body></html>`);
+        doc.close();
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+    };
+    document.body.appendChild(iframe);
+}
+
+function downloadHourlyReportExcel() {
+    const area = document.getElementById('hr-print-area');
+    if (!area) { alert('No report loaded.'); return; }
+    const sel = document.getElementById('hr-line');
+    const lineText = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+    const date = document.getElementById('hr-date')?.value || '';
+    const filename = `HourlyReport_${lineText.replace(/[^a-zA-Z0-9]/g, '_')}_${date}.xls`;
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+        xmlns:x="urn:schemas-microsoft-com:office:excel"
+        xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="UTF-8">
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
+        <x:ExcelWorksheet><x:Name>Hourly Report</x:Name>
         <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
         </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
         <style>

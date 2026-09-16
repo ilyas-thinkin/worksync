@@ -1,0 +1,420 @@
+/* WorkSync line display — full-screen TV board. 1rem scales with screen width
+   (20px on a 1080p TV, 40px on 4K) so the layout is identical on any screen. */
+
+:root {
+    --bg: #070B14;
+    --surface: #0F172A;
+    --surface-2: #131D33;
+    --line: #22304D;
+    --grid: #1A2540;
+    --text: #F1F5F9;
+    --muted: #94A3B8;
+    --good: #22C55E;
+    --warn: #FBBF24;
+    --bad: #F87171;
+    --accent: #38BDF8;
+    --co: #FBBF24;
+    --row-h: 2.9rem;
+}
+
+html { font-size: calc(100vw / 96); }
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", Roboto, "Noto Sans", "DejaVu Sans", Arial, sans-serif;
+}
+
+.cursor-idle, .cursor-idle * { cursor: none !important; }
+
+.good  { color: var(--good); }
+.warn  { color: var(--warn); }
+.bad   { color: var(--bad); }
+.muted { color: var(--muted); }
+
+.tag {
+    display: inline-block;
+    margin-left: 0.3rem;
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.25rem;
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    vertical-align: 0.15rem;
+    line-height: 1.3;
+}
+.tag-co   { background: #78350F; color: #FDE68A; }
+.tag-warn { background: #78350F; color: #FDE68A; }
+.tag-bad  { background: #7F1D1D; color: #FECACA; }
+.tag-ot   { background: #4C1D95; color: #DDD6FE; }
+
+kbd {
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 0.25rem;
+    background: var(--surface-2);
+    font-family: inherit;
+}
+
+/* ── Line picker ─────────────────────────────────────────────────────── */
+
+.picker { height: 100vh; overflow: auto; padding: 3rem 4rem; }
+.picker-title { margin: 0 0 0.4rem; font-size: 2.4rem; }
+.picker-hint { margin: 0 0 2rem; color: var(--muted); font-size: 1rem; }
+/* Wide enough for the supervisor's photo next to the longest line code we run
+   ("B5 - RUMIYA/HASEENA"), which wraps rather than overflowing its card. */
+.picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr)); gap: 1rem; }
+.picker-line {
+    display: flex;
+    align-items: center;
+    gap: 1.1rem;
+    padding: 1.2rem 1.5rem;
+    border: 1px solid var(--line);
+    border-radius: 0.8rem;
+    background: var(--surface);
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+.picker-line:hover, .picker-line:focus-visible { border-color: var(--accent); background: var(--surface-2); outline: none; }
+.picker-line.is-last { border-color: var(--accent); }
+
+/* The avatar keeps its size whether it holds a photo, initials or the placeholder dash,
+   so the cards line up in a column down the grid. */
+.picker-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 4.6rem;
+    height: 4.6rem;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 2px solid var(--line);
+    overflow: hidden;
+}
+.picker-photo { width: 100%; height: 100%; object-fit: cover; }
+.picker-initials { font-size: 1.5rem; font-weight: 800; color: var(--accent); letter-spacing: 0.02em; }
+.picker-initials.is-empty { color: var(--line); }
+
+.picker-text { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; overflow-wrap: anywhere; }
+.picker-code { font-size: 1.5rem; font-weight: 800; line-height: 1.15; }
+.picker-name { font-size: 0.95rem; color: var(--muted); }
+.picker-leader { font-size: 0.85rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+
+/* ── Board ───────────────────────────────────────────────────────────── */
+
+.board {
+    height: 100vh;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 0.5rem;
+    padding: 0.6rem 1rem 0.45rem;
+}
+.board.is-stale .summary, .board.is-stale .workers { opacity: 0.55; }
+
+.board-header { display: flex; align-items: center; gap: 1.4rem; min-width: 0; }
+
+.back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.4rem 0.75rem 0.4rem 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+.back-btn:hover, .back-btn:focus-visible { border-color: var(--accent); background: var(--surface-2); outline: none; }
+.back-btn svg { flex: none; width: 1rem; height: 1rem; }
+
+.plan-info { flex: 1; min-width: 0; }
+.plan-product, .plan-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-product { font-size: 1.05rem; }
+.plan-product strong { font-weight: 800; }
+.plan-meta { margin-top: 0.15rem; font-size: 0.8rem; color: var(--muted); }
+.sep { margin: 0 0.5rem; opacity: 0.5; }
+
+/* Nudged into the board's right padding so the clock sits nearer the screen edge. */
+.clock-block { text-align: right; white-space: nowrap; margin-right: -0.4rem; }
+.clock { font-size: 2.2rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.clock-date { font-size: 0.72rem; color: var(--muted); font-weight: 600; }
+.live-status { margin-top: 0.1rem; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.live-status::before {
+    content: '';
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    margin-right: 0.35rem;
+    border-radius: 50%;
+    background: currentColor;
+    vertical-align: 0.05rem;
+}
+.live-status.good::before { animation: pulse 2s ease-in-out infinite; }
+
+/* ── Summary tiles ───────────────────────────────────────────────────── */
+
+/* Supervisor on the left, KPI cards hard right. The supervisor photo is the tallest thing
+   in this row, so the cards stretch to its height — which is what makes them readable from
+   the floor even though they are now far narrower than the full-width strip they replaced. */
+.summary { display: flex; align-items: stretch; gap: 1rem; min-width: 0; }
+
+/* The photo is optional: without one the block shows the supervisor's initials, and with
+   no supervisor at all the whole block is hidden. */
+.sup-block {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 0.35rem 1.2rem 0.35rem 0.35rem;
+    border: 1px solid var(--line);
+    border-radius: 3.5rem;
+    background: var(--surface);
+}
+.sup-photo {
+    width: 7rem;
+    height: 7rem;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    object-fit: cover;
+    background: var(--surface-2);
+    border: 2px solid var(--line);
+}
+.sup-initials {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2.6rem;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+}
+.sup-text { min-width: 0; }
+.sup-label { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.sup-name {
+    font-size: 2.1rem;
+    font-weight: 800;
+    line-height: 1.1;
+    /* Wide enough for a two-name supervisor ("RUMIYA / HASEENA") — the row has the
+       space, and a truncated name defeats the point of reading it from the floor. */
+    max-width: 26rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* The board's line identity, which used to be the big heading in the header. It sits under the
+   supervisor's name, sized to stay readable across the floor without outshouting it. */
+.sup-line {
+    margin-top: 0.1rem;
+    font-size: 1.3rem;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    white-space: nowrap;
+}
+
+.kpis {
+    display: grid;
+    grid-template-columns: repeat(4, 11rem);
+    gap: 0.6rem;
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+.kpi {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.15rem;
+    min-width: 0;
+    /* Matches the supervisor block's height so the row looks identical on a line that
+       has no supervisor set as on one that does. */
+    min-height: 8rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--surface);
+}
+.kpi-label { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.kpi-value { font-size: 2.8rem; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kpi-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Worker table ────────────────────────────────────────────────────── */
+
+.workers {
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--surface);
+}
+/* Auto-flip off: every worker is drawn and the list scrolls by hand under a pinned header. */
+.workers.is-manual {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: #475569 transparent;
+}
+.workers.is-manual .worker-table th { position: sticky; top: 0; z-index: 1; }
+
+.worker-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+col.col-ws      { width: 4.4rem; }
+col.col-worker  { width: 16.5rem; }
+col.col-tgt     { width: 3.6rem; }
+col.col-hour    { width: 4.7rem; }
+col.col-day     { width: 4.4rem; }
+col.col-day-eff { width: 5.2rem; }
+
+.worker-table th {
+    padding: 0.3rem 0.2rem;
+    /* A shadow rather than a border: collapsed table borders stay behind when the header is pinned. */
+    box-shadow: inset 0 -2px 0 var(--line);
+    background: #1B2640;
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    text-align: center;
+    line-height: 1.15;
+    white-space: nowrap;
+}
+.worker-table th small { display: block; font-size: 0.56rem; font-weight: 600; letter-spacing: 0; text-transform: none; opacity: 0.85; }
+.worker-table th.is-current { background: #0C4A6E; color: #E0F2FE; }
+.worker-table th.th-ot { background: #43240F; color: #FED7AA; }
+.worker-table th.left { text-align: left; padding-left: 0.5rem; }
+
+.worker-table tbody tr { height: var(--row-h); }
+.worker-table tbody tr.odd { background: var(--surface-2); }
+.worker-table td {
+    padding: 0.2rem 0.3rem;
+    border-bottom: 1px solid var(--grid);
+    border-left: 1px solid var(--grid);
+    text-align: center;
+    vertical-align: middle;
+    overflow: hidden;
+}
+.worker-table td:first-child { border-left: 0; }
+.worker-table td.is-current { background: rgba(56, 189, 248, 0.1); }
+.worker-table td.is-co { box-shadow: inset 0 -0.2rem 0 var(--co); }
+.worker-table td.pending { color: #334155; font-size: 1.2rem; }
+.worker-table td.c-ot { background: rgba(251, 146, 60, 0.08); }
+
+.c-ws { font-size: 1.1rem; font-weight: 800; white-space: nowrap; }
+.moved { margin-left: 0.15rem; color: #C084FC; font-size: 0.95rem; }
+.c-worker { text-align: left !important; padding-left: 0.5rem !important; }
+.w-name { font-size: 1rem; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-id { margin-left: 0.4rem; font-size: 0.72rem; font-weight: 600; color: var(--muted); }
+.w-process { font-size: 0.72rem; line-height: 1.2; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.c-num { font-size: 1.15rem; font-weight: 700; }
+.c-tgt { color: var(--muted); }
+.c-day.strong { font-weight: 800; }
+.h-out { font-size: 1.3rem; font-weight: 800; line-height: 1.05; white-space: nowrap; }
+.h-eff { font-size: 0.76rem; font-weight: 700; line-height: 1.15; white-space: nowrap; }
+.mark { margin-right: 0.1rem; font-size: 0.65em; vertical-align: 0.12em; }
+.c-reason { text-align: left !important; padding-left: 0.5rem !important; }
+.reason {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 0.78rem;
+    line-height: 1.25;
+    color: #E2E8F0;
+}
+
+.board-message {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 1.6rem;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+
+.board-footer {
+    display: grid;
+    grid-template-columns: auto auto minmax(4rem, 1fr) auto;
+    align-items: center;
+    gap: 1rem;
+    font-size: 0.72rem;
+    color: var(--muted);
+}
+
+.flip-controls { display: flex; align-items: center; gap: 0.8rem; white-space: nowrap; }
+
+.switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.15rem 0.55rem 0.15rem 0.2rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+.switch:hover, .switch:focus-visible { border-color: var(--accent); outline: none; }
+.switch-track { position: relative; width: 1.8rem; height: 0.95rem; border-radius: 1rem; background: #334155; transition: background-color 0.2s; }
+.switch-thumb { position: absolute; top: 0.125rem; left: 0.125rem; width: 0.7rem; height: 0.7rem; border-radius: 50%; background: #F1F5F9; transition: transform 0.2s; }
+.switch[aria-checked="true"] .switch-track { background: var(--good); }
+.switch[aria-checked="true"] .switch-thumb { transform: translateX(0.85rem); }
+.switch-state { min-width: 1.4rem; color: var(--muted); }
+.switch[aria-checked="true"] .switch-state { color: var(--good); }
+
+.flip-time { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text); font-weight: 700; transition: opacity 0.2s; }
+.flip-time.is-off { opacity: 0.5; }
+.step-btn {
+    width: 1.4rem;
+    height: 1.4rem;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 0.3rem;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+.step-btn:hover:not(:disabled), .step-btn:focus-visible { border-color: var(--accent); outline: none; }
+.step-btn:disabled { opacity: 0.35; cursor: default; }
+.flip-seconds { min-width: 2.4rem; text-align: center; font-variant-numeric: tabular-nums; }
+
+.page-info { min-width: 15rem; font-weight: 700; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-progress { height: 0.3rem; border-radius: 1rem; background: var(--line); overflow: hidden; }
+.page-progress-bar { width: 0; height: 100%; background: var(--accent); }
+.legend { display: flex; gap: 1rem; white-space: nowrap; }
+.legend .tag { margin-left: 0; }
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .live-status.good::before { animation: none; }
+    .picker-line, .back-btn, .switch, .switch-track, .switch-thumb, .flip-time, .step-btn { transition: none; }
+}

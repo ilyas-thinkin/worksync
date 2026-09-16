@@ -2,6 +2,35 @@ const API_BASE = '/api';
 let mgmtCurrentSection = 'dashboard';
 let mgmtMaterialTimer = null;
 
+function mgmtEscHtml(str) {
+    return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── Line supervisor (line leader) avatar ────────────────────────────────────
+// The photo is optional — admin/IE upload it in Line Management. A line without one
+// falls back to the supervisor's initials so the column never renders empty.
+function mgmtLeaderInitials(name) {
+    const parts = String(name || '').replace(/[^A-Za-z ]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '';
+    return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+function mgmtLeaderBadgeHtml(row, size = 28) {
+    const name = row?.line_leader || '';
+    const photo = row?.line_leader_photo || '';
+    const base = `width:${size}px;height:${size}px;border-radius:50%;flex:0 0 auto;`
+        + 'display:inline-flex;align-items:center;justify-content:center;';
+    const avatar = photo
+        ? `<img src="${mgmtEscHtml(photo)}" alt="${mgmtEscHtml(name || 'Line supervisor')}" style="${base}object-fit:cover;border:1px solid #d1d5db;background:#f3f4f6;">`
+        : `<span style="${base}background:#e8f5ee;color:#1d6f42;border:1px solid #86efac;font-weight:700;font-size:${Math.max(9, Math.round(size * 0.38))}px;">${mgmtEscHtml(mgmtLeaderInitials(name) || '\u2014')}</span>`;
+    return '<span style="display:inline-flex;align-items:center;gap:8px;">'
+        + avatar
+        + (name
+            ? `<span style="color:#1d6f42;font-weight:600;font-size:13px;">${mgmtEscHtml(name)}</span>`
+            : '<span style="color:#9ca3af;font-size:12px;">\u2014</span>')
+        + '</span>';
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     const ok = await requireAuth();
     if (!ok) return;
@@ -359,6 +388,7 @@ async function loadManagementDashboard() {
                     <thead>
                         <tr>
                             <th>Line</th>
+                            <th>Supervisor</th>
                             <th>Style</th>
                             <th>Target</th>
                             <th>Output</th>
@@ -577,6 +607,7 @@ async function loadLineMetrics() {
     body.innerHTML = metrics.map(row => `
         <tr>
             <td><strong>${row.line_name}</strong><div style="color: var(--secondary); font-size: 12px;">${row.line_code}</div></td>
+            <td>${mgmtLeaderBadgeHtml(row)}</td>
             <td>
                 ${row.product_code || '-'} ${row.product_name || ''}
                 ${row.changeover ? `<div style="margin-top:2px;"><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;">CHANGEOVER</span><div style="font-size:11px;color:#92400e;margin-top:2px;">Incoming: ${row.incoming_product_code}</div></div>` : ''}
@@ -1554,6 +1585,7 @@ function downloadMgmtEfficiencyExcel() {
 // ============================================================================
 let _mgmtWieData = null;
 let _mgmtWieMetric = 'all';
+let _mgmtWieSort = 'none'; // 'none' | 'eff_asc' | 'eff_desc'
 let _mgmtWieSelectedEmps = new Set();
 let _mgmtGraphData = null;
 let _mgmtGraphSelectedEmps = new Set();
@@ -1582,6 +1614,7 @@ async function loadMgmtWorkerIndividualEff() {
     const weekAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString().slice(0, 10);
     _mgmtWieData = null;
     _mgmtWieMetric = 'all';
+    _mgmtWieSort = 'none';
     _mgmtWieSelectedEmps.clear();
     content.innerHTML = `
         <div class="page-header">
@@ -1620,6 +1653,15 @@ async function loadMgmtWorkerIndividualEff() {
                 <button id="mgmt-wie-btn-wip" onclick="setMgmtWieMetric('wip')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">WIP</button>
                 <button id="mgmt-wie-btn-output" onclick="setMgmtWieMetric('output')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Output</button>
                 <button id="mgmt-wie-btn-efficiency" onclick="setMgmtWieMetric('efficiency')" style="padding:5px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#374151;">Efficiency</button>
+            </div>
+            <div>
+                <label for="mgmt-wie-sort" style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Sort</label>
+                <select id="mgmt-wie-sort" onchange="setMgmtWieSort(this.value)"
+                    style="min-width:200px;padding:7px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;">
+                    <option value="none">Default order</option>
+                    <option value="eff_asc">Efficiency: Low &rarr; High</option>
+                    <option value="eff_desc">Efficiency: High &rarr; Low</option>
+                </select>
             </div>
             <div style="position:relative;" id="mgmt-wie-emp-picker">
                 <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Employee</label>
@@ -1770,6 +1812,19 @@ function populateMgmtWieEmpList(rows) {
     }).join('');
 }
 
+function setMgmtWieSort(mode) {
+    _mgmtWieSort = mode;
+    renderMgmtWieFiltered();
+}
+
+function sortMgmtWieRows(rows) {
+    if (_mgmtWieSort !== 'eff_asc' && _mgmtWieSort !== 'eff_desc') return rows;
+    const effOf = row => { const v = Number(row.overall_eff); return Number.isFinite(v) ? v : 0; };
+    const dir = _mgmtWieSort === 'eff_asc' ? 1 : -1;
+    return [...rows].sort((a, b) =>
+        (effOf(a) - effOf(b)) * dir || (a.emp_name || '').localeCompare(b.emp_name || ''));
+}
+
 function renderMgmtWieFiltered() {
     const container = document.getElementById('mgmt-wie-content');
     if (!container || !_mgmtWieData) return;
@@ -1777,6 +1832,7 @@ function renderMgmtWieFiltered() {
     if (_mgmtWieSelectedEmps.size > 0) {
         rows = rows.filter(row => _mgmtWieSelectedEmps.has(String(row.emp_id ?? row.employee_id)));
     }
+    rows = sortMgmtWieRows(rows);
     if (!rows.length) {
         container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--secondary);">No data for selected employees.</div></div>';
         return;

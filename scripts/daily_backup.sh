@@ -61,13 +61,19 @@ if [ -d "${QRCODES_DIR:-${ROOT_DIR}/qrcodes}" ]; then
     rsync -av "${QRCODES_DIR:-${ROOT_DIR}/qrcodes}/" "$BACKUP_DIR/qrcodes/" >> "$LOG_FILE" 2>&1
 fi
 
-# 4. Backup .env configuration (for disaster recovery)
+# 4. Backup uploaded images (line supervisor photos)
+if [ -d "${UPLOADS_DIR:-${ROOT_DIR}/uploads}" ]; then
+    log "Backing up uploads directory"
+    rsync -av "${UPLOADS_DIR:-${ROOT_DIR}/uploads}/" "$BACKUP_DIR/uploads/" >> "$LOG_FILE" 2>&1
+fi
+
+# 5. Backup .env configuration (for disaster recovery)
 if [ -f "$ENV_FILE" ]; then
     log "Backing up configuration file"
     cp "$ENV_FILE" "$BACKUP_DIR/.env.backup"
 fi
 
-# 5. Create backup manifest
+# 6. Create backup manifest
 cat > "$BACKUP_DIR/backup_manifest.txt" << MANIFEST
 WorkSync Backup Manifest
 ========================
@@ -80,20 +86,21 @@ Contents:
 - worksync_db.dump (PostgreSQL database)
 - reports/ (Excel reports)
 - qrcodes/ (QR code images)
+- uploads/ (line supervisor photos)
 - .env.backup (configuration)
 
 Backup completed at: $(date)
 MANIFEST
 
-# 6. Calculate backup size
+# 7. Calculate backup size
 BACKUP_SIZE=$(du -sh "$BACKUP_DIR" | cut -f1)
 log "Backup completed successfully. Size: $BACKUP_SIZE"
 
-# 7. Cleanup old backups (keep last 30 days)
+# 8. Cleanup old backups (keep last 30 days)
 log "Cleaning up backups older than 30 days"
 find "$BACKUP_BASE_DIR" -maxdepth 1 -type d -mtime +30 -exec rm -rf {} \; 2>/dev/null || true
 
-# 8. Show disk usage
+# 9. Show disk usage
 DISK_USAGE=$(df -h "$BACKUP_BASE_DIR" | tail -1 | awk '{print $5}')
 log "Disk usage on backup directory: $DISK_USAGE"
 

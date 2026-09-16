@@ -1,8 +1,26 @@
 const API_BASE = '/api';
 
+// Feed and WIP are not tracked at the moment. The server ignores them either way; this just keeps
+// the section out of the supervisor's way. Set app_settings.feed_wip_enabled to 'true' to restore.
+let FEED_WIP_ENABLED = false;
+
+async function applyFeedWipVisibility() {
+    try {
+        const res = await fetch(`${API_BASE}/settings`);
+        const result = await res.json();
+        FEED_WIP_ENABLED = String(result?.data?.feed_wip_enabled || 'false').toLowerCase() === 'true';
+    } catch (err) {
+        FEED_WIP_ENABLED = false;
+    }
+    if (!FEED_WIP_ENABLED) {
+        document.querySelectorAll('[data-section="feed"]').forEach(el => { el.hidden = true; });
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     const ok = await requireAuth();
     if (!ok) return;
+    await applyFeedWipVisibility();
     setupNavigation();
     setupMobileSidebar();
     loadSection('morning');
@@ -77,6 +95,7 @@ async function loadSection(section) {
     } else if (section === 'adjustment') {
         await loadAdjustmentPanel();
     } else if (section === 'feed') {
+        if (!FEED_WIP_ENABLED) { await loadMorningProcedure(); return; }
         await loadFeedInput();
     } else {
         await loadMorningProcedure();
@@ -99,6 +118,57 @@ function showToast(message, type = 'info') {
         setTimeout(() => toast.remove(), 300);
     }, 3000);
 }
+
+// ==========================================
+// IN-PAGE DIALOGS
+// ==========================================
+// These replace window.confirm/window.prompt on the output-entry path. Chrome on Android offers
+// "Prevent this page from creating additional dialogs" once a page fires several native dialogs
+// in a row; after a supervisor ticks it, confirm() returns false instantly and forever, so Save
+// appeared to do nothing at all. An in-page dialog cannot be suppressed that way.
+function showModalDialog({ title, message, confirmLabel = 'Continue', cancelLabel = 'Cancel', requireInput = false, placeholder = '' }) {
+    return new Promise(resolve => {
+        const existing = document.getElementById('ws-modal-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'ws-modal-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+        overlay.innerHTML = `
+            <div style="background:#fff;border-radius:12px;max-width:460px;width:100%;box-shadow:0 20px 45px rgba(0,0,0,0.25);overflow:hidden;">
+                <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;font-weight:700;font-size:16px;color:#111827;">${title}</div>
+                <div style="padding:16px 20px;font-size:14px;color:#374151;white-space:pre-line;line-height:1.5;">${message}</div>
+                ${requireInput ? `<div style="padding:0 20px 12px;"><input id="ws-modal-input" type="text" placeholder="${placeholder}" style="width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:15px;" autocomplete="off"></div>` : ''}
+                <div style="padding:12px 20px 16px;display:flex;gap:10px;justify-content:flex-end;">
+                    <button id="ws-modal-cancel" style="padding:10px 18px;border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">${cancelLabel}</button>
+                    <button id="ws-modal-ok" style="padding:10px 18px;border:none;background:#2563eb;color:#fff;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">${confirmLabel}</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+
+        const input = overlay.querySelector('#ws-modal-input');
+        if (input) setTimeout(() => input.focus(), 50);
+
+        const close = value => { overlay.remove(); resolve(value); };
+        overlay.querySelector('#ws-modal-cancel').onclick = () => close(requireInput ? null : false);
+        overlay.querySelector('#ws-modal-ok').onclick = () => {
+            if (!requireInput) return close(true);
+            const text = (input?.value || '').trim();
+            if (!text) {
+                input.style.borderColor = '#dc2626';
+                input.placeholder = 'A reason is required';
+                return;
+            }
+            close(text);
+        };
+        if (input) {
+            input.onkeydown = e => { if (e.key === 'Enter') overlay.querySelector('#ws-modal-ok').click(); };
+        }
+    });
+}
+
+const showConfirmDialog = opts => showModalDialog({ ...opts, requireInput: false });
+const showReasonDialog = opts => showModalDialog({ ...opts, requireInput: true });
 
 // ==========================================
 // CAMERA / QR SCANNING (shared by both sections)
@@ -637,6 +707,14 @@ function _confirmAbsentOutput(occupantName, totalOutput) {
     );
 }
 
+// Tells the supervisor when a mid-day change made the new worker's output credit start
+// later than the shift start. The server only sends `attribution` when it actually shifted
+// the start, so this stays silent on ordinary morning links.
+function _notifyAttributionShift(attribution) {
+    if (!attribution || !attribution.message) return;
+    alert(`Output attribution\n\n${attribution.message}`);
+}
+
 // POSTs to /workstation-assignments, handling the 409 replace-reason flow:
 // prompts for absent/reassigned when the server requires it, and for the
 // absent-with-output confirmation. Returns the result JSON, or null if cancelled.
@@ -649,7 +727,10 @@ async function postWorkstationAssignment(body, wsCode) {
             body: JSON.stringify(payload)
         });
         const result = await res.json();
-        if (result.success) return result;
+        if (result.success) {
+            _notifyAttributionShift(result.data?.attribution);
+            return result;
+        }
         if (result.error_code === 'change_reason_required') {
             const reason = await _pickChangeReason(wsCode, result.occupant?.emp_name);
             if (!reason) return null; // cancelled
@@ -782,7 +863,10 @@ function startChangeEmployee(workstationCode, linePlanWorkstationId, currentEmpI
             const resolveResult = await res.json();
 
             if (!resolveResult.success || !resolveResult.data?.employee) {
-                scanResult.innerHTML = '<p style="color:#dc2626;">Employee not found. Try again.</p>';
+                // A deactivated worker's badge scans fine but can never resolve — show the
+                // server's reason so the supervisor stops re-scanning and fixes it in Admin.
+                const reason = resolveResult.error || 'Employee not found. Try again.';
+                scanResult.innerHTML = `<p style="color:#dc2626;">${reason}</p>`;
                 return;
             }
 
@@ -1155,7 +1239,11 @@ const hourlyState = {
     changeoverReadyWorkstationCount: 0,
     canFinalizePrimary: false,
     finalizePrimaryBusy: false,
-    finalizePromptShown: false
+    finalizePromptShown: false,
+    // Stations the incoming style does not use, still holding an operator. They cannot switch to
+    // CO, so they are released rather than converted.
+    surplusWorkstations: [],
+    coOnlyWorkstationCount: 0
 };
 
 const SHORTFALL_REASONS = [
@@ -1587,6 +1675,8 @@ async function onHourlyLineChange() {
         hourlyState.totalWorkstationCount = result.total_workstation_count || 0;
         hourlyState.changeoverReadyWorkstationCount = result.changeover_ready_workstation_count || 0;
         hourlyState.canFinalizePrimary = result.can_finalize_primary === true;
+        hourlyState.surplusWorkstations = Array.isArray(result.surplus_workstations) ? result.surplus_workstations : [];
+        hourlyState.coOnlyWorkstationCount = result.co_only_workstation_count || 0;
         hourlyState.finalizePrimaryBusy = false;
         if (!hourlyState.canFinalizePrimary) hourlyState.finalizePromptShown = false;
         // Restore changeoverUiEnabled from sessionStorage (survives reload, not cross-day)
@@ -2257,21 +2347,83 @@ function enableHourlyChangeover() {
 
 // Auto-prompt shown the moment every staffed workstation has switched to CO —
 // no button needs to be pressed to surface it, it just appears with a single OK.
+// Releasing an operator from a station the changeover style does not use. They stay on shift —
+// the supervisor puts them on another workstation afterwards — so this is deliberately worded as a
+// release, not a departure.
+function promptReleaseSurplusWs(btn) {
+    const wsCode = btn.dataset.wsCode;
+    const date = btn.dataset.date;
+    const empCode = btn.dataset.empCode || '';
+    const empName = btn.dataset.empName || '';
+    const who = [empCode, empName].filter(Boolean).join(' – ') || 'the operator';
+    if (!confirm(
+        `${wsCode} is not part of the changeover style.\n\n`
+        + `Release ${who} from this workstation?\n\n`
+        + `Their hours on this station up to now still count. The station is freed so you can `
+        + `assign them elsewhere.`
+    )) return;
+    releaseSurplusWorkstation(wsCode, date);
+}
+
+async function releaseSurplusWorkstation(wsCode, date) {
+    try {
+        const response = await fetch(`${API_BASE}/supervisor/changeover/release-workstation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: hourlyState.lineId, work_date: date, workstation_code: wsCode })
+        });
+        const result = await response.json();
+        if (!result.success) throw new Error(result.error || 'Failed to release workstation');
+        showToast(result.message || `${wsCode} released`, 'success');
+        await onHourlyLineChange();
+        return true;
+    } catch (err) {
+        showToast(err.message, 'error');
+        return false;
+    }
+}
+
 function showFinalizeChangeoverPrompt() {
     if (document.getElementById('co-finalize-modal')) return;
     hourlyState.finalizePromptShown = true;
+
+    // Stations the incoming style has no work for. Their operators come off the line as part of the
+    // promotion, so the supervisor is shown exactly who that is before confirming — this is the
+    // bulk counterpart of the per-station Release button.
+    const surplus = hourlyState.surplusWorkstations || [];
+    const surplusHtml = surplus.length
+        ? `<div style="text-align:left;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin:0 0 16px;">
+                <div style="font-size:12px;font-weight:700;color:#b91c1c;margin-bottom:6px;">
+                    ${surplus.length} workstation${surplus.length === 1 ? '' : 's'} not in the new style
+                </div>
+                <div style="font-size:12px;color:#7f1d1d;line-height:1.5;max-height:150px;overflow-y:auto;">
+                    ${surplus.map(ws => `<div><strong>${ws.workstation_code}</strong> &nbsp;${[ws.emp_code, ws.emp_name].filter(Boolean).join(' – ') || ''}</div>`).join('')}
+                </div>
+                <div style="font-size:11px;color:#991b1b;margin-top:8px;">
+                    These operators are released from their workstations. Hours already worked still
+                    count; assign them to other workstations after converting.
+                </div>
+            </div>`
+        : '';
 
     const modal = document.createElement('div');
     modal.id = 'co-finalize-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3200;display:flex;align-items:center;justify-content:center;padding:20px;';
     modal.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:24px;width:min(420px,95vw);box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center;">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:min(460px,95vw);box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center;">
             <div style="font-size:32px;margin-bottom:8px;">&#8652;</div>
-            <h3 style="margin:0 0 10px;font-size:16px;font-weight:700;color:#111827;">All Workstations in CO</h3>
-            <p style="margin:0 0 20px;font-size:13px;color:#4b5563;line-height:1.5;">
-                Every workstation has switched to changeover. Convert CO to primary and make CO blank for the next product.
+            <h3 style="margin:0 0 10px;font-size:16px;font-weight:700;color:#111827;">All CO Workstations Switched</h3>
+            <p style="margin:0 0 16px;font-size:13px;color:#4b5563;line-height:1.5;">
+                Every workstation the changeover style uses has switched. Convert CO to primary and
+                make CO blank for the next product.
             </p>
-            <button id="co-finalize-ok-btn" class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;min-width:120px;" onclick="confirmFinalizeChangeoverPrimary()">OK</button>
+            ${surplusHtml}
+            <div style="display:flex;gap:8px;justify-content:center;">
+                <button class="btn btn-secondary" style="min-width:100px;" onclick="closeFinalizeChangeoverPrompt()">Cancel</button>
+                <button id="co-finalize-ok-btn" class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;min-width:140px;" onclick="confirmFinalizeChangeoverPrimary()">
+                    ${surplus.length ? 'Release &amp; Convert' : 'Convert to Primary'}
+                </button>
+            </div>
         </div>`;
     document.body.appendChild(modal);
 }
@@ -2282,22 +2434,26 @@ function closeFinalizeChangeoverPrompt() {
 
 async function confirmFinalizeChangeoverPrimary() {
     const okBtn = document.getElementById('co-finalize-ok-btn');
+    const hadSurplus = (hourlyState.surplusWorkstations || []).length > 0;
+    const originalLabel = hadSurplus ? 'Release & Convert' : 'Convert to Primary';
     if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Converting...'; }
-    const success = await finalizeChangeoverPrimary();
+    // The modal lists the surplus operators above this button, so pressing it IS the supervisor
+    // authorizing their release.
+    const success = await finalizeChangeoverPrimary({ releaseSurplus: hadSurplus });
     if (success) {
         closeFinalizeChangeoverPrompt();
     } else if (okBtn) {
         okBtn.disabled = false;
-        okBtn.textContent = 'OK';
+        okBtn.textContent = originalLabel;
     }
 }
 
-async function finalizeChangeoverPrimary() {
+async function finalizeChangeoverPrimary({ releaseSurplus = false } = {}) {
     const lineId = hourlyState.lineId;
     const workDate = document.getElementById('hourly-date')?.value || '';
     if (!lineId || !workDate || hourlyState.finalizePrimaryBusy) return false;
     if (!hourlyState.canFinalizePrimary) {
-        showToast('All workstations must switch to CO before promotion', 'error');
+        showToast('Every workstation in the changeover style must switch to CO before promotion', 'error');
         return false;
     }
 
@@ -2307,10 +2463,22 @@ async function finalizeChangeoverPrimary() {
         const response = await fetch(`${API_BASE}/supervisor/changeover/finalize-primary`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: lineId, work_date: workDate })
+            body: JSON.stringify({ line_id: lineId, work_date: workDate, release_surplus: releaseSurplus })
         });
         const result = await response.json();
         if (!result.success) {
+            // The server found surplus operators the client did not know about (someone was
+            // assigned since this page last loaded). Refresh the list and re-ask rather than
+            // releasing people the supervisor was never shown.
+            if (result.code === 'SURPLUS_WORKSTATIONS_PENDING') {
+                hourlyState.surplusWorkstations = result.surplus_workstations || [];
+                hourlyState.finalizePrimaryBusy = false;
+                closeFinalizeChangeoverPrompt();
+                hourlyState.finalizePromptShown = false;
+                renderHourlySummary();
+                showToast(result.error || 'Some workstations still need releasing', 'error');
+                return false;
+            }
             throw new Error(result.error || 'Failed to convert CO as primary');
         }
         if (hourlyState.changeoverUiEnabledKey) {
@@ -2325,6 +2493,67 @@ async function finalizeChangeoverPrimary() {
         showToast(err.message, 'error');
         return false;
     }
+}
+
+// Surfaces hours that were started but never finished, before the grace window closes on them.
+// Without this the gap is invisible until the numbers are already missing from the reports.
+function buildPendingHoursBanner() {
+    const workstations = hourlyState.workstations || [];
+    if (!workstations.length) return '';
+
+    const date = document.getElementById('hourly-date')?.value || '';
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    if (date !== todayStr) return '';
+
+    const nowHour = now.getHours();
+    const nowMinute = now.getMinutes();
+    const progress = hourlyState.progressData || [];
+
+    const rows = [];
+    for (let h = 8; h <= 19; h += 1) {
+        if (h >= nowHour) continue; // hour still running — nothing is late yet
+
+        const missing = [];
+        let anyEntered = false;
+        for (const ws of workstations) {
+            const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
+            if (!wsProcessIds.length) continue;
+            const hasEntry = progress.some(d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === h);
+            if (hasEntry) anyEntered = true;
+            else missing.push(ws.workstation_code);
+        }
+        // An hour with no entries at all is a break or a non-working hour, not a gap.
+        if (!anyEntered || !missing.length) continue;
+
+        const cutoffHour = h + 2;
+        const minutesLeft = (cutoffHour - nowHour) * 60 - nowMinute;
+        rows.push({ hour: h, missing, cutoffHour, minutesLeft });
+    }
+    if (!rows.length) return '';
+
+    const items = rows.map(r => {
+        const label = `${String(r.hour).padStart(2, '0')}:00-${String(r.hour + 1).padStart(2, '0')}:00`;
+        const overdue = r.minutesLeft <= 0;
+        const shown = r.missing.slice(0, 12).join(', ');
+        const more = r.missing.length > 12 ? ` +${r.missing.length - 12} more` : '';
+        const timing = overdue
+            ? `<span style="color:#b91c1c;font-weight:700;">closed ${String(r.cutoffHour).padStart(2, '0')}:00 — needs a reason</span>`
+            : `<span style="color:${r.minutesLeft <= 20 ? '#b91c1c' : '#b45309'};font-weight:700;">${r.minutesLeft} min left</span>`;
+        return `<div style="margin-top:6px;font-size:12.5px;color:#374151;">
+                    <strong>${label}</strong> — ${r.missing.length} station${r.missing.length === 1 ? '' : 's'} missing &nbsp;${timing}
+                    <div style="color:#6b7280;font-size:11.5px;margin-top:2px;">${shown}${more}</div>
+                </div>`;
+    }).join('');
+
+    return `
+        <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="background:#d97706;color:#fff;padding:3px 10px;border-radius:10px;font-weight:700;font-size:12px;">&#9888; HOURS INCOMPLETE</span>
+                <span style="font-size:12.5px;color:#92400e;">Enter these before the hour closes, or they will need a late-entry reason.</span>
+            </div>
+            ${items}
+        </div>`;
 }
 
 function renderHourlySummary() {
@@ -2342,9 +2571,17 @@ function renderHourlySummary() {
     // Changeover completion banner (shown when changeover is planned)
     let changeoverBanner = '';
     if (hourlyState.incomingProductId) {
-        const totalWs = hourlyState.totalWorkstationCount || (hourlyState.workstations?.length || 0);
-        const readyWs = hourlyState.changeoverReadyWorkstationCount || ((hourlyState.workstations || []).filter(ws => ws.ws_changeover_active).length);
+        // Counts cover only the stations the changeover style actually uses. The fallbacks have to
+        // apply the same filter as the server, or a shorter incoming layout makes the banner read
+        // 80/100 and look permanently stuck.
+        const gateWs = (hourlyState.workstations || []).filter(ws => ws.has_co_plan && !ws.is_co_only);
+        const totalWs = hourlyState.totalWorkstationCount || gateWs.length;
+        const readyWs = hourlyState.changeoverReadyWorkstationCount || gateWs.filter(ws => ws.ws_changeover_active).length;
         const finalizeReady = !!hourlyState.canFinalizePrimary;
+        const surplusCount = (hourlyState.surplusWorkstations || []).length;
+        const surplusNote = surplusCount > 0
+            ? ` ${surplusCount} workstation${surplusCount === 1 ? '' : 's'} not used by the new style — release the operator${surplusCount === 1 ? '' : 's'} to finish.`
+            : '';
         if (hourlyState.changeoverActive) {
             // CO is running — show CO output vs CO target (mirrors the pre-CO primary progress bar)
             const coOutput = computeTotalOutput(hourlyState.progressData, hourlyState.workstations, { useChangeover: true });
@@ -2356,8 +2593,8 @@ function renderHourlySummary() {
             const finalizeText = hourlyState.finalizePrimaryBusy
                 ? 'Converting CO to primary...'
                 : finalizeReady
-                    ? 'All the workstations are in CO. Convert CO to primary and make CO blank for next product.'
-                    : `CO workstations switched: ${readyWs}/${totalWs || 0}. CO stays as changeover until every workstation has switched.`;
+                    ? `All the workstations are in CO. Convert CO to primary and make CO blank for next product.${surplusNote}`
+                    : `CO workstations switched: ${readyWs}/${totalWs || 0}. CO stays as changeover until every workstation has switched.${surplusNote}`;
             changeoverBanner = `
                 <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
                     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
@@ -2424,6 +2661,10 @@ function renderHourlySummary() {
         const perHourIncoming = hourlyState.perHourIncomingTarget || 0;
         const hasChangeover = !!hourlyState.incomingProductId;
         const canStartWorkstationChangeover = !!hourlyState.changeoverActive || !!hourlyState.changeoverUiEnabled;
+        // Whether the incoming style's workstation layout has actually been uploaded. Until it has,
+        // no station has a CO counterpart and every one of them would look surplus — so the
+        // release affordance stays hidden and the plain CO button behaviour is left alone.
+        const coLayoutExists = (workstations || []).some(ws => ws.has_co_plan);
         const flowMetrics = buildWorkstationFlowMetrics(workstations, hourlyState.progressData, { useChangeover: hourlyState.changeoverActive });
 
         const cards = workstations.map(ws => {
@@ -2505,9 +2746,27 @@ function renderHourlySummary() {
                                 : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
             let coBtn = '';
-            if (isWsChangeover) {
+            if (ws.is_co_only) {
+                // Only exists in the incoming style, so there is no primary work here to switch
+                // away from — it just needs an operator before the new style goes primary.
+                coBtn = `<span class="ws-card-action" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
+                    title="This workstation only exists in the changeover style — assign an operator in the Morning section">&#10023; NEW IN CO</span>`;
+            } else if (isWsChangeover) {
                 coBtn = `<button class="btn ws-card-action" style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;"
                     onclick="revertWsChangeover('${ws.workstation_code}', '${date}')">&#8617; Primary</button>`;
+            } else if (canStartWorkstationChangeover && hasChangeover && coLayoutExists && !ws.has_co_plan) {
+                // Not part of the changeover layout, so it can never switch to CO. Offering the CO
+                // button here just produced a server rejection; releasing the operator is the real
+                // action, and it is what unblocks promotion.
+                coBtn = ws.assigned_employee_id
+                    ? `<button class="btn ws-card-action" style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
+                        data-ws-code="${ws.workstation_code}" data-date="${date}"
+                        data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
+                        data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"
+                        title="Not required for the changeover style — release the operator for reassignment"
+                        onclick="promptReleaseSurplusWs(this)">&#8599; Release</button>`
+                    : `<span class="ws-card-action" style="background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
+                        title="Not part of the changeover style">NOT IN CO</span>`;
             } else if (canStartWorkstationChangeover && hasChangeover) {
                 const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
                 coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
@@ -2525,16 +2784,25 @@ function renderHourlySummary() {
                 ? `<div class="ws-card-row"><span class="ws-card-label">Reason</span><span style="font-size:12px;color:#6b7280;">${reason}</span></div>`
                 : '';
             const flow = flowMetrics.get(getWorkstationFlowKey(ws)) || { availableInput: 0, cumulativeOutput: 0, wip: 0 };
-            const flowLine = `<div class="ws-card-row">
+            // In and WIP are both seeded from the group's recorded feed, so with feed/WIP tracking
+            // off they read 0 and the row says nothing true. Hidden rather than shown as zeros.
+            const flowLine = FEED_WIP_ENABLED
+                ? `<div class="ws-card-row">
                         <span class="ws-card-label">Flow</span>
                         <span style="font-size:12px;color:#6b7280;">
                             In: <strong>${flow.availableInput}</strong>
                             &nbsp;|&nbsp; Cum Out: <strong>${flow.cumulativeOutput}</strong>
                             &nbsp;|&nbsp; WIP: <strong>${flow.wip}</strong>
                         </span>
-                    </div>`;
+                    </div>`
+                : '';
+            // "CO Saved" is the snapshot taken at the moment this station cut over. When a changeover
+            // runs past midnight the flag carries forward but the cutover belongs to the earlier day,
+            // so there is no snapshot for today — printing the row anyway showed four zeros that read
+            // as real measurements (no output, no balance, no feed) rather than as absent data.
             const changeoverNote = isWsChangeover
-                ? `<div class="ws-card-row">
+                ? (ws.has_changeover_event
+                    ? `<div class="ws-card-row">
                         <span class="ws-card-label">CO Saved</span>
                         <span style="font-size:12px;color:#6b7280;">
                             Primary output: <strong>${ws.changeover_primary_output_quantity || 0}</strong>
@@ -2543,6 +2811,12 @@ function renderHourlySummary() {
                             &nbsp;|&nbsp; Feed: <strong>${ws.changeover_feed_quantity || 0}</strong>
                         </span>
                     </div>`
+                    : `<div class="ws-card-row">
+                        <span class="ws-card-label">CO Saved</span>
+                        <span style="font-size:12px;color:#9ca3af;font-style:italic;">
+                            Changeover carried over from an earlier day — cutover figures are recorded on that date.
+                        </span>
+                    </div>`)
                 : '';
             const changeoverTargetNote = isWsChangeover
                 ? `<div class="ws-card-row">
@@ -2610,17 +2884,21 @@ function renderHourlySummary() {
             ? hourlyState.incomingEffectiveTarget || hourlyState.incomingTarget || '–'
             : hourlyState.primaryTarget || hourlyState.targetQty || '–';
         const targetLabel = hourlyState.changeoverActive ? 'CO Session' : 'Daily';
-        container.innerHTML = changeoverBanner + `
+        container.innerHTML = buildPendingHoursBanner() + changeoverBanner + `
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Workstation Output Summary</h3>
-                    <span style="font-size:0.85em; color:#6b7280;">
-                        /hr: <strong>${perHourDisplay || '–'}</strong> &nbsp;|&nbsp;
-                        ${targetLabel}: <strong>${dailyTargetDisplay}</strong>
-                        ${!hourlyState.changeoverActive && hourlyState.incomingTarget ? ` &nbsp;|&nbsp; CO: <strong>${hourlyState.incomingTarget}</strong>` : ''}
-                    </span>
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                        <span style="font-size:0.85em; color:#6b7280;">
+                            /hr: <strong>${perHourDisplay || '–'}</strong> &nbsp;|&nbsp;
+                            ${targetLabel}: <strong>${dailyTargetDisplay}</strong>
+                            ${!hourlyState.changeoverActive && hourlyState.incomingTarget ? ` &nbsp;|&nbsp; CO: <strong>${hourlyState.incomingTarget}</strong>` : ''}
+                        </span>
+                        <button class="btn btn-primary btn-sm" onclick="openQuickEntry()">Quick Entry — all stations</button>
+                    </div>
                 </div>
                 <div class="card-body">
+                    <div id="quick-entry-panel" style="display:none;"></div>
                     <div class="ws-cards-grid">${cards}</div>
                 </div>
             </div>
@@ -2704,7 +2982,7 @@ function renderHourlySummary() {
             </div>`;
     }).join('');
 
-    container.innerHTML = changeoverBanner + `
+    container.innerHTML = buildPendingHoursBanner() + changeoverBanner + `
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">Process Output Summary</h3>
@@ -2718,6 +2996,181 @@ function renderHourlySummary() {
             </div>
         </div>
     `;
+}
+
+// ==========================================
+// QUICK ENTRY — whole hour in one save
+// ==========================================
+// Walking 84 stations as 84 separate saves is what let the entry window expire mid-round. This
+// grid holds the whole line and posts it as a single request.
+function openQuickEntry() {
+    const panel = document.getElementById('quick-entry-panel');
+    if (!panel) return;
+    if (panel.style.display === 'block') { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+
+    const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
+    const workstations = hourlyState.workstations || [];
+    const progress = hourlyState.progressData || [];
+
+    const rows = workstations.map(ws => {
+        const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
+        const existing = progress.find(d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour);
+        const value = existing ? parseInt(existing.quantity || 0, 10) : '';
+        const target = getWorkstationHourlyTarget(ws);
+        const emp = ws.assigned_emp_name || '';
+        const filled = existing ? 'background:#f0fdf4;' : '';
+        return `
+            <tr style="${filled}">
+                <td style="padding:6px 8px;font-weight:700;white-space:nowrap;">${ws.workstation_code}</td>
+                <td style="padding:6px 8px;color:#6b7280;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${emp}</td>
+                <td style="padding:6px 8px;color:#6b7280;font-size:12px;text-align:right;">${target || '–'}</td>
+                <td style="padding:6px 8px;">
+                    <input type="number" min="0" inputmode="numeric"
+                           data-qe-plan-id="${ws.id}" data-qe-target="${target || 0}" value="${value}"
+                           style="width:86px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:15px;text-align:right;">
+                </td>
+                <td style="padding:6px 8px;">
+                    <select data-qe-reason-for="${ws.id}" style="padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;max-width:170px;">
+                        <option value="">— reason if below target —</option>
+                        ${SHORTFALL_REASONS.map(r => `<option value="${r}"${existing?.shortfall_reason === r ? ' selected' : ''}>${r}</option>`).join('')}
+                    </select>
+                </td>
+            </tr>`;
+    }).join('');
+
+    panel.style.display = 'block';
+    panel.innerHTML = `
+        <div style="border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;padding:12px;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+                <strong style="font-size:14px;color:#1e40af;">Quick Entry — hour ${String(hour).padStart(2, '0')}:00-${String(hour + 1).padStart(2, '0')}:00</strong>
+                <span style="font-size:12px;color:#3730a3;">Fill what you have and save once. Blank rows are skipped.</span>
+                <span style="margin-left:auto;display:flex;gap:8px;">
+                    <button class="btn btn-secondary btn-sm" onclick="openQuickEntry()">Close</button>
+                    <button class="btn btn-primary btn-sm" id="qe-save-btn" onclick="submitQuickEntry()">Save all</button>
+                </span>
+            </div>
+            <div style="max-height:52vh;overflow:auto;background:#fff;border:1px solid #e5e7eb;border-radius:6px;">
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                    <thead style="position:sticky;top:0;background:#f9fafb;z-index:1;">
+                        <tr style="text-align:left;color:#374151;">
+                            <th style="padding:8px;">WS</th>
+                            <th style="padding:8px;">Employee</th>
+                            <th style="padding:8px;text-align:right;">Target</th>
+                            <th style="padding:8px;">Output</th>
+                            <th style="padding:8px;">Shortfall reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>`;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function submitQuickEntry() {
+    const panel = document.getElementById('quick-entry-panel');
+    if (!panel) return;
+    const lineId = hourlyState.lineId;
+    const date = document.getElementById('hourly-date')?.value;
+    const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
+    if (!lineId || !date || !hour) { showToast('Line, date and hour are required', 'error'); return; }
+
+    const entries = [];
+    const missingReason = [];
+    panel.querySelectorAll('input[data-qe-plan-id]').forEach(input => {
+        const raw = (input.value || '').trim();
+        if (raw === '') return; // untouched station — leave it alone
+        const qty = parseInt(raw, 10);
+        if (!Number.isFinite(qty) || qty < 0) return;
+        const planId = parseInt(input.dataset.qePlanId, 10);
+        const target = parseInt(input.dataset.qeTarget, 10) || 0;
+        const reasonEl = panel.querySelector(`select[data-qe-reason-for="${planId}"]`);
+        const reason = reasonEl?.value || '';
+        if (target > 0 && qty < target && !reason) {
+            missingReason.push(input.closest('tr')?.firstElementChild?.textContent || String(planId));
+            if (reasonEl) reasonEl.style.borderColor = '#dc2626';
+        } else if (reasonEl) {
+            reasonEl.style.borderColor = '#d1d5db';
+        }
+        entries.push({
+            workstation_plan_id: planId,
+            quantity: qty,
+            forwarded_quantity: qty,
+            remaining_quantity: 0,
+            qa_rejection: 0,
+            shortfall_reason: (target > 0 && qty < target) ? reason : null
+        });
+    });
+
+    if (!entries.length) { showToast('Nothing to save — enter at least one output', 'error'); return; }
+    if (missingReason.length) {
+        showToast(`Shortfall reason needed for: ${missingReason.slice(0, 6).join(', ')}${missingReason.length > 6 ? '…' : ''}`, 'error');
+        return;
+    }
+
+    const btn = document.getElementById('qe-save-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    const payload = { line_id: lineId, work_date: date, hour_slot: hour, entries };
+    const extras = {};
+    try {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const response = await fetch(`${API_BASE}/supervisor/progress/batch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...payload, ...extras })
+            });
+            const result = await response.json().catch(() => ({}));
+
+            if (response.status === 401) { showToast('Session expired. Please reload and sign in again.', 'error'); return; }
+
+            if (!response.ok && result.late_entry_required) {
+                const lateReason = await showReasonDialog({
+                    title: 'Late entry',
+                    message: result.message || 'This hour has already closed. Give a reason to record it.',
+                    placeholder: 'e.g. line stopped, entered after round',
+                    confirmLabel: 'Save late entry'
+                });
+                if (!lateReason) { showToast('Not saved — a late entry needs a reason', 'error'); return; }
+                extras.late_entry_reason = lateReason;
+                continue;
+            }
+
+            if (!response.ok && result.output_warning && result.requires_confirmation) {
+                const list = (result.warnings || []).slice(0, 8).map(w => `• ${w.message}`).join('\n');
+                const more = (result.warnings || []).length > 8 ? `\n…and ${result.warnings.length - 8} more.` : '';
+                const ok = await showConfirmDialog({
+                    title: `Check ${result.warnings?.length || 0} output value${result.warnings?.length === 1 ? '' : 's'}`,
+                    message: `${list}${more}`,
+                    confirmLabel: 'Save anyway'
+                });
+                if (!ok) return;
+                extras.allow_validation_override = true;
+                continue;
+            }
+
+            if (!result.success) { showToast(result.error || 'Failed to save', 'error'); return; }
+
+            const skipped = result.skipped_count || 0;
+            showToast(
+                `Saved ${result.saved_count} station${result.saved_count === 1 ? '' : 's'}` +
+                (skipped ? ` — ${skipped} skipped` : '') +
+                (result.late_entry ? ' (late entry recorded)' : ''),
+                skipped ? 'info' : 'success'
+            );
+            if (skipped && result.data?.skipped?.length) {
+                console.warn('Quick entry skipped:', result.data.skipped);
+            }
+            panel.style.display = 'none';
+            panel.innerHTML = '';
+            await refreshHourlySummary();
+            return;
+        }
+        showToast('Could not save — please try again', 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save all'; }
+    }
 }
 
 function startHourlyScan() {
@@ -2998,43 +3451,56 @@ async function saveWorkstationHourlyOutput() {
         shortfall_reason: isShortfall ? reason : null
     };
 
+    // The server can gate a save twice — once for a late entry (needs a reason) and once for an
+    // output warning (needs confirmation). Answers accumulate in `extras` and the save is retried,
+    // so a station that trips both is still saved in one pass instead of being abandoned.
+    const extras = {};
     try {
-        const response = await fetch(`${API_BASE}/supervisor/progress`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const result = await response.json();
-        if (response.status === 401) {
-            showToast('Session expired. Please reload the page and sign in again.', 'error');
-            return;
-        }
-        if (!response.ok && result.output_warning && result.requires_confirmation) {
-            const shouldContinue = confirm(result.message || 'This output exceeds the current control limits. Do you want to continue?');
-            if (!shouldContinue) return;
-
-            const retryResponse = await fetch(`${API_BASE}/supervisor/progress`, {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const response = await fetch(`${API_BASE}/supervisor/progress`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    ...payload,
-                    allow_validation_override: true
-                })
+                body: JSON.stringify({ ...payload, ...extras })
             });
-            const retryResult = await retryResponse.json();
-            if (!retryResult.success) { showToast(retryResult.error || 'Failed to save output', 'error'); return; }
-            showToast('Output saved', 'success');
+            const result = await response.json().catch(() => ({}));
+
+            if (response.status === 401) {
+                showToast('Session expired. Please reload the page and sign in again.', 'error');
+                return;
+            }
+
+            if (!response.ok && result.late_entry_required) {
+                const lateReason = await showReasonDialog({
+                    title: 'Late entry',
+                    message: result.message || 'This hour has already closed. Give a reason to record it.',
+                    placeholder: 'e.g. line stopped, entered after round',
+                    confirmLabel: 'Save late entry'
+                });
+                if (!lateReason) { showToast('Not saved — a late entry needs a reason', 'error'); return; }
+                extras.late_entry_reason = lateReason;
+                continue;
+            }
+
+            if (!response.ok && result.output_warning && result.requires_confirmation) {
+                const shouldContinue = await showConfirmDialog({
+                    title: 'Check this output',
+                    message: result.message || 'This output exceeds the current control limits. Do you want to continue?',
+                    confirmLabel: 'Save anyway'
+                });
+                if (!shouldContinue) return;
+                extras.allow_validation_override = true;
+                continue;
+            }
+
+            if (!result.success) { showToast(result.error || 'Failed to save output', 'error'); return; }
+
+            showToast(result.late_entry ? 'Output saved (late entry recorded)' : 'Output saved', 'success');
             document.getElementById('hourly-entry-panel').style.display = 'none';
             hourlyState.selectedWorkstation = null;
             await refreshHourlySummary();
             return;
         }
-        if (!result.success) { showToast(result.error || 'Failed to save output', 'error'); return; }
-
-        showToast('Output saved', 'success');
-        document.getElementById('hourly-entry-panel').style.display = 'none';
-        hourlyState.selectedWorkstation = null;
-        await refreshHourlySummary();
+        showToast('Could not save output — please try again', 'error');
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -3450,11 +3916,11 @@ function renderOtPlanSection() {
                         <div style="font-size:10px;color:#9ca3af;">OT target units</div>
                     </div>
                     <div style="background:#f0fdf4;border-radius:8px;padding:10px;">
-                        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:600;margin-bottom:4px;">WIP Flow</div>
+                        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;font-weight:600;margin-bottom:4px;">${FEED_WIP_ENABLED ? 'WIP Flow' : 'OT Flow'}</div>
                         <div style="font-size:11px;color:#374151;">Reg out: <strong>${parseInt(ws.regular_shift_output_quantity || 0, 10) || 0}</strong></div>
-                        <div style="font-size:11px;color:#92400e;">Opening WIP: <strong>${openingWip}</strong></div>
+                        ${FEED_WIP_ENABLED ? `<div style="font-size:11px;color:#92400e;">Opening WIP: <strong>${openingWip}</strong></div>` : ''}
                         <div style="font-size:11px;color:#7c3aed;">Balance: <strong>${balanceQty}</strong></div>
-                        <div style="font-size:11px;color:#15803d;">Closing WIP: <strong>${closingWip}</strong></div>
+                        ${FEED_WIP_ENABLED ? `<div style="font-size:11px;color:#15803d;">Closing WIP: <strong>${closingWip}</strong></div>` : ''}
                         <div style="font-size:11px;color:#111827;margin-top:2px;border-top:1px solid #dcfce7;padding-top:2px;">Combined: <strong>${combinedOutput}</strong></div>
                     </div>
                 </div>
@@ -3900,7 +4366,10 @@ const adjustState = {
     departureId: null,
     vacantWsCode: null,
     adjStep: null,   // 'scan-employee' | 'choose-type'
-    scannedEmployee: null
+    scannedEmployee: null,
+    // return form
+    returnDepartureId: null,
+    returnWsCode: null
 };
 
 async function loadAdjustmentPanel() {
@@ -3945,7 +4414,9 @@ async function loadAdjLineStatus() {
     const lineId = sel?.value;
     if (!lineId) return;
     adjustState.lineId = lineId;
-    adjustState.date = new Date().toISOString().slice(0, 10);
+    // Local date, like the rest of the page. toISOString() is UTC, so in IST this panel used to
+    // query a different work_date than Morning/Hourly for part of every evening.
+    adjustState.date = getSupervisorLocalDate();
 
     const panel = document.getElementById('adj-status-panel');
     panel.innerHTML = '<p style="color:#6b7280;padding:8px;">Loading...</p>';
@@ -3992,17 +4463,28 @@ function renderAdjStatusTable(workstations) {
             workerHtml = `<span style="color:#dc2626;font-weight:600;">${ws.emp_code} — ${ws.emp_name}</span>
                 <span style="color:#9ca3af;font-size:11px;display:block;">${reasonLabel}${t ? ' @ '+t : ''}</span>`;
             cardClass = 'ws-card--alert';
-            footerBtn = `<button class="btn ws-card-action" style="background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;"
-                onclick="openAdjustmentScan(${ws.departure_id}, '${ws.workstation_code}')">
-                Assign Worker
-            </button>`;
+            footerBtn = `<div style="display:flex;gap:6px;width:100%;">
+                <button class="btn ws-card-action" style="flex:1;background:#dcfce7;color:#15803d;border:1px solid #86efac;"
+                    onclick="openReturnForm(${ws.departure_id}, '${ws.workstation_code}')">
+                    Worker Returned
+                </button>
+                <button class="btn ws-card-action" style="flex:1;background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;"
+                    onclick="openAdjustmentScan(${ws.departure_id}, '${ws.workstation_code}')">
+                    Assign Worker
+                </button>
+            </div>`;
         } else {
             const typeLabel = ws.adjustment_type === 'combine' ? 'Combined' : 'Reassigned';
             statusBadge = `<span style="background:#ede9fe;color:#7c3aed;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${typeLabel}</span>`;
             const rTime = ws.reassignment_time ? new Date(ws.reassignment_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
             workerHtml += `<span style="color:#7c3aed;font-size:11px;display:block;">${ws.covering_emp_code} covers @ ${rTime}</span>`;
             cardClass = 'ws-card--changeover';
-            footerBtn = `<span style="color:#9ca3af;font-size:13px;padding:8px 0;display:block;text-align:center;">Resolved</span>`;
+            // Coverage is not the end of the story: the departed worker can still come back,
+            // which ends the coverage and sends the covering worker back to their own station.
+            footerBtn = `<button class="btn ws-card-action" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;"
+                onclick="openReturnForm(${ws.departure_id}, '${ws.workstation_code}')">
+                Worker Returned
+            </button>`;
         }
 
         return `
@@ -4035,16 +4517,30 @@ function renderAdjHistory(records) {
     const panel = document.getElementById('adj-history-panel');
     if (!records.length) { panel.innerHTML = ''; return; }
 
+    const fmt = (t) => t ? new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : null;
+
     const cards = records.map(r => {
-        const deptTime = r.departure_time ? new Date(r.departure_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '-';
-        const adjLabel = r.adjustment_type ? (r.adjustment_type === 'assign' ? 'Assign' : 'Combine') : 'Pending';
-        const rTime = r.reassignment_time ? new Date(r.reassignment_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : null;
+        const deptTime = fmt(r.departure_time) || '-';
+        const retTime = fmt(r.return_time);
+        const rTime = fmt(r.reassignment_time);
         const coverInfo = r.covering_emp_code ? `${r.covering_emp_code} (${r.covering_from_ws || ''})` : null;
         const reasonLabel = { sick: 'Sick', personal: 'Personal', operational: 'Operational', other: 'Other' }[r.departure_reason] || r.departure_reason;
-        const resolved = !!r.adjustment_type;
-        const badgeStyle = resolved ? 'background:#d1fae5;color:#065f46;' : 'background:#fee2e2;color:#991b1b;';
+        const returned = !!r.return_time;
+        // A returned departure is fully closed. An un-returned one is "Pending" until somebody
+        // covers it, then shows the coverage type — but it is still open until the worker is back.
+        const adjLabel = returned ? 'Returned' : (r.adjustment_type ? (r.adjustment_type === 'assign' ? 'Assign' : 'Combine') : 'Pending');
+        const badgeStyle = returned
+            ? 'background:#dcfce7;color:#15803d;'
+            : (r.adjustment_type ? 'background:#d1fae5;color:#065f46;' : 'background:#fee2e2;color:#991b1b;');
+
+        let awayFor = '';
+        if (returned) {
+            const mins = Math.max(0, Math.round((new Date(r.return_time) - new Date(r.departure_time)) / 60000));
+            awayFor = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+        }
+
         return `
-            <div class="ws-card ${resolved ? 'ws-card--changeover' : 'ws-card--alert'}">
+            <div class="ws-card ${returned ? '' : (r.adjustment_type ? 'ws-card--changeover' : 'ws-card--alert')}">
                 <div class="ws-card-header">
                     <span class="ws-card-code">${r.workstation_code}</span>
                     <div class="ws-card-badges">
@@ -4055,6 +4551,11 @@ function renderAdjHistory(records) {
                     <div class="ws-card-row"><span class="ws-card-label">Departed</span><span>${r.dep_emp_code} — ${r.dep_emp_name}</span></div>
                     <div class="ws-card-row"><span class="ws-card-label">Reason / Time</span><span>${reasonLabel} · ${deptTime}</span></div>
                     ${coverInfo ? `<div class="ws-card-row"><span class="ws-card-label">Covered By</span><span>${coverInfo}${rTime ? ' · ' + rTime : ''}</span></div>` : ''}
+                    ${returned ? `<div class="ws-card-row"><span class="ws-card-label">Returned</span><span style="color:#15803d;font-weight:600;">${retTime} · away ${awayFor}</span></div>` : ''}
+                </div>
+                <div class="ws-card-footer" id="adj-hist-footer-${r.departure_id}">
+                    ${returned ? '' : `<button class="btn ws-card-action" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;"
+                        onclick="openReturnForm(${r.departure_id}, null)">Worker Returned</button>`}
                 </div>
             </div>`;
     }).join('');
@@ -4159,6 +4660,85 @@ async function confirmDeparture() {
     }
 }
 
+// ─── WORKER RETURN ────────────────────────────────────────────────────────────
+// The other half of "Mark Departure". Without it a departure was terminal: the station stayed
+// VACANT for the rest of the day, hourly output entry stayed disabled, and the same worker
+// could not be put back on her own workstation.
+//
+// wsCode is the status-card path (renders into that card's footer); pass null from the history
+// panel, which renders into its own footer instead — that panel is the only view guaranteed to
+// list every open departure, including ones whose worker lost their assignment row to a cover.
+function openReturnForm(departureId, wsCode) {
+    adjustState.returnDepartureId = departureId;
+    adjustState.returnWsCode = wsCode;
+
+    const now = new Date();
+    const localTime = now.getFullYear() + '-' +
+        String(now.getMonth()+1).padStart(2,'0') + '-' +
+        String(now.getDate()).padStart(2,'0') + 'T' +
+        String(now.getHours()).padStart(2,'0') + ':' +
+        String(now.getMinutes()).padStart(2,'0');
+
+    const footer = wsCode
+        ? document.getElementById(`adj-card-footer-${wsCode}`)
+        : document.getElementById(`adj-hist-footer-${departureId}`);
+    if (!footer) return;
+    footer.innerHTML = `
+        <div style="padding:12px 0 4px;">
+            <div style="font-weight:700;font-size:13px;color:#15803d;margin-bottom:8px;">Record Return</div>
+            <p style="font-size:12px;color:#6b7280;margin:0 0 10px;">The workstation goes live again from the next full working hour after this time.</p>
+            <div style="display:grid;gap:10px;">
+                <div>
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Return Time</label>
+                    <input type="datetime-local" id="ret-time-input" value="${localTime}" class="form-control" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Notes (optional)</label>
+                    <input type="text" id="ret-notes-input" placeholder="e.g. back from clinic" class="form-control">
+                </div>
+                <div class="mismatch-actions">
+                    <button class="ws-card-action" style="background:#16a34a;color:#fff;border:none;" onclick="confirmReturn()">Confirm Return</button>
+                    <button class="ws-card-action" style="background:#f3f4f6;color:#374151;border:1px solid #d1d5db;" onclick="loadAdjLineStatus()">Cancel</button>
+                </div>
+            </div>
+        </div>`;
+    footer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function confirmReturn() {
+    const timeVal = document.getElementById('ret-time-input')?.value;
+    const notes = document.getElementById('ret-notes-input')?.value || '';
+    if (!timeVal) { showToast('Enter return time', 'error'); return; }
+
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/worker-return`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                line_id: adjustState.lineId,
+                work_date: adjustState.date,
+                departure_id: adjustState.returnDepartureId,
+                return_time: new Date(timeVal).toISOString(),
+                return_notes: notes
+            })
+        });
+        const result = await r.json();
+        if (!result.success) { showToast(result.error || 'Failed to record return', 'error'); return; }
+        const restored = result.data.restored_workstations || [];
+        showToast(
+            `${result.data.emp_name} back on ${result.data.workstation_code}` +
+            (restored.length ? ` · ${restored.join(', ')} restored` : ''),
+            'success'
+        );
+        if (result.data.note) showToast(result.data.note, 'error');
+        adjustState.returnDepartureId = null;
+        adjustState.returnWsCode = null;
+        await loadAdjLineStatus();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 // ─── ADJUSTMENT SCAN FLOW ─────────────────────────────────────────────────────
 function openAdjustmentScan(departureId, vacantWsCode) {
     adjustState.departureId = departureId;
@@ -4178,75 +4758,52 @@ function openAdjustmentScan(departureId, vacantWsCode) {
         </div>`;
     footer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    startCamera('adj-camera', null, async (rawValue) => {
-        stopCamera();
-        const result = document.getElementById('adj-scan-result');
-        result.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
-        try {
-            const r = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ employee_qr: rawValue })
-            });
-            const data = await r.json();
-            if (!data.success) {
-                result.innerHTML = `<p style="color:#dc2626;">${data.error || 'Employee not found. Try again.'}</p>
-                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
-                return;
-            }
-            adjustState.scannedEmployee = data.data.employee;
+    startCamera('adj-camera', null, handleAdjScanResult);
+}
 
-            // Find their current workstation from the status table
-            const assigned = (adjustState.workstations || []).find(
-                ws => ws.employee_id === adjustState.scannedEmployee.id && ws.status === 'active'
-            );
-            if (!assigned) {
-                result.innerHTML = `<p style="color:#dc2626;">This employee (${data.data.employee.emp_name}) is not active on this line today, or may themselves be departed.</p>
-                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
-                return;
-            }
-            adjustState.scannedFromWs = assigned.workstation_code;
-            showAdjChoicePrompt(data.data.employee, assigned.workstation_code);
-        } catch (err) {
-            document.getElementById('adj-scan-result').innerHTML = `<p style="color:#dc2626;">${err.message}</p>`;
+// Single implementation for both the first scan and the retry. These were near-verbatim copies
+// with divergent error text, so a supervisor saw one message on the first scan and a different
+// one on retry for the identical condition — and a fix to one never reached the other.
+async function handleAdjScanResult(rawValue) {
+    stopCamera();
+    const result = document.getElementById('adj-scan-result');
+    if (!result) return;
+    result.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ employee_qr: rawValue })
+        });
+        const data = await r.json();
+        if (!data.success) {
+            result.innerHTML = `<p style="color:#dc2626;">${data.error || 'Employee not found. Try again.'}</p>
+                <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
+            return;
         }
-    });
+        adjustState.scannedEmployee = data.data.employee;
+
+        // Find their current workstation from the status table. A worker who departed and has
+        // since returned is 'active' again, so they are scannable here like anyone else.
+        const assigned = (adjustState.workstations || []).find(
+            ws => ws.employee_id === adjustState.scannedEmployee.id && ws.status === 'active'
+        );
+        if (!assigned) {
+            result.innerHTML = `<p style="color:#dc2626;">This employee (${data.data.employee.emp_name}) is not active on this line today. If they are the worker who left this station, use <strong>Worker Returned</strong> instead.</p>
+                <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
+            return;
+        }
+        adjustState.scannedFromWs = assigned.workstation_code;
+        showAdjChoicePrompt(data.data.employee, assigned.workstation_code);
+    } catch (err) {
+        const el = document.getElementById('adj-scan-result');
+        if (el) el.innerHTML = `<p style="color:#dc2626;">${err.message}</p>`;
+    }
 }
 
 function retryAdjScan() {
     adjustState.scannedEmployee = null;
-    startCamera('adj-camera', null, async (rawValue) => {
-        stopCamera();
-        // reuse same logic — just call openAdjustmentScan equivalent inline
-        const result = document.getElementById('adj-scan-result');
-        result.innerHTML = '<p style="color:#6b7280;">Resolving employee...</p>';
-        try {
-            const r = await fetch(`${API_BASE}/supervisor/resolve-employee-by-qr`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ employee_qr: rawValue })
-            });
-            const data = await r.json();
-            if (!data.success) {
-                result.innerHTML = `<p style="color:#dc2626;">${data.error || 'Employee not found.'}</p>
-                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
-                return;
-            }
-            adjustState.scannedEmployee = data.data.employee;
-            const assigned = (adjustState.workstations || []).find(
-                ws => ws.employee_id === adjustState.scannedEmployee.id && ws.status === 'active'
-            );
-            if (!assigned) {
-                result.innerHTML = `<p style="color:#dc2626;">Employee not active on this line today.</p>
-                    <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="retryAdjScan()">Retry Scan</button>`;
-                return;
-            }
-            adjustState.scannedFromWs = assigned.workstation_code;
-            showAdjChoicePrompt(data.data.employee, assigned.workstation_code);
-        } catch (err) {
-            document.getElementById('adj-scan-result').innerHTML = `<p style="color:#dc2626;">${err.message}</p>`;
-        }
-    });
+    startCamera('adj-camera', null, handleAdjScanResult);
 }
 
 function showAdjChoicePrompt(emp, fromWs) {

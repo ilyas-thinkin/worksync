@@ -40,6 +40,7 @@ const loginSchema = z.object({
 const lineSchema = z.object({
     line_code: lineCode,
     line_name: z.string().min(1).max(100),
+    line_leader: z.string().max(100).optional().nullable(),
     is_active: z.boolean().optional()
 });
 

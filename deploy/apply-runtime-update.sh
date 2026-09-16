@@ -8,6 +8,7 @@ mkdir -p \
   "${ROOT_DIR}/logs" \
   "${ROOT_DIR}/reports" \
   "${ROOT_DIR}/qrcodes" \
+  "${ROOT_DIR}/uploads/line-leaders" \
   "${ROOT_DIR}/backups" \
   "${ROOT_DIR}/backend/logs"
 

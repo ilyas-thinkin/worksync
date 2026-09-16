@@ -86,7 +86,10 @@ const ROLE_PASSWORDS = {
   admin: requireEnv('ADMIN_PASSWORD'),
   ie: requireEnv('IE_PASSWORD'),
   supervisor: requireEnv('SUPERVISOR_PASSWORD'),
-  management: requireEnv('MANAGEMENT_PASSWORD')
+  management: requireEnv('MANAGEMENT_PASSWORD'),
+  // The line TV login is optional: with DISPLAY_PASSWORD unset the role just cannot sign in,
+  // rather than stopping the whole server from booting.
+  ...(process.env.DISPLAY_PASSWORD ? { display: process.env.DISPLAY_PASSWORD } : {})
 };
 
 const parseCookies = (cookieHeader = '') => {
@@ -99,10 +102,14 @@ const parseCookies = (cookieHeader = '') => {
 };
 
 const TOKEN_MAX_AGE_SEC = 12 * 60 * 60; // 12 hours — one full shift + buffer
+// A line TV is switched on once and left running, sometimes off over a weekend; a
+// shift-length session would drop it back to the login screen every morning.
+const DISPLAY_TOKEN_MAX_AGE_SEC = 30 * 24 * 60 * 60;
+const tokenMaxAgeFor = (role) => (role === 'display' ? DISPLAY_TOKEN_MAX_AGE_SEC : TOKEN_MAX_AGE_SEC);
 
 const signToken = (payload) => {
   const now = Math.floor(Date.now() / 1000);
-  const fullPayload = { ...payload, iat: now, exp: now + TOKEN_MAX_AGE_SEC };
+  const fullPayload = { ...payload, iat: now, exp: now + tokenMaxAgeFor(payload.role) };
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const body = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
   const data = `${header}.${body}`;
@@ -133,13 +140,13 @@ const isHttpsRequest = (req) => {
   return proto === 'https';
 };
 
-const buildAuthCookie = (token, req, { clear = false } = {}) => {
+const buildAuthCookie = (token, req, { clear = false, maxAge = TOKEN_MAX_AGE_SEC } = {}) => {
   const parts = [
     `${AUTH_COOKIE}=${token}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
-    clear ? 'Max-Age=0' : `Max-Age=${TOKEN_MAX_AGE_SEC}`  // persist for full shift
+    clear ? 'Max-Age=0' : `Max-Age=${maxAge}`  // persist for the token's lifetime
   ];
   if (isHttpsRequest(req)) {
     parts.push('Secure');
@@ -151,16 +158,18 @@ const buildAuthCookie = (token, req, { clear = false } = {}) => {
 // user never gets logged out mid-shift while a truly idle session still expires.
 const renewTokenIfHalfExpired = (payload, req, res) => {
   const now = Math.floor(Date.now() / 1000);
-  if (payload.iat && now - payload.iat > TOKEN_MAX_AGE_SEC / 2) {
+  const maxAge = tokenMaxAgeFor(payload.role);
+  if (payload.iat && now - payload.iat > maxAge / 2) {
     const freshToken = signToken({ role: payload.role });
-    res.setHeader('Set-Cookie', buildAuthCookie(freshToken, req));
+    res.setHeader('Set-Cookie', buildAuthCookie(freshToken, req, { maxAge }));
   }
 };
 
 const requireRole = (role) => (req, res, next) => {
+  const roles = Array.isArray(role) ? role : [role];
   const cookies = parseCookies(req.headers.cookie || '');
   const payload = verifyToken(cookies[AUTH_COOKIE]);
-  if (!payload || payload.role !== role) {
+  if (!payload || !roles.includes(payload.role)) {
     return res.status(401).redirect('/');
   }
   renewTokenIfHalfExpired(payload, req, res);
@@ -181,7 +190,7 @@ const requireAnyRole = (roles) => (req, res, next) => {
 
 // Block direct access to protected HTML files
 app.use((req, res, next) => {
-  const blocked = ['/admin.html', '/ie.html', '/supervisor.html', '/management.html'];
+  const blocked = ['/admin.html', '/ie.html', '/supervisor.html', '/management.html', '/display.html'];
   if (blocked.includes(req.path)) {
     return res.redirect('/');
   }
@@ -198,6 +207,9 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 // Serve QR code images
 app.use('/qrcodes', express.static(process.env.QRCODES_DIR || path.join(__dirname, '..', '..', 'qrcodes')));
+// Serve uploaded images (line supervisor photos). Open like /qrcodes: the line TV signs in
+// as the read-only 'display' role and still has to render the supervisor's face.
+app.use('/uploads', express.static(process.env.UPLOADS_DIR || path.join(__dirname, '..', '..', 'uploads')));
 
 // Realtime updates (SSE)
 app.get('/events', requireAnyRole(['admin', 'ie', 'supervisor', 'management']), realtime.handleEvents);
@@ -214,6 +226,11 @@ app.use('/api', (req, res, next) => {
   // Allow product export/template downloads without auth
   if (req.path.startsWith('/products/export/') || req.path === '/products/upload-template') {
     return next();
+  }
+  // The line TV role is read-only and limited to exactly the reads the display page makes;
+  // every other path falls through to rules that do not list 'display'.
+  if (req.method === 'GET' && (req.path.startsWith('/display/') || req.path === '/hourly-report' || req.path === '/efficiency-report')) {
+    return requireAnyRole(['display', 'admin', 'ie', 'supervisor', 'management'])(req, res, next);
   }
   if (req.path.startsWith('/users') || req.path.startsWith('/production-days') || req.path.startsWith('/audit-logs')) {
     return requireAnyRole(['admin'])(req, res, next);
@@ -232,6 +249,11 @@ app.use('/api', (req, res, next) => {
   }
   if (req.path === '/daily-plans/ot-toggle' && req.method === 'PATCH') {
     return requireAnyRole(['admin', 'ie', 'supervisor'])(req, res, next);
+  }
+  // Reading settings is open to every signed-in role — it carries shift times and feature flags
+  // that the supervisor and management panels need to render correctly. Writing stays IE/admin.
+  if (req.path.startsWith('/settings') && req.method === 'GET') {
+    return requireAnyRole(['admin', 'ie', 'supervisor', 'management'])(req, res, next);
   }
   if (req.path.startsWith('/daily-plans') || req.path.startsWith('/ie') || req.path.startsWith('/settings')) {
     return requireAnyRole(['ie', 'admin'])(req, res, next);
@@ -272,12 +294,13 @@ app.post('/auth/login', (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid password' });
   }
   const token = signToken({ role });
-  res.setHeader('Set-Cookie', buildAuthCookie(token, req));
+  res.setHeader('Set-Cookie', buildAuthCookie(token, req, { maxAge: tokenMaxAgeFor(role) }));
   const redirectMap = {
     admin: '/admin',
     ie: '/ie',
     supervisor: '/supervisor',
-    management: '/management'
+    management: '/management',
+    display: '/display'
   };
   res.json({ success: true, redirect: redirectMap[role] || '/' });
 });
@@ -327,6 +350,12 @@ app.get('/supervisor', requireRole('supervisor'), (req, res) => {
 app.get('/management', requireAnyRole(['admin', 'ie', 'supervisor', 'management']), (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'management.html'));
+});
+
+// Line TV display — the display role, plus every staff role so anyone can check a screen
+app.get('/display', requireRole(['display', 'admin', 'ie', 'supervisor', 'management']), (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(path.join(__dirname, 'public', 'display.html'));
 });
 
 // Serve login page for all other routes (Express 5 syntax)

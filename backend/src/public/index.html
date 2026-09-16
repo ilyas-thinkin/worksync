@@ -98,6 +98,7 @@
         .login-card-icon.ie      { background: linear-gradient(135deg, #1D4ED8, #1E40AF); }
         .login-card-icon.sup     { background: linear-gradient(135deg, #7C3AED, #5B21B6); }
         .login-card-icon.mgmt    { background: linear-gradient(135deg, #15803D, #166534); }
+        .login-card-icon.display { background: linear-gradient(135deg, #0E7490, #155E75); }
         .login-card h3 {
             font-family: 'Playfair Display', Georgia, serif;
             font-size: 17px;
@@ -216,6 +217,16 @@
                     <h3>Management</h3>
                     <p>Overview and reporting access.</p>
                     <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openLogin('management')">Sign In</button>
+                </div>
+                <div class="login-card" onclick="openLogin('display')">
+                    <div class="login-card-icon display">
+                        <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="#CFFAFE" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                        </svg>
+                    </div>
+                    <h3>Line Display</h3>
+                    <p>Live hourly board for a line's TV screen.</p>
+                    <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openLogin('display')">Sign In</button>
                 </div>
             </div>
         </div>

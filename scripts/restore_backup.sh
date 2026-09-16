@@ -83,6 +83,12 @@ if [ -d "$BACKUP_DIR/qrcodes" ]; then
     rsync -av "$BACKUP_DIR/qrcodes/" "${QRCODES_DIR:-${ROOT_DIR}/qrcodes}/"
 fi
 
+# Restore uploaded images (line supervisor photos)
+if [ -d "$BACKUP_DIR/uploads" ]; then
+    echo "Restoring uploads..."
+    rsync -av "$BACKUP_DIR/uploads/" "${UPLOADS_DIR:-${ROOT_DIR}/uploads}/"
+fi
+
 # Start WorkSync service
 echo "Starting WorkSync service..."
 pm2 start "${ROOT_DIR}/backend/ecosystem.config.js" --only worksync --update-env

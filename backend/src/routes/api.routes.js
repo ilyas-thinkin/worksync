@@ -32,6 +32,52 @@ const excelUpload = multer({
     }
 });
 
+// Multer setup for line supervisor photos (memory storage; written to disk after the
+// bytes are checked). Kept separate from excelUpload so a photo can never slip into an
+// Excel endpoint or the other way round.
+const LINE_LEADER_PHOTO_DIR = path.join(
+    process.env.UPLOADS_DIR || path.join(__dirname, '..', '..', '..', 'uploads'),
+    'line-leaders'
+);
+const LINE_LEADER_PHOTO_URL_BASE = '/uploads/line-leaders';
+
+const photoUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB — plenty for a portrait, small enough for the Pi
+    fileFilter: (req, file, cb) => {
+        const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png'];
+        if (allowedMimes.includes(file.mimetype) && /\.(jpe?g|png)$/i.test(file.originalname)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only JPG, JPEG or PNG images are allowed'));
+        }
+    }
+});
+
+// The extension a browser sends is a claim, not a fact. Read the magic bytes so a renamed
+// script can never land in a directory that is served as static files.
+function sniffImageExtension(buffer) {
+    if (!buffer || buffer.length < 12) return null;
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return 'jpg';
+    const pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    if (pngSignature.every((byte, i) => buffer[i] === byte)) return 'png';
+    return null;
+}
+
+// Removes a previously stored photo file. Best effort: a missing file is not an error,
+// and a stale row must never block saving the new photo.
+function removeLineLeaderPhotoFile(webPath) {
+    if (!webPath || !webPath.startsWith(LINE_LEADER_PHOTO_URL_BASE + '/')) return;
+    const fileName = path.basename(webPath);
+    try {
+        fs.unlinkSync(path.join(LINE_LEADER_PHOTO_DIR, fileName));
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            console.error('[line-leader-photo] Could not remove', fileName, err.message);
+        }
+    }
+}
+
 // Apply sanitization to all routes
 router.use(sanitizeInputs);
 
@@ -170,6 +216,30 @@ const getSettingValue = async (key, fallback) => {
     return result.rows[0]?.value || fallback;
 };
 
+// Material feed and WIP tracking are not part of the current process, so the checks that depend on
+// them (output vs available input, group WIP totals) are switched off rather than removed. Flip
+// app_settings.feed_wip_enabled to 'true' to bring them back — no code change, no restart.
+// Cached briefly because a batch save validates every workstation in the hour.
+let feedWipCache = { value: null, at: 0 };
+const FEED_WIP_TTL_MS = 30000;
+const isFeedWipEnabled = async () => {
+    const now = Date.now();
+    if (feedWipCache.value !== null && now - feedWipCache.at < FEED_WIP_TTL_MS) {
+        return feedWipCache.value;
+    }
+    let enabled = false;
+    try {
+        const raw = await getSettingValue('feed_wip_enabled', 'false');
+        enabled = String(raw).toLowerCase() === 'true';
+    } catch (err) {
+        // Default to off: a settings lookup failure must not resurrect prompts the floor
+        // has been told to ignore.
+        enabled = false;
+    }
+    feedWipCache = { value: enabled, at: now };
+    return enabled;
+};
+
 const isDayLocked = async (workDate) => {
     if (!workDate) return false;
     const result = await pool.query(
@@ -258,6 +328,84 @@ function resolveHistoryEffectiveToHour(workDate, isOvertime = false) {
     return fromHour - 1;
 }
 
+// A departure/return pair splits the shift into hours the worker was present and hours the
+// station stood empty. The history WINDOW and the efficiency DENOMINATOR must both be built
+// from the same pair of boundary hours; derived independently, the worker gets credited for
+// output in an hour that is not in their denominator (or the reverse) and the efficiency
+// reads wrong in a way nobody can reconcile from the UI.
+//
+// Rounding is deliberately asymmetric — both directions keep the absence honest:
+//   * departure 11:36 -> the worker KEEPS the whole hour-11 slot. They were there for most of
+//     it and nobody replaced them, so that hour's output is theirs. (This is what
+//     POST /supervisor/worker-departure has always done — not a behaviour change.)
+//   * return 13:36 -> the worker does NOT get the hour-13 slot; they missed most of it.
+//
+// Consequences that fall out of those two rules for free:
+//   * firstPresentHour > lastPresentHour always, so the two windows can never overlap;
+//   * a depart+return inside one hour yields zero absent hours, not a negative one;
+//   * returnTime null reproduces the old truncate-the-day behaviour exactly.
+//
+// Hour math stays JS-side like every other history helper — a SQL EXTRACT(HOUR ...) would
+// depend on the session TimeZone GUC and silently disagree with this.
+//
+// Returns { lastPresentHour, firstPresentHour, absentHours }:
+//   lastPresentHour  — close the pre-departure window AT this hour (null: the departure lands
+//                      before the shift started, so delete the window instead)
+//   firstPresentHour — open the post-return window AT this hour (null: no working hour is left
+//                      today, so open no window at all)
+//   absentHours      — the working-hour slots the station stood empty, for the denominator
+function resolveDepartureReturnHours(departureTime, returnTime, isOvertime = false) {
+    const hours = getHistoryHours(isOvertime);
+    if (!hours.length) {
+        return { lastPresentHour: null, firstPresentHour: null, absentHours: [] };
+    }
+
+    const depHour = departureTime ? new Date(departureTime).getHours() : null;
+    const retHour = returnTime ? new Date(returnTime).getHours() : null;
+
+    const lastPresentHour = Number.isFinite(depHour)
+        ? (hours.filter(h => h <= depHour).slice(-1)[0] ?? null)
+        : null;
+
+    let firstPresentHour = null;
+    if (Number.isFinite(retHour)) {
+        firstPresentHour = hours.find(h => h > retHour) ?? null;
+        // Belt and braces for a clock-skewed or hand-typed return earlier than the departure:
+        // never let the return window open at or before the hour the departure window closed,
+        // or the two overlap and break the per-employee no-overlap invariant.
+        if (firstPresentHour !== null && lastPresentHour !== null && firstPresentHour <= lastPresentHour) {
+            firstPresentHour = hours.find(h => h > lastPresentHour) ?? null;
+        }
+    }
+
+    const absentHours = hours.filter(h =>
+        (lastPresentHour === null || h > lastPresentHour) &&
+        (firstPresentHour === null || h < firstPresentHour)
+    );
+
+    return { lastPresentHour, firstPresentHour, absentHours };
+}
+
+const formatHistoryHourLabel = (hour) =>
+    Number.isFinite(hour) ? `${String(hour).padStart(2, '0')}:00` : '';
+
+// Human-readable note for the supervisor when a mid-day employee change causes the new
+// worker's output credit to start later than the shift start. Returns null when nothing
+// was shifted, so the UI only speaks up when the rule actually changed something.
+function buildAttributionNotice(historySync, workstationCode) {
+    if (!historySync || !historySync.start_shifted) return null;
+    const fromHour = historySync.effective_from_hour;
+    if (!Number.isFinite(fromHour)) return null;
+    return {
+        effective_from_hour: fromHour,
+        effective_from_label: formatHistoryHourLabel(fromHour),
+        requested_from_hour: historySync.requested_from_hour ?? null,
+        message: `Mid-day change: output at ${workstationCode} is credited to this worker from `
+            + `${formatHistoryHourLabel(fromHour)} onward. Earlier hours today stay credited to `
+            + `where they actually worked, so nothing is counted twice on the efficiency report.`
+    };
+}
+
 async function closeAssignmentHistoryForEmployee(db, {
     employeeId,
     workDate,
@@ -305,6 +453,51 @@ async function closeAssignmentHistoryForEmployee(db, {
     return { closed: true, deleted: false };
 }
 
+// Pulls back any already-closed window that would still cover `fromHour`, so a new window
+// starting at that hour never overlaps it. Two scopes are cleaned: other workers on the same
+// workstation, and this worker's own earlier stints anywhere that day (a mid-day move must not
+// pay him twice for the same hour). A window left with nothing in it is removed.
+async function trimHistoryWindowsOverlapping(db, {
+    lineId,
+    workDate,
+    workstationCode,
+    isOvertime = false,
+    employeeId,
+    fromHour
+}) {
+    if (!workDate || !Number.isFinite(fromHour)) return { trimmed: 0, deleted: 0 };
+    const overlapping = await db.query(
+        `SELECT id, effective_from_hour
+         FROM employee_workstation_assignment_history
+         WHERE work_date = $1
+           AND is_overtime = $2
+           AND effective_to_hour IS NOT NULL
+           AND effective_to_hour >= $3
+           AND (
+                 (line_id = $4 AND workstation_code = $5 AND employee_id <> $6)
+              OR employee_id = $6
+           )`,
+        [workDate, !!isOvertime, fromHour, lineId, workstationCode, employeeId]
+    );
+    let trimmed = 0;
+    let deleted = 0;
+    for (const row of overlapping.rows) {
+        if (fromHour - 1 < parseInt(row.effective_from_hour, 10)) {
+            await db.query(`DELETE FROM employee_workstation_assignment_history WHERE id = $1`, [row.id]);
+            deleted += 1;
+        } else {
+            await db.query(
+                `UPDATE employee_workstation_assignment_history
+                 SET effective_to_hour = $1, updated_at = NOW()
+                 WHERE id = $2`,
+                [fromHour - 1, row.id]
+            );
+            trimmed += 1;
+        }
+    }
+    return { trimmed, deleted };
+}
+
 async function syncAssignmentHistoryForCurrentRow(db, {
     lineId,
     workDate,
@@ -316,7 +509,14 @@ async function syncAssignmentHistoryForCurrentRow(db, {
     linkedAt = null,
     attendanceStart = null,
     lateReason = null,
-    forceCurrentHourStart = false
+    forceCurrentHourStart = false,
+    // Pin the window's start hour instead of deriving it from attendance_start/linked_at.
+    // Required by the departure/return flow: resolveHistoryEffectiveFromHour rounds a 13:36
+    // timestamp DOWN to hour 13 (`hours.find(h => h >= 13)`), while a return must round UP to
+    // 14 — the worker missed most of hour 13. Deriving the two independently puts output in a
+    // window that is not in the worker's efficiency denominator.
+    // The prior-window guards below still apply and can only push this FORWARD, never back.
+    forceFromHour = null
 }) {
     const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
     if (!normalizedEmployeeId || !workDate || !workstationCode || !isLinked) return null;
@@ -333,12 +533,37 @@ async function syncAssignmentHistoryForCurrentRow(db, {
         [normalizedEmployeeId, workDate, !!isOvertime]
     );
     const activeRow = activeResult.rows[0];
-    let fromHour = forceCurrentHourStart
+
+    // forceCurrentHourStart exists so a mid-day MOVE cannot backdate the new window over hours
+    // the worker spent somewhere else. That only means something when the worker already has a
+    // window today to be moved away from. Applied to the worker's FIRST window of the day it
+    // does the opposite of its job: an ordinary plan save at 08:46 for someone linked since the
+    // shift start opens the window at 09:00 and every hour already entered falls outside every
+    // window, so the hourly report shows a blank 1st hour and the output is credited to nobody
+    // (2026-09-04, line 13: one plan save pushed 77 windows to hour 9 and orphaned 13,145 units).
+    // The priorMaxTo/ownMaxTo guards below still push this forward off any real prior window, so
+    // deriving from attendance_start here cannot double-credit a handover.
+    let hasHistoryToday = !!activeRow;
+    if (forceCurrentHourStart && !hasHistoryToday) {
+        const priorHistoryResult = await db.query(
+            `SELECT 1 FROM employee_workstation_assignment_history
+             WHERE employee_id = $1 AND work_date = $2 AND is_overtime = $3
+             LIMIT 1`,
+            [normalizedEmployeeId, workDate, !!isOvertime]
+        );
+        hasHistoryToday = priorHistoryResult.rowCount > 0;
+    }
+    const useCurrentHourStart = forceCurrentHourStart && hasHistoryToday;
+
+    let fromHour = Number.isFinite(forceFromHour)
+        ? forceFromHour
+        : useCurrentHourStart
         ? resolveHistoryEffectiveFromHour(workDate, isOvertime)
         : activeRow
         ? resolveHistoryEffectiveFromHour(workDate, isOvertime)
         : resolveHistoryEffectiveFromHour(workDate, isOvertime, attendanceStart, linkedAt);
     if (fromHour === null) return null;
+    const requestedFromHour = fromHour;
 
     // Never let this employee's window start before a DIFFERENT employee's already-closed
     // window on this exact workstation/date ends — otherwise "credit full shift" (linked before
@@ -357,8 +582,34 @@ async function syncAssignmentHistoryForCurrentRow(db, {
     if (priorMaxTo !== null && fromHour <= priorMaxTo) {
         const hours = getHistoryHours(isOvertime);
         const nextAvailable = hours.find(h => h > priorMaxTo);
+        // No hour left after the previous occupant (a takeover inside the last hour of the
+        // shift): the fallback below parks this worker ON that same hour, so the trim pass
+        // before the INSERT hands the boundary hour to whoever is standing there now.
         fromHour = nextAvailable ?? hours[hours.length - 1];
     }
+
+    // Same guard for THIS employee's own already-closed windows, on any workstation or line.
+    // A worker moved mid-day (e.g. WS30 -> WS33) has the old window closed a moment before the
+    // new one is written, so `activeRow` is null and the "credit full shift" attendance_start
+    // branch above backdates the new window to the shift start — overlapping the hours he was
+    // still at the old workstation and double-counting them on the worker efficiency report.
+    const ownPriorResult = await db.query(
+        `SELECT MAX(effective_to_hour) AS max_to
+         FROM employee_workstation_assignment_history
+         WHERE work_date = $1 AND is_overtime = $2
+           AND employee_id = $3 AND effective_to_hour IS NOT NULL`,
+        [workDate, !!isOvertime, normalizedEmployeeId]
+    );
+    const ownMaxTo = ownPriorResult.rows[0]?.max_to != null
+        ? parseInt(ownPriorResult.rows[0].max_to, 10)
+        : null;
+    if (ownMaxTo !== null && fromHour <= ownMaxTo) {
+        const hours = getHistoryHours(isOvertime);
+        const nextAvailable = hours.find(h => h > ownMaxTo);
+        fromHour = nextAvailable ?? hours[hours.length - 1];
+    }
+
+    const startShifted = fromHour !== requestedFromHour;
 
     if (activeRow) {
         const activeFrom = parseInt(activeRow.effective_from_hour, 10);
@@ -378,7 +629,7 @@ async function syncAssignmentHistoryForCurrentRow(db, {
                  WHERE id = $4`,
                 [linkedAt || null, attendanceStart || null, lateReason || null, activeRow.id]
             );
-            return { reused: true };
+            return { reused: true, effective_from_hour: activeFrom, start_shifted: false };
         }
         const closeHour = fromHour - 1;
         if (closeHour < activeFrom) {
@@ -393,6 +644,22 @@ async function syncAssignmentHistoryForCurrentRow(db, {
             );
         }
     }
+
+    // Last line of defence for the no-overlap invariant. Both guards above can only push
+    // this window forward while a later working hour exists; inside the final hour they fall
+    // back onto the hour the previous occupant already owns, and that hour's output and
+    // shortfall reason would then be credited to two people at once (seen on 2026-08-21:
+    // WS22 hour 16 counted for both the worker who went on outpass and his replacement).
+    // Whoever was linked last owns the boundary hour, matching how every other handover
+    // closes the outgoing worker at fromHour - 1.
+    await trimHistoryWindowsOverlapping(db, {
+        lineId,
+        workDate,
+        workstationCode,
+        isOvertime,
+        employeeId: normalizedEmployeeId,
+        fromHour
+    });
 
     await db.query(
         `INSERT INTO employee_workstation_assignment_history
@@ -412,7 +679,12 @@ async function syncAssignmentHistoryForCurrentRow(db, {
             lateReason || null
         ]
     );
-    return { reused: false };
+    return {
+        reused: false,
+        effective_from_hour: fromHour,
+        requested_from_hour: requestedFromHour,
+        start_shifted: startShifted
+    };
 }
 
 async function closeHistoryForWorkstationAssignmentIfNeeded(db, {
@@ -477,6 +749,164 @@ async function clearEmployeeAssignmentConflicts(db, employeeId, workDate, isOver
         }
     }
     return result.rows;
+}
+
+// Stamps return_time on every OPEN departure this worker has on workDate and ends whatever
+// coverage those departures attracted. Shared by POST /supervisor/worker-return (the explicit
+// button) and by POST /workstation-assignments (a supervisor re-linking a departed worker IS
+// that worker coming back).
+//
+// Matched on (work_date, employee_id) and NOT on workstation_code, deliberately: a departed
+// worker re-linked to a DIFFERENT station would otherwise leave the old departure open
+// forever, still charging her its absent hours against her efficiency denominator.
+//
+// Returns { departures, endedAdjustments, firstPresentHour } where firstPresentHour is the
+// latest first-present hour across the departures closed here — the hour every window opened
+// as a consequence of this return must start at.
+async function closeOpenDeparturesForEmployee(db, { workDate, employeeId, returnTime, notes = null }) {
+    const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
+    if (!normalizedEmployeeId || !workDate) {
+        return { departures: [], endedAdjustments: [], firstPresentHour: null };
+    }
+    const stamp = returnTime ? new Date(returnTime) : new Date();
+
+    const openResult = await db.query(
+        `SELECT id, line_id, workstation_code, departure_time
+         FROM worker_departures
+         WHERE employee_id = $1 AND work_date = $2 AND return_time IS NULL
+         ORDER BY departure_time
+         FOR UPDATE`,
+        [normalizedEmployeeId, workDate]
+    );
+    if (!openResult.rows.length) {
+        return { departures: [], endedAdjustments: [], firstPresentHour: null };
+    }
+
+    // Clamp the stamp forward to each row's own start. The caller's timestamp is wall-clock
+    // "now" on the auto-close path, which is NOT on the work_date when a supervisor is fixing
+    // up an earlier day (or when a departure was entered with a future clock time) — stamping
+    // it raw put return_time before departure_time and the wd_return_after_departure CHECK
+    // rejected the whole link with a 500. GREATEST does it per row, so several departures with
+    // different times are each clamped to their own floor.
+    let firstPresentHour = null;
+    const endedAdjustments = [];
+    for (const departure of openResult.rows) {
+        const rowStamp = stamp < new Date(departure.departure_time) ? new Date(departure.departure_time) : stamp;
+        const { firstPresentHour: fph } = resolveDepartureReturnHours(departure.departure_time, rowStamp, false);
+        if (fph !== null && (firstPresentHour === null || fph > firstPresentHour)) {
+            firstPresentHour = fph;
+        }
+        // Same clamp for wa_ended_after_reassignment: coverage cannot end before it started.
+        const endedResult = await db.query(
+            `UPDATE worker_adjustments
+                SET ended_at = GREATEST(reassignment_time, $2::timestamptz)
+              WHERE departure_id = $1 AND ended_at IS NULL
+              RETURNING id, line_id, adjustment_type, from_employee_id,
+                        from_workstation_code, vacant_workstation_code`,
+            [departure.id, rowStamp]
+        );
+        endedAdjustments.push(...endedResult.rows);
+    }
+
+    await db.query(
+        `UPDATE worker_departures
+            SET return_time = GREATEST(departure_time, $2::timestamptz),
+                return_notes = COALESCE($3, return_notes)
+          WHERE id = ANY($1::int[])`,
+        [openResult.rows.map(r => r.id), stamp, notes]
+    );
+
+    return { departures: openResult.rows, endedAdjustments, firstPresentHour };
+}
+
+// Puts a covering worker (an 'assign' adjustment) back on the workstation they came from once
+// the departed worker returns.
+//
+// Ordering matters and is load-bearing: closeAssignmentHistoryForEmployee closes THE SINGLE
+// MOST RECENT OPEN WINDOW for an employee anywhere on the date — it has no workstation
+// predicate. Closing the cover's window at the vacant station FIRST means every helper called
+// afterwards finds nothing open to grab, so none of them can close the wrong window.
+async function restoreCoveringWorkerToOriginalWorkstation(db, { lineId, workDate, adjustment, returnTime, fromHour }) {
+    if (!adjustment || adjustment.adjustment_type !== 'assign') return null;
+    const coverId = parseInt(adjustment.from_employee_id, 10);
+    const line = adjustment.line_id || lineId;
+    if (!coverId || !line) return null;
+    const hours = getHistoryHours(false);
+
+    // 1. Close the cover's window at the vacant station, one hour before the returning worker
+    //    picks it back up. Deletes it if they never completed an hour there.
+    await closeAssignmentHistoryForEmployee(db, {
+        employeeId: coverId,
+        workDate,
+        isOvertime: false,
+        effectiveToHour: (fromHour ?? (hours[hours.length - 1] + 1)) - 1
+    });
+
+    // 2. Remove them from the vacant station. WITH an employee_id predicate — a concurrent
+    //    request may have put somebody else there, and that person must not be deleted.
+    await db.query(
+        `DELETE FROM employee_workstation_assignments
+         WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3
+           AND employee_id = $4 AND is_overtime = false`,
+        [line, workDate, adjustment.vacant_workstation_code, coverId]
+    );
+
+    // 3. Back onto their own station. Normally nobody is there (their row was removed when the
+    //    coverage started), but close out whoever moved in meanwhile.
+    await closeHistoryForWorkstationAssignmentIfNeeded(db, {
+        lineId: line,
+        workDate,
+        workstationCode: adjustment.from_workstation_code,
+        isOvertime: false,
+        nextEmployeeId: coverId
+    });
+    await clearEmployeeAssignmentConflicts(db, coverId, workDate, false, line, adjustment.from_workstation_code);
+
+    const planWs = await db.query(
+        `SELECT lpw.id
+         FROM line_plan_workstations lpw
+         LEFT JOIN line_daily_plans ldp
+                ON ldp.line_id = lpw.line_id AND ldp.work_date = lpw.work_date
+         WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.workstation_code = $3
+           AND (ldp.product_id IS NULL OR lpw.product_id = ldp.product_id)
+         ORDER BY lpw.id DESC LIMIT 1`,
+        [line, workDate, adjustment.from_workstation_code]
+    );
+    const planWsId = planWs.rows[0]?.id || null;
+
+    await db.query(
+        `INSERT INTO employee_workstation_assignments
+           (line_id, work_date, workstation_code, employee_id, is_overtime,
+            line_plan_workstation_id, is_linked, linked_at, attendance_start, assigned_at)
+         VALUES ($1, $2, $3, $4, false, $5, true, $6, $6, NOW())
+         ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+         DO UPDATE SET employee_id              = EXCLUDED.employee_id,
+                       line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                       is_linked                = true,
+                       linked_at                = EXCLUDED.linked_at,
+                       attendance_start         = COALESCE(employee_workstation_assignments.attendance_start,
+                                                           EXCLUDED.attendance_start),
+                       assigned_at              = NOW()`,
+        [line, workDate, adjustment.from_workstation_code, coverId, planWsId, returnTime]
+    );
+
+    // 4. Open their window back at their own station. Skipped when the return lands after the
+    //    last working hour — there is no hour left to attribute.
+    if (fromHour !== null && fromHour !== undefined) {
+        await syncAssignmentHistoryForCurrentRow(db, {
+            lineId: line,
+            workDate,
+            workstationCode: adjustment.from_workstation_code,
+            employeeId: coverId,
+            linePlanWorkstationId: planWsId,
+            isOvertime: false,
+            isLinked: true,
+            linkedAt: returnTime,
+            attendanceStart: returnTime,
+            forceFromHour: fromHour
+        });
+    }
+    return { employeeId: coverId, workstationCode: adjustment.from_workstation_code };
 }
 
 // Handles the "why is this linked employee being replaced?" decision when a
@@ -568,6 +998,33 @@ async function handleReplacedEmployeeReason(db, {
                          WHEN hist.line_plan_workstation_id IS NOT NULL
                           AND ws_match.id = hist.line_plan_workstation_id THEN 0
                          ELSE 1
+                     END,
+                     -- Same fallback ranking as getEmployeeProgressForWindow: when the history
+                     -- row has no plan id, a line/date carrying several products' workstation
+                     -- sets would otherwise resolve by max(id) onto an idle product and report
+                     -- no output — marking a worker absent who in fact produced.
+                     CASE
+                         WHEN EXISTS (
+                             SELECT 1
+                             FROM line_plan_workstation_processes pp
+                             JOIN line_process_hourly_progress ll
+                               ON ll.process_id = pp.product_process_id
+                              AND ll.line_id = hist.line_id
+                              AND ll.work_date = hist.work_date
+                             WHERE pp.workstation_id = ws_match.id
+                         ) THEN 0
+                         ELSE 1
+                     END,
+                     CASE
+                         WHEN ws_match.product_id = (
+                                  SELECT d.product_id FROM line_daily_plans d
+                                   WHERE d.line_id = hist.line_id AND d.work_date = hist.work_date
+                              ) THEN 0
+                         WHEN ws_match.product_id = (
+                                  SELECT d.incoming_product_id FROM line_daily_plans d
+                                   WHERE d.line_id = hist.line_id AND d.work_date = hist.work_date
+                              ) THEN 1
+                         ELSE 2
                      END,
                      ws_match.id DESC
                  LIMIT 1
@@ -770,6 +1227,191 @@ async function getLineActualOutput(db, lineId, workDate, productId = null) {
         [lineId, workDate]
     );
     return parseInt(outputResult.rows[0]?.total || 0, 10);
+}
+
+// Finished pieces per hour_slot for one product on a line: the last workstation's last
+// process, i.e. the same representative process getLineActualOutput totals for the day.
+async function getLineHourlyFinishedOutput(db, lineId, workDate, productId) {
+    const outputByHour = {};
+    const normalizedProductId = productId ? parseInt(productId, 10) : null;
+    if (!lineId || !workDate || !normalizedProductId) return outputByHour;
+
+    const result = await db.query(
+        `WITH last_ws AS (
+             SELECT id
+             FROM line_plan_workstations
+             WHERE line_id = $1
+               AND work_date = $2
+               AND product_id = $3
+             ORDER BY workstation_number DESC, id DESC
+             LIMIT 1
+         ),
+         representative_process AS (
+             SELECT lpwp.product_process_id
+             FROM last_ws
+             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = last_ws.id
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             ORDER BY lpwp.sequence_in_workstation DESC,
+                      pp.sequence_number DESC,
+                      lpwp.product_process_id DESC
+             LIMIT 1
+         )
+         SELECT lph.hour_slot, MAX(lph.quantity) AS qty
+         FROM representative_process rp
+         JOIN line_process_hourly_progress lph
+           ON lph.process_id = rp.product_process_id
+          AND lph.line_id = $1
+          AND lph.work_date = $2
+         GROUP BY lph.hour_slot`,
+        [lineId, workDate, normalizedProductId]
+    );
+    for (const row of result.rows) {
+        outputByHour[row.hour_slot] = parseInt(row.qty || 0, 10) || 0;
+    }
+    return outputByHour;
+}
+
+// The stations that finish the garment: any workstation in the day's plan holding an operation whose
+// name STARTS with the words "final stitching". Trailing words are expected and fine — "Final Stitching
+// of Wallet Shell Side", "Final stitching 1" — but a leading word means a different operation:
+// "Puller Final Stitching in AMS" is a puller machine in the middle of the line, not the final stage.
+// Punctuation and double spaces are squashed first.
+async function getFinalStitchingStations(db, lineId, workDate) {
+    const result = await db.query(
+        `SELECT DISTINCT lpw.id,
+                lpw.workstation_code,
+                lpw.workstation_number,
+                lpw.takt_time_seconds,
+                lpw.actual_sam_seconds
+         FROM line_plan_workstations lpw
+         JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+         JOIN product_processes pp ON pp.id = lpwp.product_process_id
+         JOIN operations o ON o.id = pp.operation_id
+         WHERE lpw.line_id = $1
+           AND lpw.work_date = $2
+           AND regexp_replace(lower(o.operation_name), '[^a-z0-9]+', ' ', 'g') LIKE 'final stitching%'
+         ORDER BY lpw.workstation_number`,
+        [lineId, workDate]
+    );
+    return result.rows;
+}
+
+async function getLastPlanWorkstationCode(db, lineId, workDate, productId) {
+    const normalizedProductId = productId ? parseInt(productId, 10) : null;
+    if (!normalizedProductId) return null;
+    const result = await db.query(
+        `SELECT workstation_code
+         FROM line_plan_workstations
+         WHERE line_id = $1 AND work_date = $2 AND product_id = $3
+         ORDER BY workstation_number DESC, id DESC
+         LIMIT 1`,
+        [lineId, workDate, normalizedProductId]
+    );
+    return result.rows[0]?.workstation_code || null;
+}
+
+// The operations each workstation performs, as one label per station ("Cleaning · Puller fixing"),
+// keyed the way normalizeWsCode keys them so "WS01" and "W01" resolve to the same station.
+// Names are deduped and kept in the order they run inside the station.
+async function getWorkstationProcessLabels(db, lineId, workDate) {
+    const result = await db.query(
+        `WITH ops AS (
+             SELECT lpw.workstation_code,
+                    o.operation_name,
+                    MIN(lpwp.sequence_in_workstation) AS ws_sequence,
+                    MIN(pp.sequence_number) AS process_sequence
+             FROM line_plan_workstations lpw
+             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             JOIN operations o ON o.id = pp.operation_id
+             WHERE lpw.line_id = $1
+               AND lpw.work_date = $2
+             GROUP BY lpw.workstation_code, o.operation_name
+         )
+         SELECT workstation_code,
+                STRING_AGG(operation_name, ' · ' ORDER BY ws_sequence, process_sequence, operation_name) AS processes
+         FROM ops
+         GROUP BY workstation_code`,
+        [lineId, workDate]
+    );
+    const labels = {};
+    for (const row of result.rows) {
+        labels[normalizeWsCode(row.workstation_code)] = row.processes || '';
+    }
+    return labels;
+}
+
+// What the TV board's Done / Achieved / Line efficiency tiles describe. The plan's last workstation is
+// not the line's output when the final stage is split over parallel stations: two "Final Stitching"
+// stations each carry half the takt, so their outputs and their targets have to be added. Falls back
+// to the last workstation for a plan that has no such station.
+async function getFinalStitchingSummary(db, lineId, workDate, options = {}) {
+    const { endHour = null, hoursCounted = 0, lineHourlyTarget = 0, productId = null, incomingProductId = null } = options;
+    const hours = Math.max(0, hoursCounted);
+    const stations = await getFinalStitchingStations(db, lineId, workDate);
+
+    if (!stations.length) {
+        const [primaryByHour, incomingByHour, lastCode] = await Promise.all([
+            getLineHourlyFinishedOutput(db, lineId, workDate, productId),
+            getLineHourlyFinishedOutput(db, lineId, workDate, incomingProductId),
+            getLastPlanWorkstationCode(db, lineId, workDate, productId)
+        ]);
+        const finished = (byHour) => Object.entries(byHour)
+            .filter(([hour]) => endHour != null && parseInt(hour, 10) <= endHour)
+            .reduce((sum, [, qty]) => sum + qty, 0);
+        return {
+            mode: 'last_workstation',
+            station_codes: lastCode ? [lastCode] : [],
+            hourly_target: lineHourlyTarget,
+            required: lineHourlyTarget * hours,
+            achieved: finished(primaryByHour) + finished(incomingByHour),
+            // The board keeps showing the Efficiency Report's line efficiency for these lines.
+            efficiency_percent: null,
+            hours_counted: hours
+        };
+    }
+
+    const outputMap = endHour == null
+        ? {}
+        : await getWorkstationOutputMap(db, lineId, workDate, stations.map(s => s.id), { endHour });
+
+    // One entry per physical workstation: a changeover day holds a primary row and an incoming row for
+    // the same station, and its output counts from both while its target counts once.
+    const byCode = new Map();
+    for (const station of stations) {
+        const key = normalizeWsCode(station.workstation_code);
+        const output = parseInt(outputMap[station.id] || 0, 10) || 0;
+        const existing = byCode.get(key);
+        if (existing) {
+            existing.output += output;
+            if (!(existing.takt > 0)) existing.takt = parseFloat(station.takt_time_seconds) || 0;
+            if (!(existing.sam > 0)) existing.sam = parseFloat(station.actual_sam_seconds) || 0;
+            continue;
+        }
+        byCode.set(key, {
+            code: station.workstation_code,
+            number: parseInt(station.workstation_number, 10) || 0,
+            output,
+            takt: parseFloat(station.takt_time_seconds) || 0,
+            sam: parseFloat(station.actual_sam_seconds) || 0
+        });
+    }
+
+    const merged = [...byCode.values()].sort((a, b) => a.number - b.number);
+    const hourlyTarget = Math.round(merged.reduce(
+        (sum, s) => sum + (s.takt > 0 ? computeHourlyTargetFromTakt(s.takt) : lineHourlyTarget), 0
+    ));
+    const earnedHours = merged.reduce((sum, s) => sum + (s.output * s.sam) / 3600, 0);
+    const availableHours = merged.length * hours;
+    return {
+        mode: 'final_stitching',
+        station_codes: merged.map(s => s.code),
+        hourly_target: hourlyTarget,
+        required: hourlyTarget * hours,
+        achieved: merged.reduce((sum, s) => sum + s.output, 0),
+        efficiency_percent: availableHours > 0 ? Math.round((earnedHours / availableHours) * 10000) / 100 : null,
+        hours_counted: hours
+    };
 }
 
 async function getProductTargetQuantity(db, productId, fallbackTargetUnits = 0) {
@@ -1205,6 +1847,40 @@ async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
         incomingByCode.get(nk).push(row);
     }
 
+    // Regular-shift output is read straight from hourly progress rather than from group_wip.
+    // group_wip only refreshes while feed/WIP tracking is enabled, so sourcing it from there left
+    // OT reporting a wrong regular output the moment that tracking was switched off. Same
+    // definition refreshGroupWip uses: per hour slot take MAX(quantity) on the group's LAST
+    // workstation, then sum the slots — the group finishes units at its last station, so summing
+    // every station would double-count.
+    const groupOutputResult = await db.query(
+        `SELECT grp.group_identifier, COALESCE(SUM(ws_hr.qty), 0) AS output_qty
+         FROM (
+             SELECT DISTINCT ON (COALESCE(lpw.group_name, lpw.workstation_code))
+                    COALESCE(lpw.group_name, lpw.workstation_code) AS group_identifier,
+                    lpw.id AS last_workstation_id
+             FROM line_plan_workstations lpw
+             WHERE lpw.line_id = $1 AND lpw.work_date = $2
+             ORDER BY COALESCE(lpw.group_name, lpw.workstation_code),
+                      lpw.workstation_number DESC, lpw.id DESC
+         ) grp
+         LEFT JOIN LATERAL (
+             SELECT lphp.hour_slot, MAX(lphp.quantity) AS qty
+             FROM line_plan_workstation_processes lpwp
+             JOIN line_process_hourly_progress lphp ON lphp.process_id = lpwp.product_process_id
+             WHERE lpwp.workstation_id = grp.last_workstation_id
+               AND lphp.line_id = $1 AND lphp.work_date = $2
+             GROUP BY lphp.hour_slot
+         ) ws_hr ON true
+         GROUP BY grp.group_identifier`,
+        [lineId, workDate]
+    );
+    const groupOutputMap = new Map(
+        groupOutputResult.rows.map(row => [String(row.group_identifier), parseInt(row.output_qty, 10) || 0])
+    );
+
+    // Genuine WIP (materials in minus output) still needs feed, so it stays sourced from group_wip
+    // and simply reads 0 while feed/WIP tracking is off.
     const groupWipResult = await db.query(
         `SELECT group_name, materials_in, output_qty, wip_quantity
          FROM group_wip
@@ -1252,7 +1928,7 @@ async function getEffectiveOtSourceWorkstations(db, lineId, workDate) {
             source_emp_name: firstActive.assigned_emp_name || null,
             actual_sam_seconds: parseFloat(firstActive.actual_sam_seconds || 0),
             workload_pct: parseFloat(firstActive.workload_pct || 0),
-            regular_shift_output_quantity: parseInt(groupWip?.output_qty || 0, 10) || 0,
+            regular_shift_output_quantity: groupOutputMap.get(groupKey) || 0,
             regular_shift_wip_quantity: parseInt(groupWip?.wip_quantity || 0, 10) || 0,
             processes: activeRows.map(row => ({
                 process_id: row.process_id,
@@ -1371,12 +2047,153 @@ async function getWorkstationChangeoverSnapshot(db, {
     };
 }
 
+// Primary and incoming layouts for the same day are rarely the same size: a 100-station product
+// can change over to an 80-station one, where the last 20 stations simply are not part of the new
+// style, and the reverse happens too. Classifying the two layouts against each other is what makes
+// promotion possible at all — the gate used to demand that *every* primary station switch to CO,
+// which a shorter incoming layout can never satisfy, deadlocking the line for the rest of the day.
+//
+//   matched — the station exists in both layouts; it must switch to CO before promotion
+//   surplus — primary-only; not needed after changeover, so its operator is released and the
+//             supervisor reassigns them elsewhere (see releaseSurplusWorkstation)
+//   coOnly  — incoming-only; a station the new style adds, staffable while changeover runs
+//
+// Codes are compared through normalizeWsCode so W01 / WS01 / ws1 resolve to one station. The three
+// call sites used to spell this comparison three different ways — a numeric regexp in
+// activate-workstation, raw string equality in promotion, normalizeWsCode in the read endpoint —
+// so a layout mixing spellings could pass activation and then fail promotion.
+async function classifyChangeoverWorkstations(db, {
+    lineId,
+    workDate,
+    primaryProductId,
+    incomingProductId,
+    forUpdate = false
+}) {
+    const result = { matched: [], surplus: [], coOnly: [] };
+    if (!lineId || !workDate || !primaryProductId) return result;
+
+    const fetchLayout = async (productId) => {
+        if (!productId) return [];
+        const res = await db.query(
+            `SELECT lpw.id, lpw.workstation_code, lpw.workstation_number, lpw.group_name,
+                    lpw.ws_changeover_active, lpw.co_employee_id,
+                    ewa.employee_id, ewa.is_linked, e.emp_code, e.emp_name
+             FROM line_plan_workstations lpw
+             LEFT JOIN employee_workstation_assignments ewa
+               ON ewa.line_id = lpw.line_id
+              AND ewa.work_date = lpw.work_date
+              AND ewa.workstation_code = lpw.workstation_code
+              AND ewa.is_overtime = false
+             LEFT JOIN employees e ON e.id = ewa.employee_id
+             WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
+             ORDER BY lpw.workstation_number, lpw.workstation_code`
+            + (forUpdate ? ' FOR UPDATE OF lpw' : ''),
+            [lineId, workDate, productId]
+        );
+        // One entry per physical station. Two plan rows sharing a code would otherwise be counted
+        // twice on both sides of the gate.
+        const byCode = new Map();
+        for (const row of res.rows) {
+            const key = normalizeWsCode(row.workstation_code);
+            if (!byCode.has(key)) byCode.set(key, row);
+        }
+        return Array.from(byCode.entries());
+    };
+
+    const primaryEntries = await fetchLayout(primaryProductId);
+    const incomingEntries = await fetchLayout(incomingProductId);
+    const incomingByCode = new Map(incomingEntries);
+
+    for (const [key, row] of primaryEntries) {
+        const incoming = incomingByCode.get(key) || null;
+        const entry = {
+            key,
+            workstation_code: row.workstation_code,
+            workstation_number: row.workstation_number,
+            group_name: row.group_name || null,
+            primary_workstation_id: row.id,
+            incoming_workstation_id: incoming ? incoming.id : null,
+            ws_changeover_active: row.ws_changeover_active === true,
+            employee_id: row.employee_id ? parseInt(row.employee_id, 10) : null,
+            is_linked: row.is_linked === true,
+            emp_code: row.emp_code || null,
+            emp_name: row.emp_name || null
+        };
+        (incoming ? result.matched : result.surplus).push(entry);
+    }
+
+    const primaryKeys = new Set(primaryEntries.map(([key]) => key));
+    for (const [key, row] of incomingEntries) {
+        if (primaryKeys.has(key)) continue;
+        result.coOnly.push({
+            key,
+            workstation_code: row.workstation_code,
+            workstation_number: row.workstation_number,
+            group_name: row.group_name || null,
+            primary_workstation_id: null,
+            incoming_workstation_id: row.id,
+            ws_changeover_active: row.ws_changeover_active === true,
+            employee_id: row.employee_id ? parseInt(row.employee_id, 10) : null,
+            is_linked: row.is_linked === true,
+            emp_code: row.emp_code || null,
+            emp_name: row.emp_name || null,
+            co_employee_id: row.co_employee_id ? parseInt(row.co_employee_id, 10) : null
+        });
+    }
+
+    return result;
+}
+
+// A surplus station is only in the way while somebody is still standing at it. Releasing one is not
+// a departure — the operator is still on shift and the supervisor will put them on another
+// workstation — so no worker_departures row is written. Two things have to happen: stop the clock
+// here, and free the station.
+//
+// Closing the history window at the last completed hour is what keeps the efficiency report honest.
+// The hours the operator actually ran the outgoing style still count, and the hours after the
+// changeover — during which this station produces nothing, because the style no longer uses it —
+// stop adding to their denominator. Leaving the window open is what produces the ghost 0% rows.
+async function releaseSurplusWorkstation(db, { lineId, workDate, workstationCode, effectiveToHour = null }) {
+    if (!lineId || !workDate || !workstationCode) return null;
+    const existing = await db.query(
+        `SELECT employee_id, is_linked
+         FROM employee_workstation_assignments
+         WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false
+         LIMIT 1`,
+        [lineId, workDate, workstationCode]
+    );
+    const row = existing.rows[0];
+    if (!row || !row.employee_id) return null;
+    const employeeId = parseInt(row.employee_id, 10);
+
+    if (row.is_linked) {
+        await closeAssignmentHistoryForEmployee(db, {
+            employeeId,
+            workDate,
+            isOvertime: false,
+            ...(Number.isFinite(effectiveToHour) ? { effectiveToHour } : {})
+        });
+    }
+
+    // Guarded by employee_id: a concurrent request may have already put somebody else here, and
+    // that person's assignment must survive.
+    await db.query(
+        `DELETE FROM employee_workstation_assignments
+         WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3
+           AND is_overtime = false AND employee_id = $4`,
+        [lineId, workDate, workstationCode, employeeId]
+    );
+
+    return { employeeId, workstationCode };
+}
+
 async function buildChangeoverPromotionSnapshot(db, {
     lineId,
     workDate,
     previousPrimaryProductId,
     newPrimaryProductId,
-    beforePlan
+    beforePlan,
+    releasedSurplusWorkstations = []
 }) {
     const productIds = [previousPrimaryProductId, newPrimaryProductId]
         .map(id => parseInt(id, 10))
@@ -1476,6 +2293,9 @@ async function buildChangeoverPromotionSnapshot(db, {
         previous_daily_plan: beforePlan,
         previous_primary_product_id: previousPrimaryProductId,
         new_primary_product_id: newPrimaryProductId,
+        // Stations the new style does not use, whose operators this promotion takes off the line.
+        // Recorded here because the assignment rows themselves are deleted moments later.
+        released_surplus_workstations: releasedSurplusWorkstations,
         primary_workstations: primaryWorkstationsResult.rows,
         incoming_workstations: incomingWorkstationsResult.rows,
         employee_assignments: assignmentsResult.rows,
@@ -1725,20 +2545,76 @@ function getPreservedRegularAssignmentState(stateByEmployee, employeeId) {
 }
 
 const REPORT_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
+const toOrdinal = (n) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    return (mod10 === 1 && mod100 !== 11) ? `${n}st`
+        : (mod10 === 2 && mod100 !== 12) ? `${n}nd`
+        : (mod10 === 3 && mod100 !== 13) ? `${n}rd`
+        : `${n}th`;
+};
+// "1st", "2nd", ... counted over the working slots (lunch skipped), so hour_slot 13 reads
+// as the 5th hour of the shift the way the supervisors count it. OT slots keep clock time.
+const formatShiftHourOrdinal = (hourSlot) => {
+    const hour = parseInt(hourSlot, 10);
+    if (!Number.isFinite(hour)) return '';
+    const idx = REPORT_WORK_HOURS.indexOf(hour);
+    if (idx < 0) return `${String(hour).padStart(2, '0')}:00`;
+    return toOrdinal(idx + 1);
+};
 const formatHourRangeLabel = (hourSlot) => {
     const hour = parseInt(hourSlot, 10);
     if (!Number.isFinite(hour)) return '';
     const start = `${String(hour).padStart(2, '0')}:00`;
     const end = `${String(hour + 1).padStart(2, '0')}:00`;
     const idx = REPORT_WORK_HOURS.indexOf(hour);
-    const n = (idx >= 0 ? idx : 0) + 1;
-    const mod10 = n % 10;
-    const mod100 = n % 100;
-    const ord = (mod10 === 1 && mod100 !== 11) ? `${n}st`
-        : (mod10 === 2 && mod100 !== 12) ? `${n}nd`
-        : (mod10 === 3 && mod100 !== 13) ? `${n}rd`
-        : `${n}th`;
-    return `${ord} hour (${start}-${end})`;
+    return `${toOrdinal((idx >= 0 ? idx : 0) + 1)} hour (${start}-${end})`;
+};
+
+// [{hour, reason}] -> "Shipment rework - 1st, 2nd & 3rd hour; INEFFICIENT - 8th hour".
+// Hours are grouped under each reason and kept in the order the reason first appeared,
+// so the supervisor reads the day left to right.
+const formatReasonHours = (reasonHours) => {
+    if (!Array.isArray(reasonHours) || !reasonHours.length) return null;
+    const byReason = new Map();
+    const entries = reasonHours
+        .map(item => ({ hour: parseInt(item?.hour, 10), reason: String(item?.reason || '').trim() }))
+        .filter(item => Number.isFinite(item.hour) && item.reason)
+        .sort((a, b) => a.hour - b.hour);
+    for (const entry of entries) {
+        // One hour can carry several reasons (different processes on the same workstation).
+        for (const reason of entry.reason.split(';').map(r => r.trim()).filter(Boolean)) {
+            if (!byReason.has(reason)) byReason.set(reason, new Set());
+            byReason.get(reason).add(entry.hour);
+        }
+    }
+    if (!byReason.size) return null;
+    const parts = [];
+    for (const [reason, hours] of byReason) {
+        const labels = [...hours].sort((a, b) => a - b).map(formatShiftHourOrdinal).filter(Boolean);
+        if (!labels.length) { parts.push(reason); continue; }
+        const hourText = labels.length > 1
+            ? `${labels.slice(0, -1).join(', ')} & ${labels[labels.length - 1]}`
+            : labels[0];
+        parts.push(`${reason} - ${hourText} hour`);
+    }
+    return parts.join('; ');
+};
+
+// Merges two [{hour, reason}] lists (same worker on two lines / two stints the same day).
+const mergeReasonHours = (a, b) => {
+    const seen = new Set();
+    const merged = [];
+    for (const item of [...(a || []), ...(b || [])]) {
+        const hour = parseInt(item?.hour, 10);
+        const reason = String(item?.reason || '').trim();
+        if (!Number.isFinite(hour) || !reason) continue;
+        const key = `${hour}|${reason}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ hour, reason });
+    }
+    return merged.sort((x, y) => x.hour - y.hour);
 };
 
 async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = null, endHour = null, isOvertime = false, hoursDenom = 1, splitBySource = false } = {}) {
@@ -1747,6 +2623,11 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
         ? `, source_product_id, STRING_AGG(DISTINCT workstation_code, ', ' ORDER BY workstation_code) AS workstation_codes`
         : '';
     const totalsSourceGroup = splitBySource ? ', source_product_id' : '';
+    const reasonSourceSelect = splitBySource ? ', a.source_product_id' : '';
+    const reasonSourceGroup = splitBySource ? ', source_product_id' : '';
+    const reasonJoinPredicate = splitBySource
+        ? ' AND er.source_product_id IS NOT DISTINCT FROM et.source_product_id'
+        : '';
     const outerSourceField = splitBySource ? 'et.source_product_id' : 'ca.source_product_id';
     const outerWsCodesField = splitBySource ? 'et.workstation_codes' : 'NULL';
     const workstationTable = useOt ? 'line_ot_workstations' : 'line_plan_workstations';
@@ -1757,16 +2638,24 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
     const lateralProductField = useOt ? 'ws_match.source_product_id' : 'ws_match.product_id';
     const lateralWorkloadField = useOt ? 'NULL::numeric AS workload_pct' : 'ws_match.workload_pct AS workload_pct';
     const lateralCustomTaktField = useOt ? 'false' : 'COALESCE(ws_match.is_custom_takt, false)';
+    // line_ot_workstations has no takt_time_seconds column — OT rows report 0 takt.
+    const lateralTaktField = useOt
+        ? '0::numeric AS takt_time_seconds'
+        : 'ws_match.takt_time_seconds';
     let incomingProductId = null;
+    let planProductId = null;
     if (!useOt) {
         const planResult = await db.query(
-            `SELECT incoming_product_id
+            `SELECT product_id, incoming_product_id
              FROM line_daily_plans
              WHERE line_id = $1 AND work_date = $2`,
             [lineId, workDate]
         );
         incomingProductId = planResult.rows[0]?.incoming_product_id
             ? parseInt(planResult.rows[0].incoming_product_id, 10)
+            : null;
+        planProductId = planResult.rows[0]?.product_id
+            ? parseInt(planResult.rows[0].product_id, 10)
             : null;
     }
     const historyHours = getHistoryHours(useOt);
@@ -1791,6 +2680,73 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
     const overtimeIndex = params.length;
     params.push(windowEndHour);
     const windowEndIndex = params.length;
+    // A line/date can carry several products' workstation sets (re-plan, changeover,
+    // leftovers). When a history row has no line_plan_workstation_id we must fall back to
+    // the row for the product actually being run that day — picking the highest id instead
+    // lands on a stale product whose processes have no output, and the worker reads zero.
+    // OT resolves against line_ot_workstations, which has no product_id — bind these only
+    // for the regular path, or the query would supply parameters it never references.
+    // OT workstations live in line_ot_workstations, which carries neither line_id nor
+    // work_date — those sit on the parent line_ot_plans row. history.line_plan_workstation_id
+    // is an id in line_plan_workstations, a different id space, so OT matches on code alone.
+    let lateralMatch = `WHERE ws_match.workstation_code = hist.workstation_code
+                   AND EXISTS (
+                         SELECT 1 FROM line_ot_plans otp
+                          WHERE otp.id = ws_match.ot_plan_id
+                            AND otp.line_id = hist.line_id
+                            AND otp.work_date = hist.work_date
+                       )
+                 ORDER BY ws_match.id DESC
+                 LIMIT 1`;
+    if (!useOt) {
+        params.push(planProductId);
+        const planIdx = params.length;
+        params.push(incomingProductId);
+        const incomingIdx = params.length;
+        // An explicit line_plan_workstation_id is a recorded fact and always wins — a line
+        // often runs a product other than the one named on the daily plan, so the plan's
+        // product cannot be used to judge an id stale. These ranks only steer the fallback
+        // used when the id is NULL, where picking the highest id lands on an idle product's
+        // workstation and the worker reads zero.
+        lateralMatch = `WHERE (
+                         hist.line_plan_workstation_id IS NOT NULL
+                         AND ws_match.id = hist.line_plan_workstation_id
+                       )
+                    OR (
+                         hist.line_plan_workstation_id IS NULL
+                         AND ws_match.line_id = hist.line_id
+                         AND ws_match.work_date = hist.work_date
+                         AND ws_match.workstation_code = hist.workstation_code
+                       )
+                 ORDER BY
+                     CASE
+                         WHEN hist.line_plan_workstation_id IS NOT NULL
+                          AND ws_match.id = hist.line_plan_workstation_id THEN 0
+                         ELSE 1
+                     END,
+                     -- Which candidate actually carries output that day decides next: a line
+                     -- may run the changeover product rather than the plan's primary, so
+                     -- product rank alone would pick an idle workstation and read as zero.
+                     CASE
+                         WHEN EXISTS (
+                             SELECT 1
+                             FROM line_plan_workstation_processes pp
+                             JOIN line_process_hourly_progress ll
+                               ON ll.process_id = pp.product_process_id
+                              AND ll.line_id = hist.line_id
+                              AND ll.work_date = hist.work_date
+                             WHERE pp.workstation_id = ws_match.id
+                         ) THEN 0
+                         ELSE 1
+                     END,
+                     CASE
+                         WHEN ws_match.product_id = $${planIdx}::int THEN 0
+                         WHEN ws_match.product_id = $${incomingIdx}::int THEN 1
+                         ELSE 2
+                     END,
+                     ws_match.id DESC
+                 LIMIT 1`;
+    }
 
     // Ghost-row safety net (cumulative views only): an employee whose windows on this
     // line+date are ALL closed and produced zero output was replaced/unlinked without
@@ -1837,30 +2793,13 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                  SELECT ws_match.id,
                         ws_match.workstation_number,
                         ws_match.group_name,
-                        ws_match.takt_time_seconds,
+                        ${lateralTaktField},
                         ws_match.actual_sam_seconds,
                         ${lateralCustomTaktField} AS is_custom_takt,
                         ${lateralWorkloadField},
                         ${lateralProductField} AS source_product_id
                  FROM ${workstationTable} ws_match
-                 WHERE (
-                         hist.line_plan_workstation_id IS NOT NULL
-                         AND ws_match.id = hist.line_plan_workstation_id
-                       )
-                    OR (
-                         hist.line_plan_workstation_id IS NULL
-                         AND ws_match.line_id = hist.line_id
-                         AND ws_match.work_date = hist.work_date
-                         AND ws_match.workstation_code = hist.workstation_code
-                       )
-                 ORDER BY
-                     CASE
-                         WHEN hist.line_plan_workstation_id IS NOT NULL
-                          AND ws_match.id = hist.line_plan_workstation_id THEN 0
-                         ELSE 1
-                     END,
-                     ws_match.id DESC
-                 LIMIT 1
+                 ${lateralMatch}
              ) ws ON true
              WHERE hist.line_id = $1
                AND hist.work_date = $2
@@ -1898,9 +2837,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     COALESCE(SUM(wh.hour_output), 0) AS total_output,
                     COALESCE(SUM(wh.hour_rejection), 0) AS total_rejection,
                     COALESCE(SUM((wh.hour_output * a.actual_sam_seconds) / 3600.0), 0) AS total_sah_hours,
-                    MAX(wh.hour_updated) AS last_updated,
-                    STRING_AGG(DISTINCT wh.hour_reason, '; ')
-                        FILTER (WHERE wh.hour_reason IS NOT NULL AND wh.hour_reason <> '') AS reasons
+                    MAX(wh.hour_updated) AS last_updated
              FROM assignments a
              LEFT JOIN ws_hour wh
                ON wh.workstation_id = a.workstation_id
@@ -1908,15 +2845,37 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
               AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
              GROUP BY a.history_id, a.employee_id, a.workstation_id, a.workstation_code, a.workstation_number, a.group_name, a.actual_sam_seconds, a.source_product_id, a.window_closed
          ),
+         employee_reason_hours AS (
+             -- One row per (employee, hour) the employee actually owned, so a shortfall
+             -- reason logged on a workstation is only ever tied to whoever was standing
+             -- there that hour — a later occupant of the same workstation never inherits it.
+             SELECT a.employee_id${reasonSourceSelect},
+                    wh.hour_slot,
+                    STRING_AGG(DISTINCT wh.hour_reason, '; ') AS hour_reason
+             FROM assignments a
+             JOIN ws_hour wh
+               ON wh.workstation_id = a.workstation_id
+              AND wh.hour_slot >= a.effective_from_hour
+              AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
+             WHERE wh.hour_reason IS NOT NULL AND wh.hour_reason <> ''
+             GROUP BY a.employee_id${reasonSourceGroup}, wh.hour_slot
+         ),
+         employee_reasons AS (
+             SELECT employee_id${reasonSourceGroup},
+                    jsonb_agg(
+                        jsonb_build_object('hour', hour_slot, 'reason', hour_reason)
+                        ORDER BY hour_slot
+                    ) AS reason_hours
+             FROM employee_reason_hours
+             GROUP BY employee_id${reasonSourceGroup}
+         ),
          employee_totals AS (
              SELECT employee_id${totalsSourceSelect},
                     COALESCE(SUM(total_output), 0) AS total_output,
                     COALESCE(SUM(total_rejection), 0) AS total_rejection,
                     COALESCE(SUM(total_sah_hours), 0) AS total_sah_hours,
                     BOOL_AND(window_closed) AS all_windows_closed,
-                    MAX(last_updated) AS last_updated,
-                    STRING_AGG(DISTINCT reasons, '; ')
-                        FILTER (WHERE reasons IS NOT NULL AND reasons <> '') AS reasons
+                    MAX(last_updated) AS last_updated
              FROM assignment_stats
              GROUP BY employee_id${totalsSourceGroup}
          ),
@@ -1951,10 +2910,11 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                 COALESCE(et.total_rejection, 0) AS total_rejection,
                 COALESCE(et.total_sah_hours, 0) AS total_sah_hours,
                 et.last_updated,
-                et.reasons
+                er.reason_hours
          FROM employee_totals et
          JOIN employees e ON e.id = et.employee_id
          LEFT JOIN current_assignment ca ON ca.employee_id = et.employee_id
+         LEFT JOIN employee_reasons er ON er.employee_id = et.employee_id${reasonJoinPredicate}
          ${ghostRowFilter}
          ORDER BY ca.workstation_number NULLS LAST, ca.workstation_code, e.emp_code`,
         params
@@ -1969,6 +2929,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
             : 0;
         const sourceProductId = row.source_product_id != null ? parseInt(row.source_product_id, 10) : null;
         const isChangeover = !useOt && !!incomingProductId && sourceProductId === incomingProductId;
+        const reasonHours = Array.isArray(row.reason_hours) ? row.reason_hours : [];
         return {
             id: row.id,
             emp_code: row.emp_code,
@@ -1989,9 +2950,14 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
             is_changeover: isChangeover,
             total_output: output,
             total_rejection: parseInt(row.total_rejection || 0, 10),
+            shortfall_reason_hours: reasonHours,
+            // Kept on the row because applyDepartureEfficiency re-divides the earned hours
+            // by a departed worker's shorter personal denominator; without it every worker
+            // with a worker_departures row reads 0% no matter how much they produced.
+            total_sah_hours: sahHours,
             efficiency_percent: efficiency,
             last_updated: row.last_updated,
-            shortfall_reasons: row.reasons || null
+            shortfall_reasons: formatReasonHours(reasonHours)
         };
     });
 }
@@ -2004,23 +2970,50 @@ async function getCumulativeEmployeeProgress(db, lineId, workDate, endHour, isOv
     return getEmployeeProgressForWindow(db, lineId, workDate, { endHour, isOvertime, hoursDenom, splitBySource });
 }
 
-// Returns Map<employeeId(int), personal_hoursDenom> for employees who departed mid-day on lineId/workDate.
-// personal_hoursDenom = number of REGULAR_HISTORY_HOURS slots <= the departure hour.
-async function getDepartureHourDenomMap(db, lineId, workDate) {
+// Returns Map<employeeId(int), personal_hoursDenom> for workers who lost working hours to a
+// mid-day departure on lineId/workDate. The denominator is the shift minus the UNION of the
+// absent slots implied by each departure/return pair — union, not sum, so two overlapping
+// absences are not charged twice. Because the boundary hours come from the same
+// resolveDepartureReturnHours() the history windows are built from, the hours summed into
+// total_sah_hours and the hours in this denominator are the same set by construction.
+//
+// A worker who departed and has not returned (return_time NULL) reproduces the old behaviour
+// exactly: every slot after the departure hour is absent.
+//
+// endHour clamps the shift to the hours the report has actually reached. Without it a
+// departure at 11:36 retroactively shrinks the denominator of the 10:00 view to 4 against a
+// 3-hour window, understating that worker's efficiency by 25%.
+async function getDepartureHourDenomMap(db, lineId, workDate, { endHour = null, isOvertime = false } = {}) {
+    const hours = getHistoryHours(isOvertime);
+    const shiftHours = Number.isFinite(endHour) ? hours.filter(h => h <= endHour) : hours.slice();
+    if (!shiftHours.length) return new Map();
+
     const result = await db.query(
-        `SELECT employee_id, departure_time
+        `SELECT employee_id, departure_time, return_time
          FROM worker_departures
-         WHERE line_id = $1 AND work_date = $2`,
+         WHERE line_id = $1 AND work_date = $2
+         ORDER BY employee_id, departure_time`,
         [lineId, workDate]
     );
-    const map = new Map();
+
+    const absentByEmployee = new Map();
     for (const row of result.rows) {
-        const deptHour = new Date(row.departure_time).getHours();
-        const lastValidHour = REGULAR_HISTORY_HOURS.filter(h => h <= deptHour).slice(-1)[0] ?? null;
-        if (lastValidHour !== null) {
-            const denom = REGULAR_HISTORY_HOURS.filter(h => h <= lastValidHour).length;
-            map.set(parseInt(row.employee_id, 10), denom);
-        }
+        const employeeId = parseInt(row.employee_id, 10);
+        if (!employeeId) continue;
+        const { absentHours } = resolveDepartureReturnHours(row.departure_time, row.return_time, isOvertime);
+        if (!absentByEmployee.has(employeeId)) absentByEmployee.set(employeeId, new Set());
+        const bucket = absentByEmployee.get(employeeId);
+        for (const h of absentHours) bucket.add(h);
+    }
+
+    const map = new Map();
+    for (const [employeeId, absent] of absentByEmployee) {
+        const denom = shiftHours.filter(h => !absent.has(h)).length;
+        // denom === shiftHours.length: they left and came back inside the same hour and lost
+        // nothing — leave them on the caller's shift-wide denominator rather than overriding
+        // with an identical value. denom === 0: absent for every hour the report has reached,
+        // so no denominator exists — leave the row alone instead of dividing by zero.
+        if (denom > 0 && denom < shiftHours.length) map.set(employeeId, denom);
     }
     return map;
 }
@@ -2031,7 +3024,9 @@ function applyDepartureEfficiency(rows, denomMap) {
     return rows.map(emp => {
         const personalDenom = denomMap.get(emp.id);
         if (!Number.isFinite(personalDenom) || personalDenom <= 0) return emp;
-        const sahHours = parseFloat(emp.total_sah_hours || 0);
+        const sahHours = parseFloat(emp.total_sah_hours);
+        // Never zero out a row we cannot recompute — leave the original efficiency alone.
+        if (!Number.isFinite(sahHours)) return emp;
         const efficiency = sahHours > 0
             ? Math.round((sahHours / personalDenom) * 10000) / 100
             : 0;
@@ -2048,15 +3043,19 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
     const lateralProductField = useOt ? 'ws_match.source_product_id' : 'ws_match.product_id';
     const lateralWorkloadField = useOt ? 'NULL::numeric AS workload_pct' : 'ws_match.workload_pct AS workload_pct';
     let incomingProductId = null;
+    let planProductId = null;
     if (!useOt) {
         const planResult = await db.query(
-            `SELECT incoming_product_id
+            `SELECT product_id, incoming_product_id
              FROM line_daily_plans
              WHERE line_id = $1 AND work_date = $2`,
             [lineId, workDate]
         );
         incomingProductId = planResult.rows[0]?.incoming_product_id
             ? parseInt(planResult.rows[0].incoming_product_id, 10)
+            : null;
+        planProductId = planResult.rows[0]?.product_id
+            ? parseInt(planResult.rows[0].product_id, 10)
             : null;
     }
     const historyHours = getHistoryHours(useOt);
@@ -2087,6 +3086,73 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
     const overtimeIndex = params.length;
     params.push(windowEndHour);
     const windowEndIndex = params.length;
+    // A line/date can carry several products' workstation sets (re-plan, changeover,
+    // leftovers). When a history row has no line_plan_workstation_id we must fall back to
+    // the row for the product actually being run that day — picking the highest id instead
+    // lands on a stale product whose processes have no output, and the worker reads zero.
+    // OT resolves against line_ot_workstations, which has no product_id — bind these only
+    // for the regular path, or the query would supply parameters it never references.
+    // OT workstations live in line_ot_workstations, which carries neither line_id nor
+    // work_date — those sit on the parent line_ot_plans row. history.line_plan_workstation_id
+    // is an id in line_plan_workstations, a different id space, so OT matches on code alone.
+    let lateralMatch = `WHERE ws_match.workstation_code = hist.workstation_code
+                   AND EXISTS (
+                         SELECT 1 FROM line_ot_plans otp
+                          WHERE otp.id = ws_match.ot_plan_id
+                            AND otp.line_id = hist.line_id
+                            AND otp.work_date = hist.work_date
+                       )
+                 ORDER BY ws_match.id DESC
+                 LIMIT 1`;
+    if (!useOt) {
+        params.push(planProductId);
+        const planIdx = params.length;
+        params.push(incomingProductId);
+        const incomingIdx = params.length;
+        // An explicit line_plan_workstation_id is a recorded fact and always wins — a line
+        // often runs a product other than the one named on the daily plan, so the plan's
+        // product cannot be used to judge an id stale. These ranks only steer the fallback
+        // used when the id is NULL, where picking the highest id lands on an idle product's
+        // workstation and the worker reads zero.
+        lateralMatch = `WHERE (
+                         hist.line_plan_workstation_id IS NOT NULL
+                         AND ws_match.id = hist.line_plan_workstation_id
+                       )
+                    OR (
+                         hist.line_plan_workstation_id IS NULL
+                         AND ws_match.line_id = hist.line_id
+                         AND ws_match.work_date = hist.work_date
+                         AND ws_match.workstation_code = hist.workstation_code
+                       )
+                 ORDER BY
+                     CASE
+                         WHEN hist.line_plan_workstation_id IS NOT NULL
+                          AND ws_match.id = hist.line_plan_workstation_id THEN 0
+                         ELSE 1
+                     END,
+                     -- Which candidate actually carries output that day decides next: a line
+                     -- may run the changeover product rather than the plan's primary, so
+                     -- product rank alone would pick an idle workstation and read as zero.
+                     CASE
+                         WHEN EXISTS (
+                             SELECT 1
+                             FROM line_plan_workstation_processes pp
+                             JOIN line_process_hourly_progress ll
+                               ON ll.process_id = pp.product_process_id
+                              AND ll.line_id = hist.line_id
+                              AND ll.work_date = hist.work_date
+                             WHERE pp.workstation_id = ws_match.id
+                         ) THEN 0
+                         ELSE 1
+                     END,
+                     CASE
+                         WHEN ws_match.product_id = $${planIdx}::int THEN 0
+                         WHEN ws_match.product_id = $${incomingIdx}::int THEN 1
+                         ELSE 2
+                     END,
+                     ws_match.id DESC
+                 LIMIT 1`;
+    }
 
     const result = await db.query(
         `WITH assignments AS (
@@ -2117,24 +3183,7 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
                         ${lateralWorkloadField},
                         ${lateralProductField} AS source_product_id
                  FROM ${workstationTable} ws_match
-                 WHERE (
-                         hist.line_plan_workstation_id IS NOT NULL
-                         AND ws_match.id = hist.line_plan_workstation_id
-                       )
-                    OR (
-                         hist.line_plan_workstation_id IS NULL
-                         AND ws_match.line_id = hist.line_id
-                         AND ws_match.work_date = hist.work_date
-                         AND ws_match.workstation_code = hist.workstation_code
-                       )
-                 ORDER BY
-                     CASE
-                         WHEN hist.line_plan_workstation_id IS NOT NULL
-                          AND ws_match.id = hist.line_plan_workstation_id THEN 0
-                         ELSE 1
-                     END,
-                     ws_match.id DESC
-                 LIMIT 1
+                 ${lateralMatch}
              ) ws ON true
              WHERE hist.line_id = $1
                AND hist.work_date = $2
@@ -2558,6 +3607,7 @@ router.get('/daily-plans', async (req, res) => {
                     pl.line_code,
                     pl.line_name,
                     pl.line_leader,
+                    pl.line_leader_photo,
                     NULL::INTEGER as current_product_id,
                     0 as target_units,
                     NULL::TEXT as current_product_code,
@@ -2751,22 +3801,45 @@ router.patch('/daily-plans', async (req, res) => {
         return res.status(403).json({ success: false, error: 'Production day is locked' });
     }
     try {
-        const lockCheck = await pool.query(
-            `SELECT is_locked FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
+        const beforeRes = await pool.query(
+            `SELECT * FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
             [line_id, work_date]
         );
-        if (lockCheck.rows[0]?.is_locked) {
+        const before = beforeRes.rows[0] || null;
+        if (before?.is_locked) {
             return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
+
+        // A blank target box on the plan screen submits 0, which is indistinguishable from a
+        // deliberate "this line is not running today". Zeroing a target that currently holds a
+        // real number blanks the TV board's day target, every per-station Tgt cell that is not on
+        // a custom takt, and the achieved %, so make the caller confirm it the way an SCO-breaking
+        // product change is confirmed. force_zero_target is the answer to that confirm.
+        const zeroedTargets = [];
+        if (before && !fields.force_zero_target) {
+            for (const key of ['target_units', 'incoming_target_units']) {
+                if (!(key in fields)) continue;
+                const next = parseInt(fields[key] ?? 0, 10) || 0;
+                const prev = parseInt(before[key] || 0, 10) || 0;
+                if (next === 0 && prev > 0) zeroedTargets.push({ field: key, previous: prev });
+            }
+        }
+        delete fields.force_zero_target;
+        if (zeroedTargets.length) {
+            return res.status(200).json({
+                success: false,
+                zero_target_warning: true,
+                zeroed_targets: zeroedTargets,
+                error: zeroedTargets
+                    .map(t => `${t.field === 'target_units' ? 'Daily target' : 'Changeover target'} would drop from ${t.previous} to 0`)
+                    .join('; ')
+            });
         }
 
         // Cap target_units against remaining order quantity if being updated
         let capWarning = null;
         if ('target_units' in fields && parseInt(fields.target_units || 0) > 0) {
-            const existing = await pool.query(
-                `SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2`,
-                [line_id, work_date]
-            );
-            const productId = ('product_id' in fields ? fields.product_id : existing.rows[0]?.product_id);
+            const productId = ('product_id' in fields ? fields.product_id : before?.product_id);
             if (productId) {
                 const capRes = await pool.query(`
                     SELECT
@@ -2834,6 +3907,13 @@ router.patch('/daily-plans', async (req, res) => {
                  WHERE line_id = $1 AND work_date = $2 AND ws_changeover_active = true`,
                 [line_id, work_date]
             );
+            // Same retraction as the per-workstation revert: clearing the flags line-wide without
+            // dropping the cutover records leaves the two tables disagreeing for that whole day.
+            await pool.query(
+                `DELETE FROM workstation_changeover_events
+                 WHERE line_id = $1 AND work_date = $2`,
+                [line_id, work_date]
+            );
             await pool.query(
                 `UPDATE line_daily_plans SET changeover_started_at = NULL, updated_at = NOW()
                  WHERE line_id = $1 AND work_date = $2`,
@@ -2864,14 +3944,19 @@ router.patch('/daily-plans', async (req, res) => {
             return res.status(404).json({ success: false, error: 'Daily plan not found — save the full plan first' });
         }
 
-        // If target_units changed and this is today, sync production_lines.target_units
+        // If target_units changed and this is today, sync production_lines.target_units.
+        // Mirror the stored row, not the request: the order-qty cap above may have lowered it.
         if ('target_units' in fields && work_date === new Date().toISOString().slice(0, 10)) {
             await pool.query(
                 `UPDATE production_lines SET target_units = $1, updated_at = NOW() WHERE id = $2`,
-                [fields.target_units ?? 0, line_id]
+                [parseInt(result.rows[0].target_units || 0, 10) || 0, line_id]
             );
             realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
         }
+
+        // This was the one daily-plan write path with no audit row, which is why a zeroed
+        // target could not be traced back to a request. Every plan edit is logged now.
+        await logAudit('line_daily_plans', result.rows[0].id, 'update', result.rows[0], before, req);
 
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
         res.json({ success: true, data: result.rows[0], cap_warning: capWarning || null });
@@ -2982,7 +4067,7 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
     try {
         await client.query('BEGIN');
         const sourcePlan = await client.query(
-            `SELECT product_id, target_units
+            `SELECT product_id, target_units, incoming_product_id, incoming_target_units
              FROM line_daily_plans
              WHERE line_id = $1 AND work_date = $2
              LIMIT 1`,
@@ -3003,14 +4088,34 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
         // Previously this always used the PRIMARY product_id, silently mis-copying into the
         // wrong slot whenever the caller intended a changeover-plan copy.
         let targetProductId;
+        let bootstrapChangeover = false;
         if (isChangeoverTarget) {
             targetProductId = targetPlan.rows[0].incoming_product_id;
             if (!targetProductId) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ success: false, error: `No changeover style selected for ${to_date} yet. Choose or upload a changeover style first, then copy the plan into it.` });
+                // No changeover style set on the target yet. Adopt the product being copied
+                // in, the same way the changeover Upload Plan path bootstraps the incoming
+                // product from the template's Product Code. Without this a line that has no
+                // SCO could never receive one by copying, since the changeover workstation
+                // rows are keyed on incoming_product_id.
+                targetProductId = parseInt(product_id, 10);
+                bootstrapChangeover = true;
             }
         } else {
             targetProductId = targetPlan.rows[0].product_id;
+        }
+
+        // line_plan_workstations rows are keyed on product_id, and the copy deletes the
+        // target slot by (line, date, product) before inserting. If the changeover style
+        // were allowed to equal the primary style, that delete would wipe the line's own
+        // Daily Plan and replace it with the copy. Same rule the upload path enforces.
+        if (isChangeoverTarget && String(targetProductId) === String(targetPlan.rows[0].product_id)) {
+            await client.query('ROLLBACK');
+            const primaryCode = await pool.query(`SELECT product_code FROM products WHERE id = $1`, [targetPlan.rows[0].product_id]);
+            const label = primaryCode.rows[0]?.product_code || `#${targetPlan.rows[0].product_id}`;
+            return res.status(400).json({
+                success: false,
+                error: `Changeover style must be different from the Daily Plan style (${label}). Pick the other plan on the source line, or a different source date.`
+            });
         }
 
         // A changeover keeps the same physical operator at a workstation code — the person
@@ -3063,6 +4168,29 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             }
         }
 
+        // Bootstrapping an empty changeover slot: record the adopted style and carry its
+        // target across, so the IE does not land on a changeover plan with a 0 target
+        // (which would leave takt at 0 and every workload % reading 0). Only runs when the
+        // slot was empty — an already-set changeover style keeps the target the IE typed.
+        if (bootstrapChangeover) {
+            const src = sourcePlan.rows[0];
+            // Which of the source day's two numbers applies depends on which of its slots
+            // is being copied: its incoming target when copying its SCO plan, its daily
+            // target when copying its Primary.
+            const sourceIsIncoming = src && String(src.incoming_product_id) === String(product_id);
+            const carriedTarget = parseInt(
+                (sourceIsIncoming ? src?.incoming_target_units : src?.target_units) || 0, 10) || 0;
+            await client.query(
+                `UPDATE line_daily_plans
+                 SET incoming_product_id = $3,
+                     incoming_target_units = $4,
+                     updated_by = $5,
+                     updated_at = NOW()
+                 WHERE line_id = $1 AND work_date = $2`,
+                [toLineId, to_date, targetProductId, carriedTarget, req.user?.id || null]
+            );
+        }
+
         // Auto-carry the daily target forward only for the primary slot — the changeover slot
         // keeps whatever target the IE has already set in "Changeover Target" to avoid guessing
         // which of the source day's numbers (primary vs incoming) should apply.
@@ -3101,7 +4229,8 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             copied_from: from_date,
             from_line_id: fromLineId,
             target_product_id: targetProductId,
-            copied_employees: shouldCopyEmployees
+            copied_employees: shouldCopyEmployees,
+            changeover_bootstrapped: bootstrapChangeover
         });
     } catch (err) {
         try { await client.query('ROLLBACK'); } catch (_) {}
@@ -4805,12 +5934,13 @@ router.get('/lines', async (req, res) => {
 });
 
 router.post('/lines', validateBody(schemas.line.partial()), async (req, res) => {
-    const { line_code, line_name, hall_location, current_product_id, target_units, efficiency } = req.body;
+    const { line_code, line_name, hall_location, current_product_id, target_units, efficiency, line_leader } = req.body;
     try {
         const result = await pool.query(
-            `INSERT INTO production_lines (line_code, line_name, hall_location, current_product_id, target_units, efficiency, is_active)
-             VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING *`,
-            [line_code, line_name, hall_location, current_product_id, target_units || 0, efficiency || 0]
+            `INSERT INTO production_lines (line_code, line_name, hall_location, current_product_id, target_units, efficiency, line_leader, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`,
+            [line_code, line_name, hall_location, current_product_id, target_units || 0, efficiency || 0,
+             (line_leader || '').trim() || null]
         );
         const newLine = result.rows[0];
         // Auto-generate 100 workstation QR codes for the new line (non-blocking)
@@ -4826,7 +5956,7 @@ router.post('/lines', validateBody(schemas.line.partial()), async (req, res) => 
 
 router.put('/lines/:id', async (req, res) => {
     const { id } = req.params;
-    const { line_code, line_name, hall_location, current_product_id, target_units, efficiency, is_active } = req.body;
+    const { line_code, line_name, hall_location, current_product_id, target_units, efficiency, is_active, line_leader } = req.body;
     try {
         const today = new Date().toISOString().slice(0, 10);
         const lockCheck = await pool.query(
@@ -4842,11 +5972,25 @@ router.put('/lines/:id', async (req, res) => {
                 return res.status(403).json({ success: false, error: 'Daily plan is locked for today' });
             }
         }
+        // line_leader is only written when the caller sent the field, so an older client
+        // (or the plan upload, which sets the leader from the template) never blanks it.
+        const leaderProvided = line_leader !== undefined;
+        // Same rule for the target, for a stronger reason: this route edits line master data
+        // (code, hall, leader, photo). An edit that never mentioned the target must not carry a
+        // missing or blank field through as a 0 and wipe today's plan. Zeroing a live target is
+        // the Daily Plan screen's job, where it is confirmed — see PATCH /daily-plans.
+        const targetProvided = target_units !== undefined && target_units !== null && target_units !== '';
+        const targetValue = parseInt(target_units || 0, 10) || 0;
         const result = await pool.query(
             `UPDATE production_lines
-             SET line_code = $1, line_name = $2, hall_location = $3, current_product_id = $4, target_units = $5, efficiency = $6, is_active = $7, updated_at = NOW()
+             SET line_code = $1, line_name = $2, hall_location = $3, current_product_id = $4,
+                 target_units = CASE WHEN $11::BOOLEAN THEN $5::INTEGER ELSE target_units END,
+                 efficiency = $6, is_active = $7,
+                 line_leader = CASE WHEN $9::BOOLEAN THEN NULLIF(BTRIM(COALESCE($10, '')), '') ELSE line_leader END,
+                 updated_at = NOW()
              WHERE id = $8 RETURNING *`,
-            [line_code, line_name, hall_location, current_product_id, target_units || 0, efficiency || 0, is_active, id]
+            [line_code, line_name, hall_location, current_product_id, targetValue, efficiency || 0, is_active, id,
+             leaderProvided, leaderProvided ? String(line_leader) : null, targetProvided]
         );
         if (current_product_id) {
             await pool.query(
@@ -4854,23 +5998,113 @@ router.put('/lines/:id', async (req, res) => {
                  VALUES ($1, $2, $3, $4, $5, $5)
                  ON CONFLICT (line_id, work_date)
                  DO UPDATE SET product_id = EXCLUDED.product_id,
-                               target_units = EXCLUDED.target_units,
+                               target_units = CASE WHEN $6::BOOLEAN AND EXCLUDED.target_units > 0
+                                                   THEN EXCLUDED.target_units
+                                                   ELSE line_daily_plans.target_units END,
                                updated_by = EXCLUDED.updated_by,
                                updated_at = NOW()`,
-                [id, current_product_id, today, target_units || 0, null]
+                [id, current_product_id, today, targetValue, null, targetProvided]
             );
             realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id: id, work_date: today });
-        } else if (target_units !== undefined) {
+        } else if (targetProvided) {
             await pool.query(
                 `UPDATE line_daily_plans
                  SET target_units = $1, updated_at = NOW()
-                 WHERE line_id = $2 AND work_date = $3`,
-                [target_units || 0, id, today]
+                 WHERE line_id = $2 AND work_date = $3
+                   AND ($1 > 0 OR COALESCE(target_units, 0) = 0)`,
+                [targetValue, id, today]
             );
             realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id: id, work_date: today });
         }
         realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: result.rows[0]?.id || id });
         res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ── Line supervisor photo ───────────────────────────────────────────────────
+// Admin and IE upload the line leader's portrait from Line Management. The photo is
+// optional everywhere: a line with none renders the leader's initials instead.
+router.post('/lines/:id/leader-photo', (req, res, next) => {
+    photoUpload.single('photo')(req, res, (err) => {
+        if (!err) return next();
+        const message = err.code === 'LIMIT_FILE_SIZE'
+            ? 'Photo is too large. Maximum size is 5MB.'
+            : err.message;
+        res.status(400).json({ success: false, error: message });
+    });
+}, async (req, res) => {
+    const { id } = req.params;
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Only admin or IE can change the supervisor photo' });
+    }
+    const lineId = parseInt(id, 10);
+    if (!Number.isFinite(lineId)) {
+        return res.status(400).json({ success: false, error: 'Invalid line id' });
+    }
+    if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No photo uploaded' });
+    }
+    const ext = sniffImageExtension(req.file.buffer);
+    if (!ext) {
+        return res.status(400).json({ success: false, error: 'That file is not a JPG or PNG image' });
+    }
+    try {
+        const existing = await pool.query(
+            'SELECT line_leader_photo FROM production_lines WHERE id = $1', [lineId]
+        );
+        if (!existing.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+        const previousPhoto = existing.rows[0].line_leader_photo;
+
+        fs.mkdirSync(LINE_LEADER_PHOTO_DIR, { recursive: true });
+        // The timestamp in the name is what busts the browser/TV cache on re-upload —
+        // the board holds a page for hours, so a stable file name would keep the old face.
+        const fileName = `line-${lineId}-${Date.now()}.${ext}`;
+        fs.writeFileSync(path.join(LINE_LEADER_PHOTO_DIR, fileName), req.file.buffer);
+        const webPath = `${LINE_LEADER_PHOTO_URL_BASE}/${fileName}`;
+
+        const result = await pool.query(
+            `UPDATE production_lines SET line_leader_photo = $1, updated_at = NOW()
+             WHERE id = $2 RETURNING id, line_code, line_name, line_leader, line_leader_photo`,
+            [webPath, lineId]
+        );
+        // Only drop the old file once the new path is committed, so a failed UPDATE
+        // never leaves the line pointing at a file that is already gone.
+        if (previousPhoto && previousPhoto !== webPath) removeLineLeaderPhotoFile(previousPhoto);
+
+        realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: lineId });
+        res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.delete('/lines/:id/leader-photo', async (req, res) => {
+    const { id } = req.params;
+    if (!['admin', 'ie'].includes(req.user?.role)) {
+        return res.status(403).json({ success: false, error: 'Only admin or IE can change the supervisor photo' });
+    }
+    const lineId = parseInt(id, 10);
+    if (!Number.isFinite(lineId)) {
+        return res.status(400).json({ success: false, error: 'Invalid line id' });
+    }
+    try {
+        const existing = await pool.query(
+            'SELECT line_leader_photo FROM production_lines WHERE id = $1', [lineId]
+        );
+        if (!existing.rows[0]) {
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+        await pool.query(
+            'UPDATE production_lines SET line_leader_photo = NULL, updated_at = NOW() WHERE id = $1',
+            [lineId]
+        );
+        removeLineLeaderPhotoFile(existing.rows[0].line_leader_photo);
+        realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: lineId });
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -4896,9 +6130,10 @@ router.delete('/lines/:id/hard-delete', async (req, res) => {
         return res.status(403).json({ success: false, error: 'Admin or IE access required' });
     }
     try {
-        // Fetch line_code before deletion (for QR folder cleanup)
-        const lineResult = await pool.query('SELECT line_code FROM production_lines WHERE id = $1', [id]);
+        // Fetch line_code before deletion (for QR folder cleanup) and the supervisor photo path
+        const lineResult = await pool.query('SELECT line_code, line_leader_photo FROM production_lines WHERE id = $1', [id]);
         const lineCode = lineResult.rows[0]?.line_code;
+        const leaderPhoto = lineResult.rows[0]?.line_leader_photo;
 
         const deps = await pool.query(
             `SELECT
@@ -4927,6 +6162,8 @@ router.delete('/lines/:id/hard-delete', async (req, res) => {
             const qrDir = path.join(process.env.QRCODES_DIR || path.join(__dirname, '..', '..', 'qrcodes'), 'workstations', lineCode);
             fs.promises.rm(qrDir, { recursive: true, force: true }).catch(() => {});
         }
+
+        removeLineLeaderPhotoFile(leaderPhoto);
 
         realtime.broadcast('data_change', { entity: 'lines', action: 'delete', id });
         res.json({ success: true, message: 'Line deleted successfully' });
@@ -5442,6 +6679,8 @@ router.get('/lines-metrics', async (req, res) => {
                 pl.id as line_id,
                 pl.line_name,
                 pl.line_code,
+                pl.line_leader,
+                pl.line_leader_photo,
                 COALESCE(ldp.target_units, pl.target_units, 0) as target,
                 COALESCE(p.product_code, '') as product_code,
                 COALESCE(p.product_name, '') as product_name,
@@ -5499,6 +6738,8 @@ router.get('/lines-metrics', async (req, res) => {
                 line_id: row.line_id,
                 line_name: row.line_name,
                 line_code: row.line_code,
+                line_leader: row.line_leader || null,
+                line_leader_photo: row.line_leader_photo || null,
                 product_code: row.product_code,
                 product_name: row.product_name,
                 incoming_product_code: row.incoming_product_code || null,
@@ -6987,11 +8228,14 @@ router.post('/workstation-assignments', async (req, res) => {
     const date = work_date || new Date().toISOString().slice(0, 10);
     const matQty = (material_provided !== undefined && material_provided !== null) ? parseInt(material_provided, 10) : null;
     const linked = is_linked === true || is_linked === 'true';
+    let historySync = null;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         let displacedWorkstations = [];
         let reasonOutcome = null;
+        // Set only when this link closes an open departure — see the auto-close block below.
+        let returnFromHour = null;
 
         // Compute attendance_start when linking
         let linkedAt = null;
@@ -7048,6 +8292,37 @@ router.post('/workstation-assignments', async (req, res) => {
             const effectiveAttendanceStart = linked ? attendanceStart : (existingEwa?.attendance_start || null);
             const effectiveLateReason = linked ? (late_reason || null) : (existingEwa?.late_reason || null);
 
+            // A supervisor re-linking a worker who has an open departure IS that worker coming
+            // back. This used to succeed at the DB level and change nothing visible: every
+            // status expression reads worker_departures, not the assignment row, so the station
+            // stayed VACANT, hourly output entry stayed disabled, and the Adjustment panel kept
+            // refusing to scan her ("not active on this line today"). Closing the departure here
+            // makes that stuck state unreachable from either entry point.
+            //
+            // Runs BEFORE handleReplacedEmployeeReason on purpose: that helper 409s
+            // change_reason_required when the station holds a linked DIFFERENT employee — the
+            // covering worker — and a supervisor answering 'absent' there would delete the
+            // cover's history rows and mark them absent for the whole day. Putting the cover
+            // back first leaves the station empty, so the helper returns ok.
+            if (effectiveLinked) {
+                const returned = await closeOpenDeparturesForEmployee(client, {
+                    workDate: date,
+                    employeeId: employee_id,
+                    returnTime: effectiveLinkedAt || linkedAt || new Date(),
+                    notes: 'auto-closed by workstation re-link'
+                });
+                returnFromHour = returned.firstPresentHour;
+                for (const adjustment of returned.endedAdjustments) {
+                    await restoreCoveringWorkerToOriginalWorkstation(client, {
+                        lineId: line_id,
+                        workDate: date,
+                        adjustment,
+                        returnTime: effectiveLinkedAt || linkedAt || new Date(),
+                        fromHour: returnFromHour
+                    });
+                }
+            }
+
             reasonOutcome = await handleReplacedEmployeeReason(client, {
                 lineId: line_id,
                 workDate: date,
@@ -7103,7 +8378,7 @@ router.post('/workstation-assignments', async (req, res) => {
                 [line_id, workstation_code, employee_id, date, resolvedLinePlanWorkstationId,
                  effectiveLinked, effectiveLinkedAt, effectiveLateReason, effectiveAttendanceStart]
             );
-            await syncAssignmentHistoryForCurrentRow(client, {
+            historySync = await syncAssignmentHistoryForCurrentRow(client, {
                 lineId: line_id,
                 workDate: date,
                 workstationCode: workstation_code,
@@ -7114,7 +8389,11 @@ router.post('/workstation-assignments', async (req, res) => {
                 linkedAt: effectiveLinkedAt,
                 attendanceStart: effectiveAttendanceStart,
                 lateReason: effectiveLateReason,
-                forceCurrentHourStart: displacedWorkstations.length > 0
+                forceCurrentHourStart: displacedWorkstations.length > 0,
+                // null on every ordinary link. On a return it pins the window to the same hour
+                // the efficiency denominator counts her back from — without it the window
+                // opens an hour earlier than the denominator allows and the two disagree.
+                forceFromHour: returnFromHour
             });
         } else {
             await closeHistoryForWorkstationAssignmentIfNeeded(client, {
@@ -7158,7 +8437,8 @@ router.post('/workstation-assignments', async (req, res) => {
                 work_date: date,
                 linked_at: linkedAt,
                 attendance_start: attendanceStart,
-                displaced_workstations: displacedWorkstations
+                displaced_workstations: displacedWorkstations,
+                attribution: buildAttributionNotice(historySync, workstation_code)
             }
         });
     } catch (err) {
@@ -8948,6 +10228,7 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
                         lineId,
                         workDate: work_date,
                         workstationCode: ws.workstation_code,
+                        linePlanWorkstationId: wsId,
                         employeeId: ws.employee_id,
                         isOvertime: false,
                         isLinked: preservedState.is_linked,
@@ -9071,6 +10352,7 @@ router.patch('/lines/:lineId/workstation-plan/employees', async (req, res) => {
                         lineId,
                         workDate: work_date,
                         workstationCode: wsCode,
+                        linePlanWorkstationId: lpwId,
                         employeeId: empId,
                         isOvertime: false,
                         isLinked: preservedState.is_linked,
@@ -9435,6 +10717,7 @@ router.post('/workstation-plan/upload-excel', excelUpload.single('file'), async 
                         lineId,
                         workDate,
                         workstationCode: wsCode,
+                        linePlanWorkstationId: wsRow.id,
                         employeeId: empResult.rows[0].id,
                         isOvertime: false,
                         isLinked: preservedState.is_linked,
@@ -9995,19 +11278,45 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         let summaryProductCode = effectiveProdCode;
         let effectiveTargetUnits = targetUnits;
 
+        // Target line explicitly chosen by the user in the "line not found" prompt,
+        // and explicit permission to create a line the template names but the system
+        // does not have yet.
+        const requestedUseLineId = parseInt(String(req.body?.use_line_id || '').trim(), 10);
+        const useLineId = Number.isFinite(requestedUseLineId) && requestedUseLineId > 0 ? requestedUseLineId : null;
+        const confirmNewLine = ['1', 'true', 'yes'].includes(String(req.body?.confirm_new_line || '').toLowerCase());
+
         // --- Pre-check: line conflict ---
-        if (!isDetailMode && !confirmLine) {
+        if (!isDetailMode && !useLineId) {
             const lineCheck = await pool.query(
                 `SELECT id, line_code, line_name FROM production_lines
                  WHERE UPPER(TRIM(line_code)) = $1 ORDER BY is_active DESC LIMIT 1`,
                 [lineCode]
             );
-            if (lineCheck.rows[0]) {
+            if (lineCheck.rows[0] && !confirmLine) {
                 return res.status(409).json({
                     success: false,
                     code: 'LINE_EXISTS',
                     line_code: lineCheck.rows[0].line_code,
                     line_name: lineCheck.rows[0].line_name || lineCheck.rows[0].line_code
+                });
+            }
+            if (!lineCheck.rows[0] && !confirmNewLine) {
+                // The template's LINE CODE matches no existing line. Auto-creating one here
+                // silently parks the whole plan on a line nobody is looking at, and the upload
+                // still reports success — from the floor it looks like the upload "did nothing"
+                // to the line they actually run. Make the target an explicit choice instead.
+                const candidates = await pool.query(
+                    `SELECT id, line_code, line_name, hall_location
+                     FROM production_lines
+                     WHERE is_active = true
+                     ORDER BY line_code`
+                );
+                return res.status(409).json({
+                    success: false,
+                    code: 'LINE_NOT_FOUND',
+                    line_code: lineCode,
+                    hall_name: hallName || null,
+                    existing_lines: candidates.rows
                 });
             }
         }
@@ -10128,12 +11437,58 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                     [lineId, workDate, productId, effectiveTargetUnits, req.user?.id || null]
                 );
             } else {
-                if (detailPlan) {
-                    productId = parseInt(detailPlan.product_id, 10);
+                if (detailPlan && detailPlan.product_id) {
+                    // The uploaded template names its own style in row 6. Writing it into
+                    // whatever product the daily plan happens to hold silently rewrites that
+                    // other style's shared product_processes list — every line and every past
+                    // date using it then renders the wrong operations. Never guess: when the
+                    // codes disagree, make the user say which product this plan belongs to.
+                    const planProductCode = normalizeCode(detailPlan.primary_product_code);
+                    const uploadProductCode = normalizeCode(effectiveProdCode);
+                    const planProductChoice = String(req.body?.confirm_plan_product || '').trim().toLowerCase();
+
+                    if (uploadProductCode && planProductCode && uploadProductCode !== planProductCode
+                        && planProductChoice !== 'switch' && planProductChoice !== 'keep') {
+                        await client.query('ROLLBACK');
+                        return res.status(409).json({
+                            success: false,
+                            code: 'PLAN_PRODUCT_MISMATCH',
+                            message: `This file is for ${effectiveProdCode}, but the plan on this line/date is ${detailPlan.primary_product_code}.`,
+                            error: `This file is for ${effectiveProdCode}, but the plan on this line/date is ${detailPlan.primary_product_code}.`,
+                            upload_product_code: effectiveProdCode,
+                            upload_product_name: productName || '',
+                            plan_product_code: detailPlan.primary_product_code,
+                            line_code: detailPlan.line_code || summaryLineCode,
+                            work_date: workDate
+                        });
+                    }
+
+                    if (uploadProductCode && planProductCode && uploadProductCode !== planProductCode
+                        && planProductChoice === 'switch') {
+                        // Point the day's plan at the uploaded style instead of overwriting
+                        // the one already there.
+                        const switchedProduct = await client.query(
+                            `INSERT INTO products (product_code, product_name, buyer_name, plan_month, is_active)
+                             VALUES ($1, $2, $3, $4, true)
+                             ON CONFLICT (product_code) DO UPDATE
+                               SET product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), products.product_name),
+                                   buyer_name   = COALESCE(EXCLUDED.buyer_name, products.buyer_name),
+                                   plan_month   = COALESCE(EXCLUDED.plan_month, products.plan_month),
+                                   is_active    = true,
+                                   updated_at   = NOW()
+                             RETURNING id, product_code`,
+                            [effectiveProdCode, productName || effectiveProdCode, buyerName, planMonth]
+                        );
+                        productId = switchedProduct.rows[0].id;
+                        summaryProductCode = switchedProduct.rows[0].product_code || summaryProductCode;
+                    } else {
+                        productId = parseInt(detailPlan.product_id, 10);
+                        summaryProductCode = detailPlan.primary_product_code || summaryProductCode;
+                    }
+
                     effectiveTargetUnits = targetUnits > 0
                         ? targetUnits
                         : (parseInt(detailPlan.target_units || 0, 10) || 0);
-                    summaryProductCode = detailPlan.primary_product_code || summaryProductCode;
                 } else {
                     // No plan yet — resolve/create product from Excel template and create the plan
                     const prodResult = await client.query(
@@ -10149,40 +11504,54 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                         [effectiveProdCode, productName || effectiveProdCode, buyerName, planMonth]
                     );
                     productId = prodResult.rows[0].id;
-                    effectiveTargetUnits = targetUnits > 0 ? targetUnits : 0;
+                    effectiveTargetUnits = targetUnits > 0
+                        ? targetUnits
+                        : (parseInt(detailPlan?.target_units || 0, 10) || 0);
                     summaryProductCode = prodResult.rows[0].product_code || summaryProductCode;
                 }
             }
         } else {
-            // Find or create line — if it already exists, use it as-is (no updates to name/hall)
-            const existingLine = await client.query(
-                `SELECT id
-                 FROM production_lines
-                 WHERE UPPER(TRIM(line_code)) = $1
-                 ORDER BY is_active DESC, id ASC
-                 LIMIT 1`,
-                [lineCode]
-            );
+            // Find or create line — if it already exists, use it as-is (no updates to name/hall).
+            // `use_line_id` wins: the user picked the target line explicitly after being told
+            // the template's LINE CODE matched nothing.
+            const existingLine = useLineId
+                ? await client.query(
+                    `SELECT id, line_code FROM production_lines WHERE id = $1 LIMIT 1`,
+                    [useLineId]
+                )
+                : await client.query(
+                    `SELECT id, line_code
+                     FROM production_lines
+                     WHERE UPPER(TRIM(line_code)) = $1
+                     ORDER BY is_active DESC, id ASC
+                     LIMIT 1`,
+                    [lineCode]
+                );
+            if (useLineId && !existingLine.rows[0]) {
+                throw new Error('The selected target line no longer exists. Reopen the upload and pick a line again.');
+            }
             if (existingLine.rows[0]) {
                 lineId      = existingLine.rows[0].id;
                 lineCreated = false;
+                summaryLineCode = existingLine.rows[0].line_code || summaryLineCode;
+                // Only hall/leader are refreshed from the template. line_name is the line's own
+                // identity (what the line list shows) — overwriting it with HALL NAME renamed
+                // real lines to "Hall B".
                 await client.query(
                     `UPDATE production_lines
-                     SET line_code = COALESCE(NULLIF(line_code, ''), $1),
-                         line_name = COALESCE($2, line_name),
-                         hall_location = COALESCE($3, hall_location),
-                         line_leader = COALESCE($4, line_leader),
+                     SET hall_location = COALESCE($1, hall_location),
+                         line_leader = COALESCE($2, line_leader),
                          is_active = true,
                          updated_at = NOW()
-                     WHERE id = $5`,
-                    [lineCode, hallName || null, hallName || null, lineLeader || null, lineId]
+                     WHERE id = $3`,
+                    [hallName || null, lineLeader || null, lineId]
                 );
             } else {
                 if (!hallName) throw new Error(`Line "${lineCode}" not found. Provide HALL NAME to auto-create it.`);
                 const ins = await client.query(
                     `INSERT INTO production_lines (line_code, line_name, hall_location, line_leader, is_active)
                      VALUES ($1, $2, $3, $4, true) RETURNING id`,
-                    [lineCode, hallName, hallName, lineLeader]
+                    [lineCode, lineCode, hallName, lineLeader]
                 );
                 lineId      = ins.rows[0].id;
                 lineCreated = true;
@@ -10775,6 +12144,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                         lineId,
                         workDate,
                         workstationCode: wsCode,
+                        linePlanWorkstationId: wsId,
                         employeeId: empId,
                         isOvertime: false,
                         isLinked: preservedState.is_linked,
@@ -10960,6 +12330,79 @@ const resolveEmployeeFromQrPayload = async (parsed) => {
     return null;
 };
 
+const normalizeEmpName = (name) => String(name || '').toUpperCase().replace(/[^A-Z]/g, '');
+
+// Active record behind a deactivated badge. Deliberately EXACT (letters only) and only when
+// unambiguous: near-miss name matching pairs up genuinely different workers — SIMRAN/IMRAN,
+// PADMA/RADHA, MD ASIF/MD. NASIM — and naming the wrong person to a supervisor on the floor
+// would get the wrong worker linked, which is worse than saying nothing.
+const findLiveRecordForDeactivated = async (match) => {
+    const target = normalizeEmpName(match.emp_name);
+    if (!target) return null;
+    const r = await pool.query(
+        `SELECT id, emp_code, emp_name FROM employees
+          WHERE is_active = true AND id <> $1
+            AND regexp_replace(upper(emp_name), '[^A-Z]', '', 'g') = $2`,
+        [match.id, target]
+    );
+    return r.rows.length === 1 ? r.rows[0] : null;
+};
+
+// Same three lookups as resolveEmployeeFromQrPayload but ignoring is_active. Used only to
+// explain a failed scan: a deactivated worker's badge otherwise reports "Employee not found",
+// which sends the supervisor into re-scanning a badge that can never resolve.
+const resolveAnyEmployeeFromQrPayload = async (parsed) => {
+    if (!parsed) return null;
+    if (parsed.uuid && UUID_PATTERN.test(parsed.uuid)) {
+        const r = await pool.query(
+            `SELECT id, emp_code, emp_name, is_active FROM employees WHERE uuid = $1`,
+            [parsed.uuid]
+        );
+        if (r.rows[0]) return r.rows[0];
+    }
+    if (parsed.id) {
+        const r = await pool.query(
+            `SELECT id, emp_code, emp_name, is_active FROM employees WHERE id = $1`,
+            [parsed.id]
+        );
+        if (r.rows[0]) return r.rows[0];
+    }
+    const rawCode = parsed.code || parsed.emp_code || parsed.raw;
+    if (rawCode) {
+        const r = await pool.query(
+            `SELECT id, emp_code, emp_name, is_active FROM employees WHERE emp_code = $1`,
+            [rawCode]
+        );
+        if (r.rows[0]) return r.rows[0];
+    }
+    return null;
+};
+
+// Body for a 404 when an employee QR did not resolve — names the worker when the badge is
+// valid but the record is deactivated, so the supervisor knows the fix is in Admin, not the scan.
+const employeeQrFailureBody = async (parsed) => {
+    const match = await resolveAnyEmployeeFromQrPayload(parsed);
+    if (match && match.is_active === false) {
+        // Many deactivated records are superseded duplicates — the same worker was re-created
+        // under a new code, leaving the old badge in circulation. Point at the live badge
+        // rather than inviting a reactivation that would give one person two active records.
+        const live = await findLiveRecordForDeactivated(match);
+        return {
+            success: false,
+            error_code: live ? 'employee_badge_superseded' : 'employee_inactive',
+            error: live
+                ? `This is an old badge. ${match.emp_name} (${match.emp_code}) is deactivated \u2014 `
+                  + `their current record is ${live.emp_name} (${live.emp_code}). Scan that badge instead.`
+                : `${match.emp_name} (${match.emp_code}) is on the system but deactivated, so they `
+                  + `cannot be linked. Check Admin \u2192 Employees for their current record, or `
+                  + `reactivate this one.`,
+            employee: { id: match.id, emp_code: match.emp_code, emp_name: match.emp_name },
+            replacement: live || null
+        };
+    }
+    return { success: false, error_code: 'employee_not_found', error: 'Employee not found' };
+};
+
 // Helper: get both active product IDs for a line on a date
 const getIncomingMaxSequence = async (productId) => {
     if (!productId) return 0;
@@ -11138,6 +12581,7 @@ const refreshProcessWip = async (lineId, processId, workDate) => {
 // Recalculate and upsert group_wip for one group.
 // groupIdentifier = group_name for grouped workstations, workstation_code for ungrouped.
 const refreshGroupWip = async (lineId, workDate, groupIdentifier, client = null) => {
+    if (!(await isFeedWipEnabled())) return; // WIP tracking is off — nothing to recompute
     const db = client || pool;
     const groupWsResult = await db.query(
         `SELECT workstation_code FROM line_plan_workstations
@@ -11351,16 +12795,30 @@ const validateWorkstationHourlySave = async (db, {
     );
 
     const firstWorkstationCode = groupWorkstations[0]?.workstation_code || '';
-    const materialsResult = await db.query(
-        `SELECT COALESCE(material_provided, 0) AS total_materials
-         FROM employee_workstation_assignments
-         WHERE line_id = $1
-           AND work_date = $2
-           AND workstation_code = $3
-           AND is_overtime = false`,
-        [lineId, workDate, firstWorkstationCode]
-    );
-    const totalMaterialsIn = parseInt(materialsResult.rows[0]?.total_materials || 0, 10) || 0;
+    // Input-availability checking depends on feed and WIP, which the floor does not track today.
+    // While that is off, the only control left here is the planned-target check below.
+    const feedWipEnabled = await isFeedWipEnabled();
+    let feedRecorded = false;
+    let totalMaterialsIn = 0;
+    if (feedWipEnabled) {
+        const materialsResult = await db.query(
+            `SELECT material_provided
+             FROM employee_workstation_assignments
+             WHERE line_id = $1
+               AND work_date = $2
+               AND workstation_code = $3
+               AND is_overtime = false`,
+            [lineId, workDate, firstWorkstationCode]
+        );
+        // A NULL material_provided means the group feed was never recorded — it does NOT mean zero
+        // was fed. Collapsing "unknown" to 0 made available input 0 for every group, so every
+        // output save on a line with no feed entry raised a false "exceeds available input"
+        // prompt — 84 of them per hour on Rumiya. Only compare against feed we actually have.
+        feedRecorded = materialsResult.rows[0]?.material_provided != null;
+        totalMaterialsIn = feedRecorded
+            ? (parseInt(materialsResult.rows[0].material_provided, 10) || 0)
+            : 0;
+    }
 
     const currentIndex = groupWorkstations.findIndex(row => row.id === parseInt(workstationPlanId, 10));
     if (currentIndex < 0) return;
@@ -11375,7 +12833,12 @@ const validateWorkstationHourlySave = async (db, {
             : totals.totalQty;
         const availableInput = i === 0 ? totalMaterialsIn : previousCumulativeOutput;
 
-        if (projectedCumulativeOutput > availableInput) {
+        // The first station's input is the group feed; skip that comparison when no feed was
+        // recorded. Downstream stations are checked against the previous station's real output,
+        // which is meaningful whether or not feed was entered — but both are WIP-flow checks, so
+        // neither runs while feed/WIP tracking is off.
+        const inputIsKnown = feedWipEnabled && (i > 0 || feedRecorded);
+        if (inputIsKnown && projectedCumulativeOutput > availableInput) {
             const sourceLabel = i === 0 ? 'group feed' : `previous workstation ${groupWorkstations[i - 1].workstation_code}`;
             warnings.push({
                 type: 'available_input_exceeded',
@@ -11675,6 +13138,8 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             total_workstation_count: 0,
             changeover_ready_workstation_count: 0,
             can_finalize_primary: false,
+            surplus_workstations: [],
+            co_only_workstation_count: 0,
             changeover_sequence: changeoverSequence,
             incoming_max_sequence: incomingMaxSequence,
             changeover_enabled: CHANGEOVER_ENABLED
@@ -11694,6 +13159,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     wce.primary_balance_quantity AS changeover_primary_balance_quantity,
                     wce.primary_pending_wip AS changeover_primary_pending_wip,
                     wce.same_employee AS changeover_same_employee,
+                    wce.id AS changeover_event_id,
                     pp.id as process_id, pp.sequence_number, pp.operation_sah,
                     o.operation_code, o.operation_name,
                     p.product_code, p.target_qty,
@@ -11726,16 +13192,20 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     AND ewa.workstation_code = lpw.workstation_code)
                 AND ewa.is_overtime = false
              LEFT JOIN employees e ON ewa.employee_id = e.id
+             -- Only an OPEN departure (no return_time) makes a workstation vacant. Once the
+             -- worker is back the station goes live again and hourly output entry re-enables.
              LEFT JOIN worker_departures wd
                 ON wd.line_id = lpw.line_id AND wd.work_date = lpw.work_date
                 AND wd.workstation_code = lpw.workstation_code
                 AND wd.employee_id = ewa.employee_id
-             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
+                AND wd.return_time IS NULL
+             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id AND wa.ended_at IS NULL
              LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
              -- Detect when this WS's employee is doing a combine (their original WS)
              LEFT JOIN worker_adjustments wa_emp_comb
                 ON wa_emp_comb.from_employee_id = ewa.employee_id
                 AND wa_emp_comb.adjustment_type = 'combine'
+                AND wa_emp_comb.ended_at IS NULL
                 AND wa_emp_comb.line_id = lpw.line_id
                 AND wa_emp_comb.work_date = lpw.work_date
                 AND wa_emp_comb.from_workstation_code = lpw.workstation_code
@@ -11846,6 +13316,13 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         changeover_primary_balance_quantity: parseInt(row.changeover_primary_balance_quantity || 0, 10),
                         changeover_primary_pending_wip: parseInt(row.changeover_primary_pending_wip || 0, 10),
                         changeover_same_employee: row.changeover_same_employee === true,
+                        // Whether this station actually cut over on THIS date. A changeover running
+                        // across a day boundary carries ws_changeover_active forward, but the cutover
+                        // itself happened on the earlier day and its snapshot belongs to that day —
+                        // fabricating one here would assert a second cutover and double-count the
+                        // balance and WIP it records. The client uses this to avoid presenting the
+                        // absent snapshot as a row of real zeros.
+                        has_changeover_event: !!row.changeover_event_id,
                         product_id: isCoActive ? incomingId : primaryId,
                         departure_id: row.departure_id || null,
                         departure_time: row.departure_time || null,
@@ -11898,9 +13375,12 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             }
 
             // Keep the incoming workstation process list available even before the workstation switches.
+            // Keyed through normalizeWsCode like the rest of coWsMap — looking it up by the raw code
+            // missed every station whose spelling differed at all between the two layouts.
             for (const ws of wsMap.values()) {
-                if (!coWsMap.has(ws.workstation_code)) continue;
-                ws.co_processes = coWsMap.get(ws.workstation_code).rows.map(coRow => ({
+                const coKey = normalizeWsCode(ws.workstation_code);
+                if (!coWsMap.has(coKey)) continue;
+                ws.co_processes = coWsMap.get(coKey).rows.map(coRow => ({
                     id: coRow.process_id,
                     sequence_number: coRow.sequence_number,
                     operation_code: coRow.operation_code,
@@ -11912,7 +13392,114 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 }));
             }
 
-            const workstations = Array.from(wsMap.values());
+            // The incoming style can also ADD stations the outgoing one never had (live data has a
+            // 23-station product changing over to a 35-station one). Those have no primary plan row,
+            // so a card list built from the primary layout leaves them invisible: nobody could be
+            // put on them until after promotion, and the new style went primary short-handed.
+            // Surface them as changeover-only cards so they can be staffed while changeover runs.
+            if (incomingId) {
+                const primaryKeys = new Set(
+                    Array.from(wsMap.values()).map(ws => normalizeWsCode(ws.workstation_code))
+                );
+                for (const [nwk, coData] of coWsMap.entries()) {
+                    if (primaryKeys.has(nwk)) continue;
+                    const firstCoRow = coData.rows[0];
+                    if (!firstCoRow) continue;
+
+                    const coTaktTimeSeconds = parseFloat(firstCoRow.takt_time_seconds || 0) || 0;
+                    const coTargetUnits = coTaktTimeSeconds > 0
+                        ? computeTargetUnitsFromTakt(coTaktTimeSeconds, workingSeconds)
+                        : incomingTarget;
+                    const coHourlyTargetUnits = coTaktTimeSeconds > 0
+                        ? computeHourlyTargetFromTakt(coTaktTimeSeconds)
+                        : perHourIncomingTarget;
+                    let wsChangeoverTarget = null;
+                    let wsChangeoverRemainingHours = null;
+                    if (changeoverActive && meta.changeover_started_at) {
+                        wsChangeoverRemainingHours = getRemainingShiftHours(meta.changeover_started_at, inTime, outTime, lunchMins);
+                        wsChangeoverTarget = roundMetric(coHourlyTargetUnits * wsChangeoverRemainingHours, 2);
+                    }
+
+                    wsMap.set(`co-only:${coData.plan_id}`, {
+                        id: coData.plan_id,
+                        primary_ws_id: null,
+                        // Only exists in the incoming style, so there is no primary work here to
+                        // finish and nothing to "switch" — it follows the line-level changeover.
+                        is_co_only: true,
+                        workstation_number: firstCoRow.workstation_number,
+                        workstation_code: firstCoRow.workstation_code,
+                        group_name: firstCoRow.group_name || null,
+                        has_co_plan: true,
+                        co_suggested_emp_id: coData.co_emp_id ?? null,
+                        co_suggested_emp_code: coData.co_emp_code ?? null,
+                        co_suggested_emp_name: coData.co_emp_name ?? null,
+                        takt_time_seconds: firstCoRow.takt_time_seconds,
+                        target_units: roundMetric(coTargetUnits, 2),
+                        hourly_target_units: roundMetric(coHourlyTargetUnits, 2),
+                        actual_sam_seconds: firstCoRow.actual_sam_seconds,
+                        workload_pct: firstCoRow.workload_pct,
+                        ws_changeover_active: changeoverActive,
+                        ws_changeover_started_at: meta.changeover_started_at || null,
+                        ws_changeover_target: wsChangeoverTarget,
+                        ws_changeover_remaining_hours: wsChangeoverRemainingHours,
+                        ws_changeover_hourly_target: roundMetric(coHourlyTargetUnits, 2),
+                        primary_target_units: 0,
+                        primary_hourly_target_units: 0,
+                        co_target_units: roundMetric(coTargetUnits, 2),
+                        co_hourly_target_units: roundMetric(coHourlyTargetUnits, 2),
+                        assigned_employee_id: firstCoRow.assigned_employee_id || null,
+                        assigned_emp_code: firstCoRow.assigned_emp_code || null,
+                        assigned_emp_name: firstCoRow.assigned_emp_name || null,
+                        assigned_is_linked: firstCoRow.assigned_is_linked || false,
+                        material_provided: firstCoRow.material_provided ?? null,
+                        changeover_feed_given: !!firstCoRow.changeover_feed_given,
+                        changeover_feed_quantity: parseInt(firstCoRow.changeover_feed_quantity || 0, 10),
+                        changeover_primary_output_quantity: 0,
+                        changeover_primary_target_quantity: 0,
+                        changeover_primary_balance_quantity: 0,
+                        changeover_primary_pending_wip: 0,
+                        changeover_same_employee: false,
+                        has_changeover_event: !!firstCoRow.changeover_event_id,
+                        product_id: incomingId,
+                        departure_id: firstCoRow.departure_id || null,
+                        departure_time: firstCoRow.departure_time || null,
+                        departure_reason: firstCoRow.departure_reason || null,
+                        adjustment_id: firstCoRow.adjustment_id || null,
+                        coverage_type: firstCoRow.coverage_type || null,
+                        reassignment_time: firstCoRow.reassignment_time || null,
+                        covering_emp_code: firstCoRow.covering_emp_code || null,
+                        covering_emp_name: firstCoRow.covering_emp_name || null,
+                        covering_from_ws: firstCoRow.covering_from_ws || null,
+                        ws_status: firstCoRow.coverage_type ? 'covered' : (!firstCoRow.departure_id ? 'active' : (!firstCoRow.adjustment_id ? 'vacant' : 'covered')),
+                        processes: coData.rows.map(coRow => ({
+                            id: coRow.process_id,
+                            sequence_number: coRow.sequence_number,
+                            operation_code: coRow.operation_code,
+                            operation_name: coRow.operation_name,
+                            operation_sah: coRow.operation_sah,
+                            product_code: coRow.product_code,
+                            target_qty: coRow.target_qty,
+                            sequence_in_workstation: coRow.sequence_in_workstation
+                        })),
+                        co_processes: coData.rows.map(coRow => ({
+                            id: coRow.process_id,
+                            sequence_number: coRow.sequence_number,
+                            operation_code: coRow.operation_code,
+                            operation_name: coRow.operation_name,
+                            operation_sah: coRow.operation_sah,
+                            product_code: coRow.product_code,
+                            target_qty: coRow.target_qty,
+                            sequence_in_workstation: coRow.sequence_in_workstation
+                        }))
+                    });
+                }
+            }
+
+            // Sorted by station number so the changeover-only cards appended above land in their
+            // real position on the line. The group-leader pass below depends on this order.
+            const workstations = Array.from(wsMap.values()).sort(
+                (a, b) => (a.workstation_number || 0) - (b.workstation_number || 0)
+            );
 
             // Compute is_group_first for group-level material tracking
             // Workstations are already ordered by workstation_number, so first occurrence = group leader
@@ -11975,16 +13562,42 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             // Vacant workstations (nobody assigned) can never be switched to CO, so they
             // shouldn't block the "all workstations converted" gate — nothing is produced
             // there regardless of which product it's nominally attributed to.
-            const staffedWorkstations = workstations.filter(ws => ws.assigned_employee_id);
+            const staffedWorkstations = workstations.filter(ws => ws.assigned_employee_id && !ws.is_co_only);
+
+            // Only stations that exist in BOTH layouts can switch, so only those decide whether
+            // promotion is possible. When a 100-station style changes over to an 80-station one the
+            // last 20 have no CO counterpart and never will — counting them here is what pinned
+            // can_finalize_primary to false and stranded the line in changeover for the rest of the
+            // day. They are reported separately instead, as stations whose operators need releasing.
+            // coWsMap.size guards the window where the IE has named an incoming product but not yet
+            // uploaded its workstation plan: every station would otherwise have no CO counterpart
+            // and be reported as surplus, inviting the supervisor to release the whole line.
+            const hasCoLayout = !!incomingId && coWsMap.size > 0;
+            const gateWorkstations = hasCoLayout
+                ? staffedWorkstations.filter(ws => ws.has_co_plan)
+                : staffedWorkstations;
+            const surplusWorkstations = hasCoLayout
+                ? staffedWorkstations
+                    .filter(ws => !ws.has_co_plan)
+                    .map(ws => ({
+                        workstation_code: ws.workstation_code,
+                        employee_id: ws.assigned_employee_id,
+                        emp_code: ws.assigned_emp_code,
+                        emp_name: ws.assigned_emp_name
+                    }))
+                : [];
+
             return res.json({
                 success: true,
                 data: flatProcesses,
                 workstation_plan: workstations,
                 has_plan: true,
                 ...sharedFields,
-                total_workstation_count: staffedWorkstations.length,
-                changeover_ready_workstation_count: staffedWorkstations.filter(ws => ws.ws_changeover_active).length,
-                can_finalize_primary: !!incomingId && staffedWorkstations.length > 0 && staffedWorkstations.every(ws => ws.ws_changeover_active)
+                total_workstation_count: gateWorkstations.length,
+                changeover_ready_workstation_count: gateWorkstations.filter(ws => ws.ws_changeover_active).length,
+                can_finalize_primary: hasCoLayout && gateWorkstations.length > 0 && gateWorkstations.every(ws => ws.ws_changeover_active),
+                surplus_workstations: surplusWorkstations,
+                co_only_workstation_count: workstations.filter(ws => ws.is_co_only).length
             });
         }
 
@@ -12502,25 +14115,21 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         // POST /supervisor/changeover/finalize-primary). Vacant workstations (no employee
         // assigned) can never be switched, so they don't count toward the gate.
         let shouldFinalize = false;
+        let pendingSurplusCount = 0;
         try {
-            const allWsRes = await pool.query(
-                `SELECT COUNT(*) FILTER (WHERE lpw.ws_changeover_active = true) AS co_count,
-                        COUNT(*) AS total
-                 FROM line_plan_workstations lpw
-                 JOIN employee_workstation_assignments ewa
-                   ON ewa.line_id = lpw.line_id
-                  AND ewa.work_date = lpw.work_date
-                  AND ewa.workstation_code = lpw.workstation_code
-                  AND ewa.is_overtime = false
-                  AND ewa.employee_id IS NOT NULL
-                 WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = (
-                     SELECT product_id FROM line_daily_plans WHERE line_id = $1 AND work_date = $2
-                 )`,
-                [line_id, work_date]
-            );
-            const total = parseInt(allWsRes.rows[0]?.total || 0, 10);
-            const coCount = parseInt(allWsRes.rows[0]?.co_count || 0, 10);
-            shouldFinalize = total > 0 && coCount === total;
+            const layout = await classifyChangeoverWorkstations(pool, {
+                lineId: line_id,
+                workDate: work_date,
+                primaryProductId: plan.product_id,
+                incomingProductId: plan.incoming_product_id
+            });
+            // Only stations the incoming style uses are counted. A shorter incoming layout leaves
+            // surplus stations behind that can never switch, and counting those here is what kept
+            // shouldFinalize permanently false.
+            const staffedMatched = layout.matched.filter(ws => ws.employee_id != null);
+            pendingSurplusCount = layout.surplus.filter(ws => ws.employee_id != null).length;
+            shouldFinalize = staffedMatched.length > 0
+                && staffedMatched.every(ws => ws.ws_changeover_active);
         } catch (checkErr) {
             console.warn('[changeover finalize check] error:', checkErr.message);
         }
@@ -12552,6 +14161,7 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
             success: true,
             message: `Changeover activated for workstation ${workstation_code}`,
             should_finalize: shouldFinalize,
+            pending_surplus_count: pendingSurplusCount,
             data: {
                 workstation_code,
                 same_employee: sameEmployeeMode,
@@ -12694,6 +14304,18 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
                      updated_at = NOW()
                  WHERE id = $1`,
                 [ws.primary_workstation_id]
+            );
+
+            // The cutover is being undone, so the record of it has to go with the flag. This is
+            // live state, not an append-only log — activate-workstation already overwrites the row
+            // via ON CONFLICT, and audit_logs keeps the history. Leaving it behind is what produced
+            // days holding dozens of events for stations that are back on the primary style
+            // (line 17 / 2026-08-24: 44 event rows, 0 active flags), so any report reading this
+            // table counted cutovers that had been reverted.
+            await client.query(
+                `DELETE FROM workstation_changeover_events
+                 WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3`,
+                [line_id, work_date, workstation_code]
             );
 
             if (currentEmployeeId && currentEmployeeId !== nextEmployeeId) {
@@ -12848,10 +14470,133 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
     }
 });
 
+// Releases the operator from a workstation the incoming style does not use, so promotion is no
+// longer blocked on a station that can never switch to CO. This is the per-station counterpart of
+// the bulk release the finalize modal performs; supervisors use it as each surplus station finishes
+// its outgoing-style work, rather than waiting until promotion.
+//
+// The operator is not marked absent or departed — they are still on shift, and the supervisor
+// assigns them to another workstation afterwards. Only their window at *this* station is closed.
+router.post('/supervisor/changeover/release-workstation', async (req, res) => {
+    const { line_id, work_date, workstation_code } = req.body;
+    if (!line_id || !work_date || !workstation_code) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
+    }
+    if (!CHANGEOVER_ENABLED) {
+        return res.status(403).json({ success: false, error: 'Changeover is disabled' });
+    }
+    if (await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const planResult = await client.query(
+            `SELECT product_id, incoming_product_id, is_locked
+             FROM line_daily_plans WHERE line_id = $1 AND work_date = $2 FOR UPDATE`,
+            [line_id, work_date]
+        );
+        const plan = planResult.rows[0];
+        if (!plan) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'No daily plan found' });
+        }
+        if (plan.is_locked) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+        }
+        if (!plan.incoming_product_id) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: 'No changeover product configured for this line' });
+        }
+
+        const layout = await classifyChangeoverWorkstations(client, {
+            lineId: line_id,
+            workDate: work_date,
+            primaryProductId: plan.product_id,
+            incomingProductId: plan.incoming_product_id,
+            forUpdate: true
+        });
+
+        // Without an uploaded changeover layout every station looks surplus. Releasing on that
+        // basis would empty the line, so refuse until the incoming plan actually exists.
+        if (layout.matched.length === 0 && layout.coOnly.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: 'No changeover workstation plan exists for this line/date yet'
+            });
+        }
+
+        const target = normalizeWsCode(workstation_code);
+        // Only genuinely surplus stations may be released here. A station the new style still uses
+        // must go through activate-workstation instead — releasing it would quietly drop it out of
+        // the changeover rather than switching it over.
+        const surplus = layout.surplus.find(ws => ws.key === target);
+        if (!surplus) {
+            const matched = layout.matched.find(ws => ws.key === target);
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: matched
+                    ? `Workstation ${workstation_code} is part of the changeover layout — switch it to CO instead of releasing it`
+                    : `Workstation ${workstation_code} is not in the primary workstation plan`
+            });
+        }
+        if (!surplus.employee_id) {
+            await client.query('ROLLBACK');
+            return res.json({
+                success: true,
+                message: `Workstation ${workstation_code} already has no operator`,
+                data: { workstation_code, employee_id: null, already_vacant: true }
+            });
+        }
+
+        const released = await releaseSurplusWorkstation(client, {
+            lineId: line_id,
+            workDate: work_date,
+            workstationCode: surplus.workstation_code
+        });
+
+        await client.query('COMMIT');
+
+        await logAudit('employee_workstation_assignments', 0, 'changeover_release_surplus', {
+            line_id,
+            work_date,
+            workstation_code: surplus.workstation_code,
+            employee_id: released?.employeeId || surplus.employee_id,
+            primary_product_id: plan.product_id,
+            incoming_product_id: plan.incoming_product_id,
+            context: 'workstation_not_in_changeover_layout'
+        }, null, req).catch(() => {});
+
+        realtime.broadcast('data_change', { entity: 'changeover', action: 'ws_released', line_id, work_date, workstation_code: surplus.workstation_code });
+        realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, work_date, workstation_code: surplus.workstation_code });
+
+        return res.json({
+            success: true,
+            message: `${surplus.emp_name || 'Operator'} released from ${surplus.workstation_code} — not required for the changeover style`,
+            data: {
+                workstation_code: surplus.workstation_code,
+                employee_id: released?.employeeId || surplus.employee_id,
+                emp_code: surplus.emp_code,
+                emp_name: surplus.emp_name
+            }
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        return res.status(err.status || 500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
 // Helper: runs the full changeover promotion (used by both the route and auto-promote).
 // Returns { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits }
 // Throws on any validation or DB error (with err.status set for HTTP codes).
-async function performChangeoverPromotion(lineId, workDate, userId) {
+async function performChangeoverPromotion(lineId, workDate, userId, { releaseSurplus = false } = {}) {
     const fail = (status, message) => {
         const err = new Error(message);
         err.status = status;
@@ -12863,6 +14608,7 @@ async function performChangeoverPromotion(lineId, workDate, userId) {
     let updatedPlan = null;
     let promotedProductId = null;
     let promotedTargetUnits = 0;
+    const releasedSurplus = [];
 
     const client = await pool.connect();
     try {
@@ -12901,52 +14647,60 @@ async function performChangeoverPromotion(lineId, workDate, userId) {
         if (archiveCheckResult.rowCount > 0)
             fail(409, 'Primary promotion has already been completed for this line/date');
 
-        const primaryWsResult = await client.query(
-            `SELECT lpw.id, lpw.workstation_code, lpw.ws_changeover_active, ewa.employee_id
-             FROM line_plan_workstations lpw
-             LEFT JOIN employee_workstation_assignments ewa
-               ON ewa.line_id = lpw.line_id
-              AND ewa.work_date = lpw.work_date
-              AND ewa.workstation_code = lpw.workstation_code
-              AND ewa.is_overtime = false
-             WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.product_id = $3
-             ORDER BY lpw.workstation_number, lpw.workstation_code FOR UPDATE OF lpw`,
-            [lineId, workDate, previousPrimaryProductId]
-        );
-        if (primaryWsResult.rowCount === 0) fail(400, 'No primary workstation plan exists for this line/date');
+        const layout = await classifyChangeoverWorkstations(client, {
+            lineId,
+            workDate,
+            primaryProductId: previousPrimaryProductId,
+            incomingProductId: promotedProductId,
+            forUpdate: true
+        });
+        if (layout.matched.length === 0 && layout.surplus.length === 0)
+            fail(400, 'No primary workstation plan exists for this line/date');
+        if (layout.matched.length === 0 && layout.coOnly.length === 0)
+            fail(400, 'No changeover workstation plan exists for this line/date');
 
-        const incomingWsResult = await client.query(
-            `SELECT id, workstation_code
-             FROM line_plan_workstations
-             WHERE line_id = $1 AND work_date = $2 AND product_id = $3
-             ORDER BY workstation_number, workstation_code FOR UPDATE`,
-            [lineId, workDate, promotedProductId]
-        );
-        if (incomingWsResult.rowCount === 0) fail(400, 'No changeover workstation plan exists for this line/date');
-
-        const incomingByCode = new Map(
-            incomingWsResult.rows.map(row => [String(row.workstation_code || ''), row])
-        );
-        const missingIncoming = primaryWsResult.rows
-            .filter(row => !incomingByCode.has(String(row.workstation_code || '')))
-            .map(row => row.workstation_code);
-        if (missingIncoming.length > 0)
-            fail(400, `Missing changeover workstation mapping for: ${missingIncoming.join(', ')}`);
-
-        // Vacant workstations (no employee assigned) can never be switched to CO, so they
-        // don't block promotion — only staffed workstations must have switched.
-        const pendingWorkstations = primaryWsResult.rows
-            .filter(row => row.employee_id != null && row.ws_changeover_active !== true)
-            .map(row => row.workstation_code);
+        // Only stations the new style actually uses have to switch. Vacant ones can never be
+        // switched (there is nobody to switch), and they produce nothing either way, so they do
+        // not block. Surplus stations are handled below rather than counted as pending — demanding
+        // that they switch to a style that has no work for them is what deadlocked promotion.
+        const pendingWorkstations = layout.matched
+            .filter(ws => ws.employee_id != null && ws.ws_changeover_active !== true)
+            .map(ws => ws.workstation_code);
         if (pendingWorkstations.length > 0)
             fail(400, `All workstations must switch to CO before promotion. Pending: ${pendingWorkstations.join(', ')}`);
+
+        // Surplus stations still holding an operator: the supervisor has to have agreed to release
+        // them, because it takes those operators off this line's clock. Releasing is deliberately
+        // not silent — the error names the stations so the caller can show them and ask.
+        const staffedSurplus = layout.surplus.filter(ws => ws.employee_id != null);
+        if (staffedSurplus.length > 0 && !releaseSurplus) {
+            const err = new Error(
+                `${staffedSurplus.length} workstation(s) are not part of the changeover layout and still have an operator: `
+                + `${staffedSurplus.map(ws => ws.workstation_code).join(', ')}. Release them to continue.`
+            );
+            err.status = 409;
+            err.code = 'SURPLUS_WORKSTATIONS_PENDING';
+            err.surplusWorkstations = staffedSurplus.map(ws => ({
+                workstation_code: ws.workstation_code,
+                employee_id: ws.employee_id,
+                emp_code: ws.emp_code,
+                emp_name: ws.emp_name
+            }));
+            throw err;
+        }
 
         const snapshot = await buildChangeoverPromotionSnapshot(client, {
             lineId,
             workDate,
             previousPrimaryProductId,
             newPrimaryProductId: promotedProductId,
-            beforePlan
+            beforePlan,
+            releasedSurplusWorkstations: staffedSurplus.map(ws => ({
+                workstation_code: ws.workstation_code,
+                employee_id: ws.employee_id,
+                emp_code: ws.emp_code,
+                emp_name: ws.emp_name
+            }))
         });
 
         const archiveInsertResult = await client.query(
@@ -12964,6 +14718,19 @@ async function performChangeoverPromotion(lineId, workDate, userId) {
             ]
         );
         archiveRecord = archiveInsertResult.rows[0];
+
+        // Snapshot and archive are written, so the pre-release state is preserved. Now take the
+        // surplus operators off their stations: their history window closes at the last completed
+        // hour and the station is freed, leaving them unassigned and available for the supervisor
+        // to place elsewhere.
+        for (const ws of staffedSurplus) {
+            const released = await releaseSurplusWorkstation(client, {
+                lineId,
+                workDate,
+                workstationCode: ws.workstation_code
+            });
+            if (released) releasedSurplus.push(released);
+        }
 
         await normalizeRegularAssignmentsToProductWorkstations(client, {
             lineId, workDate, productId: promotedProductId
@@ -13003,14 +14770,14 @@ async function performChangeoverPromotion(lineId, workDate, userId) {
         client.release();
     }
 
-    return { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits };
+    return { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits, releasedSurplus };
 }
 
 // Finalize changeover into the new primary product once every workstation has switched.
 // This preserves the previous primary state in an archive row and then promotes the incoming
 // product to become the line's primary product for the same day.
 router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
-    const { line_id, work_date } = req.body;
+    const { line_id, work_date, release_surplus } = req.body;
     if (!line_id || !work_date) {
         return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
     }
@@ -13023,16 +14790,39 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
 
     let result;
     try {
-        result = await performChangeoverPromotion(line_id, work_date, req.user?.id || null);
+        result = await performChangeoverPromotion(line_id, work_date, req.user?.id || null, {
+            releaseSurplus: release_surplus === true || release_surplus === 'true'
+        });
     } catch (err) {
+        // Surplus stations still staffed: hand the list back so the client can name the operators
+        // it is about to take off the line and ask before retrying with release_surplus.
+        if (err.code === 'SURPLUS_WORKSTATIONS_PENDING') {
+            return res.status(err.status || 409).json({
+                success: false,
+                error: err.message,
+                code: err.code,
+                surplus_workstations: err.surplusWorkstations || []
+            });
+        }
         return res.status(err.status || 500).json({ success: false, error: err.message });
     }
 
-    const { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits } = result;
+    const { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits, releasedSurplus } = result;
 
     await logAudit('changeover_primary_promotions', archiveRecord.id, 'create', archiveRecord, null, req);
     await logAudit('line_daily_plans', updatedPlan.id, 'changeover_finalize_primary',
         { ...updatedPlan, archived_promotion_id: archiveRecord.id }, beforePlan, req);
+    // The archive RETURNING clause omits the snapshot, so record the released operators separately —
+    // otherwise the only trace of them leaving their stations is the deleted assignment rows.
+    if (releasedSurplus && releasedSurplus.length > 0) {
+        await logAudit('employee_workstation_assignments', 0, 'changeover_release_surplus', {
+            line_id,
+            work_date,
+            archived_promotion_id: archiveRecord.id,
+            released: releasedSurplus,
+            context: 'finalize_primary_bulk_release'
+        }, null, req).catch(() => {});
+    }
 
     realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
     realtime.broadcast('data_change', { entity: 'changeover', action: 'finalized_primary', line_id, work_date });
@@ -13052,7 +14842,8 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
             new_primary_product_id: promotedProductId,
             new_primary_product_code: beforePlan.incoming_product_code || null,
             new_primary_product_name: beforePlan.incoming_product_name || null,
-            new_primary_target_units: promotedTargetUnits
+            new_primary_target_units: promotedTargetUnits,
+            released_surplus_workstations: releasedSurplus || []
         }
     });
 });
@@ -13112,7 +14903,7 @@ router.post('/supervisor/resolve-employee-by-qr', async (req, res) => {
     try {
         const employee = await resolveEmployeeFromQrPayload(parsed);
         if (!employee) {
-            return res.status(404).json({ success: false, error: 'Employee not found' });
+            return res.status(404).json(await employeeQrFailureBody(parsed));
         }
         res.json({ success: true, data: { employee } });
     } catch (err) {
@@ -13134,7 +14925,7 @@ router.post('/supervisor/resolve-employee', async (req, res) => {
     try {
         const employee = await resolveEmployeeFromQrPayload(employeeParsed);
         if (!employee) {
-            return res.status(404).json({ success: false, error: 'Employee not found' });
+            return res.status(404).json(await employeeQrFailureBody(employeeParsed));
         }
         const employeeId = employee.id;
 
@@ -13188,6 +14979,7 @@ router.get('/supervisor/line-status/:lineId', async (req, res) => {
                 wd.departure_time,
                 wd.departure_reason,
                 wd.notes        AS departure_notes,
+                wd.return_time,
                 wa.id           AS adjustment_id,
                 wa.adjustment_type,
                 wa.reassignment_time,
@@ -13200,10 +14992,13 @@ router.get('/supervisor/line-status/:lineId', async (req, res) => {
              LEFT JOIN line_plan_workstations lpw
                 ON lpw.line_id = ewa.line_id AND lpw.work_date = ewa.work_date
                 AND lpw.workstation_code = ewa.workstation_code
+             -- Only an OPEN departure (no return_time) makes a workstation vacant; once the
+             -- worker is back this stops matching and the status falls through to 'active'.
              LEFT JOIN worker_departures wd
                 ON wd.line_id = ewa.line_id AND wd.work_date = ewa.work_date
                 AND wd.workstation_code = ewa.workstation_code AND wd.employee_id = ewa.employee_id
-             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
+                AND wd.return_time IS NULL
+             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id AND wa.ended_at IS NULL
              LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
              WHERE ewa.line_id = $1 AND ewa.work_date = $2 AND ewa.is_overtime = false
              ORDER BY COALESCE(lpw.workstation_number, 999999), ewa.workstation_code`,
@@ -13221,6 +15016,7 @@ router.get('/supervisor/line-status/:lineId', async (req, res) => {
             departure_time: row.departure_time || null,
             departure_reason: row.departure_reason || null,
             departure_notes: row.departure_notes || null,
+            return_time: row.return_time || null,
             adjustment_id: row.adjustment_id || null,
             adjustment_type: row.adjustment_type || null,
             reassignment_time: row.reassignment_time || null,
@@ -13247,43 +15043,59 @@ router.post('/supervisor/worker-departure', async (req, res) => {
     }
     const date = work_date || new Date().toISOString().slice(0, 10);
     const deptTime = departure_time || new Date().toISOString();
+    // Transactional: the INSERT and the history close used to run as two separate autocommitted
+    // pool statements, so a failure between them left a departure row with an OPEN history
+    // window — exactly the state that makes the efficiency denominator and the attributed
+    // hours disagree.
+    const client = await pool.connect();
     try {
+        await client.query('BEGIN');
         // Verify employee is assigned to this workstation
-        const assignCheck = await pool.query(
+        const assignCheck = await client.query(
             `SELECT id FROM employee_workstation_assignments
              WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND employee_id = $4 AND is_overtime = false`,
             [line_id, date, workstation_code, employee_id]
         );
         if (!assignCheck.rows[0]) {
+            await client.query('ROLLBACK');
             return res.status(400).json({ success: false, error: 'Employee is not assigned to this workstation today' });
         }
-        const result = await pool.query(
+        const result = await client.query(
             `INSERT INTO worker_departures (line_id, work_date, employee_id, workstation_code, departure_time, departure_reason, notes)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING id, departure_time`,
             [line_id, date, employee_id, workstation_code, deptTime, departure_reason, notes || null]
         );
         const row = result.rows[0];
-        // Close assignment history at departure hour so no output after departure is attributed to this employee
-        const deptHour = new Date(row.departure_time).getHours();
-        const deptEffectiveToHour = REGULAR_HISTORY_HOURS.filter(h => h <= deptHour).slice(-1)[0] ?? null;
-        if (deptEffectiveToHour !== null) {
-            await closeAssignmentHistoryForEmployee(pool, {
-                employeeId: employee_id,
-                workDate: date,
-                isOvertime: false,
-                effectiveToHour: deptEffectiveToHour
-            });
-        }
-        const empResult = await pool.query(`SELECT emp_code, emp_name FROM employees WHERE id = $1`, [employee_id]);
+        // Close assignment history at the departure hour so no output after the departure is
+        // attributed to this employee. Unconditional: when the departure lands before the
+        // shift started, lastPresentHour is null and passing firstHour - 1 makes
+        // closeAssignmentHistoryForEmployee DELETE the window instead of closing it, which is
+        // right — leaving it open would contradict the denominator.
+        const hours = getHistoryHours(false);
+        const { lastPresentHour } = resolveDepartureReturnHours(row.departure_time, null, false);
+        await closeAssignmentHistoryForEmployee(client, {
+            employeeId: employee_id,
+            workDate: date,
+            isOvertime: false,
+            effectiveToHour: lastPresentHour ?? (hours[0] - 1)
+        });
+        const empResult = await client.query(`SELECT emp_code, emp_name FROM employees WHERE id = $1`, [employee_id]);
         const emp = empResult.rows[0];
+        await client.query('COMMIT');
         realtime.broadcast('data_change', { entity: 'worker_departure', action: 'created', line_id, work_date: date });
         res.json({ success: true, data: { departure_id: row.id, departure_time: row.departure_time, emp_code: emp?.emp_code, emp_name: emp?.emp_name, workstation_code } });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
         if (err.code === '23505') {
-            return res.status(409).json({ success: false, error: 'Departure already recorded for this employee and workstation today' });
+            return res.status(409).json({
+                success: false,
+                error: 'This worker already has an open departure from this workstation today. Record their return first.'
+            });
         }
         res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -13303,15 +15115,23 @@ router.post('/supervisor/worker-adjustment', async (req, res) => {
         await client.query('BEGIN');
         // Validate departure exists and belongs to this line/date
         const deptCheck = await client.query(
-            `SELECT id FROM worker_departures WHERE id = $1 AND line_id = $2 AND work_date = $3`,
+            `SELECT id, return_time FROM worker_departures WHERE id = $1 AND line_id = $2 AND work_date = $3`,
             [departure_id, line_id, date]
         );
         if (!deptCheck.rows[0]) {
             await client.query('ROLLBACK');
             return res.status(400).json({ success: false, error: 'Departure record not found for this line/date' });
         }
-        // Check not already adjusted
-        const adjCheck = await client.query(`SELECT id FROM worker_adjustments WHERE departure_id = $1`, [departure_id]);
+        if (deptCheck.rows[0].return_time) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ success: false, error: 'This worker has already returned — the workstation is not vacant' });
+        }
+        // Check not already covered by an OPEN adjustment. A long absence may need several
+        // successive covers, so a departure whose earlier coverage has ended is coverable again.
+        const adjCheck = await client.query(
+            `SELECT id FROM worker_adjustments WHERE departure_id = $1 AND ended_at IS NULL`,
+            [departure_id]
+        );
         if (adjCheck.rows[0]) {
             await client.query('ROLLBACK');
             return res.status(409).json({ success: false, error: 'This departure has already been resolved with an adjustment' });
@@ -13343,12 +15163,16 @@ router.post('/supervisor/worker-adjustment', async (req, res) => {
                 [line_id, date, vacant_workstation_code]
             );
             const vacantPlanWsId = vacantPlanWs.rows[0]?.id || null;
-            // Remove receiver from their original WS
-            await client.query(
-                `DELETE FROM employee_workstation_assignments WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = false`,
-                [line_id, date, from_workstation_code]
-            );
-            // Assign receiver to vacant WS
+            // Move the receiver off their original workstation onto the vacant one.
+            //
+            // There used to be a raw DELETE of from_workstation_code here. It had no
+            // employee_id predicate (it removed whoever was standing there, not the validated
+            // receiver) and, by removing the row two statements early, it left
+            // clearEmployeeAssignmentConflicts below with nothing to find — so the receiver's
+            // OPEN history window at their original workstation was never closed, and no
+            // window was ever opened at the vacant one. Their whole afternoon of output was
+            // attributed to the station they had left. The helper already does exactly the
+            // right thing, including closing the history window, so let it do the work.
             await clearEmployeeAssignmentConflicts(
                 client,
                 from_employee_id,
@@ -13357,13 +15181,45 @@ router.post('/supervisor/worker-adjustment', async (req, res) => {
                 line_id,
                 vacant_workstation_code
             );
+            // The conflict target here is the DEPARTED worker's row. Set the link fields
+            // explicitly: leaving them alone made the receiver silently inherit the departed
+            // worker's is_linked/linked_at/attendance_start/late_reason on the update path,
+            // while the insert path let is_linked fall to its DEFAULT false — the same route
+            // producing two different link states depending on which branch fired.
             await client.query(
-                `INSERT INTO employee_workstation_assignments (line_id, work_date, workstation_code, employee_id, is_overtime, line_plan_workstation_id, assigned_at)
-                 VALUES ($1, $2, $3, $4, false, $5, NOW())
+                `INSERT INTO employee_workstation_assignments
+                   (line_id, work_date, workstation_code, employee_id, is_overtime,
+                    line_plan_workstation_id, is_linked, linked_at, attendance_start, late_reason, assigned_at)
+                 VALUES ($1, $2, $3, $4, false, $5, true, $6, $6, NULL, NOW())
                  ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
-                 DO UPDATE SET employee_id = EXCLUDED.employee_id, line_plan_workstation_id = EXCLUDED.line_plan_workstation_id, assigned_at = NOW()`,
-                [line_id, date, vacant_workstation_code, from_employee_id, vacantPlanWsId]
+                 DO UPDATE SET employee_id              = EXCLUDED.employee_id,
+                               line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                               is_linked                = true,
+                               linked_at                = EXCLUDED.linked_at,
+                               attendance_start         = EXCLUDED.attendance_start,
+                               late_reason              = NULL,
+                               assigned_at              = NOW()`,
+                [line_id, date, vacant_workstation_code, from_employee_id, vacantPlanWsId, rTime]
             );
+            // Open the receiver's history window at the vacant station. Strictly-greater
+            // rounding, same as a return: they did not work the hour they walked over in, so
+            // the departing worker's window (closed AT the departure hour) and this one stay
+            // disjoint instead of both claiming the boundary hour.
+            const coverFromHour = getHistoryHours(false).find(h => h > new Date(rTime).getHours()) ?? null;
+            if (coverFromHour !== null) {
+                await syncAssignmentHistoryForCurrentRow(client, {
+                    lineId: line_id,
+                    workDate: date,
+                    workstationCode: vacant_workstation_code,
+                    employeeId: from_employee_id,
+                    linePlanWorkstationId: vacantPlanWsId,
+                    isOvertime: false,
+                    isLinked: true,
+                    linkedAt: rTime,
+                    attendanceStart: rTime,
+                    forceFromHour: coverFromHour
+                });
+            }
         }
         // For combine: no change to assignments — the adjustment record is the coverage
 
@@ -13380,6 +15236,181 @@ router.post('/supervisor/worker-adjustment', async (req, res) => {
     }
 });
 
+// POST /supervisor/worker-return — the departed worker came back; re-open the workstation.
+//
+// This is the other half of POST /supervisor/worker-departure. Without it a departure was a
+// terminal fact: every status expression reads worker_departures rather than the assignment
+// row, so the station stayed VACANT for the rest of the day, hourly output entry stayed
+// disabled, and the only escape was the destructive whole-day plan delete.
+router.post('/supervisor/worker-return', async (req, res) => {
+    const { line_id, work_date, departure_id, return_time, return_notes } = req.body;
+    if (!line_id || !departure_id) {
+        return res.status(400).json({ success: false, error: 'line_id and departure_id are required' });
+    }
+    const date = work_date || new Date().toISOString().slice(0, 10);
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        // FOR UPDATE, not the partial unique index: stamping return_time is an UPDATE, so the
+        // index cannot serialize two supervisors returning the same worker at once.
+        const deptResult = await client.query(
+            `SELECT id, line_id, work_date, employee_id, workstation_code, departure_time, return_time
+             FROM worker_departures WHERE id = $1 FOR UPDATE`,
+            [departure_id]
+        );
+        const departure = deptResult.rows[0];
+        if (!departure || parseInt(departure.line_id, 10) !== parseInt(line_id, 10)
+            || String(departure.work_date).slice(0, 10) !== String(date).slice(0, 10)) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: 'Departure record not found for this line/date' });
+        }
+        if (departure.return_time) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                success: false,
+                error: `This worker was already recorded as returned at ${new Date(departure.return_time).toTimeString().slice(0, 5)}`
+            });
+        }
+        const returnTime = return_time ? new Date(return_time) : new Date();
+        // Mirror the wd_return_after_departure CHECK with a message a supervisor can act on,
+        // rather than letting a raw 23514 surface as a 500.
+        if (returnTime < new Date(departure.departure_time)) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: `Return time cannot be before the ${new Date(departure.departure_time).toTimeString().slice(0, 5)} departure`
+            });
+        }
+
+        const hours = getHistoryHours(false);
+        const { lastPresentHour } = resolveDepartureReturnHours(departure.departure_time, returnTime, false);
+
+        // Close this departure (and any other open one this worker still carries) and end the
+        // coverage it attracted. firstPresentHour is the hour every window opened below starts
+        // at — same value for the returner and any cover, so they cannot overlap.
+        const { endedAdjustments, firstPresentHour } = await closeOpenDeparturesForEmployee(client, {
+            workDate: date,
+            employeeId: departure.employee_id,
+            returnTime,
+            notes: return_notes || null
+        });
+
+        // Covering workers go back to their own station FIRST — that frees the returning
+        // worker's station before we upsert her onto it, and leaves nothing open for the
+        // history helpers below to grab by mistake.
+        const restored = [];
+        for (const adjustment of endedAdjustments) {
+            const result = await restoreCoveringWorkerToOriginalWorkstation(client, {
+                lineId: line_id, workDate: date, adjustment, returnTime, fromHour: firstPresentHour
+            });
+            if (result) restored.push(result);
+        }
+
+        // Idempotency guard. Normally a no-op — the departure route already closed her window
+        // at lastPresentHour — but it catches a pre-shift departure and any hand-repaired row,
+        // and it guarantees syncAssignmentHistoryForCurrentRow below cannot take its `reused`
+        // branch and silently ignore forceFromHour.
+        await closeAssignmentHistoryForEmployee(client, {
+            employeeId: departure.employee_id,
+            workDate: date,
+            isOvertime: false,
+            effectiveToHour: lastPresentHour ?? (hours[0] - 1)
+        });
+        await clearEmployeeAssignmentConflicts(
+            client, departure.employee_id, date, false, departure.line_id, departure.workstation_code
+        );
+
+        const planWs = await client.query(
+            `SELECT lpw.id
+             FROM line_plan_workstations lpw
+             LEFT JOIN line_daily_plans ldp
+                    ON ldp.line_id = lpw.line_id AND ldp.work_date = lpw.work_date
+             WHERE lpw.line_id = $1 AND lpw.work_date = $2 AND lpw.workstation_code = $3
+               AND (ldp.product_id IS NULL OR lpw.product_id = ldp.product_id)
+             ORDER BY lpw.id DESC LIMIT 1`,
+            [departure.line_id, date, departure.workstation_code]
+        );
+        const planWsId = planWs.rows[0]?.id || null;
+
+        // attendance_start is her ARRIVAL record for the day — COALESCE, never overwrite, or
+        // the late-arrival report starts reporting the return as the time she showed up.
+        // forceFromHour makes the history window independent of it anyway.
+        const ewaResult = await client.query(
+            `INSERT INTO employee_workstation_assignments
+               (line_id, work_date, workstation_code, employee_id, is_overtime,
+                line_plan_workstation_id, is_linked, linked_at, attendance_start, assigned_at)
+             VALUES ($1, $2, $3, $4, false, $5, true, $6, $6, NOW())
+             ON CONFLICT (line_id, work_date, workstation_code, is_overtime)
+             DO UPDATE SET employee_id              = EXCLUDED.employee_id,
+                           line_plan_workstation_id = EXCLUDED.line_plan_workstation_id,
+                           is_linked                = true,
+                           linked_at                = EXCLUDED.linked_at,
+                           attendance_start         = COALESCE(employee_workstation_assignments.attendance_start,
+                                                               EXCLUDED.attendance_start),
+                           assigned_at              = NOW()
+             RETURNING attendance_start`,
+            [departure.line_id, date, departure.workstation_code, departure.employee_id, planWsId, returnTime]
+        );
+
+        if (firstPresentHour !== null) {
+            await syncAssignmentHistoryForCurrentRow(client, {
+                lineId: departure.line_id,
+                workDate: date,
+                workstationCode: departure.workstation_code,
+                employeeId: departure.employee_id,
+                linePlanWorkstationId: planWsId,
+                isOvertime: false,
+                isLinked: true,
+                linkedAt: returnTime,
+                attendanceStart: ewaResult.rows[0]?.attendance_start || returnTime,
+                forceFromHour: firstPresentHour
+            });
+        }
+
+        const empResult = await client.query(
+            `SELECT emp_code, emp_name FROM employees WHERE id = $1`, [departure.employee_id]
+        );
+        const emp = empResult.rows[0];
+        await client.query('COMMIT');
+
+        realtime.broadcast('data_change', { entity: 'worker_departure', action: 'returned', line_id, work_date: date });
+        realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, work_date: date });
+        logAudit('worker_departures', departure.id, 'worker_returned', {
+            line_id, work_date: date,
+            employee_id: departure.employee_id,
+            workstation_code: departure.workstation_code,
+            departure_time: departure.departure_time,
+            return_time: returnTime,
+            effective_from_hour: firstPresentHour,
+            ended_adjustments: endedAdjustments.map(a => a.id),
+            restored_workstations: restored.map(r => r.workstationCode)
+        }, null, req).catch(() => {});
+
+        res.json({
+            success: true,
+            data: {
+                departure_id: departure.id,
+                return_time: returnTime,
+                workstation_code: departure.workstation_code,
+                emp_code: emp?.emp_code,
+                emp_name: emp?.emp_name,
+                effective_from_hour: firstPresentHour,
+                restored_workstations: restored.map(r => r.workstationCode),
+                // firstPresentHour null = she came back after the last working hour, so the
+                // station is live again but no output can be credited to this return.
+                note: firstPresentHour === null
+                    ? 'Returned after the last working hour — no further output can be attributed today.'
+                    : null
+            }
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
 // GET /supervisor/worker-departures/:lineId — departure + adjustment history for the shift
 router.get('/supervisor/worker-departures/:lineId', async (req, res) => {
     const { lineId } = req.params;
@@ -13387,10 +15418,12 @@ router.get('/supervisor/worker-departures/:lineId', async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT
-                wd.id AS departure_id, wd.workstation_code, wd.departure_time, wd.departure_reason, wd.notes,
+                wd.id AS departure_id, wd.employee_id, wd.workstation_code,
+                wd.departure_time, wd.departure_reason, wd.notes,
+                wd.return_time, wd.return_notes,
                 lpw.workstation_number,
                 e_dep.emp_code AS dep_emp_code, e_dep.emp_name AS dep_emp_name,
-                wa.id AS adjustment_id, wa.adjustment_type, wa.reassignment_time,
+                wa.id AS adjustment_id, wa.adjustment_type, wa.reassignment_time, wa.ended_at,
                 wa.from_workstation_code AS covering_from_ws,
                 e_cov.emp_code AS covering_emp_code, e_cov.emp_name AS covering_emp_name
              FROM worker_departures wd
@@ -13398,7 +15431,18 @@ router.get('/supervisor/worker-departures/:lineId', async (req, res) => {
              LEFT JOIN line_plan_workstations lpw
                 ON lpw.line_id = wd.line_id AND lpw.work_date = wd.work_date
                 AND lpw.workstation_code = wd.workstation_code
-             LEFT JOIN worker_adjustments wa ON wa.departure_id = wd.id
+             -- One departure can now carry several successive covers, so a plain join would
+             -- render the same departure once per adjustment. Pick one: open coverage wins,
+             -- otherwise the most recent. This panel deliberately does NOT filter on
+             -- return_time — it is the history, and it must show closed departures too.
+             LEFT JOIN LATERAL (
+                 SELECT wa.id, wa.adjustment_type, wa.reassignment_time, wa.ended_at,
+                        wa.from_workstation_code, wa.from_employee_id
+                 FROM worker_adjustments wa
+                 WHERE wa.departure_id = wd.id
+                 ORDER BY (wa.ended_at IS NULL) DESC, wa.reassignment_time DESC, wa.id DESC
+                 LIMIT 1
+             ) wa ON TRUE
              LEFT JOIN employees e_cov ON e_cov.id = wa.from_employee_id
              WHERE wd.line_id = $1 AND wd.work_date = $2
              ORDER BY COALESCE(lpw.workstation_number, 999999), wd.workstation_code, wd.departure_time DESC`,
@@ -13434,7 +15478,7 @@ router.post('/supervisor/assign', async (req, res) => {
 
         const employee = await resolveEmployeeFromQrPayload(employeeParsed);
         if (!employee) {
-            return res.status(404).json({ success: false, error: 'Employee not found' });
+            return res.status(404).json(await employeeQrFailureBody(employeeParsed));
         }
         const employeeId = employee.id;
 
@@ -13689,7 +15733,7 @@ router.post('/supervisor/scan', async (req, res) => {
     try {
         const employee = await resolveEmployeeFromQrPayload(employeeParsed);
         if (!employee) {
-            return res.status(404).json({ success: false, error: 'Employee not found' });
+            return res.status(404).json(await employeeQrFailureBody(employeeParsed));
         }
         const employeeId = employee.id;
         const process = await resolveProcessForLine(line_id, processParsed);
@@ -13865,7 +15909,7 @@ router.post('/supervisor/mapping/unlink-all', async (req, res) => {
 router.post('/supervisor/progress', async (req, res) => {
     const { line_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, remarks, shortfall_reason } = req.body;
     // Support both: workstation_plan_id (new model) or process_id (legacy)
-    const { workstation_plan_id, process_id, allow_validation_override } = req.body;
+    const { workstation_plan_id, process_id, allow_validation_override, late_entry_reason } = req.body;
     if (!line_id || !work_date || hour_slot === undefined || (!process_id && !workstation_plan_id)) {
         return res.status(400).json({ success: false, error: 'line_id, work_date, hour_slot, and either process_id or workstation_plan_id are required' });
     }
@@ -13880,30 +15924,81 @@ router.post('/supervisor/progress', async (req, res) => {
     if (!adminOverride && await isLineClosed(line_id, work_date)) {
         return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
     }
-    // Entries for an hour slot (e.g. 09:00-10:00) are only editable until the end of the
-    // following hour (11:00) — one hour of grace after the slot closes, then it locks.
+    // Entries for an hour slot (e.g. 09:00-10:00) are expected before the end of the following
+    // hour (11:00). Past that the entry is late — but it is still accepted, because refusing it
+    // outright destroyed the output permanently: a supervisor walking an 84-workstation line
+    // could not reach every station inside the window, and every station past the cutoff lost
+    // its hour for good. A late entry now requires a reason and is written to audit_logs.
+    let lateEntry = null;
     if (!adminOverride) {
         const cutoffHour = hourValue + 2;
         const cutoff = new Date(`${work_date}T${String(cutoffHour).padStart(2, '0')}:00:00`);
         if (Number.isFinite(cutoff.getTime()) && Date.now() >= cutoff.getTime()) {
             const rangeLabel = `${String(hourValue).padStart(2, '0')}:00-${String(hourValue + 1).padStart(2, '0')}:00`;
-            return res.status(403).json({
-                success: false,
-                error: `Output entry for the ${rangeLabel} hour is locked (entries were only allowed until ${String(cutoffHour).padStart(2, '0')}:00)`
-            });
+            const cutoffLabel = `${String(cutoffHour).padStart(2, '0')}:00`;
+            const reason = typeof late_entry_reason === 'string' ? late_entry_reason.trim() : '';
+            if (!reason) {
+                return res.status(409).json({
+                    success: false,
+                    late_entry_required: true,
+                    requires_confirmation: true,
+                    hour_label: rangeLabel,
+                    cutoff_label: cutoffLabel,
+                    message: `The ${rangeLabel} hour closed at ${cutoffLabel}. You can still record this output, but you must give a reason for the late entry.`
+                });
+            }
+            lateEntry = { reason, rangeLabel, cutoffLabel };
         }
     }
+    // Records a late entry against the line so IE can see which hours were back-filled and why.
+    const logLateEntry = async (workstationLabel) => {
+        if (!lateEntry) return;
+        try {
+            await pool.query(
+                `INSERT INTO audit_logs (table_name, record_id, action, new_values, reason, request_path, http_method)
+                 VALUES ('line_process_hourly_progress', $1, 'late_entry', $2, $3, $4, $5)`,
+                [
+                    parseInt(line_id, 10) || 0,
+                    JSON.stringify({
+                        line_id, work_date, hour_slot: hourValue, quantity,
+                        workstation: workstationLabel || null,
+                        hour_label: lateEntry.rangeLabel, cutoff: lateEntry.cutoffLabel
+                    }),
+                    lateEntry.reason,
+                    req.originalUrl || null,
+                    req.method || null
+                ]
+            );
+        } catch (logErr) {
+            // A failed audit write must never cost the supervisor their output.
+            console.error('late_entry audit log failed:', logErr.message);
+        }
+    };
     try {
         // New model: workstation_plan_id — fan out to all processes in this workstation
         if (workstation_plan_id) {
             const wsResult = await pool.query(
+                // The assignment is resolved with a LATERAL LIMIT 1 rather than a plain LEFT JOIN:
+                // the code-match branch can hit several rows (an OT row for the same workstation,
+                // or a row left over from another plan), and a plain join then returned one group
+                // per employee_id, leaving rows[0] — and so who the output was credited to —
+                // dependent on scan order. Regular-hours entry must never pick up an OT row.
                 `SELECT lpw.id, lpw.workstation_code,
                         ewa.employee_id,
                         array_agg(lpwp.product_process_id ORDER BY lpwp.sequence_in_workstation) as process_ids
                  FROM line_plan_workstations lpw
                  JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
-                 LEFT JOIN employee_workstation_assignments ewa
-                    ON (ewa.line_plan_workstation_id = lpw.id OR (ewa.line_id = lpw.line_id AND ewa.work_date = lpw.work_date AND ewa.workstation_code = lpw.workstation_code))
+                 LEFT JOIN LATERAL (
+                     SELECT a.employee_id
+                     FROM employee_workstation_assignments a
+                     WHERE a.is_overtime = false
+                       AND (a.line_plan_workstation_id = lpw.id
+                            OR (a.line_id = lpw.line_id AND a.work_date = lpw.work_date AND a.workstation_code = lpw.workstation_code))
+                     ORDER BY (a.line_plan_workstation_id = lpw.id) DESC,
+                              a.linked_at DESC NULLS LAST,
+                              a.employee_id
+                     LIMIT 1
+                 ) ewa ON true
                  WHERE lpw.id = $1 AND lpw.line_id = $2
                  GROUP BY lpw.id, lpw.workstation_code, ewa.employee_id`,
                 [workstation_plan_id, line_id]
@@ -13915,10 +16010,13 @@ router.post('/supervisor/progress', async (req, res) => {
             if (!ws.employee_id) {
                 return res.status(400).json({ success: false, error: 'No employee assigned to this workstation' });
             }
-            const completed = parseInt(quantity || 0, 10);
-            const forwarded = parseInt(forwarded_quantity || completed, 10);
-            const remaining = parseInt(remaining_quantity || 0, 10);
-            const rejected = parseInt(qa_rejection || 0, 10);
+            // ?? not ||: a real 0 is a valid quantity. With || a forwarded_quantity of 0 fell
+            // through to `completed`, so any entry holding stock back (forwarded 0, remaining > 0)
+            // failed the completed === forwarded + remaining check and could not be saved at all.
+            const completed = parseInt(quantity ?? 0, 10) || 0;
+            const forwarded = parseInt(forwarded_quantity ?? completed, 10) || 0;
+            const remaining = parseInt(remaining_quantity ?? 0, 10) || 0;
+            const rejected = parseInt(qa_rejection ?? 0, 10) || 0;
             if (completed < 0 || forwarded < 0 || remaining < 0) {
                 return res.status(400).json({ success: false, error: 'Output quantities must be non-negative' });
             }
@@ -13983,8 +16081,9 @@ router.post('/supervisor/progress', async (req, res) => {
             if (wsGrpRes.rows[0]?.group_identifier) {
                 await refreshGroupWip(line_id, work_date, wsGrpRes.rows[0].group_identifier);
             }
+            await logLateEntry(ws.workstation_code);
             realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, workstation_plan_id, work_date, hour_slot });
-            return res.json({ success: true, data: { workstation_plan_id, process_ids: savedProcessIds, quantity: completed } });
+            return res.json({ success: true, late_entry: !!lateEntry, data: { workstation_plan_id, process_ids: savedProcessIds, quantity: completed } });
         }
 
         // Legacy model: single process_id
@@ -14008,10 +16107,10 @@ router.post('/supervisor/progress', async (req, res) => {
         if (!assignment) {
             return res.status(400).json({ success: false, error: 'No employee assigned to this workstation' });
         }
-        const completed = parseInt(quantity || 0, 10);
-        const forwarded = parseInt(forwarded_quantity || 0, 10);
-        const remaining = parseInt(remaining_quantity || 0, 10);
-        const rejected = parseInt(qa_rejection || 0, 10);
+        const completed = parseInt(quantity ?? 0, 10) || 0;
+        const forwarded = parseInt(forwarded_quantity ?? 0, 10) || 0;
+        const remaining = parseInt(remaining_quantity ?? 0, 10) || 0;
+        const rejected = parseInt(qa_rejection ?? 0, 10) || 0;
         if (rejected < 0 || rejected > completed) {
             return res.status(400).json({ success: false, error: 'QA Rejection must be between 0 and Completed' });
         }
@@ -14139,8 +16238,9 @@ router.post('/supervisor/progress', async (req, res) => {
         if (legacyGrpRes.rows[0]?.group_identifier) {
             await refreshGroupWip(line_id, work_date, legacyGrpRes.rows[0].group_identifier);
         }
+        await logLateEntry(null);
         realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, process_id, work_date, hour_slot });
-        res.json({ success: true, data: result.rows[0] });
+        res.json({ success: true, late_entry: !!lateEntry, data: result.rows[0] });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -14193,6 +16293,218 @@ router.get('/supervisor/ws-employees', async (req, res) => {
         res.json({ success: true, data: employees });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Saves an entire hour for a line in one request.
+//
+// The single-workstation route is fine for correcting one station, but it made a normal round on
+// a large line a race: 84 separate posts, each with its own lock check and its own confirmation
+// prompt, against a window that closes two hours after the slot. Supervisors regularly lost the
+// tail of the line to that window. Here the whole hour is one post — one lock check, one late
+// reason, one confirmation for all warnings together — so the round cannot expire halfway.
+router.post('/supervisor/progress/batch', async (req, res) => {
+    const { line_id, work_date, hour_slot, entries, late_entry_reason, allow_validation_override } = req.body;
+    if (!line_id || !work_date || hour_slot === undefined || !Array.isArray(entries)) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date, hour_slot and entries[] are required' });
+    }
+    if (!entries.length) {
+        return res.status(400).json({ success: false, error: 'entries[] is empty' });
+    }
+    if (entries.length > 300) {
+        return res.status(400).json({ success: false, error: 'Too many entries in one batch (max 300)' });
+    }
+    const hourValue = parseInt(hour_slot, 10);
+    if (!Number.isFinite(hourValue) || hourValue < 8 || hourValue > 19) {
+        return res.status(400).json({ success: false, error: 'hour_slot must be between 8 and 19' });
+    }
+    const adminOverride = req.user?.role === 'admin' && req.headers['x-worksync-admin-override'] === '1';
+    if (!adminOverride && await isDayLocked(work_date)) {
+        return res.status(403).json({ success: false, error: 'Production day is locked' });
+    }
+    if (!adminOverride && await isLineClosed(line_id, work_date)) {
+        return res.status(403).json({ success: false, error: 'Shift is closed for this line' });
+    }
+
+    // One late-entry decision for the whole hour, not one per workstation.
+    let lateEntry = null;
+    if (!adminOverride) {
+        const cutoffHour = hourValue + 2;
+        const cutoff = new Date(`${work_date}T${String(cutoffHour).padStart(2, '0')}:00:00`);
+        if (Number.isFinite(cutoff.getTime()) && Date.now() >= cutoff.getTime()) {
+            const rangeLabel = `${String(hourValue).padStart(2, '0')}:00-${String(hourValue + 1).padStart(2, '0')}:00`;
+            const cutoffLabel = `${String(cutoffHour).padStart(2, '0')}:00`;
+            const reason = typeof late_entry_reason === 'string' ? late_entry_reason.trim() : '';
+            if (!reason) {
+                return res.status(409).json({
+                    success: false,
+                    late_entry_required: true,
+                    requires_confirmation: true,
+                    hour_label: rangeLabel,
+                    cutoff_label: cutoffLabel,
+                    message: `The ${rangeLabel} hour closed at ${cutoffLabel}. You can still record this output, but you must give a reason for the late entry.`
+                });
+            }
+            lateEntry = { reason, rangeLabel, cutoffLabel };
+        }
+    }
+
+    const client = await pool.connect();
+    try {
+        // Resolve every workstation in the batch up front, so one unknown id cannot leave the
+        // hour half-written.
+        const planIds = entries
+            .map(e => parseInt(e.workstation_plan_id, 10))
+            .filter(id => Number.isFinite(id));
+        if (planIds.length !== entries.length) {
+            return res.status(400).json({ success: false, error: 'Every entry needs a numeric workstation_plan_id' });
+        }
+        const wsResult = await client.query(
+            `SELECT lpw.id, lpw.workstation_code,
+                    COALESCE(lpw.group_name, lpw.workstation_code) AS group_identifier,
+                    ewa.employee_id,
+                    array_agg(lpwp.product_process_id ORDER BY lpwp.sequence_in_workstation) AS process_ids
+             FROM line_plan_workstations lpw
+             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+             LEFT JOIN LATERAL (
+                 SELECT a.employee_id
+                 FROM employee_workstation_assignments a
+                 WHERE a.is_overtime = false
+                   AND (a.line_plan_workstation_id = lpw.id
+                        OR (a.line_id = lpw.line_id AND a.work_date = lpw.work_date AND a.workstation_code = lpw.workstation_code))
+                 ORDER BY (a.line_plan_workstation_id = lpw.id) DESC,
+                          a.linked_at DESC NULLS LAST,
+                          a.employee_id
+                 LIMIT 1
+             ) ewa ON true
+             WHERE lpw.id = ANY($1::int[]) AND lpw.line_id = $2
+             GROUP BY lpw.id, lpw.workstation_code, group_identifier, ewa.employee_id`,
+            [planIds, line_id]
+        );
+        const wsById = new Map(wsResult.rows.map(r => [parseInt(r.id, 10), r]));
+
+        const prepared = [];
+        const skipped = [];
+        for (const entry of entries) {
+            const planId = parseInt(entry.workstation_plan_id, 10);
+            const ws = wsById.get(planId);
+            if (!ws) { skipped.push({ workstation_plan_id: planId, error: 'Workstation plan not found' }); continue; }
+            if (!ws.employee_id) { skipped.push({ workstation_plan_id: planId, workstation_code: ws.workstation_code, error: 'No employee assigned' }); continue; }
+
+            const completed = parseInt(entry.quantity ?? 0, 10) || 0;
+            const forwarded = parseInt(entry.forwarded_quantity ?? completed, 10) || 0;
+            const remaining = parseInt(entry.remaining_quantity ?? 0, 10) || 0;
+            const rejected = parseInt(entry.qa_rejection ?? 0, 10) || 0;
+            if (completed < 0 || forwarded < 0 || remaining < 0) {
+                skipped.push({ workstation_plan_id: planId, workstation_code: ws.workstation_code, error: 'Quantities must be non-negative' });
+                continue;
+            }
+            if (rejected < 0 || rejected > completed) {
+                skipped.push({ workstation_plan_id: planId, workstation_code: ws.workstation_code, error: 'QA rejection must be between 0 and completed' });
+                continue;
+            }
+            if (completed !== forwarded + remaining) {
+                skipped.push({ workstation_plan_id: planId, workstation_code: ws.workstation_code, error: 'Completed must equal forwarded + remaining' });
+                continue;
+            }
+            prepared.push({ ws, planId, completed, forwarded, remaining, rejected, shortfall_reason: entry.shortfall_reason || null });
+        }
+        if (!prepared.length) {
+            return res.status(400).json({ success: false, error: 'No valid entries to save', skipped });
+        }
+
+        // Collect every warning first and raise them together, so the supervisor answers once for
+        // the hour instead of once per workstation.
+        if (allow_validation_override !== true && allow_validation_override !== 'true') {
+            const warnings = [];
+            for (const item of prepared) {
+                const warning = await validateWorkstationHourlySave(client, {
+                    lineId: line_id,
+                    workDate: work_date,
+                    workstationPlanId: item.planId,
+                    hourSlot: hourValue,
+                    quantity: item.completed,
+                    allowOverride: false
+                });
+                if (warning?.requiresConfirmation) warnings.push(...warning.warnings);
+            }
+            if (warnings.length) {
+                return res.status(409).json({
+                    success: false,
+                    output_warning: true,
+                    requires_confirmation: true,
+                    warnings,
+                    message: warnings.map(w => w.message).join('\n')
+                });
+            }
+        }
+
+        await client.query('BEGIN');
+        const saved = [];
+        for (const item of prepared) {
+            for (const pid of item.ws.process_ids) {
+                await client.query(
+                    `INSERT INTO line_process_hourly_progress
+                     (line_id, process_id, employee_id, work_date, hour_slot, quantity, forwarded_quantity, remaining_quantity, qa_rejection, shortfall_reason)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     ON CONFLICT (line_id, process_id, work_date, hour_slot)
+                     DO UPDATE SET quantity = EXCLUDED.quantity,
+                                   employee_id = EXCLUDED.employee_id,
+                                   forwarded_quantity = EXCLUDED.forwarded_quantity,
+                                   remaining_quantity = EXCLUDED.remaining_quantity,
+                                   qa_rejection = EXCLUDED.qa_rejection,
+                                   shortfall_reason = EXCLUDED.shortfall_reason,
+                                   updated_at = NOW()`,
+                    [line_id, pid, item.ws.employee_id, work_date, hourValue, item.completed, item.forwarded, item.remaining, item.rejected, item.shortfall_reason]
+                );
+            }
+            saved.push({ workstation_plan_id: item.planId, workstation_code: item.ws.workstation_code, quantity: item.completed });
+        }
+        await client.query('COMMIT');
+
+        // WIP refresh and audit are post-commit: the output is already safe, and neither is worth
+        // rolling an entered hour back for.
+        const groups = [...new Set(prepared.map(i => i.ws.group_identifier).filter(Boolean))];
+        for (const group of groups) {
+            try { await refreshGroupWip(line_id, work_date, group); }
+            catch (wipErr) { console.error('refreshGroupWip failed for', group, wipErr.message); }
+        }
+        if (lateEntry) {
+            try {
+                await pool.query(
+                    `INSERT INTO audit_logs (table_name, record_id, action, new_values, reason, request_path, http_method)
+                     VALUES ('line_process_hourly_progress', $1, 'late_entry', $2, $3, $4, $5)`,
+                    [
+                        parseInt(line_id, 10) || 0,
+                        JSON.stringify({
+                            line_id, work_date, hour_slot: hourValue,
+                            workstations: saved.map(s => s.workstation_code),
+                            station_count: saved.length,
+                            hour_label: lateEntry.rangeLabel, cutoff: lateEntry.cutoffLabel
+                        }),
+                        lateEntry.reason,
+                        req.originalUrl || null,
+                        req.method || null
+                    ]
+                );
+            } catch (logErr) {
+                console.error('late_entry audit log failed:', logErr.message);
+            }
+        }
+
+        realtime.broadcast('data_change', { entity: 'progress', action: 'update', line_id, work_date, hour_slot: hourValue });
+        return res.json({
+            success: true,
+            late_entry: !!lateEntry,
+            saved_count: saved.length,
+            skipped_count: skipped.length,
+            data: { saved, skipped }
+        });
+    } catch (err) {
+        try { await client.query('ROLLBACK'); } catch (rbErr) { /* connection already gone */ }
+        return res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -15919,7 +18231,9 @@ router.get('/efficiency-report', async (req, res) => {
             Number.isFinite(reportHour)
                 ? getCumulativeEmployeeProgress(pool, line_id, date, reportHour, false, liveHoursDenom)
                 : getCumulativeEmployeeProgress(pool, line_id, date, null, false, liveHoursDenom),
-            getDepartureHourDenomMap(pool, line_id, date)
+            getDepartureHourDenomMap(pool, line_id, date, {
+                endHour: Number.isFinite(reportHour) ? reportHour : null
+            })
         ]);
         const liveEmployeeProgress = applyDepartureEfficiency(rawLiveEmployeeProgress, departureDenomMap);
         const hourlyWorkstationProgress = Number.isFinite(reportHour)
@@ -16247,6 +18561,374 @@ router.get('/efficiency-report', async (req, res) => {
     }
 });
 
+// ============================================================================
+// HOURLY REPORT
+// ============================================================================
+// GET /api/hourly-report?line_id=&date=
+// One row per employee, one cell per shift hour (1st..8th), each carrying that
+// hour's output and efficiency, plus a whole-day OT lump and a cumulative total.
+//
+// Deliberately scoped to ONE line and ONE date: per-hour columns only make sense
+// inside a single day. That is also why there is no cross-line merge here like the
+// one in /worker-individual-efficiency — an employee who worked two lines the same
+// day is simply reported under the line being asked about. Do not "restore" that.
+router.get('/hourly-report', async (req, res) => {
+    const lineId = req.query.line_id ? parseInt(req.query.line_id, 10) : null;
+    const date = typeof req.query.date === 'string' ? req.query.date : '';
+    if (!Number.isFinite(lineId) || !date) {
+        return res.status(400).json({ success: false, error: 'line_id and date are required' });
+    }
+    if (!ISO_WORK_DATE_RE.test(date)) {
+        return res.status(400).json({ success: false, error: 'date must be YYYY-MM-DD' });
+    }
+    try {
+        const lineResult = await pool.query(
+            `SELECT pl.id, pl.line_code, pl.line_name, pl.line_leader, pl.line_leader_photo,
+                    ldp.target_units, ldp.incoming_target_units,
+                    ldp.product_id, ldp.incoming_product_id,
+                    p.product_code, p.product_name,
+                    ip.product_code AS incoming_product_code,
+                    ip.product_name AS incoming_product_name
+             FROM production_lines pl
+             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
+             LEFT JOIN products p ON p.id = ldp.product_id
+             LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
+             WHERE pl.id = $1`,
+            [lineId, date]
+        );
+        if (lineResult.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+        const line = lineResult.rows[0];
+
+        const shiftWindow = await getShiftWindowDetails();
+        const workingHours = shiftWindow.workingHours > 0 ? shiftWindow.workingHours : 8;
+
+        // A plan-less line with assignment history is still a valid report — targets
+        // just come back as 0 and the frontend renders a dash. Never 404 for this.
+        const targetUnits = parseInt(line.target_units || 0, 10) || 0;
+        const coTargetUnits = parseInt(line.incoming_target_units || 0, 10) || 0;
+        const lineHourlyTarget = targetUnits > 0 ? Math.ceil(targetUnits / workingHours) : 0;
+        const lineCoHourlyTarget = coTargetUnits > 0 ? Math.ceil(coTargetUnits / workingHours) : 0;
+
+        // Only query hours the shift has actually reached. An unreached hour must come
+        // back as null (blank) rather than a zero, or every worker reads 0% all morning.
+        const isToday = date === new Date().toISOString().slice(0, 10);
+        const currentClockHour = new Date().getHours();
+        const reachedHours = isToday
+            ? REPORT_WORK_HOURS.filter(h => h <= currentClockHour)
+            : REPORT_WORK_HOURS.slice();
+        const maxHour = reachedHours.length ? reachedHours[reachedHours.length - 1] : null;
+        const liveHours = isToday
+            ? Math.max(1, reachedHours.length)
+            : Math.min(REPORT_WORK_HOURS.length, workingHours);
+
+        // The cumulative (live) totals stop at the last FINISHED hour. An hour's output is
+        // entered only once it is over, so counting the running hour's target and time left
+        // almost every worker short for the whole hour. The row spine below still runs to
+        // maxHour: its assignment filter is effective_from_hour <= endHour, so ending it at the
+        // finished hour would drop anyone who joined this hour and empty the report all 1st hour.
+        const completedHours = isToday ? reachedHours.filter(h => h < currentClockHour) : reachedHours;
+        const liveEndHour = completedHours.length ? completedHours[completedHours.length - 1] : null;
+        const liveTotalsHours = isToday ? completedHours.length : liveHours;
+        const liveRunsBehind = liveEndHour !== maxHour;
+
+        const [perHourSets, rawCumulative, departureMap, rawLiveCumulative, liveDepartureMap, otProgressRes, dayLocked, lineClosed] = await Promise.all([
+            Promise.all(reachedHours.map(h => getHourlyEmployeeProgress(pool, lineId, date, h, false))),
+            maxHour == null
+                ? Promise.resolve([])
+                : getCumulativeEmployeeProgress(pool, lineId, date, maxHour, false, liveHours),
+            getDepartureHourDenomMap(pool, lineId, date, { endHour: maxHour }),
+            liveRunsBehind && liveEndHour != null
+                ? getCumulativeEmployeeProgress(pool, lineId, date, liveEndHour, false, liveTotalsHours)
+                : Promise.resolve([]),
+            liveRunsBehind && liveEndHour != null
+                ? getDepartureHourDenomMap(pool, lineId, date, { endHour: liveEndHour })
+                : Promise.resolve(new Map()),
+            // Whole-day OT lump. Read from employee_workstation_assignments, NOT from
+            // getEmployeeProgressForWindow({isOvertime:true}) — the assignment-history
+            // table carries no OT rows at all, so that path returns nothing.
+            pool.query(
+                `SELECT ewa.employee_id,
+                        COALESCE(SUM(lotp.ot_target_units), 0)                AS ot_target,
+                        COALESCE(SUM(lotp.quantity), 0)                       AS ot_output,
+                        COALESCE(SUM(lotp.quantity * low.actual_sam_seconds) / 3600.0, 0) AS ot_earned_hours,
+                        COALESCE(SUM(COALESCE(NULLIF(low.ot_minutes, 0), lop.global_ot_minutes, 0)) / 60.0, 0) AS ot_available_hours
+                 FROM employee_workstation_assignments ewa
+                 JOIN line_ot_workstations low
+                   ON low.workstation_code = ewa.workstation_code
+                  AND low.ot_plan_id IN (
+                      SELECT id FROM line_ot_plans WHERE line_id = $1 AND work_date = $2
+                  )
+                 JOIN line_ot_plans lop ON lop.id = low.ot_plan_id
+                 LEFT JOIN line_ot_progress lotp
+                   ON lotp.ot_workstation_id = low.id
+                  AND lotp.work_date = $2
+                 WHERE ewa.line_id = $1
+                   AND ewa.work_date = $2
+                   AND ewa.is_overtime = true
+                   AND ewa.employee_id IS NOT NULL
+                   AND low.is_active = true
+                 GROUP BY ewa.employee_id`,
+                [lineId, date]
+            ),
+            isDayLocked(date),
+            isLineClosed(lineId, date)
+        ]);
+
+        // applyDepartureEfficiency only rewrites the CUMULATIVE efficiency, using the
+        // departed worker's shorter personal denominator. Per-hour cells run at
+        // hoursDenom=1 and are already correct, so they are left alone.
+        const cumulative = applyDepartureEfficiency(rawCumulative, departureMap);
+        const liveCumulative = liveRunsBehind
+            ? applyDepartureEfficiency(rawLiveCumulative, liveDepartureMap)
+            : cumulative;
+        const liveById = new Map(liveCumulative.map(emp => [String(emp.id), emp]));
+        const liveDenomMap = liveRunsBehind ? liveDepartureMap : departureMap;
+
+        const hourlyTargetFor = (r) => {
+            const takt = parseFloat(r.takt_time_seconds || 0);
+            if (r.is_custom_takt && takt > 0) {
+                return Math.max(0, Math.round(computeHourlyTargetFromTakt(takt)));
+            }
+            return (r.is_changeover && lineCoHourlyTarget > 0) ? lineCoHourlyTarget : lineHourlyTarget;
+        };
+
+        // The cumulative set is the row spine: it carries the ghost-row filter that
+        // hides no-shows and stale plan-swap rows. The per-hour sets skip that filter
+        // by design, so using them as the spine would resurrect those ghosts.
+        const rowMap = new Map();
+        for (const emp of cumulative) {
+            const key = String(emp.id);
+            const denom = departureMap.get(parseInt(emp.id, 10)) || liveHours;
+            // Missing from the live set = only joined in the running hour: nothing finished yet.
+            const live = liveById.get(key);
+            rowMap.set(key, {
+                emp_id: emp.id,
+                emp_code: emp.emp_code,
+                emp_name: emp.emp_name,
+                workstation_code: emp.workstation_code || null,
+                group_name: emp.group_name || '',
+                is_changeover: !!emp.is_changeover,
+                moved_mid_day: false,
+                departed: departureMap.has(parseInt(emp.id, 10)),
+                departure_hour: departureMap.has(parseInt(emp.id, 10))
+                    ? (REPORT_WORK_HOURS[denom - 1] ?? null)
+                    : null,
+                ot_only: false,
+                hourly_target: hourlyTargetFor(emp),
+                hours: {},
+                ot: null,
+                cumulative: {
+                    output: live ? live.total_output : 0,
+                    rejection: live ? live.total_rejection : 0,
+                    efficiency_percent: live ? live.efficiency_percent : null,
+                    target: 0,
+                    hours_denom: live ? (liveDenomMap.get(parseInt(emp.id, 10)) || liveTotalsHours) : 0,
+                    reason: emp.shortfall_reasons || null
+                }
+            });
+        }
+
+        perHourSets.forEach((rows, idx) => {
+            const hour = reachedHours[idx];
+            for (const r of rows) {
+                const row = rowMap.get(String(r.id));
+                if (!row) continue;
+                row.hours[hour] = {
+                    workstation_code: r.workstation_code || null,
+                    output: r.total_output,
+                    rejection: r.total_rejection,
+                    efficiency_percent: r.efficiency_percent,
+                    target: hourlyTargetFor(r),
+                    // last_updated is MAX(lph.updated_at) over the matched hour and is
+                    // non-null iff a progress row exists — that is what separates
+                    // "supervisor never entered this hour" from "entered a real 0".
+                    entered: r.last_updated != null,
+                    is_changeover: !!r.is_changeover,
+                    reason: formatReasonHours(r.shortfall_reason_hours) || null
+                };
+            }
+        });
+
+        // Row-level flags derived from the hours actually worked.
+        for (const row of rowMap.values()) {
+            const cells = Object.values(row.hours).filter(Boolean);
+            const codes = new Set(cells.map(c => c.workstation_code).filter(Boolean));
+            row.moved_mid_day = codes.size > 1;
+            row.cumulative.target = completedHours.reduce((sum, h) => sum + (row.hours[h]?.target || 0), 0);
+            const lastCell = maxHour != null ? row.hours[maxHour] : null;
+            if (lastCell) row.is_changeover = lastCell.is_changeover;
+        }
+
+        // OT-only workers have no regular assignment, so the spine never saw them.
+        // Give them a stub row rather than dropping their overtime on the floor.
+        const otMissingIds = [];
+        for (const otRow of otProgressRes.rows) {
+            const empId = parseInt(otRow.employee_id, 10);
+            if (!Number.isFinite(empId)) continue;
+            const key = String(empId);
+            if (!rowMap.has(key)) {
+                otMissingIds.push(empId);
+                rowMap.set(key, {
+                    emp_id: empId, emp_code: '', emp_name: '',
+                    workstation_code: null, group_name: '',
+                    is_changeover: false, moved_mid_day: false,
+                    departed: false, departure_hour: null, ot_only: true,
+                    hourly_target: 0, hours: {}, ot: null,
+                    cumulative: { output: 0, rejection: 0, efficiency_percent: null, target: 0, hours_denom: 0, reason: null }
+                });
+            }
+            const otAvail = parseFloat(otRow.ot_available_hours || 0);
+            const otEarned = parseFloat(otRow.ot_earned_hours || 0);
+            rowMap.get(key).ot = {
+                target: parseInt(otRow.ot_target || 0, 10) || 0,
+                output: parseInt(otRow.ot_output || 0, 10) || 0,
+                earned_hours: otEarned,
+                available_hours: otAvail,
+                efficiency_percent: otAvail > 0 ? Math.round((otEarned / otAvail) * 10000) / 100 : null
+            };
+        }
+        if (otMissingIds.length) {
+            const empRes = await pool.query(
+                `SELECT id, emp_code, emp_name FROM employees WHERE id = ANY($1::int[])`,
+                [otMissingIds]
+            );
+            for (const e of empRes.rows) {
+                const row = rowMap.get(String(e.id));
+                if (row) { row.emp_code = e.emp_code; row.emp_name = e.emp_name; }
+            }
+        }
+
+        const hours = REPORT_WORK_HOURS.map(h => ({
+            hour_slot: h,
+            ordinal: formatShiftHourOrdinal(h),
+            label: formatHourRangeLabel(h),
+            reached: maxHour != null && h <= maxHour
+        }));
+
+        res.json({
+            success: true,
+            data: {
+                line: {
+                    id: line.id,
+                    line_code: line.line_code,
+                    line_name: line.line_name,
+                    line_leader: line.line_leader || null,
+                    line_leader_photo: line.line_leader_photo || null
+                },
+                date,
+                is_today: isToday,
+                is_locked: !!dayLocked,
+                is_closed: !!lineClosed,
+                max_hour: maxHour,
+                hours,
+                plan: {
+                    product_code: line.product_code || null,
+                    product_name: line.product_name || null,
+                    incoming_product_code: line.incoming_product_code || null,
+                    incoming_product_name: line.incoming_product_name || null,
+                    target_units: targetUnits,
+                    incoming_target_units: coTargetUnits,
+                    working_hours: workingHours,
+                    in_time: shiftWindow.inTime,
+                    out_time: shiftWindow.outTime,
+                    line_hourly_target: lineHourlyTarget,
+                    line_co_hourly_target: lineCoHourlyTarget,
+                    live_hours: liveHours
+                },
+                has_ot: otProgressRes.rows.length > 0,
+                rows: [...rowMap.values()]
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================================
+// LINE DISPLAY (shop-floor TV)
+// ============================================================================
+// The TV board renders /hourly-report as it is. These two routes add only what it does not carry:
+// the line list for the screen's picker, and the server clock plus the final stitching stage behind
+// the board's Done, Achieved and Line efficiency tiles.
+
+// GET /api/display/lines
+router.get('/display/lines', async (req, res) => {
+    try {
+        const result = await pool.query(
+            // The leader's name and photo let the picker cards be recognised by face from across
+            // the floor, the same pair the board header shows. Both are optional — the card falls
+            // back to initials, then to nothing.
+            `SELECT id, line_code, line_name, line_leader, line_leader_photo
+             FROM production_lines
+             WHERE is_active = true
+             ORDER BY line_code, id`
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// GET /api/display/line-status?line_id=
+router.get('/display/line-status', async (req, res) => {
+    const lineId = req.query.line_id ? parseInt(req.query.line_id, 10) : null;
+    if (!Number.isFinite(lineId)) {
+        return res.status(400).json({ success: false, error: 'line_id is required' });
+    }
+    try {
+        // Same "today" and finished-hour rules as /hourly-report, so the board asks that report
+        // for the day it treats as live and its line tiles stop at the same hour as the rows.
+        const now = new Date();
+        const date = now.toISOString().slice(0, 10);
+        const completedHours = REPORT_WORK_HOURS.filter(h => h < now.getHours());
+        const lastCompletedHour = completedHours.length ? completedHours[completedHours.length - 1] : null;
+
+        const planResult = await pool.query(
+            `SELECT pl.id, ldp.product_id, ldp.incoming_product_id, ldp.target_units
+             FROM production_lines pl
+             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
+             WHERE pl.id = $1`,
+            [lineId, date]
+        );
+        if (planResult.rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+        const plan = planResult.rows[0];
+        const shiftWindow = await getShiftWindowDetails();
+        const workingHours = shiftWindow.workingHours > 0 ? shiftWindow.workingHours : 8;
+        const targetUnits = parseInt(plan.target_units || 0, 10) || 0;
+        const lineHourlyTarget = targetUnits > 0 ? Math.ceil(targetUnits / workingHours) : 0;
+
+        const [finalStitching, workstationProcesses] = await Promise.all([
+            getFinalStitchingSummary(pool, lineId, date, {
+                endHour: lastCompletedHour,
+                hoursCounted: completedHours.length,
+                lineHourlyTarget,
+                productId: plan.product_id,
+                incomingProductId: plan.incoming_product_id
+            }),
+            getWorkstationProcessLabels(pool, lineId, date)
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                date,
+                server_time: now.toISOString(),
+                time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                clock_hour: now.getHours(),
+                last_completed_hour: lastCompletedHour,
+                final_stitching: finalStitching,
+                workstation_processes: workstationProcesses
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // GET /api/worker-individual-efficiency?from_date=&to_date=&line_id=&date=
 // Returns per-workstation per-employee efficiency grid across a date range for ALL active lines,
 // handling mid-day departures (DEP), assign (PRE/POST), and combine (COMB) adjustments.
@@ -16344,7 +19026,11 @@ router.get('/worker-individual-efficiency', async (req, res) => {
             const [rawEmpProgress, rawSplitEmpProgress, empDepartureMap] = await Promise.all([
                 getCumulativeEmployeeProgress(pool, lid, date, null, false, liveHoursForDate),
                 getCumulativeEmployeeProgress(pool, lid, date, null, false, liveHoursForDate, { splitBySource: true }),
-                getDepartureHourDenomMap(pool, lid, date)
+                getDepartureHourDenomMap(pool, lid, date, {
+                    endHour: isToday
+                        ? (REGULAR_HISTORY_HOURS.filter(h => h <= new Date().getHours()).slice(-1)[0] ?? null)
+                        : null
+                })
             ]);
             const empProgress = applyDepartureEfficiency(rawEmpProgress, empDepartureMap);
             const splitEmpProgress = applyDepartureEfficiency(rawSplitEmpProgress, empDepartureMap);
@@ -16352,7 +19038,6 @@ router.get('/worker-individual-efficiency', async (req, res) => {
             // Bucket the split rows per employee into primary vs CO so a day-cell can show
             // both when a workstation ran primary for part of the day then changed over.
             const mergeWsCodes = (a, b) => [...new Set([...(a || '').split(', ').filter(Boolean), ...(b || '').split(', ').filter(Boolean)])].join(', ');
-            const mergeReasons = (a, b) => [...new Set([...(a || '').split('; ').filter(Boolean), ...(b || '').split('; ').filter(Boolean)])].join('; ') || null;
             const splitByEmp = new Map();
             for (const row of splitEmpProgress) {
                 const bucket = splitByEmp.get(row.id) || { primary: null, co: null };
@@ -16394,7 +19079,7 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                     existingCell._earned_hours = (existingCell._earned_hours || 0) + earnedHours;
                     existingCell.tag = (existingCell.tag === 'CO' || emp.is_changeover) ? 'CO' : existingCell.tag;
                     existingCell.workstation_codes = mergeWsCodes(existingCell.workstation_codes, dayWsCodes);
-                    existingCell.reason = mergeReasons(existingCell.reason, emp.shortfall_reasons);
+                    existingCell._reason_hours = mergeReasonHours(existingCell._reason_hours, emp.shortfall_reason_hours);
                     if (hasBothSources) {
                         existingCell.primary_output = (existingCell.primary_output || 0) + split.primary.output;
                         existingCell.primary_eff = (existingCell.primary_eff || 0) + split.primary.eff;
@@ -16410,7 +19095,7 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                         tag: emp.is_changeover ? 'CO' : null,
                         line_id: lid,
                         workstation_codes: dayWsCodes,
-                        reason: emp.shortfall_reasons || null,
+                        _reason_hours: emp.shortfall_reason_hours || [],
                         primary_output: hasBothSources ? split.primary.output : undefined,
                         primary_eff: hasBothSources ? split.primary.eff : undefined,
                         co_output: hasBothSources ? split.co.output : undefined,
@@ -16491,6 +19176,10 @@ router.get('/worker-individual-efficiency', async (req, res) => {
                     row.dates[d] = { line_target: 0, wip: 0, output: 0, eff: 0, tag: null, hours_worked: 0 };
                 }
                 const cell = row.dates[d];
+                // Reason text is built here, after same-day stints on different lines have
+                // been merged, so each reason lists every hour that worker owned it.
+                cell.reason = formatReasonHours(cell._reason_hours) || cell.reason || null;
+                delete cell._reason_hours;
                 const earnedHours = parseFloat(cell._earned_hours || 0) || 0;
                 cell.eff = (cell.hours_worked > 0)
                     ? Math.round((earnedHours / cell.hours_worked) * 10000) / 100
