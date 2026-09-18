@@ -4,27 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WorkSync Line Display</title>
-    <link rel="stylesheet" href="css/display.css?v=20260916-2">
+    <link rel="stylesheet" href="css/display.css?v=20260918-3">
 </head>
 <body>
     <main id="picker" class="picker" hidden>
         <h1 class="picker-title">Choose the line for this screen</h1>
-        <p class="picker-hint">The screen remembers its line. On the board use the <kbd>‹ Lines</kbd> button or <kbd>Esc</kbd> to come back here, and <kbd>F</kbd> for full screen.</p>
+        <p class="picker-hint">The screen remembers its line. On the board use the <kbd>‹ Lines</kbd> button (bottom left) or <kbd>Esc</kbd> to come back here, and <kbd>F</kbd> for full screen.</p>
         <div id="picker-grid" class="picker-grid"><p class="picker-hint">Loading lines…</p></div>
     </main>
 
     <main id="board" class="board" hidden>
         <header class="board-header">
-            <button id="back-to-lines" class="back-btn" type="button" title="Back to line selection (Esc)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
-                </svg>
-                Lines
-            </button>
-            <div class="plan-info">
-                <div id="plan-product" class="plan-product"></div>
-                <div id="plan-meta" class="plan-meta"></div>
-            </div>
             <div class="clock-block">
                 <div id="clock" class="clock">--:--</div>
                 <div id="clock-date" class="clock-date"></div>
@@ -42,6 +32,11 @@
                     <div id="sup-line" class="sup-line"></div>
                 </div>
             </div>
+            <div id="plan-card" class="plan-card">
+                <div class="kpi-label">Style</div>
+                <div id="plan-product" class="plan-product"></div>
+                <div id="plan-meta" class="plan-meta"></div>
+            </div>
             <div id="kpis" class="kpis"></div>
         </section>
 
@@ -56,6 +51,12 @@
 
         <footer class="board-footer">
             <div class="flip-controls">
+                <button id="back-to-lines" class="back-btn" type="button" title="Back to line selection (Esc)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+                    </svg>
+                    Lines
+                </button>
                 <button id="autoflip-toggle" class="switch" type="button" role="switch" aria-checked="true"
                         title="Flip pages automatically. Turn off to scroll the list yourself (P)">
                     <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
@@ -82,6 +83,32 @@
         </footer>
     </main>
 
+    <div id="tile-picker" class="tile-picker" role="dialog" aria-modal="true" aria-labelledby="tp-title" hidden>
+        <div class="tp-panel">
+            <header class="tp-head">
+                <div>
+                    <h2 id="tp-title" class="tp-title"></h2>
+                    <p id="tp-hint" class="tp-hint"></p>
+                </div>
+                <button id="tp-close" class="tp-close" type="button" aria-label="Close without saving">×</button>
+            </header>
+            <label id="tp-overall" class="tp-overall" hidden>
+                <input id="tp-overall-box" type="checkbox">
+                <span><strong>Line overall efficiency</strong><small>The whole line, as the Efficiency Report shows it</small></span>
+            </label>
+            <div id="tp-or" class="tp-or" hidden>or workstations</div>
+            <div id="tp-grid" class="tp-grid"></div>
+            <footer class="tp-foot">
+                <span id="tp-count" class="tp-count"></span>
+                <span id="tp-error" class="tp-error bad" role="alert"></span>
+                <button id="tp-clear" class="tp-btn" type="button" title="Empty this card again">Clear</button>
+                <button id="tp-cancel" class="tp-btn" type="button">Cancel</button>
+                <button id="tp-save" class="tp-btn tp-primary" type="button">Save</button>
+            </footer>
+        </div>
+    </div>
+
+    <script src="js/public-host.js"></script>
     <script src="js/display.js"></script>
 </body>
 </html>

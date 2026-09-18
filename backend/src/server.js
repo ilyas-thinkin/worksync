@@ -188,6 +188,123 @@ const requireAnyRole = (roles) => (req, res, next) => {
   next();
 };
 
+// --- Public address with a trusted certificate ---
+// The LAN names (https://worksync, worksync.local, the Pi's IP) can only carry a self-signed
+// certificate, so browsers warn "not private" on them and, on the line TVs, drop the page every
+// hour or so. PUBLIC_HOST is a DuckDNS name that resolves to the Pi's LAN address and carries a
+// Let's Encrypt certificate (see scripts/duckdns-update.sh). A page opened on an old LAN name is
+// moved there with its sign-in, so nobody has to click through a warning or log in again.
+// The Tailscale IP and the Cloudflare tunnel are left alone: they cannot reach the LAN address.
+const PUBLIC_HOST = String(process.env.PUBLIC_HOST || '').trim().toLowerCase();
+const HANDOFF_TTL_SEC = 60;
+// Set by the moving page when this device cannot reach PUBLIC_HOST, so it stays on the LAN name
+// for an hour instead of being bounced to an address it cannot open.
+const STAY_ON_LAN_COOKIE = 'worksync_stay_lan';
+
+const requestHost = (req) => String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+
+const isLegacyLanHost = (host) => {
+  if (!PUBLIC_HOST || !host || host === PUBLIC_HOST) return false;
+  if (host === 'worksync' || host === 'worksync.local') return true;
+  return /^(10\.\d+|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+$/.test(host);
+};
+
+// A sign-in pass good for one minute. Two parts and its own HMAC prefix, so it can never be
+// mistaken for an auth cookie (three parts) or the other way round.
+const signHandoff = (role) => {
+  const now = Math.floor(Date.now() / 1000);
+  const body = Buffer.from(JSON.stringify({ purpose: 'handoff', role, exp: now + HANDOFF_TTL_SEC })).toString('base64url');
+  const signature = crypto.createHmac('sha256', AUTH_SECRET).update(`handoff.${body}`).digest('base64url');
+  return `${body}.${signature}`;
+};
+
+const verifyHandoff = (token) => {
+  const [body, signature, extra] = String(token || '').split('.');
+  if (!body || !signature || extra !== undefined) return null;
+  const expected = crypto.createHmac('sha256', AUTH_SECRET).update(`handoff.${body}`).digest('base64url');
+  if (!timingSafeStringEqual(signature, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (payload.purpose !== 'handoff' || !ROLE_PASSWORDS[payload.role]) return null;
+    if (!payload.exp || Math.floor(Date.now() / 1000) > payload.exp) return null;
+    return payload.role;
+  } catch (err) {
+    return null;
+  }
+};
+
+const safeNextPath = (value) => {
+  const next = String(value || '');
+  return next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') && next.length <= 2048 ? next : '/';
+};
+
+const scriptJson = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+
+// A navigation to an old LAN name gets a small page that checks this device can open PUBLIC_HOST,
+// then moves there (carrying the sign-in when there is one) or, failing that, stays put.
+app.use((req, res, next) => {
+  if (req.method !== 'GET' || !isLegacyLanHost(requestHost(req))) return next();
+  const fetchMode = req.headers['sec-fetch-mode'];
+  const isPageLoad = fetchMode
+    ? fetchMode === 'navigate' && req.headers['sec-fetch-dest'] === 'document'
+    : String(req.headers.accept || '').includes('text/html');
+  if (!isPageLoad || /^\/(api|events|auth|uploads|qrcodes|js|css|images)(\/|$)/.test(req.path)) return next();
+  const cookies = parseCookies(req.headers.cookie || '');
+  if (cookies[STAY_ON_LAN_COOKIE]) return next();
+
+  const payload = verifyToken(cookies[AUTH_COOKIE]);
+  const move = {
+    host: PUBLIC_HOST,
+    token: payload ? signHandoff(payload.role) : null,
+    next: safeNextPath(req.originalUrl)
+  };
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('html').send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>WorkSync</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="font-family:system-ui,sans-serif;background:#0f172a;color:#cbd5e1;display:grid;place-items:center;min-height:100vh;margin:0">
+<p>Opening WorkSync…</p>
+<script src="/js/public-host.js"></script>
+<script>
+  moveToPublicHost(${scriptJson(move)}).then(function (moved) {
+    if (moved) return;
+    document.cookie = '${STAY_ON_LAN_COOKIE}=1; Path=/; Max-Age=3600; Secure; SameSite=Lax';
+    location.replace(${scriptJson(move.next)});
+  });
+</script>
+</body></html>`);
+});
+
+// Lets a page that is already open on an old LAN name (the line TV) tell that it should move.
+app.use('/api', (req, res, next) => {
+  if (isLegacyLanHost(requestHost(req))) res.setHeader('X-WorkSync-Public-Host', PUBLIC_HOST);
+  next();
+});
+
+// Same-origin: an open page asks for a one-minute pass to carry its sign-in to PUBLIC_HOST.
+app.post('/auth/handoff/start', (req, res) => {
+  const payload = verifyToken(parseCookies(req.headers.cookie || '')[AUTH_COOKIE]);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!PUBLIC_HOST || !payload) return res.status(401).json({ success: false });
+  res.json({ success: true, token: signHandoff(payload.role) });
+});
+
+// On PUBLIC_HOST: trade the pass for a normal sign-in cookie, then open the page it came from.
+// Only accepted from a form posted by one of our own LAN names.
+app.post('/auth/handoff', express.urlencoded({ extended: false, limit: '8kb' }), (req, res) => {
+  const nextPath = safeNextPath(req.body && req.body.next);
+  let originHost = '';
+  try { originHost = new URL(req.headers.origin || '').hostname.toLowerCase(); } catch (err) { /* no origin */ }
+  const role = requestHost(req) === PUBLIC_HOST && isLegacyLanHost(originHost)
+    ? verifyHandoff(req.body && req.body.token)
+    : null;
+  if (role) {
+    res.setHeader('Set-Cookie', buildAuthCookie(signToken({ role }), req, { maxAge: tokenMaxAgeFor(role) }));
+  }
+  // Without a valid pass the page itself sends the browser to the login screen, as usual.
+  res.redirect(303, nextPath);
+});
+
 // Block direct access to protected HTML files
 app.use((req, res, next) => {
   const blocked = ['/admin.html', '/ie.html', '/supervisor.html', '/management.html', '/display.html'];
@@ -227,9 +344,13 @@ app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/products/export/') || req.path === '/products/upload-template') {
     return next();
   }
-  // The line TV role is read-only and limited to exactly the reads the display page makes;
-  // every other path falls through to rules that do not list 'display'.
+  // The line TV role is limited to exactly the reads the display page makes, plus one write:
+  // which stations the board's line tiles add up. Every other path falls through to rules
+  // that do not list 'display'.
   if (req.method === 'GET' && (req.path.startsWith('/display/') || req.path === '/hourly-report' || req.path === '/efficiency-report')) {
+    return requireAnyRole(['display', 'admin', 'ie', 'supervisor', 'management'])(req, res, next);
+  }
+  if (req.method === 'PUT' && req.path === '/display/tiles') {
     return requireAnyRole(['display', 'admin', 'ie', 'supervisor', 'management'])(req, res, next);
   }
   if (req.path.startsWith('/users') || req.path.startsWith('/production-days') || req.path.startsWith('/audit-logs')) {

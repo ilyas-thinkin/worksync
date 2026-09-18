@@ -18,3 +18,7 @@ backend/src/graphify-out/
 
 # OS files
 .DS_Store
+
+# Trusted certificate (Let's Encrypt via DuckDNS) — issued on the Pi, never committed
+certs/public/
+certs/duckdns.env

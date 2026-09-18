@@ -4,9 +4,15 @@ const API_BASE = '/api';
 // the section out of the supervisor's way. Set app_settings.feed_wip_enabled to 'true' to restore.
 let FEED_WIP_ENABLED = false;
 
+// The server names the public address on every API reply while this page sits on an old LAN name.
+// Only the camera help panel uses it, to send a blocked scanner to the address that has a trusted
+// certificate. Empty means this page is already on the public name.
+let publicHostHint = '';
+
 async function applyFeedWipVisibility() {
     try {
         const res = await fetch(`${API_BASE}/settings`);
+        publicHostHint = res.headers.get('X-WorkSync-Public-Host') || '';
         const result = await res.json();
         FEED_WIP_ENABLED = String(result?.data?.feed_wip_enabled || 'false').toLowerCase() === 'true';
     } catch (err) {
@@ -178,6 +184,7 @@ let scanning = false;
 let detector = null;
 let lastScanAt = 0;
 let onQrScanned = null; // callback when QR scanned
+let lastCameraRequest = null; // replayed by retryCamera() after the supervisor grants permission
 
 function parseScanPayload(rawValue) {
     if (!rawValue) return null;
@@ -194,9 +201,12 @@ function parseScanPayload(rawValue) {
 
 async function startCamera(videoElementId, statusElementId, callback) {
     onQrScanned = callback;
+    lastCameraRequest = { videoElementId, statusElementId, callback };
     const status = document.getElementById(statusElementId);
     const video = document.getElementById(videoElementId);
     if (!video) return;
+    clearCameraHelp();
+    video.style.display = '';
 
     try {
         const isHttps = window.location.protocol === 'https:';
@@ -232,13 +242,107 @@ async function startCamera(videoElementId, statusElementId, callback) {
         if (status) status.textContent = 'Scanning...';
         scanLoop(videoElementId);
     } catch (err) {
+        // A blocked camera never produces a permission dialog, so there is nothing for the
+        // supervisor to tap: the browser has this site set to Block, the phone has taken the
+        // camera away from the browser app, or the page is on an address whose certificate did
+        // not validate. Put the way out on screen instead of in a toast that clears in 3s.
+        if (err?.name === 'NotAllowedError') {
+            renderCameraHelp(video, await cameraPermissionState());
+            showToast('Camera blocked — follow the steps on screen', 'error');
+            if (status) status.textContent = 'Camera Blocked';
+            return;
+        }
         let message = 'Unable to access camera';
-        if (err?.name === 'NotAllowedError') message = 'Camera permission blocked. Allow camera in browser settings.';
-        else if (err?.name === 'NotFoundError') message = 'No camera found.';
+        if (err?.name === 'NotFoundError') message = 'No camera found.';
         else if (err?.name === 'NotReadableError') message = 'Camera in use by another app.';
         showToast(message, 'error');
         if (status) status.textContent = 'Camera Error';
     }
+}
+
+async function cameraPermissionState() {
+    try {
+        if (!navigator.permissions?.query) return 'unknown';
+        const status = await navigator.permissions.query({ name: 'camera' });
+        return status.state;
+    } catch (err) {
+        return 'unknown'; // Safari rejects the 'camera' descriptor outright
+    }
+}
+
+function clearCameraHelp() {
+    const existing = document.getElementById('camera-permission-help');
+    if (existing) existing.remove();
+}
+
+// Chrome and Edge refuse the camera outright on a page whose certificate did not validate, with
+// no dialog and no site setting that can grant it — so a supervisor who typed an old LAN name
+// (self-signed certificate) can only get the scanner back by moving to the public address.
+function legacyLanAddress() {
+    const host = window.location.hostname;
+    return /^\d+\.\d+\.\d+\.\d+$/.test(host) || host === 'worksync' || host.endsWith('.local');
+}
+
+function cameraSettingsSteps() {
+    const ua = navigator.userAgent;
+    if (/iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) {
+        return [
+            'Tap <strong>aA</strong> at the left of the address bar &rarr; <strong>Website Settings</strong> &rarr; <strong>Camera</strong> &rarr; <strong>Allow</strong>.',
+            'Still blocked: iOS <strong>Settings</strong> &rarr; <strong>Safari</strong> &rarr; <strong>Camera</strong> &rarr; <strong>Ask</strong>, then reload this page.'
+        ];
+    }
+    if (/Android/.test(ua)) {
+        return [
+            'Tap the <strong>lock</strong> (or sliders) icon at the left of the address bar &rarr; <strong>Permissions</strong> &rarr; <strong>Camera</strong> &rarr; <strong>Allow</strong>.',
+            'If Camera is not listed there, open Android <strong>Settings</strong> &rarr; <strong>Apps</strong> &rarr; this browser &rarr; <strong>Permissions</strong> &rarr; <strong>Camera</strong> &rarr; <strong>Allow</strong>, then reload this page.'
+        ];
+    }
+    return [
+        'Click the <strong>lock</strong> icon at the left of the address bar &rarr; <strong>Camera</strong> &rarr; <strong>Allow</strong>, then reload this page.',
+        'On Windows, also check <strong>Settings</strong> &rarr; <strong>Privacy &amp; security</strong> &rarr; <strong>Camera</strong> is on for this browser.'
+    ];
+}
+
+function renderCameraHelp(video, permissionState) {
+    clearCameraHelp();
+    const container = video.parentElement;
+    if (!container) return;
+    video.style.display = 'none';
+
+    const wrongAddress = legacyLanAddress();
+    const publicUrl = publicHostHint
+        ? `https://${publicHostHint}${window.location.pathname}${window.location.search}`
+        : null;
+    const panel = document.createElement('div');
+    panel.id = 'camera-permission-help';
+    panel.innerHTML = `
+        <div style="border:1px solid #fecaca;background:#fef2f2;border-radius:8px;padding:14px;">
+            <p style="font-weight:700;color:#b91c1c;margin:0 0 6px;">Camera blocked — the browser never asked</p>
+            <p style="font-size:13px;color:#374151;margin:0 0 10px;">
+                The camera is switched off for this site, so no permission pop-up can appear.
+                Allow it once, then tap <strong>Try again</strong>.
+            </p>
+            ${wrongAddress ? `
+            <p style="font-size:13px;color:#374151;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px;margin:0 0 10px;">
+                This page is open on <strong>${window.location.hostname}</strong>, which uses the
+                self-signed certificate — browsers block the camera there and no setting can allow it.
+                ${publicUrl
+                    ? `<a href="${publicUrl}" style="color:#1d4ed8;font-weight:600;">Open the trusted address</a> and scan from there.`
+                    : 'Open WorkSync on the trusted <strong>https</strong> address and scan from there.'}
+            </p>` : ''}
+            <ol style="font-size:13px;color:#374151;margin:0 0 12px;padding-left:20px;line-height:1.6;">
+                ${cameraSettingsSteps().map(step => `<li>${step}</li>`).join('')}
+            </ol>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="retryCamera()">Try again</button>
+            <p style="font-size:11px;color:#9ca3af;margin:8px 0 0;">Browser reports camera permission: ${permissionState}</p>
+        </div>`;
+    container.appendChild(panel);
+}
+
+function retryCamera() {
+    if (!lastCameraRequest) return;
+    const { videoElementId, statusElementId, callback } = lastCameraRequest;
+    startCamera(videoElementId, statusElementId, callback);
 }
 
 function stopCamera() {

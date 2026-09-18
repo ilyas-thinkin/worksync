@@ -1,12 +1,16 @@
 // WorkSync line display — one line's Hourly Report, sized for a shop-floor TV.
 //
 // Polls every 10 seconds:
-//   /api/display/line-status  server clock, work date, the final stitching stage, station processes
+//   /api/display/line-status  server clock, work date, the day's stations and the line tiles
 //   /api/hourly-report        the same per-worker grid the IE and admin panels show
-//   /api/efficiency-report    line efficiency, only for a line with no final stitching station
+//   /api/efficiency-report    line overall efficiency, only when the efficiency tile is set to it
 // A line has far more workers than fit on one screen, so the worker list flips page by page.
 // Auto-flip can be switched off to scroll the list by hand. Both settings sit in the footer
 // and are remembered by this screen.
+//
+// Line output / Line achieved / Line efficiency add up whichever workstations someone picked on the
+// tile itself (a + card until then). That choice is saved per line on the server
+// (PUT /api/display/tiles), so every screen showing the line follows it.
 
 const REFRESH_MS = 10000;
 const REQUEST_TIMEOUT_MS = 8000;
@@ -17,9 +21,11 @@ const OFFLINE_AFTER_MS = 120000;
 // suspended with it — leaving the in-flight flag set for good. The interval kept firing, hit the
 // flag and returned without asking for anything, so the board froze until someone reloaded it.
 const REFRESH_WEDGED_MS = 30000;
-// Last resort for a screen nobody is standing at: if the data has been unreachable this long,
-// reload the page — the same thing a person walking past would do, minus the walk.
-const RELOAD_AFTER_MS = 300000;
+// The board never reloads itself. On an old LAN name (https://worksync) the certificate is
+// self-signed, so a fresh page load stops on the browser's "not private" warning, which has no
+// script to retry from and waits for a person to click through. Instead, while the server is
+// still answering, the board moves itself to the public name that has a trusted certificate.
+const PUBLIC_HOST_RETRY_MS = 600000;
 const CURSOR_IDLE_MS = 3000;
 const ROW_HEIGHT_REM = 2.9;
 
@@ -121,11 +127,12 @@ function clampFlipSeconds(value) {
     return Math.min(FLIP_SECONDS_MAX, Math.max(FLIP_SECONDS_MIN, seconds));
 }
 
-async function getJson(url) {
+async function requestJson(url, init = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-        const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        const response = await fetch(url, { ...init, credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        movePublicHostSoon(response.headers.get('X-WorkSync-Public-Host'));
         if (response.status === 401) {
             const err = new Error('Signed out');
             err.status = 401;
@@ -141,6 +148,32 @@ async function getJson(url) {
         throw err;
     } finally {
         clearTimeout(timer);
+    }
+}
+
+function getJson(url) {
+    return requestJson(url);
+}
+
+function sendJson(url, method, body) {
+    return requestJson(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+// The server names the public address on every API reply while this page sits on an old LAN name.
+// Move while the connection is known to work; a device that cannot reach the public name stays
+// here and asks again in ten minutes.
+let publicHostTriedAt = 0;
+async function movePublicHostSoon(host) {
+    if (!host || typeof window.moveToPublicHost !== 'function') return;
+    if (Date.now() - publicHostTriedAt < PUBLIC_HOST_RETRY_MS) return;
+    publicHostTriedAt = Date.now();
+    try {
+        const response = await fetch('/auth/handoff/start', { method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+        const body = await response.json();
+        if (!body.success) return;
+        await window.moveToPublicHost({ host, token: body.token, next: window.location.pathname + window.location.search });
+    } catch (_) {
+        /* stay here; retried after PUBLIC_HOST_RETRY_MS */
     }
 }
 
@@ -207,26 +240,28 @@ function openPicker() {
 // off cannot clobber the state or repaint the board with data that is now older than what is up.
 let refreshSeq = 0;
 
-async function refresh() {
+// { force: true } — after a tile is saved — writes off a poll already in flight, since that one may
+// have read the old selection. Event listeners call this with an Event, which never carries it.
+async function refresh(options) {
+    const force = !!(options && options.force === true);
     // The guard stops overlapping polls, but only until the running one is plainly stuck.
-    if (state.refreshing && Date.now() - state.refreshStartedAt < REFRESH_WEDGED_MS) return;
+    if (!force && state.refreshing && Date.now() - state.refreshStartedAt < REFRESH_WEDGED_MS) return;
     const seq = ++refreshSeq;
     state.refreshing = true;
     state.refreshStartedAt = Date.now();
     try {
         const { data: status } = await getJson(`/api/display/line-status?line_id=${lineId}`);
-        // The work date rolled over while the TV was on: reload, which also picks up page updates.
+        // The work date rolled over while the TV was on: start the new day's pages from the top.
         if (state.status && status.date !== state.status.date) {
-            window.location.reload();
-            return;
+            state.pageIndex = 0;
+            state.pageStartedAt = Date.now();
         }
         const query = `line_id=${lineId}&date=${encodeURIComponent(status.date)}`;
-        // Only a line with no final stitching station still needs the Efficiency Report for its tile.
-        const needsReportEfficiency = !status.final_stitching
-            || status.final_stitching.efficiency_percent == null;
+        // Only an efficiency tile set to the whole line needs the Efficiency Report.
+        const needsLineEfficiency = !!(status.tiles && status.tiles.efficiency && status.tiles.efficiency.line_overall);
         const [report, efficiency] = await Promise.all([
             getJson(`/api/hourly-report?${query}`),
-            needsReportEfficiency && status.last_completed_hour != null
+            needsLineEfficiency && status.last_completed_hour != null
                 // The line efficiency tile is secondary; its failure must not blank the board.
                 ? getJson(`/api/efficiency-report?${query}&hour=${status.last_completed_hour}`).catch(() => null)
                 : null
@@ -320,16 +355,18 @@ function renderSupervisor(line) {
 
 function renderHeader() {
     const { line, plan, rows, is_locked: isLocked, is_closed: isClosed } = state.report;
-    // The line is named once, on the supervisor card — see renderSupervisor. The header keeps
-    // only what changes: the style running, the shift meta and the clock.
+    // The line is named once, on the supervisor card — see renderSupervisor. The style running and
+    // the shift meta sit on the style card next to it; the header keeps only the clock.
     document.title = `${line.line_code || 'Line'} · WorkSync Display`;
     renderSupervisor(line);
 
+    // Code and name on separate lines: the style card is narrow, and the code is what people look for.
     $('plan-product').innerHTML = plan.product_code
-        ? `<strong>${esc(plan.product_code)}</strong> ${esc(plan.product_name || '')}`
+        ? `<div class="plan-code">${esc(plan.product_code)}`
             + (plan.incoming_product_code
-                ? ` <span class="tag tag-co">CO</span> <strong>${esc(plan.incoming_product_code)}</strong>`
+                ? ` <span class="tag tag-co">CO</span> ${esc(plan.incoming_product_code)}`
                 : '')
+            + `</div><div class="plan-name">${esc(plan.product_name || '')}</div>`
         : '<span class="bad">No plan for today</span>';
 
     const meta = [];
@@ -337,7 +374,8 @@ function renderHeader() {
     meta.push(`${rows.filter((row) => !row.ot_only).length} workers`);
     if (isLocked) meta.push('<span class="tag tag-warn">DAY LOCKED</span>');
     if (isClosed) meta.push('<span class="tag tag-bad">LINE CLOSED</span>');
-    $('plan-meta').innerHTML = meta.join('<span class="sep">·</span>');
+    // Each item stays whole; the card is narrow, so the line wraps at the dots instead of inside "08:00–17:00".
+    $('plan-meta').innerHTML = meta.map((item) => `<span class="meta-item">${item}</span>`).join(' <span class="sep">·</span> ');
 }
 
 function kpi(label, value, sub, cls = '') {
@@ -348,22 +386,61 @@ function kpi(label, value, sub, cls = '') {
     </div>`;
 }
 
-// Done / Achieved / Line efficiency describe the final stitching stations. Where that stage is split
-// over two parallel stations, the plan's last workstation alone is only half the line's output, so the
-// server adds the stations' outputs and their targets. A plan without such a station falls back to the
-// last workstation, and only then does the Efficiency Report supply the efficiency.
+// The three line tiles, the picker's wording for each, and what their cards say.
+const TILES = {
+    output: {
+        label: 'Line output',
+        hint: 'One workstation shows its own output. Tick several and their outputs are added together.'
+    },
+    achieved: {
+        label: 'Line achieved',
+        hint: 'Output against target till now. Tick several and their outputs and their targets are added together.'
+    },
+    efficiency: {
+        label: 'Line efficiency',
+        hint: 'One workstation shows its own efficiency. Tick several and they are pooled into one figure — or show the whole line instead.'
+    }
+};
+
+// A tile nobody has set up yet: an empty card asking for its workstations. After the line moved to a
+// new style the old choice no longer applies (station 80 is a different operation now), so it says so.
+function emptyTile(tile, styleChanged) {
+    return `<button class="kpi kpi-pick is-empty" type="button" data-tile="${tile}">
+        <div class="kpi-label">${esc(TILES[tile].label)}</div>
+        <div class="kpi-plus" aria-hidden="true">+</div>
+        <div class="kpi-sub">${styleChanged ? 'New style · choose again' : 'Choose workstations'}</div>
+    </button>`;
+}
+
+function pickedTile(tile, value, sub, cls = '') {
+    return `<button class="kpi kpi-pick" type="button" data-tile="${tile}" title="Change the workstations this card adds up">
+        <div class="kpi-label">${esc(TILES[tile].label)}</div>
+        <div class="kpi-value ${cls}">${esc(value)}</div>
+        <div class="kpi-sub">${esc(sub)}</div>
+    </button>`;
+}
+
+function stationList(summary) {
+    return summary.station_codes.join(' + ');
+}
+
+// Day target is the plan's. The other three add up the workstations picked on each card — one station
+// is its own figure, several add their outputs and targets, and efficiency pools them (the server does
+// the sums; see summarizeDisplaySelection). Line overall efficiency comes from the Efficiency Report.
 function renderSummary() {
     const { plan } = state.report;
-    const stage = state.status.final_stitching || {};
-    const fallback = stage.mode !== 'final_stitching';
-    const stations = (stage.station_codes || []).join(', ');
-    const stageName = fallback ? 'last station' : 'final stitching';
-    const required = num(stage.required) || 0;
-    const achieved = num(stage.achieved) || 0;
-    const achievedPct = required > 0 ? Math.round((achieved / required) * 100) : null;
-    const stageEff = num(stage.efficiency_percent);
+    const tiles = state.status.tiles || {};
+    const styleChanged = !!tiles.style_changed;
+
+    const output = tiles.output;
+    const achieved = tiles.achieved;
+    const required = achieved ? num(achieved.required) || 0 : 0;
+    const achievedPct = achieved && required > 0 ? Math.round((num(achieved.output) / required) * 100) : null;
+    const efficiency = tiles.efficiency;
     const reportSummary = state.efficiency && state.efficiency.summary;
-    const lineEff = stageEff != null ? stageEff : (reportSummary ? num(reportSummary.live_efficiency_pct) : null);
+    const lineEff = efficiency && efficiency.line_overall
+        ? (reportSummary ? num(reportSummary.live_efficiency_pct) : null)
+        : (efficiency ? num(efficiency.efficiency_percent) : null);
 
     $('kpis').innerHTML = [
         // "0 per hour" reads like a real, very bad target. When no target is planned at all, say so —
@@ -372,10 +449,17 @@ function renderSummary() {
             plan.incoming_target_units
                 ? `CO target ${plan.incoming_target_units}`
                 : (plan.line_hourly_target ? `${plan.line_hourly_target} per hour` : 'no target set for today')),
-        kpi('Done', achieved, stations ? `${stageName} · ${stations}` : stageName),
-        kpi('Achieved', achievedPct == null ? '–' : `${achievedPct}%`,
-            required > 0 ? `${achieved} of ${required} till now` : 'no target yet', achievedClass(achievedPct)),
-        kpi('Line efficiency', pct(lineEff), fallback ? 'Efficiency Report' : stageName, effClass(lineEff))
+        output
+            ? pickedTile('output', num(output.output) || 0, stationList(output))
+            : emptyTile('output', styleChanged),
+        achieved
+            ? pickedTile('achieved', achievedPct == null ? '–' : `${achievedPct}%`,
+                required > 0 ? `${num(achieved.output) || 0} of ${required} · ${stationList(achieved)}` : `no target yet · ${stationList(achieved)}`,
+                achievedClass(achievedPct))
+            : emptyTile('achieved', styleChanged),
+        efficiency
+            ? pickedTile('efficiency', pct(lineEff), efficiency.line_overall ? 'Whole line' : stationList(efficiency), effClass(lineEff))
+            : emptyTile('efficiency', styleChanged)
     ].join('');
 }
 
@@ -650,6 +734,112 @@ function scrollWorkersBy(px) {
     $('workers').scrollBy({ top: px, behavior: 'smooth' });
 }
 
+// ── Tile picker ─────────────────────────────────────────────────────────
+
+const picker = { tile: null, hasPlan: false, saving: false };
+
+// Drawn once, from the line status in hand when the card was tapped. The 10-second poll keeps
+// repainting the board underneath but never touches this, so ticks are not lost mid-choice.
+function openTilePicker(tile) {
+    const status = state.status;
+    if (!status || !TILES[tile]) return;
+    const current = (status.tiles || {})[tile];
+    const ticked = new Set(current && current.keys ? current.keys : []);
+    const stations = status.workstations || [];
+    const processes = status.workstation_processes || {};
+    const isEfficiency = tile === 'efficiency';
+
+    picker.tile = tile;
+    picker.hasPlan = !!status.has_plan;
+    $('tp-title').textContent = `${TILES[tile].label} — choose workstations`;
+    $('tp-hint').textContent = TILES[tile].hint;
+    $('tp-overall').hidden = !isEfficiency;
+    $('tp-or').hidden = !isEfficiency || !stations.length;
+    $('tp-overall-box').checked = isEfficiency && !!(current && current.line_overall);
+    $('tp-error').textContent = '';
+
+    $('tp-grid').innerHTML = stations.length
+        ? stations.map((station) => {
+            const on = ticked.has(station.key);
+            return `<label class="tp-station${on ? ' is-on' : ''}">
+                <input type="checkbox" value="${esc(station.key)}"${on ? ' checked' : ''}>
+                <span class="tp-code">${esc(station.code)}${station.is_final_stitching ? '<span class="tag tag-fs">FINAL STITCHING</span>' : ''}</span>
+                <span class="tp-out">${num(station.output) || 0} pcs</span>
+                <span class="tp-process">${esc(processes[station.key] || '') || '–'}</span>
+            </label>`;
+        }).join('')
+        : `<p class="tp-empty">${picker.hasPlan
+            ? 'No workstations in today\'s plan yet.'
+            : 'This line has no plan for today, so there are no workstations to choose.'}</p>`;
+
+    syncTilePicker();
+    $('tile-picker').hidden = false;
+    // Start at what is already chosen (scrolling the list to it), else at the top of the list.
+    const panel = $('tile-picker');
+    const first = panel.querySelector('input:checked') || panel.querySelector('.tp-overall:not([hidden]) input, .tp-station input');
+    (first || $('tp-cancel')).focus();
+}
+
+function closeTilePicker() {
+    picker.tile = null;
+    $('tile-picker').hidden = true;
+}
+
+// Highlights, the running count, and which buttons can be pressed.
+function syncTilePicker() {
+    const overall = picker.tile === 'efficiency' && $('tp-overall-box').checked;
+    const boxes = [...$('tp-grid').querySelectorAll('input[type="checkbox"]')];
+    boxes.forEach((box) => box.closest('.tp-station').classList.toggle('is-on', box.checked));
+    $('tp-overall').classList.toggle('is-on', overall);
+    const count = boxes.filter((box) => box.checked).length;
+    $('tp-count').textContent = overall
+        ? 'Whole line'
+        : count === 0
+            ? 'Nothing ticked — the card stays empty'
+            : count === 1 ? '1 workstation' : `${count} workstations`;
+    $('tp-save').disabled = picker.saving || !picker.hasPlan;
+    $('tp-clear').disabled = picker.saving || !picker.hasPlan;
+    $('tp-cancel').disabled = picker.saving;
+}
+
+// Line overall and workstations are either/or: ticking one side clears the other.
+function onTilePickerChange(event) {
+    const box = event.target;
+    if (!(box instanceof HTMLInputElement)) return;
+    if (box === $('tp-overall-box')) {
+        if (box.checked) $('tp-grid').querySelectorAll('input:checked').forEach((other) => { other.checked = false; });
+    } else if (box.checked) {
+        $('tp-overall-box').checked = false;
+    }
+    syncTilePicker();
+}
+
+async function saveTilePicker({ clear = false } = {}) {
+    if (!picker.tile || picker.saving) return;
+    const tile = picker.tile;
+    const lineOverall = !clear && tile === 'efficiency' && $('tp-overall-box').checked;
+    const stationKeys = clear || lineOverall
+        ? []
+        : [...$('tp-grid').querySelectorAll('input:checked')].map((box) => box.value);
+    picker.saving = true;
+    $('tp-error').textContent = '';
+    syncTilePicker();
+    try {
+        await sendJson('/api/display/tiles', 'PUT', { line_id: lineId, tile, station_keys: stationKeys, line_overall: lineOverall });
+        closeTilePicker();
+        refresh({ force: true });
+    } catch (err) {
+        if (err.status === 401) {
+            window.location.href = '/';
+            return;
+        }
+        $('tp-error').textContent = `Not saved — ${err.message}`;
+    } finally {
+        picker.saving = false;
+        if (picker.tile) syncTilePicker();
+    }
+}
+
 // ── Clock, screen, start-up ─────────────────────────────────────────────
 
 function tick() {
@@ -658,13 +848,6 @@ function tick() {
     $('clock-date').textContent = formatClock(now, { weekday: 'short', day: 'numeric', month: 'short' });
     renderLiveStatus();
     advancePage();
-
-    // Self-heal: the board has been up and talking, then went quiet for five minutes with no
-    // recovery. Reload rather than leave a frozen grid showing yesterday's numbers to the floor.
-    // Guarded on lastSuccessAt so a board that has never yet connected keeps retrying instead.
-    if (state.lastSuccessAt && Date.now() - state.lastSuccessAt > RELOAD_AFTER_MS) {
-        window.location.reload();
-    }
 }
 
 let cursorTimer = null;
@@ -692,8 +875,22 @@ function startBoard() {
 
     $('back-to-lines').addEventListener('click', openPicker);
     $('board').addEventListener('dblclick', (event) => {
-        if (!event.target.closest('.board-footer')) toggleFullscreen();
+        // A double tap on a line tile opens its picker; it must not also flip full screen.
+        if (!event.target.closest('.board-footer, .kpis')) toggleFullscreen();
     });
+
+    // The tiles are redrawn every refresh, so one listener on their container serves them all.
+    $('kpis').addEventListener('click', (event) => {
+        const card = event.target.closest('[data-tile]');
+        if (card) openTilePicker(card.dataset.tile);
+    });
+    // No close on a backdrop click: the second click of a double-click on the efficiency card lands
+    // beside the panel and would shut the picker it just opened. ×, Cancel and Esc close it.
+    $('tile-picker').addEventListener('change', onTilePickerChange);
+    $('tp-close').addEventListener('click', closeTilePicker);
+    $('tp-cancel').addEventListener('click', closeTilePicker);
+    $('tp-clear').addEventListener('click', () => saveTilePicker({ clear: true }));
+    $('tp-save').addEventListener('click', () => saveTilePicker());
     $('autoflip-toggle').addEventListener('click', () => setAutoFlip(!state.autoFlip));
     $('flip-less').addEventListener('click', () => setFlipSeconds(state.flipSeconds - FLIP_SECONDS_STEP));
     $('flip-more').addEventListener('click', () => setFlipSeconds(state.flipSeconds + FLIP_SECONDS_STEP));
@@ -728,6 +925,15 @@ function startBoard() {
 document.addEventListener('mousemove', wakeCursor);
 document.addEventListener('keydown', (event) => {
     if (!Number.isFinite(lineId)) return;
+    // While the tile picker is open the keys belong to it: Esc closes it (instead of leaving the board)
+    // and the board's shortcuts wait, so Space on a checkbox or + in the list does not flip pages.
+    if (picker.tile) {
+        if (event.key === 'Escape' && !picker.saving) {
+            closeTilePicker();
+            event.preventDefault();
+        }
+        return;
+    }
     const manual = !state.autoFlip;
     const rowPx = $('worker-body').rows[0]?.offsetHeight || 0;
     const screenPx = Math.max(rowPx, $('workers').clientHeight - $('worker-head').offsetHeight - rowPx);

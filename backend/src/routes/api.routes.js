@@ -1229,87 +1229,6 @@ async function getLineActualOutput(db, lineId, workDate, productId = null) {
     return parseInt(outputResult.rows[0]?.total || 0, 10);
 }
 
-// Finished pieces per hour_slot for one product on a line: the last workstation's last
-// process, i.e. the same representative process getLineActualOutput totals for the day.
-async function getLineHourlyFinishedOutput(db, lineId, workDate, productId) {
-    const outputByHour = {};
-    const normalizedProductId = productId ? parseInt(productId, 10) : null;
-    if (!lineId || !workDate || !normalizedProductId) return outputByHour;
-
-    const result = await db.query(
-        `WITH last_ws AS (
-             SELECT id
-             FROM line_plan_workstations
-             WHERE line_id = $1
-               AND work_date = $2
-               AND product_id = $3
-             ORDER BY workstation_number DESC, id DESC
-             LIMIT 1
-         ),
-         representative_process AS (
-             SELECT lpwp.product_process_id
-             FROM last_ws
-             JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = last_ws.id
-             JOIN product_processes pp ON pp.id = lpwp.product_process_id
-             ORDER BY lpwp.sequence_in_workstation DESC,
-                      pp.sequence_number DESC,
-                      lpwp.product_process_id DESC
-             LIMIT 1
-         )
-         SELECT lph.hour_slot, MAX(lph.quantity) AS qty
-         FROM representative_process rp
-         JOIN line_process_hourly_progress lph
-           ON lph.process_id = rp.product_process_id
-          AND lph.line_id = $1
-          AND lph.work_date = $2
-         GROUP BY lph.hour_slot`,
-        [lineId, workDate, normalizedProductId]
-    );
-    for (const row of result.rows) {
-        outputByHour[row.hour_slot] = parseInt(row.qty || 0, 10) || 0;
-    }
-    return outputByHour;
-}
-
-// The stations that finish the garment: any workstation in the day's plan holding an operation whose
-// name STARTS with the words "final stitching". Trailing words are expected and fine — "Final Stitching
-// of Wallet Shell Side", "Final stitching 1" — but a leading word means a different operation:
-// "Puller Final Stitching in AMS" is a puller machine in the middle of the line, not the final stage.
-// Punctuation and double spaces are squashed first.
-async function getFinalStitchingStations(db, lineId, workDate) {
-    const result = await db.query(
-        `SELECT DISTINCT lpw.id,
-                lpw.workstation_code,
-                lpw.workstation_number,
-                lpw.takt_time_seconds,
-                lpw.actual_sam_seconds
-         FROM line_plan_workstations lpw
-         JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
-         JOIN product_processes pp ON pp.id = lpwp.product_process_id
-         JOIN operations o ON o.id = pp.operation_id
-         WHERE lpw.line_id = $1
-           AND lpw.work_date = $2
-           AND regexp_replace(lower(o.operation_name), '[^a-z0-9]+', ' ', 'g') LIKE 'final stitching%'
-         ORDER BY lpw.workstation_number`,
-        [lineId, workDate]
-    );
-    return result.rows;
-}
-
-async function getLastPlanWorkstationCode(db, lineId, workDate, productId) {
-    const normalizedProductId = productId ? parseInt(productId, 10) : null;
-    if (!normalizedProductId) return null;
-    const result = await db.query(
-        `SELECT workstation_code
-         FROM line_plan_workstations
-         WHERE line_id = $1 AND work_date = $2 AND product_id = $3
-         ORDER BY workstation_number DESC, id DESC
-         LIMIT 1`,
-        [lineId, workDate, normalizedProductId]
-    );
-    return result.rows[0]?.workstation_code || null;
-}
-
 // The operations each workstation performs, as one label per station ("Cleaning · Puller fixing"),
 // keyed the way normalizeWsCode keys them so "WS01" and "W01" resolve to the same station.
 // Names are deduped and kept in the order they run inside the station.
@@ -1341,76 +1260,148 @@ async function getWorkstationProcessLabels(db, lineId, workDate) {
     return labels;
 }
 
-// What the TV board's Done / Achieved / Line efficiency tiles describe. The plan's last workstation is
-// not the line's output when the final stage is split over parallel stations: two "Final Stitching"
-// stations each carry half the takt, so their outputs and their targets have to be added. Falls back
-// to the last workstation for a plan that has no such station.
-async function getFinalStitchingSummary(db, lineId, workDate, options = {}) {
-    const { endHour = null, hoursCounted = 0, lineHourlyTarget = 0, productId = null, incomingProductId = null } = options;
-    const hours = Math.max(0, hoursCounted);
-    const stations = await getFinalStitchingStations(db, lineId, workDate);
-
-    if (!stations.length) {
-        const [primaryByHour, incomingByHour, lastCode] = await Promise.all([
-            getLineHourlyFinishedOutput(db, lineId, workDate, productId),
-            getLineHourlyFinishedOutput(db, lineId, workDate, incomingProductId),
-            getLastPlanWorkstationCode(db, lineId, workDate, productId)
-        ]);
-        const finished = (byHour) => Object.entries(byHour)
-            .filter(([hour]) => endHour != null && parseInt(hour, 10) <= endHour)
-            .reduce((sum, [, qty]) => sum + qty, 0);
-        return {
-            mode: 'last_workstation',
-            station_codes: lastCode ? [lastCode] : [],
-            hourly_target: lineHourlyTarget,
-            required: lineHourlyTarget * hours,
-            achieved: finished(primaryByHour) + finished(incomingByHour),
-            // The board keeps showing the Efficiency Report's line efficiency for these lines.
-            efficiency_percent: null,
-            hours_counted: hours
-        };
-    }
+// Every station in the day's plan with what it finished over the counted hours: the pool the TV board's
+// Line output / Line achieved / Line efficiency tiles add up from, once someone at the screen has picked
+// the stations for each tile (summarizeDisplaySelection, PUT /display/tiles).
+//
+// One entry per physical station, keyed the way normalizeWsCode keys it. A changeover day holds a primary
+// and an incoming plan row for the same station and the output of both counts; earned hours are taken per
+// row, so each product's pieces are weighed by that product's SAM. The hourly target is the primary row's,
+// by the same rule as the Hourly Report's Tgt column (hourlyTargetFor), so a tile agrees with the worker rows.
+//
+// is_final_stitching is only a hint for the picker: the station holds an operation whose name STARTS with
+// the words "final stitching". Trailing words are expected and fine — "Final Stitching of Wallet Shell Side",
+// "Final stitching 1" — but a leading word means a different operation: "Puller Final Stitching in AMS" is a
+// puller machine in the middle of the line, not the final stage. Punctuation and double spaces are squashed first.
+async function getDisplayWorkstationTotals(db, lineId, workDate, options = {}) {
+    const { endHour = null, lineHourlyTarget = 0, lineCoHourlyTarget = 0, incomingProductId = null } = options;
+    const result = await db.query(
+        `SELECT lpw.id,
+                lpw.workstation_code,
+                lpw.workstation_number,
+                lpw.product_id,
+                lpw.takt_time_seconds,
+                COALESCE(lpw.is_custom_takt, false) AS is_custom_takt,
+                lpw.actual_sam_seconds,
+                COALESCE(BOOL_OR(regexp_replace(lower(o.operation_name), '[^a-z0-9]+', ' ', 'g') LIKE 'final stitching%'), false)
+                    AS is_final_stitching
+         FROM line_plan_workstations lpw
+         LEFT JOIN line_plan_workstation_processes lpwp ON lpwp.workstation_id = lpw.id
+         LEFT JOIN product_processes pp ON pp.id = lpwp.product_process_id
+         LEFT JOIN operations o ON o.id = pp.operation_id
+         WHERE lpw.line_id = $1
+           AND lpw.work_date = $2
+         GROUP BY lpw.id
+         ORDER BY lpw.workstation_number, lpw.id`,
+        [lineId, workDate]
+    );
+    if (!result.rows.length) return [];
 
     const outputMap = endHour == null
         ? {}
-        : await getWorkstationOutputMap(db, lineId, workDate, stations.map(s => s.id), { endHour });
-
-    // One entry per physical workstation: a changeover day holds a primary row and an incoming row for
-    // the same station, and its output counts from both while its target counts once.
-    const byCode = new Map();
-    for (const station of stations) {
-        const key = normalizeWsCode(station.workstation_code);
-        const output = parseInt(outputMap[station.id] || 0, 10) || 0;
-        const existing = byCode.get(key);
-        if (existing) {
-            existing.output += output;
-            if (!(existing.takt > 0)) existing.takt = parseFloat(station.takt_time_seconds) || 0;
-            if (!(existing.sam > 0)) existing.sam = parseFloat(station.actual_sam_seconds) || 0;
-            continue;
+        : await getWorkstationOutputMap(db, lineId, workDate, result.rows.map(r => r.id), { endHour });
+    const incomingId = incomingProductId ? parseInt(incomingProductId, 10) : null;
+    const hourlyTargetFor = (row, isIncoming) => {
+        const takt = parseFloat(row.takt_time_seconds || 0);
+        if (row.is_custom_takt && takt > 0) {
+            return Math.max(0, Math.round(computeHourlyTargetFromTakt(takt)));
         }
-        byCode.set(key, {
-            code: station.workstation_code,
-            number: parseInt(station.workstation_number, 10) || 0,
-            output,
-            takt: parseFloat(station.takt_time_seconds) || 0,
-            sam: parseFloat(station.actual_sam_seconds) || 0
-        });
-    }
+        return (isIncoming && lineCoHourlyTarget > 0) ? lineCoHourlyTarget : lineHourlyTarget;
+    };
 
-    const merged = [...byCode.values()].sort((a, b) => a.number - b.number);
-    const hourlyTarget = Math.round(merged.reduce(
-        (sum, s) => sum + (s.takt > 0 ? computeHourlyTargetFromTakt(s.takt) : lineHourlyTarget), 0
-    ));
-    const earnedHours = merged.reduce((sum, s) => sum + (s.output * s.sam) / 3600, 0);
-    const availableHours = merged.length * hours;
+    const byKey = new Map();
+    const targetFromIncoming = new Set();
+    for (const row of result.rows) {
+        const key = String(normalizeWsCode(row.workstation_code));
+        const isIncoming = incomingId != null && parseInt(row.product_id, 10) === incomingId;
+        const output = parseInt(outputMap[row.id] || 0, 10) || 0;
+        let station = byKey.get(key);
+        if (!station) {
+            station = {
+                key,
+                code: row.workstation_code,
+                number: parseInt(row.workstation_number, 10) || 0,
+                output: 0,
+                hourly_target: hourlyTargetFor(row, isIncoming),
+                earned_hours: 0,
+                is_final_stitching: false
+            };
+            byKey.set(key, station);
+            if (isIncoming) targetFromIncoming.add(key);
+        } else if (!isIncoming && targetFromIncoming.has(key)) {
+            station.hourly_target = hourlyTargetFor(row, false);
+            targetFromIncoming.delete(key);
+        }
+        station.output += output;
+        station.earned_hours += (output * (parseFloat(row.actual_sam_seconds) || 0)) / 3600;
+        station.is_final_stitching = station.is_final_stitching || row.is_final_stitching === true;
+    }
+    return [...byKey.values()]
+        .sort((a, b) => a.number - b.number)
+        .map(s => ({ ...s, earned_hours: Math.round(s.earned_hours * 10000) / 10000 }));
+}
+
+// What one TV tile shows for the stations picked for it. One station is its own figure; several add
+// their outputs and their targets, and efficiency is pooled — earned hours over the stations' available
+// hours, so two stations at 90% and 80% read 85%, never 170%. Null when none of the picked stations is
+// in today's plan, which leaves the tile as an empty + card.
+function summarizeDisplaySelection(stations, keys, hoursCounted) {
+    const wanted = new Set((Array.isArray(keys) ? keys : []).map(String));
+    const picked = stations.filter(s => wanted.has(s.key));
+    if (!picked.length) return null;
+    const hours = Math.max(0, hoursCounted || 0);
+    const hourlyTarget = picked.reduce((sum, s) => sum + s.hourly_target, 0);
+    const earnedHours = picked.reduce((sum, s) => sum + s.earned_hours, 0);
+    const availableHours = picked.length * hours;
     return {
-        mode: 'final_stitching',
-        station_codes: merged.map(s => s.code),
+        keys: picked.map(s => s.key),
+        station_codes: picked.map(s => s.code),
+        output: picked.reduce((sum, s) => sum + s.output, 0),
         hourly_target: hourlyTarget,
         required: hourlyTarget * hours,
-        achieved: merged.reduce((sum, s) => sum + s.output, 0),
-        efficiency_percent: availableHours > 0 ? Math.round((earnedHours / availableHours) * 10000) / 100 : null,
-        hours_counted: hours
+        efficiency_percent: availableHours > 0 ? Math.round((earnedHours / availableHours) * 10000) / 100 : null
+    };
+}
+
+// TEMPORARY — for TVs still running the display.js from before 2026-09-18, which read `final_stitching`
+// for their Done / Achieved / Line efficiency tiles. The TVs never reload themselves, so without this those
+// boards would show 0 done until someone reloads them. Same figures as before: the final stitching stations,
+// else the last station (efficiency then comes from the Efficiency Report). Delete once every TV has been
+// reloaded onto the new page — nothing else reads it.
+function legacyFinalStitchingBlock(stations, hoursCounted) {
+    const finals = stations.filter(s => s.is_final_stitching);
+    const picked = finals.length ? finals : stations.slice(-1);
+    const summary = summarizeDisplaySelection(stations, picked.map(s => s.key), hoursCounted);
+    if (!summary) return null;
+    return {
+        mode: finals.length ? 'final_stitching' : 'last_workstation',
+        station_codes: summary.station_codes,
+        hourly_target: summary.hourly_target,
+        required: summary.required,
+        achieved: summary.output,
+        efficiency_percent: finals.length ? summary.efficiency_percent : null,
+        hours_counted: Math.max(0, hoursCounted || 0)
+    };
+}
+
+// The line's saved tile selection (production_lines.display_tiles) as the board shows it. A selection
+// made for another style is ignored — station 80 of a new style is a different operation — and
+// style_changed lets the empty cards say why they are empty again.
+function resolveDisplayTiles(saved, productId, stations, hoursCounted) {
+    const config = saved && typeof saved === 'object' ? saved : {};
+    const hasSelection = ['output', 'achieved', 'efficiency'].some(tile => Array.isArray(config[tile]) && config[tile].length)
+        || config.efficiency_line_overall === true;
+    const currentProduct = productId ? parseInt(productId, 10) : null;
+    const savedProduct = config.product_id ? parseInt(config.product_id, 10) : null;
+    const styleChanged = hasSelection && currentProduct != null && savedProduct !== currentProduct;
+    const active = styleChanged ? {} : config;
+    return {
+        style_changed: styleChanged,
+        output: summarizeDisplaySelection(stations, active.output, hoursCounted),
+        achieved: summarizeDisplaySelection(stations, active.achieved, hoursCounted),
+        efficiency: active.efficiency_line_overall === true
+            ? { line_overall: true }
+            : summarizeDisplaySelection(stations, active.efficiency, hoursCounted)
     };
 }
 
@@ -18849,9 +18840,10 @@ router.get('/hourly-report', async (req, res) => {
 // ============================================================================
 // LINE DISPLAY (shop-floor TV)
 // ============================================================================
-// The TV board renders /hourly-report as it is. These two routes add only what it does not carry:
-// the line list for the screen's picker, and the server clock plus the final stitching stage behind
-// the board's Done, Achieved and Line efficiency tiles.
+// The TV board renders /hourly-report as it is. These routes add only what it does not carry: the line
+// list for the screen's picker, the server clock plus the stations behind the board's Line output /
+// Line achieved / Line efficiency tiles, and the one write the display role may make — which stations
+// each of those tiles adds up.
 
 // GET /api/display/lines
 router.get('/display/lines', async (req, res) => {
@@ -18886,7 +18878,8 @@ router.get('/display/line-status', async (req, res) => {
         const lastCompletedHour = completedHours.length ? completedHours[completedHours.length - 1] : null;
 
         const planResult = await pool.query(
-            `SELECT pl.id, ldp.product_id, ldp.incoming_product_id, ldp.target_units
+            `SELECT pl.id, pl.display_tiles,
+                    ldp.product_id, ldp.incoming_product_id, ldp.target_units, ldp.incoming_target_units
              FROM production_lines pl
              LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
              WHERE pl.id = $1`,
@@ -18899,14 +18892,15 @@ router.get('/display/line-status', async (req, res) => {
         const shiftWindow = await getShiftWindowDetails();
         const workingHours = shiftWindow.workingHours > 0 ? shiftWindow.workingHours : 8;
         const targetUnits = parseInt(plan.target_units || 0, 10) || 0;
+        const coTargetUnits = parseInt(plan.incoming_target_units || 0, 10) || 0;
         const lineHourlyTarget = targetUnits > 0 ? Math.ceil(targetUnits / workingHours) : 0;
+        const lineCoHourlyTarget = coTargetUnits > 0 ? Math.ceil(coTargetUnits / workingHours) : 0;
 
-        const [finalStitching, workstationProcesses] = await Promise.all([
-            getFinalStitchingSummary(pool, lineId, date, {
+        const [workstations, workstationProcesses] = await Promise.all([
+            getDisplayWorkstationTotals(pool, lineId, date, {
                 endHour: lastCompletedHour,
-                hoursCounted: completedHours.length,
                 lineHourlyTarget,
-                productId: plan.product_id,
+                lineCoHourlyTarget,
                 incomingProductId: plan.incoming_product_id
             }),
             getWorkstationProcessLabels(pool, lineId, date)
@@ -18920,12 +18914,101 @@ router.get('/display/line-status', async (req, res) => {
                 time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                 clock_hour: now.getHours(),
                 last_completed_hour: lastCompletedHour,
-                final_stitching: finalStitching,
+                has_plan: !!plan.product_id,
+                hours_counted: completedHours.length,
+                workstations,
+                tiles: resolveDisplayTiles(plan.display_tiles, plan.product_id, workstations, completedHours.length),
+                final_stitching: legacyFinalStitchingBlock(workstations, completedHours.length),
                 workstation_processes: workstationProcesses
             }
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PUT /api/display/tiles  { line_id, tile: 'output'|'achieved'|'efficiency', station_keys: [], line_overall: false }
+// Sets which stations one TV tile adds up, for every screen showing the line. Only the named tile is
+// written, so two screens setting different cards do not undo each other; an empty selection takes the
+// tile back to its + card. A selection saved for a different style is dropped whole first, as the board
+// already ignores it. Stations are kept by number key and only those in today's plan are accepted.
+const DISPLAY_TILE_NAMES = ['output', 'achieved', 'efficiency'];
+router.put('/display/tiles', async (req, res) => {
+    const body = req.body || {};
+    const lineId = parseInt(body.line_id, 10);
+    const tile = body.tile;
+    const lineOverall = body.line_overall === true;
+    const rawKeys = body.station_keys ?? [];
+    if (!Number.isFinite(lineId)) {
+        return res.status(400).json({ success: false, error: 'line_id is required' });
+    }
+    if (!DISPLAY_TILE_NAMES.includes(tile)) {
+        return res.status(400).json({ success: false, error: 'tile must be output, achieved or efficiency' });
+    }
+    if (lineOverall && tile !== 'efficiency') {
+        return res.status(400).json({ success: false, error: 'Line overall is only offered on the efficiency tile' });
+    }
+    if (!Array.isArray(rawKeys) || rawKeys.length > 200) {
+        return res.status(400).json({ success: false, error: 'station_keys must be a list of at most 200 workstations' });
+    }
+
+    // Same "today" as /display/line-status, so the style checked here is the one the board shows.
+    const date = new Date().toISOString().slice(0, 10);
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const lineResult = await client.query(
+            `SELECT pl.display_tiles, ldp.product_id
+             FROM production_lines pl
+             LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $2
+             WHERE pl.id = $1
+             FOR UPDATE OF pl`,
+            [lineId, date]
+        );
+        if (lineResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Line not found' });
+        }
+        const before = lineResult.rows[0].display_tiles || null;
+        const productId = parseInt(lineResult.rows[0].product_id, 10) || null;
+        if (!productId) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ success: false, error: 'This line has no plan for today' });
+        }
+
+        const plannedResult = await client.query(
+            `SELECT DISTINCT workstation_code
+             FROM line_plan_workstations
+             WHERE line_id = $1 AND work_date = $2`,
+            [lineId, date]
+        );
+        const plannedKeys = new Set(plannedResult.rows.map(r => String(normalizeWsCode(r.workstation_code))));
+        const keys = lineOverall
+            ? []
+            : [...new Set(rawKeys.map(k => String(normalizeWsCode(k))))].filter(k => plannedKeys.has(k));
+
+        const sameStyle = before && parseInt(before.product_id, 10) === productId;
+        const next = sameStyle ? { ...before } : {};
+        next.product_id = productId;
+        if (keys.length) next[tile] = keys;
+        else delete next[tile];
+        if (tile === 'efficiency') {
+            if (lineOverall) next.efficiency_line_overall = true;
+            else delete next.efficiency_line_overall;
+        }
+
+        await client.query(
+            `UPDATE production_lines SET display_tiles = $2::jsonb WHERE id = $1`,
+            [lineId, JSON.stringify(next)]
+        );
+        await client.query('COMMIT');
+        await logAudit('production_lines', lineId, 'update', { display_tiles: next }, { display_tiles: before }, req);
+        res.json({ success: true, data: { display_tiles: next } });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
     }
 });
 

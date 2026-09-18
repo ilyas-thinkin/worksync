@@ -119,39 +119,35 @@ kbd {
 }
 .board.is-stale .summary, .board.is-stale .workers { opacity: 0.55; }
 
-.board-header { display: flex; align-items: center; gap: 1.4rem; min-width: 0; }
+/* Only the clock lives up here now, kept to one small line so the summary and the worker table get
+   the height. The style is on its own card in the summary row, the back button in the footer. */
+.board-header { display: flex; justify-content: flex-end; min-width: 0; }
 
+/* Sits in the footer beside Auto-flip, so it takes the switch's size and pill shape. */
 .back-btn {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    padding: 0.4rem 0.75rem 0.4rem 0.45rem;
+    gap: 0.2rem;
+    align-self: stretch;
+    padding: 0.15rem 0.55rem 0.15rem 0.3rem;
     border: 1px solid var(--line);
-    border-radius: 0.5rem;
+    border-radius: 1rem;
     background: var(--surface);
     color: var(--text);
     font: inherit;
-    font-size: 0.85rem;
     font-weight: 700;
     white-space: nowrap;
     cursor: pointer;
     transition: border-color 0.2s, background-color 0.2s;
 }
 .back-btn:hover, .back-btn:focus-visible { border-color: var(--accent); background: var(--surface-2); outline: none; }
-.back-btn svg { flex: none; width: 1rem; height: 1rem; }
-
-.plan-info { flex: 1; min-width: 0; }
-.plan-product, .plan-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.plan-product { font-size: 1.05rem; }
-.plan-product strong { font-weight: 800; }
-.plan-meta { margin-top: 0.15rem; font-size: 0.8rem; color: var(--muted); }
-.sep { margin: 0 0.5rem; opacity: 0.5; }
+.back-btn svg { flex: none; width: 0.8rem; height: 0.8rem; }
 
 /* Nudged into the board's right padding so the clock sits nearer the screen edge. */
-.clock-block { text-align: right; white-space: nowrap; margin-right: -0.4rem; }
-.clock { font-size: 2.2rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.clock-block { display: flex; align-items: baseline; gap: 0.7rem; white-space: nowrap; margin-right: -0.4rem; }
+.clock { font-size: 1rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
 .clock-date { font-size: 0.72rem; color: var(--muted); font-weight: 600; }
-.live-status { margin-top: 0.1rem; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.live-status { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
 .live-status::before {
     content: '';
     display: inline-block;
@@ -166,28 +162,30 @@ kbd {
 
 /* ── Summary tiles ───────────────────────────────────────────────────── */
 
-/* Supervisor on the left, KPI cards hard right. The supervisor photo is the tallest thing
-   in this row, so the cards stretch to its height — which is what makes them readable from
-   the floor even though they are now far narrower than the full-width strip they replaced. */
-.summary { display: flex; align-items: stretch; gap: 1rem; min-width: 0; }
+/* Supervisor on the left, KPI cards hard right, the style card filling the gap between them.
+   The supervisor photo is the tallest thing in this row, so the cards stretch to its height —
+   which is what makes them readable from the floor even though they are far narrower than the
+   full-width strip they replaced. */
+.summary { display: flex; align-items: stretch; gap: 0.6rem; min-width: 0; }
 
 /* The photo is optional: without one the block shows the supervisor's initials, and with
-   no supervisor at all the whole block is hidden. */
+   no supervisor at all the whole block is hidden. A card rather than a pill: the square
+   photo's corners would stick out of a pill's round end. */
 .sup-block {
     display: flex;
     align-items: center;
     gap: 0.85rem;
     flex: 0 1 auto;
     min-width: 0;
-    padding: 0.35rem 1.2rem 0.35rem 0.35rem;
+    padding: 0.35rem 0.9rem 0.35rem 0.35rem;
     border: 1px solid var(--line);
-    border-radius: 3.5rem;
+    border-radius: 0.8rem;
     background: var(--surface);
 }
 .sup-photo {
-    width: 7rem;
-    height: 7rem;
-    border-radius: 50%;
+    width: 9rem;
+    height: 9rem;
+    border-radius: 0.5rem;
     flex: 0 0 auto;
     object-fit: cover;
     background: var(--surface-2);
@@ -197,7 +195,7 @@ kbd {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 2.6rem;
+    font-size: 3.3rem;
     font-weight: 800;
     color: var(--accent);
     letter-spacing: 0.02em;
@@ -205,7 +203,9 @@ kbd {
 .sup-text { min-width: 0; }
 .sup-label { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 .sup-name {
-    font-size: 2.1rem;
+    /* A touch under the 2.1rem it was before the style card joined this row, so that card
+       still gets room for "MEDIUM COMPACT" on one line next to a two-name supervisor. */
+    font-size: 1.85rem;
     font-weight: 800;
     line-height: 1.1;
     /* Wide enough for a two-name supervisor ("RUMIYA / HASEENA") — the row has the
@@ -227,9 +227,43 @@ kbd {
     white-space: nowrap;
 }
 
+/* The style running. It takes whatever width the supervisor and the tiles leave (about 12rem next to
+   "RUMIYA / HASEENA"), so the name wraps under the code and the shift meta wraps at its dots. Its
+   min-width makes a very long supervisor name ellipsize rather than squeeze the style code. */
+.plan-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.15rem;
+    flex: 1 1 0;
+    min-width: 11rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--surface);
+    overflow-wrap: break-word;
+}
+.plan-product > .bad { font-size: 1.1rem; font-weight: 700; }
+.plan-code { font-size: 1.9rem; font-weight: 800; line-height: 1.05; }
+.plan-code .tag { margin-left: 0; font-size: 0.7rem; vertical-align: 0.35rem; }
+.plan-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: 0.1rem;
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+.plan-meta { margin-top: 0.15rem; font-size: 0.72rem; line-height: 1.35; color: var(--muted); }
+.plan-meta .meta-item { white-space: nowrap; }
+.plan-meta .tag { margin-left: 0; }
+.sep { opacity: 0.5; }
+
 .kpis {
     display: grid;
-    grid-template-columns: repeat(4, 11rem);
+    grid-template-columns: repeat(4, 12rem);
     gap: 0.6rem;
     flex: 0 0 auto;
     margin-left: auto;
@@ -240,9 +274,9 @@ kbd {
     justify-content: center;
     gap: 0.15rem;
     min-width: 0;
-    /* Matches the supervisor block's height so the row looks identical on a line that
-       has no supervisor set as on one that does. */
-    min-height: 8rem;
+    /* Matches the supervisor block's height (9rem photo + padding) so the row looks identical
+       on a line that has no supervisor set as on one that does. */
+    min-height: 9.7rem;
     padding: 0.5rem 0.75rem;
     border: 1px solid var(--line);
     border-radius: 0.5rem;
@@ -251,6 +285,19 @@ kbd {
 .kpi-label { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
 .kpi-value { font-size: 2.8rem; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .kpi-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Line output / Line achieved / Line efficiency are buttons: tapping one chooses the workstations
+   it adds up. Until someone has, the card is an empty dashed + asking for them. */
+.kpi-pick {
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+.kpi-pick:hover, .kpi-pick:focus-visible { border-color: var(--accent); background: var(--surface-2); outline: none; }
+.kpi.is-empty { align-items: center; text-align: center; border-style: dashed; border-width: 2px; }
+.kpi-plus { font-size: 3rem; font-weight: 300; line-height: 0.95; color: var(--accent); }
 
 /* ── Worker table ────────────────────────────────────────────────────── */
 
@@ -409,6 +456,121 @@ col.col-day-eff { width: 5.2rem; }
 .legend { display: flex; gap: 1rem; white-space: nowrap; }
 .legend .tag { margin-left: 0; }
 
+/* ── Tile picker ─────────────────────────────────────────────────────── */
+
+/* Opened from a line tile. Lists the day's stations with big checkboxes, so the right ones can be
+   ticked with a mouse from standing distance; each shows its operations and what it has finished. */
+.tile-picker {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    background: rgba(2, 6, 16, 0.8);
+}
+.tp-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(72rem, 94vw);
+    max-height: 88vh;
+    border: 1px solid var(--line);
+    border-radius: 0.8rem;
+    background: var(--surface);
+    box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.6);
+}
+.tp-head { display: flex; align-items: flex-start; gap: 1rem; padding: 1.1rem 1.4rem 0.9rem; border-bottom: 1px solid var(--line); }
+.tp-title { margin: 0; font-size: 1.5rem; font-weight: 800; }
+.tp-hint { margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--muted); }
+.tp-close {
+    flex: none;
+    width: 2.2rem;
+    height: 2.2rem;
+    margin-left: auto;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 0.4rem;
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.tp-close:hover, .tp-close:focus-visible { border-color: var(--accent); outline: none; }
+
+.tile-picker input[type="checkbox"] { flex: none; width: 1.35rem; height: 1.35rem; margin: 0; accent-color: var(--accent); cursor: pointer; }
+
+.tp-overall {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    margin: 0.9rem 1.4rem 0;
+    padding: 0.7rem 1rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--surface-2);
+    cursor: pointer;
+}
+.tp-overall strong { font-size: 1.05rem; }
+.tp-overall small { display: block; font-size: 0.75rem; color: var(--muted); }
+.tp-overall.is-on { border-color: var(--accent); background: #0C2A3F; }
+.tp-or { margin: 0.8rem 1.4rem 0; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+
+.tp-grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    align-content: start;
+    gap: 0.5rem;
+    padding: 0.9rem 1.4rem;
+    scrollbar-width: thin;
+    scrollbar-color: #475569 transparent;
+}
+.tp-station {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: 0.65rem;
+    row-gap: 0.1rem;
+    align-items: center;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--surface-2);
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+.tp-station:hover { border-color: #3B4F75; }
+.tp-station.is-on { border-color: var(--accent); background: #0C2A3F; }
+.tp-station input { grid-row: 1 / span 2; }
+.tp-code { font-size: 1rem; font-weight: 800; white-space: nowrap; }
+.tp-code .tag { vertical-align: 0.1rem; }
+.tp-out { font-size: 0.78rem; font-weight: 700; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tp-process { grid-column: 2 / span 2; font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-empty { grid-column: 1 / -1; margin: 1rem 0; font-size: 1rem; color: var(--muted); }
+.tag-fs { background: #0C4A6E; color: #BAE6FD; }
+
+.tp-foot { display: flex; align-items: center; gap: 0.6rem; padding: 0.8rem 1.4rem; border-top: 1px solid var(--line); }
+.tp-count { font-size: 0.9rem; font-weight: 700; white-space: nowrap; }
+.tp-error { flex: 1; min-width: 0; font-size: 0.85rem; text-align: right; }
+.tp-btn {
+    padding: 0.5rem 1.2rem;
+    border: 1px solid var(--line);
+    border-radius: 0.4rem;
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.9rem;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+.tp-btn:hover:not(:disabled), .tp-btn:focus-visible { border-color: var(--accent); outline: none; }
+.tp-btn:disabled { opacity: 0.45; cursor: default; }
+.tp-primary { border-color: var(--accent); background: var(--accent); color: #04121F; }
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.35; }
@@ -416,5 +578,6 @@ col.col-day-eff { width: 5.2rem; }
 
 @media (prefers-reduced-motion: reduce) {
     .live-status.good::before { animation: none; }
-    .picker-line, .back-btn, .switch, .switch-track, .switch-thumb, .flip-time, .step-btn { transition: none; }
+    .picker-line, .back-btn, .switch, .switch-track, .switch-thumb, .flip-time, .step-btn,
+    .kpi-pick, .tp-station, .tp-btn { transition: none; }
 }
