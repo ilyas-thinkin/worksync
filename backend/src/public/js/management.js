@@ -20,8 +20,12 @@ function mgmtLeaderBadgeHtml(row, size = 28) {
     const photo = row?.line_leader_photo || '';
     const base = `width:${size}px;height:${size}px;border-radius:50%;flex:0 0 auto;`
         + 'display:inline-flex;align-items:center;justify-content:center;';
-    const avatar = photo
-        ? `<img src="${mgmtEscHtml(photo)}" alt="${mgmtEscHtml(name || 'Line supervisor')}" style="${base}object-fit:cover;border:1px solid #d1d5db;background:#f3f4f6;">`
+    const photoImg = (src) => `<img src="${mgmtEscHtml(src)}" alt="${mgmtEscHtml(name || 'Line supervisor')}" style="${base}object-fit:cover;border:1px solid #d1d5db;background:#f3f4f6;">`;
+    // A line run by two supervisors: the second face overlaps the first by a third.
+    const avatar = photo && row?.line_leader_photo_2
+        ? `<span style="display:inline-flex;flex:0 0 auto;">${photoImg(photo)}<span style="display:inline-flex;margin-left:-${Math.round(size / 3)}px;">${photoImg(row.line_leader_photo_2)}</span></span>`
+        : (photo || row?.line_leader_photo_2)
+        ? photoImg(photo || row.line_leader_photo_2)
         : `<span style="${base}background:#e8f5ee;color:#1d6f42;border:1px solid #86efac;font-weight:700;font-size:${Math.max(9, Math.round(size * 0.38))}px;">${mgmtEscHtml(mgmtLeaderInitials(name) || '\u2014')}</span>`;
     return '<span style="display:inline-flex;align-items:center;gap:8px;">'
         + avatar

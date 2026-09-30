@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WorkSync Line Display</title>
-    <link rel="stylesheet" href="css/display.css?v=20260918-3">
+    <link rel="stylesheet" href="css/display.css?v=20260930-4">
 </head>
 <body>
     <main id="picker" class="picker" hidden>
@@ -25,6 +25,7 @@
         <section class="summary" aria-label="Line summary">
             <div id="sup-block" class="sup-block">
                 <img id="sup-photo" class="sup-photo" alt="" hidden>
+                <img id="sup-photo-2" class="sup-photo" alt="" hidden>
                 <span id="sup-initials" class="sup-photo sup-initials" hidden></span>
                 <div class="sup-text">
                     <div id="sup-label" class="sup-label">Supervisor</div>
@@ -83,6 +84,47 @@
         </footer>
     </main>
 
+    <main id="overview" class="board overview" hidden>
+        <header class="board-header">
+            <div class="clock-block">
+                <div id="ov-clock" class="clock">--:--</div>
+                <div id="ov-clock-date" class="clock-date"></div>
+                <div id="ov-live-status" class="live-status warn" role="status">Connecting…</div>
+            </div>
+        </header>
+
+        <section id="ov-rows" class="ov-rows" aria-label="Every line's summary"></section>
+        <div id="ov-message" class="board-message" hidden></div>
+
+        <footer class="board-footer">
+            <div class="flip-controls">
+                <button id="ov-back-to-lines" class="back-btn" type="button" title="Back to line selection (Esc)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+                    </svg>
+                    Lines
+                </button>
+                <button id="ov-autoflip-toggle" class="switch" type="button" role="switch" aria-checked="true"
+                        title="Flip pages automatically. Turn off to scroll the list yourself (P)">
+                    <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                    Auto-flip <span id="ov-autoflip-state" class="switch-state">On</span>
+                </button>
+                <div id="ov-flip-time" class="flip-time" title="How long each page stays on screen (+ / −)">
+                    <span>Every</span>
+                    <button id="ov-flip-less" class="step-btn" type="button" aria-label="Fewer seconds per page">−</button>
+                    <span id="ov-flip-seconds" class="flip-seconds" aria-live="polite">15 s</span>
+                    <button id="ov-flip-more" class="step-btn" type="button" aria-label="More seconds per page">+</button>
+                </div>
+            </div>
+            <div id="ov-page-info" class="page-info"></div>
+            <div class="page-progress"><div id="ov-page-progress-bar" class="page-progress-bar"></div></div>
+            <div class="legend">
+                <span>Tap a line to open its board</span>
+                <span>EFF <b class="good">≥90%</b> <b class="warn">≥80%</b> <b class="bad">&lt;80%</b></span>
+            </div>
+        </footer>
+    </main>
+
     <div id="tile-picker" class="tile-picker" role="dialog" aria-modal="true" aria-labelledby="tp-title" hidden>
         <div class="tp-panel">
             <header class="tp-head">
@@ -109,6 +151,6 @@
     </div>
 
     <script src="js/public-host.js"></script>
-    <script src="js/display.js"></script>
+    <script src="js/display.js?v=20260930-2"></script>
 </body>
 </html>

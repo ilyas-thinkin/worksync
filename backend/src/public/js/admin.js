@@ -17,7 +17,14 @@ function leaderInitials(name) {
 // size is the pixel diameter. Used at 28px in tables and 44px in detail headers.
 function leaderAvatarHtml(line, size = 28) {
     const name = line?.line_leader || '';
-    const photo = line?.line_leader_photo || '';
+    // A line run by two supervisors: the second face overlaps the first by a third.
+    if (line?.line_leader_photo && line?.line_leader_photo_2) {
+        const one = leaderAvatarHtml({ line_leader: name, line_leader_photo: line.line_leader_photo }, size);
+        const two = leaderAvatarHtml({ line_leader: name, line_leader_photo: line.line_leader_photo_2 }, size);
+        return `<span style="display:inline-flex;flex:0 0 auto;vertical-align:middle;">${one}`
+            + `<span style="display:inline-flex;margin-left:-${Math.round(size / 3)}px;">${two}</span></span>`;
+    }
+    const photo = line?.line_leader_photo || line?.line_leader_photo_2 || '';
     const title = name ? ` title="${escHtml(name)}"` : '';
     const base = `width:${size}px;height:${size}px;border-radius:50%;flex:0 0 auto;`
         + 'display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;';
@@ -1291,14 +1298,21 @@ async function adminLoadFinalStatus() {
     `).join('');
 }
 
-// The photo is staged in the browser and only sent once the line itself is saved: a brand
-// new line has no id to upload against until POST /lines comes back.
-let pendingLeaderPhotoFile = null;
-let pendingLeaderPhotoRemoval = false;
+// The photos are staged in the browser and only sent once the line itself is saved: a brand
+// new line has no id to upload against until POST /lines comes back. Slot 1 is the supervisor,
+// slot 2 the second supervisor of a line run by two (both names go in the one name field, "A / B").
+const pendingLeaderPhotos = { 1: { file: null, remove: false }, 2: { file: null, remove: false } };
 const LEADER_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
 
-function onLeaderPhotoPicked(input) {
-    const note = document.getElementById('leader-photo-note');
+// The form's element ids: slot 1 keeps the original ids, slot 2 adds "-2".
+const leaderPhotoEl = (name, slot) => document.getElementById(`leader-photo-${name}${slot === 2 ? '-2' : ''}`);
+
+function resetPendingLeaderPhotos() {
+    for (const slot of [1, 2]) pendingLeaderPhotos[slot] = { file: null, remove: false };
+}
+
+function onLeaderPhotoPicked(input, slot = 1) {
+    const note = leaderPhotoEl('note', slot);
     const file = input.files && input.files[0];
     if (note) note.textContent = '';
     if (!file) return;
@@ -1312,67 +1326,64 @@ function onLeaderPhotoPicked(input) {
         input.value = '';
         return;
     }
-    pendingLeaderPhotoFile = file;
-    pendingLeaderPhotoRemoval = false;
-    const preview = document.getElementById('leader-photo-preview');
+    pendingLeaderPhotos[slot] = { file, remove: false };
+    const preview = leaderPhotoEl('preview', slot);
     if (preview) {
         const url = URL.createObjectURL(file);
         preview.innerHTML = `<img src="${url}" alt="Supervisor photo preview"
             style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid #d1d5db;">`;
         preview.querySelector('img').onload = () => URL.revokeObjectURL(url);
     }
-    const removeBtn = document.getElementById('leader-photo-remove');
+    const removeBtn = leaderPhotoEl('remove', slot);
     if (removeBtn) removeBtn.style.display = '';
     if (note) note.textContent = 'Photo will be saved when you save the line.';
 }
 
-function clearLeaderPhoto() {
-    pendingLeaderPhotoFile = null;
-    pendingLeaderPhotoRemoval = true;
-    const input = document.getElementById('leader-photo-input');
+function clearLeaderPhoto(slot = 1) {
+    pendingLeaderPhotos[slot] = { file: null, remove: true };
+    const input = leaderPhotoEl('input', slot);
     if (input) input.value = '';
-    const preview = document.getElementById('leader-photo-preview');
+    const preview = leaderPhotoEl('preview', slot);
     const nameField = document.querySelector('#line-form [name="line_leader"]');
-    if (preview) preview.innerHTML = leaderAvatarHtml({ line_leader: nameField?.value || '' }, 64);
-    const removeBtn = document.getElementById('leader-photo-remove');
+    if (preview) preview.innerHTML = leaderAvatarHtml({ line_leader: slot === 2 ? '' : nameField?.value || '' }, 64);
+    const removeBtn = leaderPhotoEl('remove', slot);
     if (removeBtn) removeBtn.style.display = 'none';
-    const note = document.getElementById('leader-photo-note');
+    const note = leaderPhotoEl('note', slot);
     if (note) note.textContent = 'Photo will be removed when you save the line.';
 }
 
-// Sends the staged photo change. Returns an error message, or null when there was
+// Sends the staged photo changes, both slots. Returns an error message, or null when there was
 // nothing to do or it worked — a photo failure must not lose the saved line itself.
 async function commitLeaderPhoto(lineId) {
     if (!lineId) return null;
-    try {
-        if (pendingLeaderPhotoFile) {
-            const body = new FormData();
-            body.append('photo', pendingLeaderPhotoFile);
-            const response = await fetch(`${API_BASE}/lines/${lineId}/leader-photo`, {
-                method: 'POST', body, credentials: 'include'
-            });
-            const result = await response.json();
-            if (!result.success) return result.error || 'Could not save the supervisor photo';
-        } else if (pendingLeaderPhotoRemoval) {
-            const response = await fetch(`${API_BASE}/lines/${lineId}/leader-photo`, {
-                method: 'DELETE', credentials: 'include'
-            });
-            const result = await response.json();
-            if (!result.success) return result.error || 'Could not remove the supervisor photo';
+    const errors = [];
+    for (const slot of [1, 2]) {
+        const pending = pendingLeaderPhotos[slot];
+        const label = slot === 2 ? 'second supervisor photo' : 'supervisor photo';
+        const url = `${API_BASE}/lines/${lineId}/leader-photo${slot === 2 ? '?slot=2' : ''}`;
+        try {
+            if (pending.file) {
+                const body = new FormData();
+                body.append('photo', pending.file);
+                const response = await fetch(url, { method: 'POST', body, credentials: 'include' });
+                const result = await response.json();
+                if (!result.success) errors.push(result.error || `Could not save the ${label}`);
+            } else if (pending.remove) {
+                const response = await fetch(url, { method: 'DELETE', credentials: 'include' });
+                const result = await response.json();
+                if (!result.success) errors.push(result.error || `Could not remove the ${label}`);
+            }
+        } catch (err) {
+            errors.push(err.message);
         }
-    } catch (err) {
-        return err.message;
-    } finally {
-        pendingLeaderPhotoFile = null;
-        pendingLeaderPhotoRemoval = false;
     }
-    return null;
+    resetPendingLeaderPhotos();
+    return errors.length ? errors.join('; ') : null;
 }
 
 async function showLineModal(line = null) {
     const isEdit = line !== null;
-    pendingLeaderPhotoFile = null;
-    pendingLeaderPhotoRemoval = false;
+    resetPendingLeaderPhotos();
     // Fetch active products for dropdown
     let products = [];
     try {
@@ -1417,7 +1428,7 @@ async function showLineModal(line = null) {
                     <div class="form-group">
                         <label class="form-label">Supervisor Photo <span style="font-weight:400;color:#9ca3af;">(optional)</span></label>
                         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-                            <div id="leader-photo-preview" style="flex:0 0 auto;">${leaderAvatarHtml(line, 64)}</div>
+                            <div id="leader-photo-preview" style="flex:0 0 auto;">${leaderAvatarHtml({ line_leader: line?.line_leader, line_leader_photo: line?.line_leader_photo }, 64)}</div>
                             <div style="flex:1 1 200px;min-width:180px;">
                                 <input type="file" id="leader-photo-input" accept="image/jpeg,image/png,.jpg,.jpeg,.png"
                                        class="form-control" style="padding:6px;"
@@ -1429,6 +1440,27 @@ async function showLineModal(line = null) {
                                             style="${line?.line_leader_photo ? '' : 'display:none;'}">Remove photo</button>
                                 </div>
                                 <div id="leader-photo-note" style="font-size:11px;color:#b45309;margin-top:4px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Second Supervisor Photo <span style="font-weight:400;color:#9ca3af;">(optional)</span></label>
+                        <div style="font-size:11px;color:#6b7280;margin:-2px 0 6px;">
+                            Only for a line run by two supervisors: type both names above as <b>RUMIYA / HASEENA</b>, and put the second person's photo here.
+                        </div>
+                        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                            <div id="leader-photo-preview-2" style="flex:0 0 auto;">${leaderAvatarHtml({ line_leader_photo: line?.line_leader_photo_2 }, 64)}</div>
+                            <div style="flex:1 1 200px;min-width:180px;">
+                                <input type="file" id="leader-photo-input-2" accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+                                       class="form-control" style="padding:6px;"
+                                       onchange="onLeaderPhotoPicked(this, 2)">
+                                <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap;">
+                                    <span style="font-size:11px;color:#9ca3af;">JPG, JPEG or PNG · max 5MB</span>
+                                    <button type="button" id="leader-photo-remove-2" class="btn btn-secondary btn-sm"
+                                            onclick="clearLeaderPhoto(2)"
+                                            style="${line?.line_leader_photo_2 ? '' : 'display:none;'}">Remove photo</button>
+                                </div>
+                                <div id="leader-photo-note-2" style="font-size:11px;color:#b45309;margin-top:4px;"></div>
                             </div>
                         </div>
                     </div>

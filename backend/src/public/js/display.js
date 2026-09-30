@@ -28,6 +28,9 @@ const REFRESH_WEDGED_MS = 30000;
 const PUBLIC_HOST_RETRY_MS = 600000;
 const CURSOR_IDLE_MS = 3000;
 const ROW_HEIGHT_REM = 2.9;
+// One line's summary row on the All lines view, spacing included (the gap is padding inside the row),
+// so the rows that fit on a page follow from it the same way the worker rows do from ROW_HEIGHT_REM.
+const OV_ROW_HEIGHT_REM = 8.9;
 
 const FLIP_SECONDS_MIN = 5;
 const FLIP_SECONDS_MAX = 60;
@@ -40,9 +43,16 @@ const FLIP_SECONDS_KEY = 'worksync_display_flip_seconds';
 
 const params = new URLSearchParams(window.location.search);
 const lineId = parseInt(params.get('line') || '', 10);
+// The All lines view: every line's summary row, opened from the "All lines" card on the Lines page.
+const isOverview = !Number.isFinite(lineId) && params.has('overview');
+// Remembered in place of a line id, so a TV that was showing the All lines view comes back to it.
+const OVERVIEW_SETTING = 'overview';
 
 const state = {
     status: null,
+    overview: null,
+    overviewEff: new Map(),
+    timeZone: null,
     report: null,
     efficiency: null,
     lastSuccessAt: 0,
@@ -59,6 +69,9 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+// The board and the All lines view each carry their own clock, live status and flip footer; the All
+// lines view's copies are the same ids with an "ov-" prefix, so the shared code asks for them by name.
+const v = (id) => $(isOverview ? `ov-${id}` : id);
 
 function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, (ch) => (
@@ -102,7 +115,7 @@ function timeRange(label) {
 
 // Formats in the server's time zone, so a TV PC set to the wrong zone still shows factory time.
 function formatClock(ms, options) {
-    const timeZone = state.status && state.status.time_zone;
+    const timeZone = state.timeZone;
     const date = new Date(ms);
     try {
         return date.toLocaleString('en-GB', timeZone ? { ...options, timeZone } : options);
@@ -184,7 +197,14 @@ async function movePublicHostSoon(host) {
 // but self-contained per card: the picker is rendered once, not re-rendered every 10s.
 function pickerAvatar(line) {
     const name = line.line_leader || '';
-    const photo = line.line_leader_photo || '';
+    // Two supervisors: the circle splits down the middle, one face each side. A photo that fails
+    // there just leaves its half on the neutral background.
+    if (line.line_leader_photo && line.line_leader_photo_2) {
+        return [line.line_leader_photo, line.line_leader_photo_2]
+            .map((photo) => `<img class="picker-photo picker-half" src="${esc(photo)}" alt="${esc(name) || 'Line supervisor'}">`)
+            .join('');
+    }
+    const photo = line.line_leader_photo || line.line_leader_photo_2 || '';
     const initials = leaderInitials(name);
     // Real initials get the accent; the placeholder dash for a line with no supervisor is
     // dimmed, so an unassigned line reads as empty rather than as something to look at.
@@ -200,8 +220,20 @@ async function showPicker() {
     try {
         const { data } = await getJson('/api/display/lines');
         const last = readSetting(LAST_LINE_KEY);
+        const summaryCard = `
+            <a class="picker-line picker-summary${last === OVERVIEW_SETTING ? ' is-last' : ''}" href="/display?overview=1">
+                <span class="picker-avatar" aria-hidden="true">
+                    <svg class="picker-rows-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/>
+                    </svg>
+                </span>
+                <span class="picker-text">
+                    <span class="picker-code">All lines</span>
+                    <span class="picker-name">Summary of every line, one row each</span>
+                </span>
+            </a>`;
         grid.innerHTML = data.length
-            ? data.map((line) => `
+            ? summaryCard + data.map((line) => `
                 <a class="picker-line${String(line.id) === last ? ' is-last' : ''}" href="/display?line=${encodeURIComponent(line.id)}">
                     <span class="picker-avatar">${pickerAvatar(line)}</span>
                     <span class="picker-text">
@@ -213,7 +245,7 @@ async function showPicker() {
             : '<p class="picker-hint">No active lines.</p>';
         // A photo whose file went missing must not leave a broken-image icon on a screen
         // nobody is standing at — swap that one card to its initials and leave the rest alone.
-        grid.querySelectorAll('img.picker-photo').forEach((img) => {
+        grid.querySelectorAll('img.picker-photo:not(.picker-half)').forEach((img) => {
             img.addEventListener('error', () => {
                 img.hidden = true;
                 const initials = img.nextElementSibling;
@@ -268,6 +300,7 @@ async function refresh(options) {
         ]);
         if (seq !== refreshSeq) return; // written off as wedged; a newer attempt owns the board
         state.status = status;
+        state.timeZone = status.time_zone;
         state.report = report.data;
         state.efficiency = efficiency ? efficiency.data : null;
         state.clockOffsetMs = Date.parse(status.server_time) - Date.now();
@@ -314,11 +347,12 @@ function shortLineCode(code) {
     return (dash > 0 ? text.slice(0, dash) : text).trim();
 }
 
+// A line run by two supervisors has a second photo (line_leader_photo_2); both names are in
+// line_leader already ("RUMIYA / HASEENA"). Each photo follows the same rules on its own, and
+// whichever loads is shown — the card turns to the pair layout only when both are up.
 function renderSupervisor(line) {
-    const photo = $('sup-photo');
     const initials = $('sup-initials');
     const name = line.line_leader || '';
-    const photoPath = line.line_leader_photo || '';
 
     // This card is now the only place the board names its line, so it always shows — even for a
     // line with no supervisor set, where it falls back to the line code alone.
@@ -327,30 +361,34 @@ function renderSupervisor(line) {
     $('sup-name').hidden = !name;
     $('sup-label').hidden = !name;
 
-    const showInitials = () => {
-        photo.hidden = true;
-        initials.hidden = false;
-        initials.textContent = leaderInitials(name) || '—';
-    };
+    const showing = [
+        showSupervisorPhoto($('sup-photo'), line.line_leader_photo || '', name, line),
+        showSupervisorPhoto($('sup-photo-2'), line.line_leader_photo_2 || '', name, line)
+    ].filter(Boolean).length;
+    $('sup-block').classList.toggle('is-pair', showing === 2);
+    initials.hidden = showing > 0;
+    if (!showing) initials.textContent = leaderInitials(name) || '—';
+}
 
-    // A path that already failed to load stays failed until the photo is replaced —
-    // the board re-renders every 10s and must not flip back to a broken image each time.
+// Returns whether this photo is on screen. A path that already failed to load stays failed until the
+// photo is replaced — the board re-renders every 10s and must not flip back to a broken image each time.
+function showSupervisorPhoto(photo, photoPath, name, line) {
     if (!photoPath || photo.dataset.failedSrc === photoPath) {
-        showInitials();
-        return;
+        photo.hidden = true;
+        return false;
     }
     // Only swap the src when it actually changed — reassigning it every refresh
     // would restart the image load on every poll.
     if (photo.getAttribute('src') !== photoPath) {
         photo.onerror = () => {
             photo.dataset.failedSrc = photoPath;
-            showInitials();
+            renderSupervisor(line);
         };
         photo.setAttribute('src', photoPath);
         photo.alt = name || 'Line supervisor';
     }
     photo.hidden = false;
-    initials.hidden = true;
+    return true;
 }
 
 function renderHeader() {
@@ -360,28 +398,43 @@ function renderHeader() {
     document.title = `${line.line_code || 'Line'} · WorkSync Display`;
     renderSupervisor(line);
 
-    // Code and name on separate lines: the style card is narrow, and the code is what people look for.
-    $('plan-product').innerHTML = plan.product_code
+    $('plan-product').innerHTML = planProductHtml(plan);
+    $('plan-meta').innerHTML = planMetaHtml(plan, rows.filter((row) => !row.ot_only).length, isLocked, isClosed);
+}
+
+// Code and name on separate lines: the style card is narrow, and the code is what people look for.
+function planProductHtml(plan) {
+    return plan.product_code
         ? `<div class="plan-code">${esc(plan.product_code)}`
             + (plan.incoming_product_code
                 ? ` <span class="tag tag-co">CO</span> ${esc(plan.incoming_product_code)}`
                 : '')
             + `</div><div class="plan-name">${esc(plan.product_name || '')}</div>`
         : '<span class="bad">No plan for today</span>';
+}
 
+function planMetaHtml(plan, workerCount, isLocked, isClosed) {
     const meta = [];
     if (plan.in_time && plan.out_time) meta.push(`Shift ${esc(plan.in_time)}–${esc(plan.out_time)}`);
-    meta.push(`${rows.filter((row) => !row.ot_only).length} workers`);
+    meta.push(`${workerCount} workers`);
     if (isLocked) meta.push('<span class="tag tag-warn">DAY LOCKED</span>');
     if (isClosed) meta.push('<span class="tag tag-bad">LINE CLOSED</span>');
     // Each item stays whole; the card is narrow, so the line wraps at the dots instead of inside "08:00–17:00".
-    $('plan-meta').innerHTML = meta.map((item) => `<span class="meta-item">${item}</span>`).join(' <span class="sep">·</span> ');
+    return meta.map((item) => `<span class="meta-item">${item}</span>`).join(' <span class="sep">·</span> ');
+}
+
+// A long figure — "100.0%", a four-figure target, a signed backlog — does not fit a card at the full
+// size, and the value never wraps. It steps down one size for each glyph past three, which keeps every
+// figure whole inside its card and lets the five cards stay narrow enough for the supervisor's name.
+function valueClass(value) {
+    const len = String(value).length;
+    return len >= 6 ? 'len-6' : len === 5 ? 'len-5' : len === 4 ? 'len-4' : '';
 }
 
 function kpi(label, value, sub, cls = '') {
     return `<div class="kpi">
         <div class="kpi-label">${esc(label)}</div>
-        <div class="kpi-value ${cls}">${esc(value)}</div>
+        <div class="kpi-value ${cls} ${valueClass(value)}">${esc(value)}</div>
         <div class="kpi-sub">${esc(sub)}</div>
     </div>`;
 }
@@ -415,7 +468,7 @@ function emptyTile(tile, styleChanged) {
 function pickedTile(tile, value, sub, cls = '') {
     return `<button class="kpi kpi-pick" type="button" data-tile="${tile}" title="Change the workstations this card adds up">
         <div class="kpi-label">${esc(TILES[tile].label)}</div>
-        <div class="kpi-value ${cls}">${esc(value)}</div>
+        <div class="kpi-value ${cls} ${valueClass(value)}">${esc(value)}</div>
         <div class="kpi-sub">${esc(sub)}</div>
     </button>`;
 }
@@ -424,25 +477,67 @@ function stationList(summary) {
     return summary.station_codes.join(' + ');
 }
 
-// Day target is the plan's. The other three add up the workstations picked on each card — one station
+// Backlog: the pieces the line is short RIGHT NOW — the Line output card's pieces against what THOSE SAME
+// STATIONS should have finished by the last completed hour. Both sides come from the one selection, which is
+// what the user asked for (2026-09-25): the card follows the workstations picked for Line output and is
+// calculated from those alone. The bar is the tile's own `required`, which the server already sums as the
+// picked stations' hourly target × finished hours, by the same rule as the Hourly Report's Tgt column — so it
+// needs no pro-rating here and a changeover day's two hourly targets are handled per station.
+//
+// It therefore always agrees with "Line achieved" beside it: the same comparison, pieces instead of a
+// percentage. Note this inherits `hourlyTargetFor`'s quirk — a picked station with no custom takt is given the
+// WHOLE line's hourly target, so picking two of those doubles the bar (A1/A5/B4 read 94/h against a 63/h line
+// on 2026-09-25). That is a takt-data problem on those lines, not something this card works around.
+// Derived rather than picked, so it stays "–" until the output card has its stations.
+function backlogTile(output, hoursCounted) {
+    if (!output) return kpi('Backlog', '–', 'set Line output first', 'muted');
+    if (!hoursCounted) return kpi('Backlog', '–', 'no hour finished yet', 'muted');
+    const required = num(output.required) || 0;
+    if (required <= 0) return kpi('Backlog', '–', 'no target today', 'muted');
+    const gap = (num(output.output) || 0) - required;
+    // Signed the way the floor writes it: short reads as a negative number, so −17 is 17 behind by now.
+    return kpi(
+        'Backlog',
+        gap < 0 ? `−${Math.abs(gap)}` : gap > 0 ? `+${gap}` : '0',
+        `of ${required} · ${hoursCounted} h`,
+        gap < 0 ? 'bad' : 'good'
+    );
+}
+
+// Day target is the plan's. The three picked cards add up the workstations chosen on each — one station
 // is its own figure, several add their outputs and targets, and efficiency pools them (the server does
 // the sums; see summarizeDisplaySelection). Line overall efficiency comes from the Efficiency Report.
+// Backlog is worked out here from the output card alone: its pieces less its own target for the finished hours.
 function renderSummary() {
-    const { plan } = state.report;
     const tiles = state.status.tiles || {};
+    const reportSummary = state.efficiency && state.efficiency.summary;
+    const lineOverallEff = reportSummary ? num(reportSummary.live_efficiency_pct) : null;
+    $('kpis').innerHTML = summaryTilesHtml(state.report.plan, tiles, state.status.hours_counted, lineOverallEff, true);
+}
+
+// The five summary cards, shared by the board and the All lines view. On the board the three line tiles
+// are buttons that open the workstation picker; on the All lines view they are plain cards (pickable
+// false) — choosing stations belongs to the line's own board, where the station list is in hand.
+// lineOverallEff is the Efficiency Report's figure, used only when the efficiency tile is set to it.
+function summaryTilesHtml(plan, tiles, hoursCounted, lineOverallEff, pickable) {
     const styleChanged = !!tiles.style_changed;
+    const picked = pickable
+        ? pickedTile
+        : (tile, value, sub, cls = '') => kpi(TILES[tile].label, value, sub, cls);
+    const empty = pickable
+        ? emptyTile
+        : (tile) => kpi(TILES[tile].label, '–', styleChanged ? 'New style · not chosen' : 'Not set up', 'muted');
 
     const output = tiles.output;
     const achieved = tiles.achieved;
     const required = achieved ? num(achieved.required) || 0 : 0;
     const achievedPct = achieved && required > 0 ? Math.round((num(achieved.output) / required) * 100) : null;
     const efficiency = tiles.efficiency;
-    const reportSummary = state.efficiency && state.efficiency.summary;
     const lineEff = efficiency && efficiency.line_overall
-        ? (reportSummary ? num(reportSummary.live_efficiency_pct) : null)
+        ? lineOverallEff
         : (efficiency ? num(efficiency.efficiency_percent) : null);
 
-    $('kpis').innerHTML = [
+    return [
         // "0 per hour" reads like a real, very bad target. When no target is planned at all, say so —
         // that is also what makes the "–" in every Tgt column self-explanatory rather than a glitch.
         kpi('Day target', plan.target_units || '–',
@@ -450,16 +545,17 @@ function renderSummary() {
                 ? `CO target ${plan.incoming_target_units}`
                 : (plan.line_hourly_target ? `${plan.line_hourly_target} per hour` : 'no target set for today')),
         output
-            ? pickedTile('output', num(output.output) || 0, stationList(output))
-            : emptyTile('output', styleChanged),
+            ? picked('output', num(output.output) || 0, stationList(output))
+            : empty('output', styleChanged),
+        backlogTile(output, hoursCounted),
         achieved
-            ? pickedTile('achieved', achievedPct == null ? '–' : `${achievedPct}%`,
+            ? picked('achieved', achievedPct == null ? '–' : `${achievedPct}%`,
                 required > 0 ? `${num(achieved.output) || 0} of ${required} · ${stationList(achieved)}` : `no target yet · ${stationList(achieved)}`,
                 achievedClass(achievedPct))
-            : emptyTile('achieved', styleChanged),
+            : empty('achieved', styleChanged),
         efficiency
-            ? pickedTile('efficiency', pct(lineEff), efficiency.line_overall ? 'Whole line' : stationList(efficiency), effClass(lineEff))
-            : emptyTile('efficiency', styleChanged)
+            ? picked('efficiency', pct(lineEff), efficiency.line_overall ? 'Whole line' : stationList(efficiency), effClass(lineEff))
+            : empty('efficiency', styleChanged)
     ].join('');
 }
 
@@ -507,35 +603,51 @@ function renderWorkers() {
     renderPageInfo();
 }
 
-// Rows have a fixed height (--row-h), so the page size follows from the space left under the header.
-function rowsPerPage() {
-    const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const available = $('workers').clientHeight - $('worker-head').offsetHeight - 2;
-    return Math.max(1, Math.floor(available / (ROW_HEIGHT_REM * rootPx)));
+// The list that pages or scrolls: the board's worker table (under its pinned header), or the All lines
+// view's summary rows. Both have fixed-height rows, which the page size and scroll maths rely on.
+function listParts() {
+    return isOverview
+        ? { box: $('ov-rows'), rows: $('ov-rows').children, headPx: 0, rowRem: OV_ROW_HEIGHT_REM,
+            total: state.overview ? state.overview.lines.length : 0, noun: 'Lines', one: 'line', many: 'lines' }
+        : { box: $('workers'), rows: $('worker-body').rows, headPx: $('worker-head').offsetHeight, rowRem: ROW_HEIGHT_REM,
+            total: state.report ? state.report.rows.length : 0, noun: 'Workers', one: 'worker', many: 'workers' };
 }
 
-// First and last worker (1-based) showing under the pinned header while scrolling by hand.
+function renderList() {
+    if (isOverview) renderOverview();
+    else renderWorkers();
+}
+
+// Rows have a fixed height, so the page size follows from the space left under the header.
+function rowsPerPage() {
+    const { box, headPx, rowRem } = listParts();
+    const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const available = box.clientHeight - headPx - 2;
+    return Math.max(1, Math.floor(available / (rowRem * rootPx)));
+}
+
+// First and last row (1-based) showing under the pinned header while scrolling by hand.
 function visibleRows() {
-    const workers = $('workers');
-    const body = $('worker-body');
-    const total = body.rows.length;
-    const rowPx = total ? body.rows[0].offsetHeight : 0;
+    const { box, rows, headPx } = listParts();
+    const total = rows.length;
+    const rowPx = total ? rows[0].offsetHeight : 0;
     if (!rowPx) return { first: 0, last: 0 };
-    const headPx = $('worker-head').offsetHeight;
-    const first = Math.min(total, Math.floor(workers.scrollTop / rowPx) + 1);
-    const last = Math.min(total, Math.floor((workers.scrollTop + workers.clientHeight - headPx) / rowPx));
+    const first = Math.min(total, Math.floor(box.scrollTop / rowPx) + 1);
+    const last = Math.min(total, Math.floor((box.scrollTop + box.clientHeight - headPx) / rowPx));
     return { first, last: Math.max(first, last) };
 }
 
 function scrollToRow(index) {
-    const row = $('worker-body').rows[index];
-    if (row) $('workers').scrollTop = row.offsetTop - $('worker-head').offsetHeight;
+    const { box, rows, headPx } = listParts();
+    const row = rows[index];
+    if (row) box.scrollTop = row.offsetTop - headPx;
 }
 
 function renderPageInfo() {
-    const info = $('page-info');
-    const bar = $('page-progress-bar');
-    const total = state.report ? state.report.rows.length : 0;
+    const info = v('page-info');
+    const bar = v('page-progress-bar');
+    const { box: list, total, noun, one, many } = listParts();
+    const count = `${total} ${total === 1 ? one : many}`;
     if (!total) {
         info.textContent = '';
         bar.style.width = '0%';
@@ -545,20 +657,19 @@ function renderPageInfo() {
         const start = state.pageIndex * state.perPage;
         const end = Math.min(total, start + state.perPage);
         info.textContent = state.pageCount > 1
-            ? `Workers ${start + 1}–${end} of ${total} · Page ${state.pageIndex + 1} of ${state.pageCount}`
-            : `${total} workers`;
+            ? `${noun} ${start + 1}–${end} of ${total} · Page ${state.pageIndex + 1} of ${state.pageCount}`
+            : count;
         return; // while flipping, the bar is the countdown to the next page (advancePage)
     }
-    const workers = $('workers');
-    const scrollable = workers.scrollHeight - workers.clientHeight;
+    const scrollable = list.scrollHeight - list.clientHeight;
     if (scrollable <= 0) {
-        info.textContent = `${total} workers`;
+        info.textContent = count;
         bar.style.width = '0%';
         return;
     }
     const { first, last } = visibleRows();
-    info.textContent = `Workers ${first}–${last} of ${total} · scroll for more`;
-    bar.style.width = `${(workers.scrollTop / scrollable) * 100}%`;
+    info.textContent = `${noun} ${first}–${last} of ${total} · scroll for more`;
+    bar.style.width = `${(list.scrollTop / scrollable) * 100}%`;
 }
 
 function renderWorkerHead(hours, hasOt, currentHour) {
@@ -651,7 +762,7 @@ function workerRow(row, index, hours, hasOt, currentHour) {
 }
 
 function renderLiveStatus() {
-    const el = $('live-status');
+    const el = v('live-status');
     if (!state.lastSuccessAt) {
         el.className = 'live-status warn';
         el.textContent = state.lastError ? `Connecting · ${state.lastError}` : 'Connecting…';
@@ -660,7 +771,7 @@ function renderLiveStatus() {
     const age = Date.now() - state.lastSuccessAt;
     const at = formatClock(state.lastSuccessAt + state.clockOffsetMs, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
     // Dim the numbers once they are clearly old, so nobody on the floor trusts a frozen board.
-    $('board').classList.toggle('is-stale', age > OFFLINE_AFTER_MS);
+    $(isOverview ? 'overview' : 'board').classList.toggle('is-stale', age > OFFLINE_AFTER_MS);
     if (age > OFFLINE_AFTER_MS) {
         el.className = 'live-status bad';
         el.textContent = `Offline · last update ${at}`;
@@ -676,15 +787,15 @@ function renderLiveStatus() {
 // ── Page flipping and manual scrolling ──────────────────────────────────
 
 function renderFlipControls() {
-    $('autoflip-toggle').setAttribute('aria-checked', String(state.autoFlip));
-    $('autoflip-state').textContent = state.autoFlip ? 'On' : 'Off';
-    $('flip-seconds').textContent = `${state.flipSeconds} s`;
-    $('flip-less').disabled = state.flipSeconds <= FLIP_SECONDS_MIN;
-    $('flip-more').disabled = state.flipSeconds >= FLIP_SECONDS_MAX;
-    $('flip-time').classList.toggle('is-off', !state.autoFlip);
+    v('autoflip-toggle').setAttribute('aria-checked', String(state.autoFlip));
+    v('autoflip-state').textContent = state.autoFlip ? 'On' : 'Off';
+    v('flip-seconds').textContent = `${state.flipSeconds} s`;
+    v('flip-less').disabled = state.flipSeconds <= FLIP_SECONDS_MIN;
+    v('flip-more').disabled = state.flipSeconds >= FLIP_SECONDS_MAX;
+    v('flip-time').classList.toggle('is-off', !state.autoFlip);
 }
 
-// Switching keeps the same workers on screen: the page's first row becomes the top of the
+// Switching keeps the same rows on screen: the page's first row becomes the top of the
 // scrolled list, and the row at the top of the scrolled list picks the page to flip from.
 function setAutoFlip(enabled) {
     if (enabled === state.autoFlip) return;
@@ -692,9 +803,9 @@ function setAutoFlip(enabled) {
     state.autoFlip = enabled;
     writeSetting(AUTOFLIP_KEY, enabled ? '1' : '0');
     state.pageStartedAt = Date.now();
-    $('page-progress-bar').style.width = '0%';
+    v('page-progress-bar').style.width = '0%';
     if (enabled) state.pageIndex = Math.floor(firstRow / rowsPerPage());
-    renderWorkers();
+    renderList();
     if (!enabled) scrollToRow(firstRow);
     renderFlipControls();
 }
@@ -711,15 +822,15 @@ function setFlipSeconds(value) {
 function showPage(index) {
     state.pageIndex = ((index % state.pageCount) + state.pageCount) % state.pageCount;
     state.pageStartedAt = Date.now();
-    $('page-progress-bar').style.width = '0%';
-    renderWorkers();
+    v('page-progress-bar').style.width = '0%';
+    renderList();
 }
 
 function advancePage() {
     if (!state.autoFlip) return; // the bar shows the scroll position instead
     if (state.pageCount <= 1) {
         state.pageStartedAt = Date.now();
-        $('page-progress-bar').style.width = '0%';
+        v('page-progress-bar').style.width = '0%';
         return;
     }
     const elapsed = Date.now() - state.pageStartedAt;
@@ -727,11 +838,11 @@ function advancePage() {
         showPage(state.pageIndex + 1);
         return;
     }
-    $('page-progress-bar').style.width = `${(elapsed / (state.flipSeconds * 1000)) * 100}%`;
+    v('page-progress-bar').style.width = `${(elapsed / (state.flipSeconds * 1000)) * 100}%`;
 }
 
-function scrollWorkersBy(px) {
-    $('workers').scrollBy({ top: px, behavior: 'smooth' });
+function scrollListBy(px) {
+    listParts().box.scrollBy({ top: px, behavior: 'smooth' });
 }
 
 // ── Tile picker ─────────────────────────────────────────────────────────
@@ -840,12 +951,191 @@ async function saveTilePicker({ clear = false } = {}) {
     }
 }
 
+// ── All lines view ──────────────────────────────────────────────────────
+
+// Every line's board summary row at once, from /api/display/overview in a single call (the per-worker
+// Hourly Report is never asked for here). A line whose efficiency card is set to Line overall also needs
+// the Efficiency Report, as on its board; that figure is secondary and its failure leaves only that card "–".
+let overviewSeq = 0;
+
+async function refreshOverview() {
+    if (state.refreshing && Date.now() - state.refreshStartedAt < REFRESH_WEDGED_MS) return;
+    const seq = ++overviewSeq;
+    state.refreshing = true;
+    state.refreshStartedAt = Date.now();
+    try {
+        const { data } = await getJson('/api/display/overview');
+        const overallLines = data.last_completed_hour == null
+            ? []
+            : data.lines.filter((row) => row.tiles && row.tiles.efficiency && row.tiles.efficiency.line_overall);
+        const effs = await Promise.all(overallLines.map((row) => getJson(
+            `/api/efficiency-report?line_id=${row.line.id}&date=${encodeURIComponent(data.date)}&hour=${data.last_completed_hour}`
+        ).then((res) => num(res.data && res.data.summary && res.data.summary.live_efficiency_pct)).catch(() => null)));
+        if (seq !== overviewSeq) return;
+        if (state.overview && data.date !== state.overview.date) {
+            state.pageIndex = 0;
+            state.pageStartedAt = Date.now();
+        }
+        state.overview = data;
+        state.overviewEff = new Map(overallLines.map((row, i) => [row.line.id, effs[i]]));
+        state.timeZone = data.time_zone;
+        state.clockOffsetMs = Date.parse(data.server_time) - Date.now();
+        state.lastSuccessAt = Date.now();
+        state.lastError = null;
+        renderOverview();
+    } catch (err) {
+        if (err.status === 401) {
+            window.location.href = '/';
+            return;
+        }
+        if (seq !== overviewSeq) return;
+        state.lastError = err.message;
+    } finally {
+        if (seq === overviewSeq) {
+            state.refreshing = false;
+            renderLiveStatus();
+        }
+    }
+}
+
+// Photos that failed to load once stay on initials, so the 10-second repaint does not bring back a
+// broken image (see renderSupervisor for the board's version of the same rule).
+const failedPhotos = new Set();
+
+function overviewSupervisorHtml(line) {
+    const name = line.line_leader || '';
+    const photos = [line.line_leader_photo, line.line_leader_photo_2].filter((photo) => photo && !failedPhotos.has(photo));
+    const face = photos.length
+        ? photos.map((photo) => `<img class="sup-photo" src="${esc(photo)}" alt="${esc(name) || 'Line supervisor'}">`).join('')
+        : `<span class="sup-photo sup-initials">${esc(leaderInitials(name)) || '—'}</span>`;
+    return `<div class="sup-block${photos.length === 2 ? ' is-pair' : ''}">
+        ${face}
+        <div class="sup-text">
+            ${name ? `<div class="sup-label">Supervisor</div><div class="sup-name">${esc(name)}</div>` : ''}
+            <div class="sup-line">${esc(shortLineCode(line.line_code) || `Line ${line.id}`)}</div>
+        </div>
+    </div>`;
+}
+
+function overviewRowHtml(row, hoursCounted) {
+    const { line, plan } = row;
+    return `<a class="ov-row" href="/display?line=${encodeURIComponent(line.id)}" title="Open ${esc(line.line_code)}'s board">
+        <div class="summary">
+            ${overviewSupervisorHtml(line)}
+            <div class="plan-card">
+                <div class="kpi-label">Style</div>
+                <div class="plan-product">${planProductHtml(plan)}</div>
+                <div class="plan-meta">${planMetaHtml(plan, row.worker_count, row.is_locked, row.is_closed)}</div>
+            </div>
+            <div class="kpis">${summaryTilesHtml(plan, row.tiles || {}, hoursCounted, state.overviewEff.get(line.id) ?? null, false)}</div>
+        </div>
+    </a>`;
+}
+
+let overviewHtml = '';
+
+function renderOverview() {
+    const list = $('ov-rows');
+    const message = $('ov-message');
+    // Lines running a plan today come first; idle lines follow, each group in line-code order.
+    const lines = state.overview
+        ? [...state.overview.lines].sort((a, b) => Number(b.has_plan) - Number(a.has_plan))
+        : [];
+    list.classList.toggle('is-manual', !state.autoFlip);
+    if (!lines.length) {
+        list.innerHTML = '';
+        overviewHtml = '';
+        message.hidden = !state.overview;
+        message.textContent = 'No active lines.';
+        state.pageCount = 1;
+        renderPageInfo();
+        return;
+    }
+    message.hidden = true;
+
+    let start = 0;
+    let shown = lines;
+    if (state.autoFlip) {
+        list.scrollTop = 0;
+        state.perPage = rowsPerPage();
+        state.pageCount = Math.max(1, Math.ceil(lines.length / state.perPage));
+        if (state.pageIndex >= state.pageCount) state.pageIndex = 0;
+        start = state.pageIndex * state.perPage;
+        shown = lines.slice(start, start + state.perPage);
+    } else {
+        state.pageCount = 1;
+    }
+
+    // Only repaint when something on screen changed: rebuilding the rows every 10 seconds would reload
+    // every supervisor photo and blink them.
+    const html = shown.map((row) => overviewRowHtml(row, state.overview.hours_counted)).join('');
+    // The supervisor column is one width on every row of a page so the columns line up; it widens
+    // for the whole page only when a line on it shows two supervisor photos.
+    list.classList.toggle('has-pair', html.includes('sup-block is-pair'));
+    if (html !== overviewHtml) {
+        const scrollTop = list.scrollTop;
+        list.innerHTML = html;
+        overviewHtml = html;
+        if (!state.autoFlip) list.scrollTop = scrollTop;
+    }
+    renderPageInfo();
+}
+
+function startOverview() {
+    $('overview').hidden = false;
+    document.title = 'All lines · WorkSync Display';
+    writeSetting(LAST_LINE_KEY, OVERVIEW_SETTING);
+    document.documentElement.style.setProperty('--ov-row-h', `${OV_ROW_HEIGHT_REM}rem`);
+
+    $('ov-back-to-lines').addEventListener('click', openPicker);
+    $('overview').addEventListener('dblclick', (event) => {
+        if (!event.target.closest('.board-footer, .ov-row')) toggleFullscreen();
+    });
+    // img errors do not bubble, so this listens in the capture phase for every row's photo.
+    $('ov-rows').addEventListener('error', (event) => {
+        const img = event.target;
+        if (!(img instanceof HTMLImageElement)) return;
+        failedPhotos.add(img.getAttribute('src'));
+        overviewHtml = '';
+        renderOverview();
+    }, true);
+    $('ov-autoflip-toggle').addEventListener('click', () => setAutoFlip(!state.autoFlip));
+    $('ov-flip-less').addEventListener('click', () => setFlipSeconds(state.flipSeconds - FLIP_SECONDS_STEP));
+    $('ov-flip-more').addEventListener('click', () => setFlipSeconds(state.flipSeconds + FLIP_SECONDS_STEP));
+
+    let infoFrame = 0;
+    $('ov-rows').addEventListener('scroll', () => {
+        if (state.autoFlip || infoFrame) return;
+        infoFrame = requestAnimationFrame(() => {
+            infoFrame = 0;
+            renderPageInfo();
+        });
+    }, { passive: true });
+
+    window.addEventListener('resize', () => {
+        overviewHtml = '';
+        renderOverview();
+    });
+    document.addEventListener('visibilitychange', () => {
+        keepScreenAwake();
+        if (document.visibilityState === 'visible') refreshOverview();
+    });
+    window.addEventListener('online', refreshOverview);
+    window.addEventListener('pageshow', refreshOverview);
+    renderFlipControls();
+    keepScreenAwake();
+    refreshOverview();
+    setInterval(refreshOverview, REFRESH_MS);
+    setInterval(tick, 1000);
+    tick();
+}
+
 // ── Clock, screen, start-up ─────────────────────────────────────────────
 
 function tick() {
     const now = Date.now() + state.clockOffsetMs;
-    $('clock').textContent = formatClock(now, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-    $('clock-date').textContent = formatClock(now, { weekday: 'short', day: 'numeric', month: 'short' });
+    v('clock').textContent = formatClock(now, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    v('clock-date').textContent = formatClock(now, { weekday: 'short', day: 'numeric', month: 'short' });
     renderLiveStatus();
     advancePage();
 }
@@ -924,7 +1214,7 @@ function startBoard() {
 
 document.addEventListener('mousemove', wakeCursor);
 document.addEventListener('keydown', (event) => {
-    if (!Number.isFinite(lineId)) return;
+    if (!Number.isFinite(lineId) && !isOverview) return;
     // While the tile picker is open the keys belong to it: Esc closes it (instead of leaving the board)
     // and the board's shortcuts wait, so Space on a checkbox or + in the list does not flip pages.
     if (picker.tile) {
@@ -935,20 +1225,21 @@ document.addEventListener('keydown', (event) => {
         return;
     }
     const manual = !state.autoFlip;
-    const rowPx = $('worker-body').rows[0]?.offsetHeight || 0;
-    const screenPx = Math.max(rowPx, $('workers').clientHeight - $('worker-head').offsetHeight - rowPx);
+    const { box, rows, headPx } = listParts();
+    const rowPx = rows[0]?.offsetHeight || 0;
+    const screenPx = Math.max(rowPx, box.clientHeight - headPx - rowPx);
     switch (event.key) {
         case 'Escape': openPicker(); break;
         case 'f': case 'F': toggleFullscreen(); break;
         case 'p': case 'P': setAutoFlip(!state.autoFlip); break;
         case '+': case '=': setFlipSeconds(state.flipSeconds + FLIP_SECONDS_STEP); break;
         case '-': case '_': setFlipSeconds(state.flipSeconds - FLIP_SECONDS_STEP); break;
-        case 'ArrowDown': if (manual) scrollWorkersBy(rowPx); else showPage(state.pageIndex + 1); break;
-        case 'ArrowUp': if (manual) scrollWorkersBy(-rowPx); else showPage(state.pageIndex - 1); break;
-        case 'ArrowRight': case 'PageDown': if (manual) scrollWorkersBy(screenPx); else showPage(state.pageIndex + 1); break;
-        case 'ArrowLeft': case 'PageUp': if (manual) scrollWorkersBy(-screenPx); else showPage(state.pageIndex - 1); break;
-        case 'Home': if (manual) $('workers').scrollTo({ top: 0, behavior: 'smooth' }); else showPage(0); break;
-        case 'End': if (manual) $('workers').scrollTo({ top: $('workers').scrollHeight, behavior: 'smooth' }); else showPage(state.pageCount - 1); break;
+        case 'ArrowDown': if (manual) scrollListBy(rowPx); else showPage(state.pageIndex + 1); break;
+        case 'ArrowUp': if (manual) scrollListBy(-rowPx); else showPage(state.pageIndex - 1); break;
+        case 'ArrowRight': case 'PageDown': if (manual) scrollListBy(screenPx); else showPage(state.pageIndex + 1); break;
+        case 'ArrowLeft': case 'PageUp': if (manual) scrollListBy(-screenPx); else showPage(state.pageIndex - 1); break;
+        case 'Home': if (manual) box.scrollTo({ top: 0, behavior: 'smooth' }); else showPage(0); break;
+        case 'End': if (manual) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' }); else showPage(state.pageCount - 1); break;
         default: return;
     }
     event.preventDefault();
@@ -956,10 +1247,14 @@ document.addEventListener('keydown', (event) => {
 
 if (Number.isFinite(lineId)) {
     startBoard();
+} else if (isOverview) {
+    startOverview();
 } else {
-    // A TV that was signed out comes back to /display with no line: send it straight back to its line.
+    // A TV that was signed out comes back to /display with no line: send it straight back to its line,
+    // or to the All lines view if that is what it was showing.
     const last = params.has('pick') ? null : readSetting(LAST_LINE_KEY);
-    if (last) window.location.replace(`/display?line=${encodeURIComponent(last)}`);
+    if (last === OVERVIEW_SETTING) window.location.replace('/display?overview=1');
+    else if (last) window.location.replace(`/display?line=${encodeURIComponent(last)}`);
     else showPicker();
 }
 wakeCursor();

@@ -3599,6 +3599,7 @@ router.get('/daily-plans', async (req, res) => {
                     pl.line_name,
                     pl.line_leader,
                     pl.line_leader_photo,
+                    pl.line_leader_photo_2,
                     NULL::INTEGER as current_product_id,
                     0 as target_units,
                     NULL::TEXT as current_product_code,
@@ -6017,6 +6018,12 @@ router.put('/lines/:id', async (req, res) => {
 // ── Line supervisor photo ───────────────────────────────────────────────────
 // Admin and IE upload the line leader's portrait from Line Management. The photo is
 // optional everywhere: a line with none renders the leader's initials instead.
+// ?slot=2 is the second supervisor of a line run by two (names kept together in
+// line_leader as "A / B"); anything else is the first. The column is picked from this
+// fixed map, never built from the request.
+const LEADER_PHOTO_COLUMNS = { 1: 'line_leader_photo', 2: 'line_leader_photo_2' };
+const leaderPhotoSlot = (req) => (String(req.query.slot) === '2' ? 2 : 1);
+
 router.post('/lines/:id/leader-photo', (req, res, next) => {
     photoUpload.single('photo')(req, res, (err) => {
         if (!err) return next();
@@ -6041,25 +6048,27 @@ router.post('/lines/:id/leader-photo', (req, res, next) => {
     if (!ext) {
         return res.status(400).json({ success: false, error: 'That file is not a JPG or PNG image' });
     }
+    const slot = leaderPhotoSlot(req);
+    const column = LEADER_PHOTO_COLUMNS[slot];
     try {
         const existing = await pool.query(
-            'SELECT line_leader_photo FROM production_lines WHERE id = $1', [lineId]
+            `SELECT ${column} AS photo FROM production_lines WHERE id = $1`, [lineId]
         );
         if (!existing.rows[0]) {
             return res.status(404).json({ success: false, error: 'Line not found' });
         }
-        const previousPhoto = existing.rows[0].line_leader_photo;
+        const previousPhoto = existing.rows[0].photo;
 
         fs.mkdirSync(LINE_LEADER_PHOTO_DIR, { recursive: true });
         // The timestamp in the name is what busts the browser/TV cache on re-upload —
         // the board holds a page for hours, so a stable file name would keep the old face.
-        const fileName = `line-${lineId}-${Date.now()}.${ext}`;
+        const fileName = `line-${lineId}-${slot === 2 ? '2-' : ''}${Date.now()}.${ext}`;
         fs.writeFileSync(path.join(LINE_LEADER_PHOTO_DIR, fileName), req.file.buffer);
         const webPath = `${LINE_LEADER_PHOTO_URL_BASE}/${fileName}`;
 
         const result = await pool.query(
-            `UPDATE production_lines SET line_leader_photo = $1, updated_at = NOW()
-             WHERE id = $2 RETURNING id, line_code, line_name, line_leader, line_leader_photo`,
+            `UPDATE production_lines SET ${column} = $1, updated_at = NOW()
+             WHERE id = $2 RETURNING id, line_code, line_name, line_leader, line_leader_photo, line_leader_photo_2`,
             [webPath, lineId]
         );
         // Only drop the old file once the new path is committed, so a failed UPDATE
@@ -6082,18 +6091,19 @@ router.delete('/lines/:id/leader-photo', async (req, res) => {
     if (!Number.isFinite(lineId)) {
         return res.status(400).json({ success: false, error: 'Invalid line id' });
     }
+    const column = LEADER_PHOTO_COLUMNS[leaderPhotoSlot(req)];
     try {
         const existing = await pool.query(
-            'SELECT line_leader_photo FROM production_lines WHERE id = $1', [lineId]
+            `SELECT ${column} AS photo FROM production_lines WHERE id = $1`, [lineId]
         );
         if (!existing.rows[0]) {
             return res.status(404).json({ success: false, error: 'Line not found' });
         }
         await pool.query(
-            'UPDATE production_lines SET line_leader_photo = NULL, updated_at = NOW() WHERE id = $1',
+            `UPDATE production_lines SET ${column} = NULL, updated_at = NOW() WHERE id = $1`,
             [lineId]
         );
-        removeLineLeaderPhotoFile(existing.rows[0].line_leader_photo);
+        removeLineLeaderPhotoFile(existing.rows[0].photo);
         realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: lineId });
         res.json({ success: true });
     } catch (err) {
@@ -6122,9 +6132,9 @@ router.delete('/lines/:id/hard-delete', async (req, res) => {
     }
     try {
         // Fetch line_code before deletion (for QR folder cleanup) and the supervisor photo path
-        const lineResult = await pool.query('SELECT line_code, line_leader_photo FROM production_lines WHERE id = $1', [id]);
+        const lineResult = await pool.query('SELECT line_code, line_leader_photo, line_leader_photo_2 FROM production_lines WHERE id = $1', [id]);
         const lineCode = lineResult.rows[0]?.line_code;
-        const leaderPhoto = lineResult.rows[0]?.line_leader_photo;
+        const leaderPhotos = [lineResult.rows[0]?.line_leader_photo, lineResult.rows[0]?.line_leader_photo_2];
 
         const deps = await pool.query(
             `SELECT
@@ -6154,7 +6164,7 @@ router.delete('/lines/:id/hard-delete', async (req, res) => {
             fs.promises.rm(qrDir, { recursive: true, force: true }).catch(() => {});
         }
 
-        removeLineLeaderPhotoFile(leaderPhoto);
+        leaderPhotos.forEach(removeLineLeaderPhotoFile);
 
         realtime.broadcast('data_change', { entity: 'lines', action: 'delete', id });
         res.json({ success: true, message: 'Line deleted successfully' });
@@ -6672,6 +6682,7 @@ router.get('/lines-metrics', async (req, res) => {
                 pl.line_code,
                 pl.line_leader,
                 pl.line_leader_photo,
+                pl.line_leader_photo_2,
                 COALESCE(ldp.target_units, pl.target_units, 0) as target,
                 COALESCE(p.product_code, '') as product_code,
                 COALESCE(p.product_name, '') as product_name,
@@ -6731,6 +6742,7 @@ router.get('/lines-metrics', async (req, res) => {
                 line_code: row.line_code,
                 line_leader: row.line_leader || null,
                 line_leader_photo: row.line_leader_photo || null,
+                line_leader_photo_2: row.line_leader_photo_2 || null,
                 product_code: row.product_code,
                 product_name: row.product_name,
                 incoming_product_code: row.incoming_product_code || null,
@@ -18574,7 +18586,7 @@ router.get('/hourly-report', async (req, res) => {
     }
     try {
         const lineResult = await pool.query(
-            `SELECT pl.id, pl.line_code, pl.line_name, pl.line_leader, pl.line_leader_photo,
+            `SELECT pl.id, pl.line_code, pl.line_name, pl.line_leader, pl.line_leader_photo, pl.line_leader_photo_2,
                     ldp.target_units, ldp.incoming_target_units,
                     ldp.product_id, ldp.incoming_product_id,
                     p.product_code, p.product_name,
@@ -18806,7 +18818,8 @@ router.get('/hourly-report', async (req, res) => {
                     line_code: line.line_code,
                     line_name: line.line_name,
                     line_leader: line.line_leader || null,
-                    line_leader_photo: line.line_leader_photo || null
+                    line_leader_photo: line.line_leader_photo || null,
+                    line_leader_photo_2: line.line_leader_photo_2 || null
                 },
                 date,
                 is_today: isToday,
@@ -18852,7 +18865,7 @@ router.get('/display/lines', async (req, res) => {
             // The leader's name and photo let the picker cards be recognised by face from across
             // the floor, the same pair the board header shows. Both are optional — the card falls
             // back to initials, then to nothing.
-            `SELECT id, line_code, line_name, line_leader, line_leader_photo
+            `SELECT id, line_code, line_name, line_leader, line_leader_photo, line_leader_photo_2
              FROM production_lines
              WHERE is_active = true
              ORDER BY line_code, id`
@@ -18920,6 +18933,113 @@ router.get('/display/line-status', async (req, res) => {
                 tiles: resolveDisplayTiles(plan.display_tiles, plan.product_id, workstations, completedHours.length),
                 final_stitching: legacyFinalStitchingBlock(workstations, completedHours.length),
                 workstation_processes: workstationProcesses
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// GET /api/display/overview
+// The Lines page's "All lines" summary: every active line's board summary row at once — supervisor, style,
+// Day target and the line tiles — without the per-worker Hourly Report, which would be far too heavy to ask
+// for ten lines every ten seconds. Tiles come from the same helpers and finished-hour rule as
+// /display/line-status, so a row always matches its own board. Line overall efficiency is not worked out
+// here; the page asks /efficiency-report for the lines whose efficiency tile is set to it.
+router.get('/display/overview', async (req, res) => {
+    try {
+        const now = new Date();
+        const date = now.toISOString().slice(0, 10);
+        const completedHours = REPORT_WORK_HOURS.filter(h => h < now.getHours());
+        const lastCompletedHour = completedHours.length ? completedHours[completedHours.length - 1] : null;
+        const hoursCounted = completedHours.length;
+
+        const [linesResult, workersResult, shiftWindow, dayLocked] = await Promise.all([
+            pool.query(
+                `SELECT pl.id, pl.line_code, pl.line_name, pl.line_leader, pl.line_leader_photo, pl.line_leader_photo_2, pl.display_tiles,
+                        ldp.product_id, ldp.incoming_product_id, ldp.target_units, ldp.incoming_target_units,
+                        p.product_code, p.product_name,
+                        ip.product_code AS incoming_product_code
+                 FROM production_lines pl
+                 LEFT JOIN line_daily_plans ldp ON ldp.line_id = pl.id AND ldp.work_date = $1
+                 LEFT JOIN products p ON p.id = ldp.product_id
+                 LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
+                 WHERE pl.is_active = true
+                 ORDER BY pl.line_code, pl.id`,
+                [date]
+            ),
+            // The board's "N workers" counts its Hourly Report rows, which include anyone who worked a
+            // window on the line today and has since been moved off or left — they are in the assignment
+            // history but no longer in the live assignments, so both are counted.
+            pool.query(
+                `SELECT line_id, COUNT(DISTINCT employee_id)::int AS worker_count
+                 FROM (
+                     SELECT line_id, employee_id FROM employee_workstation_assignments
+                     WHERE work_date = $1 AND is_overtime = false AND employee_id IS NOT NULL
+                     UNION
+                     SELECT line_id, employee_id FROM employee_workstation_assignment_history
+                     WHERE work_date = $1 AND is_overtime = false AND employee_id IS NOT NULL
+                 ) worked
+                 GROUP BY line_id`,
+                [date]
+            ),
+            getShiftWindowDetails(),
+            isDayLocked(date)
+        ]);
+        const workingHours = shiftWindow.workingHours > 0 ? shiftWindow.workingHours : 8;
+        const workerCounts = new Map(workersResult.rows.map(r => [String(r.line_id), r.worker_count]));
+
+        const lines = await Promise.all(linesResult.rows.map(async (line) => {
+            const targetUnits = parseInt(line.target_units || 0, 10) || 0;
+            const coTargetUnits = parseInt(line.incoming_target_units || 0, 10) || 0;
+            const lineHourlyTarget = targetUnits > 0 ? Math.ceil(targetUnits / workingHours) : 0;
+            const lineCoHourlyTarget = coTargetUnits > 0 ? Math.ceil(coTargetUnits / workingHours) : 0;
+            const [workstations, lineClosed] = await Promise.all([
+                getDisplayWorkstationTotals(pool, line.id, date, {
+                    endHour: lastCompletedHour,
+                    lineHourlyTarget,
+                    lineCoHourlyTarget,
+                    incomingProductId: line.incoming_product_id
+                }),
+                isLineClosed(line.id, date)
+            ]);
+            return {
+                line: {
+                    id: line.id,
+                    line_code: line.line_code,
+                    line_name: line.line_name,
+                    line_leader: line.line_leader || null,
+                    line_leader_photo: line.line_leader_photo || null,
+                    line_leader_photo_2: line.line_leader_photo_2 || null
+                },
+                plan: {
+                    product_code: line.product_code || null,
+                    product_name: line.product_name || null,
+                    incoming_product_code: line.incoming_product_code || null,
+                    target_units: targetUnits,
+                    incoming_target_units: coTargetUnits,
+                    line_hourly_target: lineHourlyTarget,
+                    in_time: shiftWindow.inTime,
+                    out_time: shiftWindow.outTime
+                },
+                has_plan: !!line.product_id,
+                worker_count: workerCounts.get(String(line.id)) || 0,
+                is_locked: !!dayLocked,
+                is_closed: !!lineClosed,
+                tiles: resolveDisplayTiles(line.display_tiles, line.product_id, workstations, hoursCounted)
+            };
+        }));
+
+        res.json({
+            success: true,
+            data: {
+                date,
+                server_time: now.toISOString(),
+                time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                clock_hour: now.getHours(),
+                last_completed_hour: lastCompletedHour,
+                hours_counted: hoursCounted,
+                lines
             }
         });
     } catch (err) {
