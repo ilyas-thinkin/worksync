@@ -811,6 +811,86 @@ function _confirmAbsentOutput(occupantName, totalOutput) {
     );
 }
 
+// Asks who worked the hour in progress when a link/unlink/replacement lands mid-hour
+// (server 409 current_hour_owner_required). `info` is that 409 body.
+// Returns 'outgoing' | 'incoming' | 'absent' (unlink of one station only) | false if cancelled.
+function _pickCurrentHourOwner(wsCode, info) {
+    return new Promise(resolve => {
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        document.getElementById('hour-owner-modal')?.remove();
+
+        const hour = info?.hour;
+        const hourLabel = Number.isFinite(hour) ? `${hour}:00–${hour + 1}:00` : 'the current hour';
+        const context = info?.context || 'replace';
+        const outgoingList = Array.isArray(info?.outgoing) ? info.outgoing : [];
+        const outgoingName = context === 'unlink_all'
+            ? `${outgoingList.length} linked worker${outgoingList.length === 1 ? '' : 's'}`
+            : (outgoingList[0]?.emp_name || null);
+        const incoming = info?.incoming || null;
+        const isUnlink = context === 'unlink' || context === 'unlink_all' || context === 'unassign';
+
+        const btn = (owner, border, bg, color, title, sub) => `
+            <button class="hour-owner-btn" data-owner="${owner}"
+                style="text-align:left;padding:12px 14px;border:1px solid ${border};border-radius:8px;background:${bg};cursor:pointer;font-size:14px;">
+                <strong style="display:block;color:${color};">${title}</strong>
+                <span style="color:#6b7280;font-size:12px;">${sub}</span>
+            </button>`;
+
+        let buttons = '';
+        if (outgoingName) {
+            buttons += btn('outgoing', '#bfdbfe', '#eff6ff', '#1d4ed8',
+                `${esc(outgoingName)} worked hour ${esc(hour)}`,
+                `Hour ${esc(hourLabel)} output stays with ${esc(outgoingName)}`);
+        } else if (incoming?.moving) {
+            buttons += btn('outgoing', '#bfdbfe', '#eff6ff', '#1d4ed8',
+                `Hour ${esc(hour)} stays at ${esc(incoming.from_workstation)}`,
+                `${esc(incoming.emp_name)} worked this hour at the old station and starts here next hour`);
+        }
+        if (isUnlink) {
+            buttons += btn('incoming', '#d1d5db', '#f9fafb', '#374151',
+                `Left before hour ${esc(hour)}`,
+                `Hour ${esc(hourLabel)} goes to nobody / the next worker linked here`);
+        } else if (incoming) {
+            buttons += btn('incoming', '#bbf7d0', '#f0fdf4', '#15803d',
+                `${esc(incoming.emp_name)} worked hour ${esc(hour)}`,
+                `Hour ${esc(hourLabel)} output goes to ${esc(incoming.emp_name)} here`);
+        }
+        if (context === 'unlink') {
+            buttons += btn('absent', '#fca5a5', '#fef2f2', '#dc2626',
+                'Absent today',
+                `${esc(outgoingName || 'This worker')} was not at work — removed from today's efficiency report`);
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'hour-owner-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9100;display:flex;align-items:center;justify-content:center;padding:16px;';
+        modal.innerHTML = `
+            <div style="background:#fff;border-radius:12px;padding:24px;max-width:380px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                <h3 style="margin:0 0 6px;font-size:1rem;font-weight:700;color:#111827;">Hour ${esc(hourLabel)} — ${esc(wsCode || 'all stations')}</h3>
+                <p style="margin:0 0 18px;font-size:13px;color:#6b7280;">This hour is already running. Who should get its output?</p>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                    ${buttons}
+                    <button id="hour-owner-cancel"
+                        style="padding:10px;border:none;background:none;color:#6b7280;cursor:pointer;font-size:13px;margin-top:4px;">
+                        Cancel
+                    </button>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+
+        modal.querySelectorAll('.hour-owner-btn').forEach(b => {
+            b.addEventListener('click', () => {
+                modal.remove();
+                resolve(b.dataset.owner);
+            });
+        });
+        document.getElementById('hour-owner-cancel').addEventListener('click', () => {
+            modal.remove();
+            resolve(false);
+        });
+    });
+}
+
 // Tells the supervisor when a mid-day change made the new worker's output credit start
 // later than the shift start. The server only sends `attribution` when it actually shifted
 // the start, so this stays silent on ordinary morning links.
@@ -844,6 +924,12 @@ async function postWorkstationAssignment(body, wsCode) {
         if (result.error_code === 'absent_output_warning') {
             if (!_confirmAbsentOutput(result.occupant?.emp_name, result.total_output || 0)) return null;
             payload = { ...payload, confirm_absent_with_output: true };
+            continue;
+        }
+        if (result.error_code === 'current_hour_owner_required') {
+            const owner = await _pickCurrentHourOwner(wsCode, result);
+            if (!owner) return null; // cancelled
+            payload = { ...payload, current_hour_owner: owner };
             continue;
         }
         return result; // ordinary error — caller shows toast
@@ -880,12 +966,30 @@ async function unlinkWorkstation(wsCode, planId) {
     if (!confirm(`Are you sure you want to unlink ${wsCode}?`)) return;
     try {
         const workDate = morningState.workDate || getSupervisorLocalDate();
-        const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-workstation`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lineId: morningState.lineId, date: workDate, workstationCode: wsCode })
-        });
-        const result = await res.json();
+        let payload = { lineId: morningState.lineId, date: workDate, workstationCode: wsCode };
+        let result;
+        for (;;) {
+            const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-workstation`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            result = await res.json();
+            if (result.error_code === 'current_hour_owner_required') {
+                const owner = await _pickCurrentHourOwner(wsCode, result);
+                if (!owner) return; // cancelled
+                payload = owner === 'absent'
+                    ? { ...payload, change_reason: 'absent' }
+                    : { ...payload, current_hour_owner: owner };
+                continue;
+            }
+            if (result.error_code === 'absent_output_warning') {
+                if (!_confirmAbsentOutput(result.occupant?.emp_name, result.total_output || 0)) return;
+                payload = { ...payload, confirm_absent_with_output: true };
+                continue;
+            }
+            break;
+        }
         if (!result.success) { showToast(result.error || 'Unlink failed', 'error'); return; }
         showToast(`${wsCode} unlinked`, 'success');
         await reloadMorningAssignments();
@@ -1065,12 +1169,23 @@ async function unlinkAllMapping() {
     if (!confirm('Unlink all employee assignments for this line today?')) return;
     try {
         const workDate = morningState.workDate || getSupervisorLocalDate();
-        const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-all`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lineId: morningState.lineId, date: workDate })
-        });
-        const result = await res.json();
+        let payload = { lineId: morningState.lineId, date: workDate };
+        let result;
+        for (;;) {
+            const res = await fetch(`${API_BASE}/supervisor/mapping/unlink-all`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            result = await res.json();
+            if (result.error_code === 'current_hour_owner_required') {
+                const owner = await _pickCurrentHourOwner(null, result);
+                if (!owner) return; // cancelled
+                payload = { ...payload, current_hour_owner: owner };
+                continue;
+            }
+            break;
+        }
         if (!result.success) { showToast(result.error || 'Unlink failed', 'error'); return; }
         showToast('All assignments unlinked', 'success');
         await reloadMorningAssignments();
@@ -1359,7 +1474,8 @@ const SHORTFALL_REASONS = [
     'COMMERCIAL PACKAGE ISSUES',
     'HR MEETING',
     'QUALITY MEETING',
-    'PRODUCTION MEETING'
+    'PRODUCTION MEETING',
+    'MACHINE SHORTAGE - WILL BE ACHIEVED BY OT'
 ];
 
 // Display labels with serial numbers and Tamil translations
@@ -1372,7 +1488,9 @@ const SHORTFALL_REASON_LABELS = {
     'COMMERCIAL PACKAGE ISSUES':'6. COMMERCIAL PACKAGE ISSUES (வணிக பொதி சிக்கல்)',
     'HR MEETING':               '7. HR MEETING (மனித வளக் கூட்டம்)',
     'QUALITY MEETING':          '8. QUALITY MEETING (தர மேலாண்மை கூட்டம்)',
-    'PRODUCTION MEETING':       '9. PRODUCTION MEETING (உற்பத்தி கூட்டம்)'
+    'PRODUCTION MEETING':       '9. PRODUCTION MEETING (உற்பத்தி கூட்டம்)',
+    // Long reason: the <br> puts it on two lines in the reason picker.
+    'MACHINE SHORTAGE - WILL BE ACHIEVED BY OT': '10. MACHINE SHORTAGE -<br>WILL BE ACHIEVED BY OT (இயந்திரப் பற்றாக்குறை - OT மூலம் இலக்கு அடையப்படும்)'
 };
 
 const SUP_WORK_HOURS = [8, 9, 10, 11, 13, 14, 15, 16];
@@ -2340,7 +2458,7 @@ function coPickerSelect(optEl) {
     });
 }
 
-async function submitWsChangeoverStart(force = false, changeReason = null, confirmAbsent = false) {
+async function submitWsChangeoverStart(force = false, changeReason = null, confirmAbsent = false, hourOwner = null) {
     const { wsCode, date } = coPromptState;
     const lineId = hourlyState.lineId;
     if (!lineId || !date || !wsCode) return;
@@ -2374,6 +2492,7 @@ async function submitWsChangeoverStart(force = false, changeReason = null, confi
         }
         if (changeReason) body.change_reason = changeReason;
         if (confirmAbsent) body.confirm_absent_with_output = true;
+        if (hourOwner) body.current_hour_owner = hourOwner;
 
         const r = await fetch(`${API_BASE}/supervisor/changeover/activate-workstation`, {
             method: 'POST',
@@ -2384,7 +2503,7 @@ async function submitWsChangeoverStart(force = false, changeReason = null, confi
 
         if (data.target_warning) {
             if (confirm(`${data.message}\n\nProceed with changeover anyway?`)) {
-                await submitWsChangeoverStart(true, changeReason, confirmAbsent);
+                await submitWsChangeoverStart(true, changeReason, confirmAbsent, hourOwner);
             }
             return;
         }
@@ -2392,12 +2511,18 @@ async function submitWsChangeoverStart(force = false, changeReason = null, confi
         if (data.error_code === 'change_reason_required') {
             const reason = await _pickChangeReason(wsCode, data.occupant?.emp_name);
             if (!reason) return; // cancelled
-            await submitWsChangeoverStart(force, reason, confirmAbsent);
+            await submitWsChangeoverStart(force, reason, confirmAbsent, hourOwner);
             return;
         }
         if (data.error_code === 'absent_output_warning') {
             if (!_confirmAbsentOutput(data.occupant?.emp_name, data.total_output || 0)) return;
-            await submitWsChangeoverStart(force, changeReason, true);
+            await submitWsChangeoverStart(force, changeReason, true, hourOwner);
+            return;
+        }
+        if (data.error_code === 'current_hour_owner_required') {
+            const owner = await _pickCurrentHourOwner(wsCode, data);
+            if (!owner) return; // cancelled
+            await submitWsChangeoverStart(force, changeReason, confirmAbsent, owner);
             return;
         }
 
@@ -3896,13 +4021,73 @@ function renderOtPlanSection() {
         const isActive = ws.is_active !== false;
         const samSecs = parseFloat(ws.actual_sam_seconds || 0);
         const wsMins = ws.ot_minutes || 0;
+        // 0 = follow the line's default OT minutes; the server sends the minutes actually used.
+        const effMins = parseInt(ws.ot_effective_minutes ?? (wsMins || globalMins), 10) || 0;
         const hourlyTarget = parseFloat(ws.source_hourly_target || 0) || 0;
-        const wsTarget = parseInt(ws.ot_target_units || Math.round((hourlyTarget * wsMins) / 60) || 0, 10);
-        const taktSecs = wsTarget > 0 && wsMins > 0 ? ((wsMins * 60) / wsTarget) : 0;
+        const wsTarget = parseInt(ws.ot_target_units || Math.round((hourlyTarget * effMins) / 60) || 0, 10);
+        const taktSecs = wsTarget > 0 && effMins > 0 ? ((effMins * 60) / wsTarget) : 0;
         const eff = (taktSecs > 0 && samSecs > 0) ? (samSecs / taktSecs) * 100 : null;
-        const qty = ws.progress?.quantity ?? '';
-        const qaRej = ws.progress?.qa_rejection ?? '';
+        const hourly = ws.hourly_progress || {};
+        const hasHourly = Object.keys(hourly).length > 0;
+        const qty = hasHourly
+            ? Object.values(hourly).reduce((sum, h) => sum + (parseInt(h.quantity, 10) || 0), 0)
+            : (ws.progress?.quantity ?? '');
+        const unsplitQty = !hasHourly && ws.progress?.quantity != null ? ws.progress.quantity : null;
         const remarks = ws.progress?.remarks || '';
+        // OT hours are added one at a time: OT 1 to start, then + after each save opens the next.
+        const startHour = parseInt(ws.ot_start_hour ?? ws.ot_hour_slots?.[0]?.hour ?? 17, 10);
+        const plannedSlot = new Map((ws.ot_hour_slots || []).map(sl => [parseInt(sl.hour, 10), sl]));
+        const savedHours = Object.keys(hourly).map(h => parseInt(h, 10)).sort((a, b) => a - b);
+        const nextHour = savedHours.length ? savedHours[savedHours.length - 1] + 1 : startHour;
+        const openNext = !savedHours.length || otPlanState.openOtHour?.[ws.workstation_code] === nextHour;
+        const rowHours = openNext ? [...savedHours, nextHour] : savedHours;
+        const pad = n => String(n).padStart(2, '0');
+        const otHourRows = rowHours.map((hour, idx) => {
+            const saved = hourly[hour];
+            const slot = plannedSlot.get(hour) || { minutes: 60, target: Math.round(hourlyTarget) };
+            const key = `${ws.workstation_code}-${hour}`;
+            const hourEff = saved && samSecs > 0
+                ? (saved.quantity * samSecs / 3600) / (slot.minutes / 60) * 100
+                : null;
+            const isLast = idx === rowHours.length - 1;
+            const plusBtn = saved && isLast && isActive
+                ? `<button type="button" onclick="addOtHour('${ws.workstation_code}', ${hour + 1})" title="Add another OT hour"
+                        style="width:38px;height:38px;border-radius:50%;border:1px solid #c4b5fd;background:#ede9fe;color:#5b21b6;font-size:22px;font-weight:700;line-height:1;cursor:pointer;flex-shrink:0;">+</button>`
+                : '';
+            // Delete only on the last row: removing a middle hour would leave OT 1, OT 2 ... out of
+            // step with the clock. A saved hour is deleted on the server; an empty new row just closes.
+            const delBtn = isLast && isActive && (saved || savedHours.length)
+                ? `<button type="button" onclick="${saved ? `deleteOtHour('${ws.workstation_code}', ${ws.id}, ${hour}, ${idx + 1})` : `closeOtHour('${ws.workstation_code}')`}"
+                        title="${saved ? 'Delete this OT hour' : 'Remove this row'}"
+                        style="width:38px;height:38px;border-radius:50%;border:1px solid #fecaca;background:#fef2f2;color:#dc2626;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                    </button>`
+                : '';
+            return `<div style="display:flex;gap:6px;align-items:flex-end;padding:6px 0;${idx ? 'border-top:1px solid #e5e7eb;' : ''}">
+                <div style="flex:1.3;min-width:86px;font-size:12px;line-height:1.3;">
+                    <div style="font-weight:700;color:#5b21b6;">OT ${idx + 1} <span style="font-weight:400;color:#6b7280;font-size:11px;">${pad(hour)}:00–${pad(hour + 1)}:00</span></div>
+                    <div style="color:#6b7280;font-size:11px;">Target <strong style="color:#7c3aed;">${slot.target}</strong>
+                        ${hourEff != null ? ` · <strong style="color:${effColor(hourEff)};">${hourEff.toFixed(1)}%</strong>` : ''}</div>
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:10px;font-weight:600;color:#6b7280;display:block;margin-bottom:2px;">Output</label>
+                    <input type="number" id="ot-qty-${key}" min="0" value="${saved ? saved.quantity : ''}" placeholder="0"
+                        class="form-control" style="text-align:center;font-size:15px;padding:6px;" ${isActive ? '' : 'disabled'}>
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:10px;font-weight:600;color:#6b7280;display:block;margin-bottom:2px;">QA Rej</label>
+                    <input type="number" id="ot-qar-${key}" min="0" value="${saved ? saved.qa_rejection : ''}" placeholder="0"
+                        class="form-control" style="text-align:center;font-size:15px;padding:6px;" ${isActive ? '' : 'disabled'}>
+                </div>
+                <button id="ot-save-btn-${key}" type="button"
+                    onclick="saveOtHourProgress('${ws.workstation_code}', ${ws.id}, ${hour})"
+                    class="btn ${saved ? '' : 'btn-primary'}"
+                    style="padding:8px 12px;font-size:13px;flex-shrink:0;${saved ? 'background:#f1f5f9;color:#374151;border:1px solid #d1d5db;font-weight:600;' : ''}"
+                    ${isActive ? '' : 'disabled'}>${saved ? 'Update' : 'Save'}</button>
+                ${plusBtn}
+                ${delBtn}
+            </div>`;
+        }).join('');
         const openingWip = parseInt(ws.opening_wip_quantity ?? ws.regular_shift_wip_quantity ?? 0, 10) || 0;
         const balanceQty = parseInt(ws.balance_quantity ?? Math.max(0, wsTarget - (parseInt(qty || 0, 10) || 0)), 10) || 0;
         const closingWip = parseInt(ws.closing_wip_quantity ?? Math.max(0, openingWip - (parseInt(qty || 0, 10) || 0)), 10) || 0;
@@ -4029,33 +4214,17 @@ function renderOtPlanSection() {
                     </div>
                 </div>
 
-                <!-- Output entry -->
+                <!-- Output entry, one row per OT hour -->
                 <div style="background:#f8fafc;border-radius:8px;padding:12px;">
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
-                        <div>
-                            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Output</label>
-                            <input type="number" id="ot-qty-${ws.workstation_code}" min="0" value="${qty}" placeholder="0"
-                                class="form-control" style="text-align:center;font-size:16px;" ${isActive ? '' : 'disabled'}>
-                        </div>
-                        <div>
-                            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">QA Rejection</label>
-                            <input type="number" id="ot-qar-${ws.workstation_code}" min="0" value="${qaRej}" placeholder="0"
-                                class="form-control" style="text-align:center;font-size:16px;" ${isActive ? '' : 'disabled'}>
-                        </div>
-                    </div>
-                    <div style="margin-bottom:8px;">
+                    ${unsplitQty != null ? `<div style="font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 8px;margin-bottom:8px;">
+                        Whole-OT entry from before hourly entry: <strong>${unsplitQty}</strong>. Entering any hour below replaces it.
+                    </div>` : ''}
+                    ${otHourRows || '<div style="color:#9ca3af;font-size:12px;">No OT minutes set for this workstation.</div>'}
+                    <div style="margin-top:8px;">
                         <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Remarks</label>
                         <input type="text" id="ot-rem-${ws.workstation_code}" value="${remarks}" placeholder="Optional remarks"
                             class="form-control" ${isActive ? '' : 'disabled'}>
                     </div>
-                    <button id="ot-save-btn-${ws.workstation_code}"
-                        data-ot-ws-id="${ws.id}"
-                        onclick="${ws.progress?.quantity != null ? `otEditProgress('${ws.workstation_code}')` : `saveOtProgress('${ws.workstation_code}', ${ws.id})`}"
-                        class="btn ${ws.progress?.quantity != null ? '' : 'btn-primary'}"
-                        style="width:100%;padding:11px;font-size:15px;${ws.progress?.quantity != null ? 'background:#f1f5f9;color:#374151;border:1px solid #d1d5db;font-weight:600;' : ''}"
-                        ${isActive ? '' : 'disabled'}>
-                        ${ws.progress?.quantity != null ? 'Edit' : 'Save'}
-                    </button>
                 </div>
             </div>
         </div>`;
@@ -4157,7 +4326,6 @@ async function toggleOtWsActive(wsCode, makeActive) {
     const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
     if (!ws) return;
     ws.is_active = makeActive;
-    if (makeActive && !ws.ot_minutes) ws.ot_minutes = plan.global_ot_minutes || 0;
     // Save to server
     try {
         const r = await fetch(`${API_BASE}/lines/${otPlanState.lineId}/ot-plan/workstations`, {
@@ -4165,7 +4333,7 @@ async function toggleOtWsActive(wsCode, makeActive) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 date: otPlanState.date,
-                workstations: [{ workstation_code: wsCode, is_active: makeActive, ot_minutes: makeActive ? (ws.ot_minutes || plan.global_ot_minutes || 0) : (ws.ot_minutes || 0) }]
+                workstations: [{ workstation_code: wsCode, is_active: makeActive, ot_minutes: ws.ot_minutes || 0 }]
             })
         });
         const result = await r.json();
@@ -4193,10 +4361,9 @@ async function saveOtGlobalSettings() {
         });
         const result = await r.json();
         if (!result.success) throw new Error(result.error || 'Failed');
-        otPlanState.otPlan.global_ot_minutes = mins;
-        otPlanState.otPlan.computed_ot_target_units = result.computed_ot_target_units ?? otPlanState.otPlan.computed_ot_target_units;
         showToast('Default OT minutes saved', 'success');
-        renderOtPlanSection();
+        // Reload: the OT hours and targets of every workstation following the default changed.
+        await openOtPlanDetails(otPlanState.lineId, otPlanState.detailsLineName, otPlanState.date, otPlanState.detailsLineCode, { inlineSelectionMode: otPlanState.inlineSelectionMode });
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -4217,81 +4384,98 @@ async function saveAllOtMinutes() {
         });
         const result = await r.json();
         if (!result.success) throw new Error(result.error || 'Failed');
-        // Update local state
-        payload.forEach(p => {
-            const ws = otPlanState.workstations.find(w => w.workstation_code === p.workstation_code);
-            if (ws) ws.ot_minutes = p.ot_minutes;
-        });
-        otPlanState.otPlan.computed_ot_target_units = result.computed_ot_target_units ?? otPlanState.otPlan.computed_ot_target_units;
-        otPlanState.workstations.forEach(ws => {
-            const mins = parseInt(ws.ot_minutes || 0, 10) || 0;
-            const hourly = parseFloat(ws.source_hourly_target || 0) || 0;
-            ws.ot_target_units = Math.round((hourly * mins) / 60);
-        });
         showToast('OT minutes saved', 'success');
+        // Reload for the new OT hours and targets.
+        await openOtPlanDetails(otPlanState.lineId, otPlanState.detailsLineName, otPlanState.date, otPlanState.detailsLineCode, { inlineSelectionMode: otPlanState.inlineSelectionMode });
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// + beside the last saved OT hour: open an input for the next hour (nothing is saved until it is entered).
+function addOtHour(wsCode, hourSlot) {
+    otPlanState.openOtHour = { ...(otPlanState.openOtHour || {}), [wsCode]: hourSlot };
+    renderOtPlanSection();
+    document.getElementById(`ot-qty-${wsCode}-${hourSlot}`)?.focus();
+}
+
+function closeOtHour(wsCode) {
+    if (otPlanState.openOtHour) delete otPlanState.openOtHour[wsCode];
+    renderOtPlanSection();
+}
+
+async function deleteOtHour(wsCode, otWorkstationId, hourSlot, otNumber) {
+    if (!otPlanState.lineId || !otPlanState.date) return;
+    if (!confirm(`Delete OT ${otNumber} output for ${wsCode}?`)) return;
+    try {
+        const r = await fetch(`${API_BASE}/supervisor/ot-progress/${otWorkstationId}/${hourSlot}?work_date=${encodeURIComponent(otPlanState.date)}`, {
+            method: 'DELETE'
+        });
+        const result = await r.json();
+        if (!result.success) throw new Error(result.error || 'Failed');
+        const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
+        if (ws) {
+            const hourly = { ...(ws.hourly_progress || {}) };
+            delete hourly[hourSlot];
+            ws.hourly_progress = hourly;
+            ws.progress = result.data?.day_quantity != null
+                ? { ...(ws.progress || {}), quantity: result.data.day_quantity }
+                : null;
+        }
+        if (otPlanState.openOtHour) delete otPlanState.openOtHour[wsCode];
+        showToast(`OT ${otNumber} deleted`, 'success');
         renderOtPlanSection();
     } catch (err) {
         showToast(err.message, 'error');
     }
 }
 
-async function saveOtProgress(wsCode, otWorkstationId) {
-    const qty = parseInt(document.getElementById('ot-qty-' + wsCode)?.value || 0, 10);
-    const qaRej = parseInt(document.getElementById('ot-qar-' + wsCode)?.value || 0, 10);
+// OT output is entered per OT hour. The server keeps the day total as the sum of the hours.
+async function saveOtHourProgress(wsCode, otWorkstationId, hourSlot) {
+    const key = `${wsCode}-${hourSlot}`;
+    const qtyRaw = document.getElementById('ot-qty-' + key)?.value ?? '';
+    if (qtyRaw === '') { showToast('Enter the output for this OT hour', 'error'); return; }
+    const qty = parseInt(qtyRaw, 10);
+    const qaRej = parseInt(document.getElementById('ot-qar-' + key)?.value || 0, 10) || 0;
     const remarks = document.getElementById('ot-rem-' + wsCode)?.value || '';
     if (!otPlanState.lineId || !otPlanState.date) return;
-    if (qty < 0) { showToast('Output must be 0 or more', 'error'); return; }
+    if (!Number.isFinite(qty) || qty < 0) { showToast('Output must be 0 or more', 'error'); return; }
 
-    const btn = document.getElementById('ot-save-btn-' + wsCode);
-    const spinnerHtml = '<span style="display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:5px;"></span>Saving…';
+    const btn = document.getElementById('ot-save-btn-' + key);
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = spinnerHtml;
-        btn.style.cssText = 'background:#6b7280;border-color:#6b7280;min-width:72px;';
+        btn.textContent = 'Saving…';
     }
-
     try {
         const r = await fetch(`${API_BASE}/supervisor/ot-progress`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: otPlanState.lineId, work_date: otPlanState.date, ot_workstation_id: otWorkstationId, quantity: qty, qa_rejection: qaRej, remarks })
+            body: JSON.stringify({
+                line_id: otPlanState.lineId, work_date: otPlanState.date,
+                ot_workstation_id: otWorkstationId, hour_slot: hourSlot,
+                quantity: qty, qa_rejection: qaRej, remarks
+            })
         });
         const result = await r.json();
         if (!result.success) throw new Error(result.error || 'Failed');
-        // Update local progress state
         const ws = otPlanState.workstations.find(w => w.workstation_code === wsCode);
         if (ws) {
-            ws.progress = { quantity: qty, qa_rejection: qaRej, remarks };
-            ws.opening_wip_quantity = result.data?.opening_wip_quantity ?? ws.opening_wip_quantity;
+            ws.hourly_progress = { ...(ws.hourly_progress || {}), [hourSlot]: { quantity: qty, qa_rejection: qaRej, remarks } };
+            ws.progress = { ...(ws.progress || {}), quantity: result.data?.day_quantity ?? qty, remarks };
             ws.ot_target_units = result.data?.ot_target_units ?? ws.ot_target_units;
             ws.balance_quantity = result.data?.balance_quantity ?? ws.balance_quantity;
             ws.closing_wip_quantity = result.data?.closing_wip_quantity ?? ws.closing_wip_quantity;
         }
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = 'Edit';
-            btn.className = 'btn';
-            btn.style.cssText = 'width:100%;padding:11px;font-size:15px;background:#f1f5f9;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-weight:600;';
-            btn.setAttribute('onclick', `otEditProgress('${wsCode}')`);
-        }
+        if (otPlanState.openOtHour?.[wsCode] === hourSlot) delete otPlanState.openOtHour[wsCode];
+        showToast('OT hour saved', 'success');
+        renderOtPlanSection();
     } catch (err) {
         if (btn) {
             btn.disabled = false;
-            btn.innerHTML = 'Save';
-            btn.style.cssText = '';
+            btn.textContent = 'Save';
         }
         showToast(err.message, 'error');
     }
-}
-
-function otEditProgress(wsCode) {
-    const btn = document.getElementById('ot-save-btn-' + wsCode);
-    if (!btn) return;
-    const wsId = btn.dataset.otWsId;
-    btn.innerHTML = 'Save';
-    btn.className = 'btn btn-primary';
-    btn.style.cssText = 'width:100%;padding:11px;font-size:15px;';
-    btn.setAttribute('onclick', `saveOtProgress('${wsCode}', ${wsId})`);
 }
 
 function startOtScan(wsCode) {

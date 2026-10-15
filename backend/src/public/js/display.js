@@ -443,7 +443,7 @@ function kpi(label, value, sub, cls = '') {
 const TILES = {
     output: {
         label: 'Line output',
-        hint: 'One workstation shows its own output. Tick several and their outputs are added together.'
+        hint: 'One workstation shows its own output. Tick several and their outputs are added together. A workstation in SCO asks which style\'s pieces to count.'
     },
     achieved: {
         label: 'Line achieved',
@@ -473,8 +473,14 @@ function pickedTile(tile, value, sub, cls = '') {
     </button>`;
 }
 
+// The SCO side a Line output station counts, as the picker asked it (station_sources, null when not in SCO).
+const SCO_SOURCE_LABELS = { primary: 'Primary', co: 'SCO', both: 'Both' };
+
 function stationList(summary) {
-    return summary.station_codes.join(' + ');
+    const sources = summary.station_sources || [];
+    return summary.station_codes
+        .map((code, i) => (sources[i] ? `${code} · ${SCO_SOURCE_LABELS[sources[i]] || ''}` : code))
+        .join(' + ');
 }
 
 // Backlog: the pieces the line is short RIGHT NOW — the Line output card's pieces against what THOSE SAME
@@ -562,6 +568,9 @@ function summaryTilesHtml(plan, tiles, hoursCounted, lineOverallEff, pickable) {
 function renderWorkers() {
     if (!state.report) return;
     const { hours, rows, has_ot: hasOt, is_today: isToday } = state.report;
+    // One column per OT hour. A day with only whole-OT totals (entered before OT went per hour)
+    // has no OT hours and keeps a single OT column.
+    const otHours = hasOt ? (state.report.ot_hours || []) : [];
     const workers = $('workers');
     const table = $('worker-table');
     const message = $('board-message');
@@ -578,7 +587,7 @@ function renderWorkers() {
     message.hidden = true;
 
     const currentHour = isToday ? state.status.clock_hour : null;
-    renderWorkerHead(hours, hasOt, currentHour);
+    renderWorkerHead(hours, hasOt, otHours, currentHour);
 
     let start = 0;
     let shown = rows;
@@ -597,7 +606,7 @@ function renderWorkers() {
     // A 10-second refresh must not throw a hand-scrolled list back to the top.
     const scrollTop = workers.scrollTop;
     $('worker-body').innerHTML = shown
-        .map((row, i) => workerRow(row, start + i, hours, hasOt, currentHour))
+        .map((row, i) => workerRow(row, start + i, hours, hasOt, otHours, currentHour))
         .join('');
     if (!state.autoFlip) workers.scrollTop = scrollTop;
     renderPageInfo();
@@ -672,13 +681,13 @@ function renderPageInfo() {
     bar.style.width = `${(list.scrollTop / scrollable) * 100}%`;
 }
 
-function renderWorkerHead(hours, hasOt, currentHour) {
+function renderWorkerHead(hours, hasOt, otHours, currentHour) {
     $('worker-cols').innerHTML = [
         '<col class="col-ws">',
         '<col class="col-worker">',
         '<col class="col-tgt">',
         ...hours.map(() => '<col class="col-hour">'),
-        hasOt ? '<col class="col-hour">' : '',
+        ...(hasOt ? (otHours.length ? otHours : [null]).map(() => '<col class="col-hour">') : []),
         '<col class="col-day">',
         '<col class="col-day">',
         '<col class="col-day-eff">',
@@ -690,7 +699,9 @@ function renderWorkerHead(hours, hasOt, currentHour) {
         <th class="left">Worker</th>
         <th>Tgt<small>per hour</small></th>
         ${hours.map((hour) => `<th class="${hour.hour_slot === currentHour ? 'is-current' : ''}">${esc(hour.ordinal)}<small>${esc(timeRange(hour.label))}</small></th>`).join('')}
-        ${hasOt ? '<th class="th-ot">OT<small>whole day</small></th>' : ''}
+        ${hasOt ? (otHours.length
+            ? otHours.map((h) => `<th class="th-ot${h.hour_slot === currentHour ? ' is-current' : ''}">${esc(h.label)}<small>${esc(h.range)}</small></th>`).join('')
+            : '<th class="th-ot">OT<small>whole day</small></th>') : ''}
         <th>Live<small>target</small></th>
         <th>Live<small>output</small></th>
         <th>Live<small>efficiency</small></th>
@@ -717,8 +728,36 @@ function hourCell(cell, hour, departedAfter, isCurrent) {
     </td>`;
 }
 
+// One OT hour, coloured against that hour's target like a regular hour. A worker whose OT was
+// entered as one whole-OT total shows it in the first OT column, marked "whole OT".
+function otHourCell(ot, hour, isFirst, isCurrent) {
+    const current = isCurrent ? ' is-current' : '';
+    // No OT enabled for this worker: zero, not a missed entry.
+    if (ot && ot.enabled === false) return `<td class="c-hour c-ot${current}"><span class="muted">0</span></td>`;
+    const cell = ot?.hours?.[hour.hour_slot];
+    if (!cell && isFirst && ot?.unsplit) {
+        const eff = num(ot.efficiency_percent);
+        return `<td class="c-hour c-ot${current}">
+            <div class="h-out">${num(ot.output) || 0}</div>
+            <div class="h-eff ${effClass(eff)}">${pct(eff)} <small class="muted">whole OT</small></div>
+        </td>`;
+    }
+    if (!hour.reached && !cell?.entered) return `<td class="c-hour c-ot pending${current}">·</td>`;
+    if (!cell || !cell.entered) return `<td class="c-hour c-ot${current}"><span class="muted">–</span></td>`;
+    const output = num(cell.output) || 0;
+    const target = num(cell.target) || 0;
+    const below = target > 0 && output < target;
+    const outCls = target > 0 ? (below ? 'bad' : 'good') : '';
+    const eff = num(cell.efficiency_percent) ?? 0;
+    return `<td class="c-hour c-ot${current}">
+        <div class="h-out ${outCls}">${below ? '<span class="mark">▼</span>' : ''}${output}</div>
+        <div class="h-eff ${effClass(eff)}">${pct(eff)}</div>
+    </td>`;
+}
+
 function otCell(ot) {
     if (!ot) return '<td class="c-hour c-ot"><span class="muted">–</span></td>';
+    if (ot.enabled === false) return '<td class="c-hour c-ot"><span class="muted">0</span></td>';
     const eff = num(ot.efficiency_percent);
     return `<td class="c-hour c-ot">
         <div class="h-out">${num(ot.output) || 0}</div>
@@ -726,7 +765,7 @@ function otCell(ot) {
     </td>`;
 }
 
-function workerRow(row, index, hours, hasOt, currentHour) {
+function workerRow(row, index, hours, hasOt, otHours, currentHour) {
     const cum = row.cumulative || {};
     const badges = [
         row.is_changeover ? '<span class="tag tag-co">CO</span>' : '',
@@ -753,7 +792,9 @@ function workerRow(row, index, hours, hasOt, currentHour) {
         </td>
         <td class="c-num c-tgt">${row.hourly_target || '–'}</td>
         ${hourCells}
-        ${hasOt ? otCell(row.ot) : ''}
+        ${hasOt ? (otHours.length
+            ? otHours.map((h, i) => otHourCell(row.ot, h, i === 0, h.hour_slot === currentHour)).join('')
+            : otCell(row.ot)) : ''}
         <td class="c-num c-day">${dayTarget || '–'}</td>
         <td class="c-num c-day strong ${dayTarget > 0 ? (dayBelow ? 'bad' : 'good') : ''}">${dayOutput}</td>
         <td class="c-num c-day strong ${effClass(dayEff)}">${pct(dayEff)}</td>
@@ -849,6 +890,26 @@ function scrollListBy(px) {
 
 const picker = { tile: null, hasPlan: false, saving: false };
 
+// A station in SCO on the Line output card: which style's pieces it counts. Asked under the station once it
+// is ticked, with each side's pieces so far; no side is pre-picked unless one was saved, so Save waits for it.
+function scoChoiceHtml(station, chosen, plan) {
+    const sco = station.sco;
+    const name = `tp-sco-${station.key}`;
+    const options = [
+        ['primary', `Primary${plan.product_code ? ` · ${plan.product_code}` : ''}`, sco.primary.output],
+        ['co', `SCO${plan.incoming_product_code ? ` · ${plan.incoming_product_code}` : ''}`, sco.co.output],
+        ['both', 'Both', sco.primary.output + sco.co.output]
+    ];
+    return `<div class="tp-sco" data-key="${esc(station.key)}" role="radiogroup" aria-label="${esc(station.code)}: which data to show"${chosen ? '' : ' data-ask'}>
+        <span class="tp-sco-q">Show which data?</span>
+        ${options.map(([value, label, pcs]) => `<label class="tp-sco-opt${chosen === value ? ' is-on' : ''}">
+            <input type="radio" name="${esc(name)}" value="${value}"${chosen === value ? ' checked' : ''}>
+            <span class="tp-sco-label">${esc(label)}</span>
+            <span class="tp-sco-pcs">${num(pcs) || 0} pcs</span>
+        </label>`).join('')}
+    </div>`;
+}
+
 // Drawn once, from the line status in hand when the card was tapped. The 10-second poll keeps
 // repainting the board underneath but never touches this, so ticks are not lost mid-choice.
 function openTilePicker(tile) {
@@ -859,6 +920,9 @@ function openTilePicker(tile) {
     const stations = status.workstations || [];
     const processes = status.workstation_processes || {};
     const isEfficiency = tile === 'efficiency';
+    const asksSco = tile === 'output';
+    const chosenSources = (current && current.chosen_sources) || {};
+    const plan = (state.report && state.report.plan) || {};
 
     picker.tile = tile;
     picker.hasPlan = !!status.has_plan;
@@ -872,12 +936,16 @@ function openTilePicker(tile) {
     $('tp-grid').innerHTML = stations.length
         ? stations.map((station) => {
             const on = ticked.has(station.key);
-            return `<label class="tp-station${on ? ' is-on' : ''}">
+            const hasSco = asksSco && !!station.sco;
+            const card = `<label class="tp-station${on ? ' is-on' : ''}">
                 <input type="checkbox" value="${esc(station.key)}"${on ? ' checked' : ''}>
-                <span class="tp-code">${esc(station.code)}${station.is_final_stitching ? '<span class="tag tag-fs">FINAL STITCHING</span>' : ''}</span>
+                <span class="tp-code">${esc(station.code)}${station.is_final_stitching ? '<span class="tag tag-fs">FINAL STITCHING</span>' : ''}${hasSco ? '<span class="tag tag-co">SCO</span>' : ''}</span>
                 <span class="tp-out">${num(station.output) || 0} pcs</span>
                 <span class="tp-process">${esc(processes[station.key] || '') || '–'}</span>
             </label>`;
+            return hasSco
+                ? `<div class="tp-cell">${card}${scoChoiceHtml(station, chosenSources[station.key], plan)}</div>`
+                : card;
         }).join('')
         : `<p class="tp-empty">${picker.hasPlan
             ? 'No workstations in today\'s plan yet.'
@@ -902,13 +970,26 @@ function syncTilePicker() {
     const boxes = [...$('tp-grid').querySelectorAll('input[type="checkbox"]')];
     boxes.forEach((box) => box.closest('.tp-station').classList.toggle('is-on', box.checked));
     $('tp-overall').classList.toggle('is-on', overall);
+    // An SCO station's question shows only while it is ticked, and a ticked one must be answered.
+    const unanswered = [];
+    $('tp-grid').querySelectorAll('.tp-sco').forEach((group) => {
+        const box = group.parentElement.querySelector('input[type="checkbox"]');
+        group.hidden = !box.checked;
+        group.querySelectorAll('.tp-sco-opt').forEach((opt) => opt.classList.toggle('is-on', opt.querySelector('input').checked));
+        if (box.checked && !group.querySelector('input:checked')) {
+            unanswered.push(group.parentElement.querySelector('.tp-code').firstChild.textContent);
+        }
+    });
     const count = boxes.filter((box) => box.checked).length;
     $('tp-count').textContent = overall
         ? 'Whole line'
-        : count === 0
-            ? 'Nothing ticked — the card stays empty'
-            : count === 1 ? '1 workstation' : `${count} workstations`;
-    $('tp-save').disabled = picker.saving || !picker.hasPlan;
+        : unanswered.length
+            ? `Choose Primary, SCO or Both for ${unanswered.join(', ')}`
+            : count === 0
+                ? 'Nothing ticked — the card stays empty'
+                : count === 1 ? '1 workstation' : `${count} workstations`;
+    $('tp-count').classList.toggle('bad', unanswered.length > 0);
+    $('tp-save').disabled = picker.saving || !picker.hasPlan || unanswered.length > 0;
     $('tp-clear').disabled = picker.saving || !picker.hasPlan;
     $('tp-cancel').disabled = picker.saving;
 }
@@ -917,8 +998,12 @@ function syncTilePicker() {
 function onTilePickerChange(event) {
     const box = event.target;
     if (!(box instanceof HTMLInputElement)) return;
+    if (box.type === 'radio') {
+        syncTilePicker();
+        return;
+    }
     if (box === $('tp-overall-box')) {
-        if (box.checked) $('tp-grid').querySelectorAll('input:checked').forEach((other) => { other.checked = false; });
+        if (box.checked) $('tp-grid').querySelectorAll('input[type="checkbox"]:checked').forEach((other) => { other.checked = false; });
     } else if (box.checked) {
         $('tp-overall-box').checked = false;
     }
@@ -931,12 +1016,21 @@ async function saveTilePicker({ clear = false } = {}) {
     const lineOverall = !clear && tile === 'efficiency' && $('tp-overall-box').checked;
     const stationKeys = clear || lineOverall
         ? []
-        : [...$('tp-grid').querySelectorAll('input:checked')].map((box) => box.value);
+        : [...$('tp-grid').querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value);
+    const stationSources = {};
+    if (!clear && tile === 'output') {
+        $('tp-grid').querySelectorAll('.tp-sco').forEach((group) => {
+            const answer = group.querySelector('input:checked');
+            if (answer && stationKeys.includes(group.dataset.key)) stationSources[group.dataset.key] = answer.value;
+        });
+    }
     picker.saving = true;
     $('tp-error').textContent = '';
     syncTilePicker();
     try {
-        await sendJson('/api/display/tiles', 'PUT', { line_id: lineId, tile, station_keys: stationKeys, line_overall: lineOverall });
+        await sendJson('/api/display/tiles', 'PUT', {
+            line_id: lineId, tile, station_keys: stationKeys, line_overall: lineOverall, station_sources: stationSources
+        });
         closeTilePicker();
         refresh({ force: true });
     } catch (err) {

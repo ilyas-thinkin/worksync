@@ -2061,3 +2061,20 @@ thead th {
         right: var(--space-xl);
     }
 }
+
+/* Report tables (hourly, efficiency, worker efficiency) scroll inside a box no taller than the
+   window, so the horizontal scrollbar is always on screen instead of below the last row, and the
+   header rows stay pinned while scrolling down. */
+.report-scroll {
+    overflow: auto;
+    max-height: calc(100vh - 140px);
+}
+.report-scroll thead {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+}
+@media print {
+    .report-scroll { max-height: none; overflow: visible; }
+    .report-scroll thead { position: static; }
+}

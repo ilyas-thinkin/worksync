@@ -1305,6 +1305,20 @@ function _buildMgmtEfficiencyTable(data, date) {
         ? `${ws.ot_employee_name} (${ws.ot_employee_code})`
         : '<span style="color:#9ca3af;">Unassigned</span>';
 
+    // One line per OT hour (OT 1 = the first hour after the shift). A whole-OT entry made before
+    // OT was entered per hour has no hour to sit in and shows as "whole OT".
+    const otEffColor = e => e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
+    const otHourLines = (ws, fmt) => {
+        const hourList = (plan.ot_hours || []);
+        const lines = (ws.ot_hours || []).map(c => {
+            const h = hourList.find(x => x.hour_slot === c.hour_slot);
+            const label = h ? h.label : `${String(c.hour_slot).padStart(2, '0')}:00`;
+            return `<div><span style="font-size:10px;font-weight:700;color:#92400e;">${label}</span> ${c.entered === false ? '<span style="color:#dc2626;" title="Nothing entered for this hour">' + fmt(c) + '</span>' : fmt(c)}</div>`;
+        });
+        if (ws.ot_unsplit) lines.push('<div style="font-size:10px;color:#92400e;">whole OT (not per hour)</div>');
+        return lines.join('') || '<span style="color:#9ca3af;">—</span>';
+    };
+
     const dataRows = workstations.flatMap(ws => {
         const wid = wsIdSafe(ws);
         const combineBtn = ws.has_ot
@@ -1349,9 +1363,9 @@ function _buildMgmtEfficiencyTable(data, date) {
             <td style="${tcS}">${ws.ot_actual_sam_seconds ? ws.ot_actual_sam_seconds.toFixed(2) + 's' : '—'}</td>
             <td style="${tcS}color:#9ca3af;">—</td>
             <td style="${tcS}color:#9ca3af;">—</td>
-            <td style="${tcS}color:#9ca3af;">—</td>
-            <td style="${tcS}color:#9ca3af;">—</td>
-            <td style="${tcS}font-weight:700;">${ws.ot_output}</td>
+            <td style="${tcS}font-size:11px;line-height:1.5;">${otHourLines(ws, c => `${c.output}<span style="color:#9ca3af;"> / ${c.target}</span>`)}</td>
+            <td style="${tcS}font-size:11px;line-height:1.5;">${otHourLines(ws, c => c.efficiency_percent != null ? `<span style="color:${otEffColor(c.efficiency_percent)};font-weight:600;">${c.efficiency_percent.toFixed(2)}%</span>` : '—')}</td>
+            <td style="${tcS}font-weight:700;">${ws.ot_output}<div style="font-size:10px;font-weight:400;color:#6b7280;">target ${ws.ot_target}</div></td>
             <td style="${tcS}font-weight:700;">${ws.ot_efficiency_pct != null ? ws.ot_efficiency_pct.toFixed(2) + '%' : '—'} <span style="font-size:10px;color:#6b7280;">(${ws.ot_minutes}m)</span></td>
             <td style="${tcS}">${renderEfficiencyMetric(ws.ot_efficiency_pct, 2)}</td>
         </tr>` : '';
@@ -1445,7 +1459,7 @@ function _buildMgmtEfficiencyTable(data, date) {
                             <span>Workstation Efficiency</span>
                             ${workstations.some(w => w.has_ot) ? `<button id="eff-global-combine-btn" data-combined="0" onclick="toggleEffAllCombine(this)" style="padding:4px 12px;border-radius:6px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:11px;cursor:pointer;font-weight:700;">Combine All</button>` : ''}
                         </div>
-                        <div style="overflow-x:auto;">
+                        <div class="report-scroll">
                             <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
                                 <thead>
                                     <tr>
@@ -1473,7 +1487,7 @@ function _buildMgmtEfficiencyTable(data, date) {
                         <div style="padding:8px 12px;background:#f8fbff;border-bottom:1px solid #e2e8f0;max-height:130px;overflow:auto;">
                             ${employeeFlowSummaryHtml}
                         </div>
-                        <div style="overflow-x:auto;">
+                        <div class="report-scroll">
                             <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
                                 <thead>
                                     <tr>
@@ -2470,7 +2484,7 @@ function buildMgmtWorkerIndividualEffTable(data, metric = 'all') {
             <span><span style="background:#faf5ff;color:#6b21a8;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">COMB</span> Combined workstation</span>
             <span><span style="background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">CO</span> Changeover product</span>
         </div>
-        <div style="overflow-x:auto;">
+        <div class="report-scroll">
         <table style="border-collapse:collapse;width:max-content;min-width:100%;">
             <thead>
                 <tr>

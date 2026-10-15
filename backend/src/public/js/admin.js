@@ -241,7 +241,8 @@ const ADMIN_SHORTFALL_REASONS = [
     'COMMERCIAL PACKAGE ISSUES',
     'HR MEETING',
     'QUALITY MEETING',
-    'PRODUCTION MEETING'
+    'PRODUCTION MEETING',
+    'MACHINE SHORTAGE - WILL BE ACHIEVED BY OT'
 ];
 const ADMIN_SHORTFALL_REASON_LABELS = {
     'WORKMANSHIP PROBLEM':      '1. WORKMANSHIP PROBLEM (தொழில்நுட்பக் குறைபாடு)',
@@ -252,7 +253,9 @@ const ADMIN_SHORTFALL_REASON_LABELS = {
     'COMMERCIAL PACKAGE ISSUES':'6. COMMERCIAL PACKAGE ISSUES (வணிக பொதி சிக்கல்)',
     'HR MEETING':               '7. HR MEETING (மனித வளக் கூட்டம்)',
     'QUALITY MEETING':          '8. QUALITY MEETING (தர மேலாண்மை கூட்டம்)',
-    'PRODUCTION MEETING':       '9. PRODUCTION MEETING (உற்பத்தி கூட்டம்)'
+    'PRODUCTION MEETING':       '9. PRODUCTION MEETING (உற்பத்தி கூட்டம்)',
+    // Long reason: the <br> puts it on two lines in the reason picker.
+    'MACHINE SHORTAGE - WILL BE ACHIEVED BY OT': '10. MACHINE SHORTAGE -<br>WILL BE ACHIEVED BY OT (இயந்திரப் பற்றாக்குறை - OT மூலம் இலக்கு அடையப்படும்)'
 };
 const adminHourlyState = {
     lineId: '',
@@ -2005,6 +2008,86 @@ function _confirmAbsentOutput(occupantName, totalOutput) {
     );
 }
 
+// Asks who worked the hour in progress (mirrors supervisor.js) when a link/unlink/replacement lands mid-hour
+// (server 409 current_hour_owner_required). `info` is that 409 body.
+// Returns 'outgoing' | 'incoming' | 'absent' (unlink of one station only) | false if cancelled.
+function _pickCurrentHourOwner(wsCode, info) {
+    return new Promise(resolve => {
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        document.getElementById('hour-owner-modal')?.remove();
+
+        const hour = info?.hour;
+        const hourLabel = Number.isFinite(hour) ? `${hour}:00–${hour + 1}:00` : 'the current hour';
+        const context = info?.context || 'replace';
+        const outgoingList = Array.isArray(info?.outgoing) ? info.outgoing : [];
+        const outgoingName = context === 'unlink_all'
+            ? `${outgoingList.length} linked worker${outgoingList.length === 1 ? '' : 's'}`
+            : (outgoingList[0]?.emp_name || null);
+        const incoming = info?.incoming || null;
+        const isUnlink = context === 'unlink' || context === 'unlink_all' || context === 'unassign';
+
+        const btn = (owner, border, bg, color, title, sub) => `
+            <button class="hour-owner-btn" data-owner="${owner}"
+                style="text-align:left;padding:12px 14px;border:1px solid ${border};border-radius:8px;background:${bg};cursor:pointer;font-size:14px;">
+                <strong style="display:block;color:${color};">${title}</strong>
+                <span style="color:#6b7280;font-size:12px;">${sub}</span>
+            </button>`;
+
+        let buttons = '';
+        if (outgoingName) {
+            buttons += btn('outgoing', '#bfdbfe', '#eff6ff', '#1d4ed8',
+                `${esc(outgoingName)} worked hour ${esc(hour)}`,
+                `Hour ${esc(hourLabel)} output stays with ${esc(outgoingName)}`);
+        } else if (incoming?.moving) {
+            buttons += btn('outgoing', '#bfdbfe', '#eff6ff', '#1d4ed8',
+                `Hour ${esc(hour)} stays at ${esc(incoming.from_workstation)}`,
+                `${esc(incoming.emp_name)} worked this hour at the old station and starts here next hour`);
+        }
+        if (isUnlink) {
+            buttons += btn('incoming', '#d1d5db', '#f9fafb', '#374151',
+                `Left before hour ${esc(hour)}`,
+                `Hour ${esc(hourLabel)} goes to nobody / the next worker linked here`);
+        } else if (incoming) {
+            buttons += btn('incoming', '#bbf7d0', '#f0fdf4', '#15803d',
+                `${esc(incoming.emp_name)} worked hour ${esc(hour)}`,
+                `Hour ${esc(hourLabel)} output goes to ${esc(incoming.emp_name)} here`);
+        }
+        if (context === 'unlink') {
+            buttons += btn('absent', '#fca5a5', '#fef2f2', '#dc2626',
+                'Absent today',
+                `${esc(outgoingName || 'This worker')} was not at work — removed from today's efficiency report`);
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'hour-owner-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9100;display:flex;align-items:center;justify-content:center;padding:16px;';
+        modal.innerHTML = `
+            <div style="background:#fff;border-radius:12px;padding:24px;max-width:380px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                <h3 style="margin:0 0 6px;font-size:1rem;font-weight:700;color:#111827;">Hour ${esc(hourLabel)} — ${esc(wsCode || 'all stations')}</h3>
+                <p style="margin:0 0 18px;font-size:13px;color:#6b7280;">This hour is already running. Who should get its output?</p>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                    ${buttons}
+                    <button id="hour-owner-cancel"
+                        style="padding:10px;border:none;background:none;color:#6b7280;cursor:pointer;font-size:13px;margin-top:4px;">
+                        Cancel
+                    </button>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+
+        modal.querySelectorAll('.hour-owner-btn').forEach(b => {
+            b.addEventListener('click', () => {
+                modal.remove();
+                resolve(b.dataset.owner);
+            });
+        });
+        document.getElementById('hour-owner-cancel').addEventListener('click', () => {
+            modal.remove();
+            resolve(false);
+        });
+    });
+}
+
 async function saveWorkstationAssignment(lineId, workstationCode, employeeId) {
     try {
         let payload = {
@@ -2029,6 +2112,12 @@ async function saveWorkstationAssignment(lineId, workstationCode, employeeId) {
             if (result.error_code === 'absent_output_warning') {
                 if (!_confirmAbsentOutput(result.occupant?.emp_name, result.total_output || 0)) return;
                 payload = { ...payload, confirm_absent_with_output: true };
+                continue;
+            }
+            if (result.error_code === 'current_hour_owner_required') {
+                const owner = await _pickCurrentHourOwner(workstationCode, result);
+                if (!owner) return; // cancelled
+                payload = { ...payload, current_hour_owner: owner };
                 continue;
             }
             break;
@@ -11077,6 +11166,20 @@ function _buildEfficiencyTable(data, selectedHour) {
         ? `${ws.ot_employee_name} (${ws.ot_employee_code})`
         : '<span style="color:#9ca3af;">Unassigned</span>';
 
+    // One line per OT hour (OT 1 = the first hour after the shift). A whole-OT entry made before
+    // OT was entered per hour has no hour to sit in and shows as "whole OT".
+    const otEffColor = e => e >= 90 ? '#16a34a' : e >= 80 ? '#d97706' : '#dc2626';
+    const otHourLines = (ws, fmt) => {
+        const hourList = (plan.ot_hours || []);
+        const lines = (ws.ot_hours || []).map(c => {
+            const h = hourList.find(x => x.hour_slot === c.hour_slot);
+            const label = h ? h.label : `${String(c.hour_slot).padStart(2, '0')}:00`;
+            return `<div><span style="font-size:10px;font-weight:700;color:#92400e;">${label}</span> ${c.entered === false ? '<span style="color:#dc2626;" title="Nothing entered for this hour">' + fmt(c) + '</span>' : fmt(c)}</div>`;
+        });
+        if (ws.ot_unsplit) lines.push('<div style="font-size:10px;color:#92400e;">whole OT (not per hour)</div>');
+        return lines.join('') || '<span style="color:#9ca3af;">—</span>';
+    };
+
     const dataRows = workstations.flatMap(ws => {
         const wid = wsIdSafe(ws);
         const combineBtn = ws.has_ot
@@ -11123,9 +11226,9 @@ function _buildEfficiencyTable(data, selectedHour) {
             <td style="${tcS}">${formatMetric(ws.ot_actual_sam_seconds, 2)}s</td>
             <td style="${tcS}color:#9ca3af;">—</td>
             <td style="${tcS}color:#9ca3af;">—</td>
-            <td style="${tcS}color:#9ca3af;">—</td>
-            <td style="${tcS}color:#9ca3af;">—</td>
-            <td style="${tcS}font-weight:700;">${ws.ot_output}</td>
+            <td style="${tcS}font-size:11px;line-height:1.5;">${otHourLines(ws, c => `${c.output}<span style="color:#9ca3af;"> / ${c.target}</span>`)}</td>
+            <td style="${tcS}font-size:11px;line-height:1.5;">${otHourLines(ws, c => c.efficiency_percent != null ? `<span style="color:${otEffColor(c.efficiency_percent)};font-weight:600;">${c.efficiency_percent.toFixed(2)}%</span>` : '—')}</td>
+            <td style="${tcS}font-weight:700;">${ws.ot_output}<div style="font-size:10px;font-weight:400;color:#6b7280;">target ${ws.ot_target}</div></td>
             <td style="${tcS}font-weight:700;">${formatMetric(ws.ot_efficiency_pct, 2, '%')} <span style="font-size:10px;color:#6b7280;">(${ws.ot_minutes}m)</span></td>
             <td style="${tcS}">${renderEfficiencyMetric(ws.ot_efficiency_pct, 2)}</td>
         </tr>` : '';
@@ -11226,7 +11329,7 @@ function _buildEfficiencyTable(data, selectedHour) {
                             <span>Workstation Efficiency</span>
                             ${workstations.some(w => w.has_ot) ? `<button id="eff-global-combine-btn" data-combined="0" onclick="toggleEffAllCombine(this)" style="padding:4px 12px;border-radius:6px;background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;font-size:11px;cursor:pointer;font-weight:700;">Combine All</button>` : ''}
                         </div>
-                        <div style="overflow-x:auto;">
+                        <div class="report-scroll">
                             <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
                                 <thead>
                                     <tr>
@@ -11254,7 +11357,7 @@ function _buildEfficiencyTable(data, selectedHour) {
                         <div style="padding:8px 12px;background:#f8fbff;border-bottom:1px solid #e2e8f0;max-height:130px;overflow:auto;">
                             ${employeeFlowSummaryHtml}
                         </div>
-                        <div style="overflow-x:auto;">
+                        <div class="report-scroll">
                             <table style="border-collapse:collapse;width:100%;white-space:nowrap;">
                                 <thead>
                                     <tr>
@@ -11922,13 +12025,20 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
                 blank,
             ].join('');
             const otEffC  = effColor(otEff);
+            // Per OT hour under the day total: "17:00 60/63" and "17:00 96.2%".
+            const otHourEntries = Object.entries(cell?.ot_hours || {}).sort((a, b) => a[0] - b[0]);
+            const otHourLine = (fmt) => otHourEntries.map(([h, c]) =>
+                `<div style="font-size:9px;font-weight:400;white-space:nowrap;${c.entered ? '' : 'color:#dc2626;'}"><span style="color:#92400e;">${String(h).padStart(2, '0')}:00</span> ${fmt(c)}</div>`
+            ).join('') + (cell?.ot_unsplit_output ? `<div style="font-size:9px;font-weight:400;color:#92400e;">${cell.ot_unsplit_output} whole OT</div>` : '');
+            const otTgt = cell?.ot_target || 0;
+            const otAch = otTgt > 0 ? ((otOut || 0) / otTgt) * 100 : null;
             return [
                 `<td style="${tcS}background:#fff7ed;">—</td>`,
                 showTarget ? `<td style="${tcS}background:#fff7ed;">${cell?.ot_target ?? '—'}</td>` : '',
                 showWip    ? `<td style="${tcS}background:#fff7ed;">—</td>` : '',
-                showOutput ? `<td style="${tcS}background:#fff7ed;font-weight:700;">${otOut ?? 0}</td>` : '',
-                `<td style="${tcS}background:#fff7ed;">—</td>`,
-                showEff    ? `<td style="${tcS}background:#fff7ed;font-weight:600;color:${otEffC};">${otEff != null ? otEff.toFixed(1) + '%' : '—'}</td>` : '',
+                showOutput ? `<td style="${tcS}background:#fff7ed;font-weight:700;">${otOut ?? 0}${otHourLine(c => `${c.output}/${c.target}`)}</td>` : '',
+                `<td style="${tcS}background:#fff7ed;font-weight:600;color:${effColor(otAch)};">${otAch != null ? otAch.toFixed(0) + '%' : '—'}</td>`,
+                showEff    ? `<td style="${tcS}background:#fff7ed;font-weight:600;color:${otEffC};">${otEff != null ? otEff.toFixed(1) + '%' : '—'}${otHourLine(c => c.eff != null ? c.eff.toFixed(1) + '%' : '—')}</td>` : '',
                 `<td style="${tcS}background:#fff7ed;">—</td>`,
             ].join('');
         }).join('') : '';
@@ -11952,14 +12062,15 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
                 showEff    ? blank  : '',
                 blank,
             ].join('');
-            const combOut = regOut + otOut;
+            const combOut = cell?.comb_output ?? (regOut + otOut);
+            const combEff = cell?.comb_eff ?? null;
             return [
                 `<td style="${tcS}background:#f0fdf4;">—</td>`,
-                showTarget ? `<td style="${tcS}background:#f0fdf4;">${cell?.line_target ?? '—'}</td>` : '',
+                showTarget ? `<td style="${tcS}background:#f0fdf4;">${(cell?.line_target || 0) + (cell?.ot_target || 0)}<div style="font-size:9px;color:#6b7280;">Reg ${cell?.line_target || 0} + OT ${cell?.ot_target || 0}</div></td>` : '',
                 showWip    ? `<td style="${tcS}background:#f0fdf4;">—</td>` : '',
-                showOutput ? `<td style="${tcS}background:#f0fdf4;font-weight:700;">Reg:${regOut}<br>OT:${otOut}</td>` : '',
+                showOutput ? `<td style="${tcS}background:#f0fdf4;font-weight:700;">${combOut}<div style="font-size:9px;font-weight:400;color:#6b7280;">Reg ${regOut} + OT ${otOut}</div></td>` : '',
                 `<td style="${tcS}background:#f0fdf4;">—</td>`,
-                showEff    ? `<td style="${tcS}background:#f0fdf4;font-size:10px;"><div style="color:${effColor(regEff)};">Reg:${regEff.toFixed(1)}%</div><div style="color:${effColor(otEff)};">OT:${otEff != null ? otEff.toFixed(1) + '%' : '—'}</div></td>` : '',
+                showEff    ? `<td style="${tcS}background:#f0fdf4;font-weight:700;color:${effColor(combEff)};" title="(regular earned hours + OT earned hours) / ${cell?.total_hours ?? '-'}h worked">${combEff != null ? combEff.toFixed(1) + '%' : '—'}<div style="font-size:9px;font-weight:400;color:#6b7280;">Reg ${regEff.toFixed(1)}% · OT ${otEff != null ? otEff.toFixed(1) + '%' : '—'}</div></td>` : '',
                 `<td style="${tcS}background:#f0fdf4;">—</td>`,
             ].join('');
         }).join('') : '';
@@ -11991,8 +12102,8 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             <td style="${tdS}font-weight:600;">${row.emp_name || '-'}<button onclick="toggleWieCombine('${eid}')" title="Expand" style="margin-left:5px;padding:1px 5px;border-radius:4px;background:#dcfce7;color:#15803d;border:1px solid #86efac;font-size:10px;cursor:pointer;font-weight:700;vertical-align:middle;">⊗</button></td>
             <td style="${tcS}">${row.emp_code || '-'}</td>
             ${combDateCells}
-            ${showOutput ? `<td style="${tcS}font-weight:700;background:#f0fdf4;">Reg:${row.total_output}<br>OT:${row.total_ot_output || 0}</td>` : ''}
-            ${showEff    ? `<td style="${tcS}font-size:10px;background:#f0fdf4;"><div style="color:${effColor(totalEffVal)};">Reg:${totalEffVal.toFixed(1)}%</div><div style="color:${effColor(totalOtEff)};">OT:${totalOtEff != null ? totalOtEff.toFixed(1) + '%' : '—'}</div></td>` : ''}
+            ${showOutput ? `<td style="${tcS}font-weight:700;background:#f0fdf4;">${combTotalOut}<div style="font-size:9px;font-weight:400;color:#6b7280;">Reg ${row.total_output} + OT ${row.total_ot_output || 0}</div></td>` : ''}
+            ${showEff    ? `<td style="${tcS}font-weight:700;background:#f0fdf4;color:${effColor(row.overall_comb_eff)};">${row.overall_comb_eff != null ? row.overall_comb_eff.toFixed(1) + '%' : '—'}<div style="font-size:9px;font-weight:400;color:#6b7280;">Reg ${totalEffVal.toFixed(1)}% · OT ${totalOtEff != null ? totalOtEff.toFixed(1) + '%' : '—'}</div></td>` : ''}
         </tr>` : '';
 
         return [regRow, otRow, combRow].filter(Boolean);
@@ -12016,7 +12127,7 @@ function _buildWorkerIndividualEffTable(data, metric = 'all') {
             <span><span style="background:#fff7ed;color:#92400e;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">OT</span> Overtime row</span>
             <span><span style="background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;font-size:9px;font-weight:700;">CO</span> Changeover product</span>
         </div>
-        <div style="overflow-x:auto;">
+        <div class="report-scroll">
         <table style="border-collapse:collapse;width:max-content;min-width:100%;">
             <thead>
                 <tr>
@@ -12378,6 +12489,7 @@ function _hrCell(cell, reached, metric, tcS, effColor, departedAfter) {
 
 function _buildHourlyReportTable(data, metric = 'all') {
     const { line, date, hours, plan, rows, has_ot: hasOt, is_locked: isLocked, is_closed: isClosed } = data;
+    const otHours = hasOt ? (data.ot_hours || []) : [];
     const thS  = 'background:#1e3a5f;color:#fff;padding:6px 5px;text-align:center;white-space:nowrap;font-size:11px;border:1px solid #0f2744;font-weight:700;';
     const thSS = 'background:#1e3a5f;color:#fff;padding:4px 4px;text-align:center;white-space:nowrap;font-size:10px;border:1px solid #0f2744;';
     const tdS  = 'padding:4px 5px;border:1px solid #9ca3af;font-size:11px;';
@@ -12399,10 +12511,18 @@ function _buildHourlyReportTable(data, metric = 'all') {
     const hourGroupHeaders = hours.map(h =>
         `<th colspan="${subCols}" style="${thS}">${h.ordinal.toUpperCase()} HOUR<br><span style="font-weight:400;font-size:9px;">${h.label.replace(/^.*\(|\)$/g, '')}</span></th>`
     ).join('');
-    const otGroupHeader = hasOt ? `<th colspan="${subCols}" style="${thS}background:#92400e;border-color:#78350f;">OT<br><span style="font-weight:400;font-size:9px;">whole day</span></th>` : '';
+    const otThS = `${thS}background:#92400e;border-color:#78350f;`;
+    // After the 8 regular hours: REG cumulative OUT | EFF (regular shift only), each OT hour,
+    // the OT total as TGT | OUT | EFF, then CUMULATIVE = regular + OT.
+    const otGroupHeader = hasOt
+        ? `<th colspan="2" style="${thS}">REG<br><span style="font-weight:400;font-size:9px;">CUMULATIVE</span></th>`
+            + otHours.map(h => `<th colspan="${subCols}" style="${otThS}">${escHtml(h.label)}<br><span style="font-weight:400;font-size:9px;">${escHtml(h.range)}</span></th>`).join('')
+            + `<th colspan="3" style="${otThS}">OT TOTAL</th>`
+        : '';
 
     const subPair = `${showOut ? `<th style="${thSS}">OUT</th>` : ''}${showEff ? `<th style="${thSS}">EFF%</th>` : ''}`;
-    const subHeaders = hours.map(() => subPair).join('') + (hasOt ? subPair : '');
+    const subHeaders = hours.map(() => subPair).join('')
+        + (hasOt ? `<th style="${thSS}">OUT</th><th style="${thSS}">EFF%</th>` + subPair.repeat(otHours.length) + `<th style="${thSS}">TGT</th><th style="${thSS}">OUT</th><th style="${thSS}">EFF%</th>` : '');
 
     // ── Line-level hourly target band ───────────────────────────────────
     const bandTgt = plan.line_hourly_target || 0;
@@ -12410,12 +12530,22 @@ function _buildHourlyReportTable(data, metric = 'all') {
     const bandLabel = bandTgt > 0
         ? (bandCo > 0 ? `${bandTgt} <span style="font-weight:400;">(CO ${bandCo})</span>` : String(bandTgt))
         : '&ndash;';
+    // The band's cumulative cell must match the rows under it. Their day target is the hourly
+    // target for each regular hour (63 x 8 = 504), not the plan's 500 — the hourly target is the
+    // plan's rate rounded up — plus that same hourly target for every OT hour a worker does.
+    const bandDay = bandTgt * hours.length;
+    const bandSmall = 'font-weight:400;font-size:10px;';
+    const bandCum = bandTgt > 0
+        ? (hasOt
+            ? `${bandDay} + ${bandTgt} <span style="${bandSmall}">/ OT hour</span>`
+            : `${bandDay} <span style="${bandSmall}">/ day</span>`)
+        : '&ndash;';
     const targetBand = `
         <tr style="background:#dbeafe;">
             <td colspan="${fixedCols}" style="${tdS}font-weight:700;color:#1e3a8a;">TARGET / HOUR &nbsp;<span style="font-weight:400;font-size:10px;">(line)</span></td>
             ${hours.map(() => `<td colspan="${subCols}" style="${tcS}font-weight:700;color:#1e3a8a;">${bandLabel}</td>`).join('')}
-            ${hasOt ? `<td colspan="${subCols}" style="${tcS}color:#1e3a8a;">&mdash;</td>` : ''}
-            <td colspan="3" style="${tcS}font-weight:700;color:#1e3a8a;">${plan.target_units || '&ndash;'} <span style="font-weight:400;font-size:10px;">/ day</span></td>
+            ${hasOt ? `<td colspan="2" style="${tcS}"></td><td colspan="${subCols * otHours.length + 3}" style="${tcS}color:#1e3a8a;">OT ${plan.line_hourly_target || '&ndash;'}/hr</td>` : ''}
+            <td colspan="3" style="${tcS}font-weight:700;color:#1e3a8a;white-space:nowrap;">${bandCum}</td>
             <td style="${tdS}background:#dbeafe;"></td>
         </tr>`;
 
@@ -12444,10 +12574,34 @@ function _buildHourlyReportTable(data, metric = 'all') {
             return _hrCell(cell, h.reached, metric, tcS, effColor, departedAfter);
         }).join('');
 
-        const otCells = hasOt
-            ? (row.ot
-                ? `${showOut ? `<td style="${tcS}background:#fff7ed;font-weight:700;">${row.ot.output}</td>` : ''}${showEff ? `<td style="${tcS}background:#fff7ed;font-weight:600;color:${effColor(row.ot.efficiency_percent)};">${row.ot.efficiency_percent != null ? row.ot.efficiency_percent.toFixed(1) + '%' : '&mdash;'}</td>` : ''}`
-                : `${showOut ? `<td style="${tcS}background:#fff7ed;color:#6b7280;">&mdash;</td>` : ''}${showEff ? `<td style="${tcS}background:#fff7ed;color:#6b7280;">&mdash;</td>` : ''}`)
+        const otBg = 'background:#fff7ed;';
+        const otPair = (cell, title = '') => cell
+            ? `${showOut ? `<td style="${tcS}${otBg}font-weight:700;${cell.entered === false ? 'color:#dc2626;' : ''}" title="${title}">${cell.output}</td>` : ''}${showEff ? `<td style="${tcS}${otBg}font-weight:600;color:${effColor(cell.efficiency_percent)};">${cell.efficiency_percent != null ? cell.efficiency_percent.toFixed(1) + '%' : '&mdash;'}</td>` : ''}`
+            : `${showOut ? `<td style="${tcS}${otBg}color:#6b7280;">&mdash;</td>` : ''}${showEff ? `<td style="${tcS}${otBg}color:#6b7280;">&mdash;</td>` : ''}`;
+        // No OT enabled for this worker: every OT cell is a grey zero.
+        const otOff = row.ot && row.ot.enabled === false;
+        const otZero = `<td style="${tcS}${otBg}color:#9ca3af;">0</td>`;
+        const otCells = hasOt && otOff
+            ? `${showOut ? otZero : ''}${showEff ? otZero : ''}`.repeat(otHours.length) + otZero.repeat(3)
+            : hasOt
+            ? otHours.map(h => {
+                const cell = row.ot?.hours?.[h.hour_slot];
+                return otPair(cell, cell ? `Target ${cell.target}${cell.entered === false ? ' - nothing entered' : ''}` : '');
+            }).join('') + (row.ot
+                ? `<td style="${tcS}${otBg}">${row.ot.target || '&ndash;'}</td>
+                   <td style="${tcS}${otBg}font-weight:700;" title="${row.ot.unsplit ? `Includes ${row.ot.unsplit.output} entered for the whole OT, not per hour` : ''}">${row.ot.output}</td>
+                   <td style="${tcS}${otBg}font-weight:700;color:${effColor(row.ot.efficiency_percent)};">${row.ot.efficiency_percent != null ? row.ot.efficiency_percent.toFixed(1) + '%' : '&mdash;'}</td>`
+                : `<td style="${tcS}${otBg}color:#6b7280;">&mdash;</td>`.repeat(3))
+            : '';
+        // Regular shift only. For a worker with OT the cumulative is reg + OT, so the regular
+        // figures are carried separately; without OT the cumulative already is the regular figure.
+        const regCum = cum.includes_ot ? (cum.regular || {}) : cum;
+        const regOut = Number(regCum.output) || 0;
+        const regEffRaw = regCum.efficiency_percent;
+        const regEff = Number.isFinite(Number(regEffRaw)) && regEffRaw != null ? Number(regEffRaw) : null;
+        const regEffCell = hasOt
+            ? `<td style="${tcS}background:#f8fafc;font-weight:700;" title="${regCum.target ? `Regular target ${regCum.target}` : ''}">${regOut}</td>`
+              + `<td style="${tcS}background:#f8fafc;font-weight:700;color:${effColor(regEff)};">${regEff != null ? regEff.toFixed(1) + '%' : '&mdash;'}</td>`
             : '';
 
         const reasonTxt = cum.reason || '';
@@ -12458,10 +12612,11 @@ function _buildHourlyReportTable(data, metric = 'all') {
             <td style="${tcS}">${wsCell}</td>
             <td style="${tcS}font-weight:600;">${row.hourly_target || '&ndash;'}</td>
             ${hourCells}
+            ${regEffCell}
             ${otCells}
             <td style="${tcS}background:#f8fafc;">${cum.target || '&ndash;'}</td>
             <td style="${tcS}background:#f8fafc;font-weight:700;">${cum.output ?? 0}</td>
-            <td style="${tcS}background:#f8fafc;font-weight:700;color:${effColor(cumEff)};">${cumEff != null ? cumEff.toFixed(1) + '%' : '&mdash;'}</td>
+            <td style="${tcS}background:#f8fafc;font-weight:700;color:${effColor(cumEff)};" title="${cum.includes_ot && cum.regular ? `Regular only: ${cum.regular.output} out, ${cum.regular.efficiency_percent != null ? Number(cum.regular.efficiency_percent).toFixed(1) + '%' : '-'} over ${cum.regular.hours_denom}h. With OT: ${cum.hours_denom}h worked.` : ''}">${cumEff != null ? cumEff.toFixed(1) + '%' : '&mdash;'}</td>
             <td style="${tdS}font-size:10px;" title="${reasonTxt.replace(/"/g, '&quot;')}">${escHtml(reasonTxt) || '&ndash;'}</td>
         </tr>`;
     }).join('');
@@ -12493,14 +12648,14 @@ function _buildHourlyReportTable(data, metric = 'all') {
             <span><span style="background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:3px;font-weight:700;">CO</span> changeover product</span>
             <span>Efficiency is SAH-earned; the target is takt-derived &mdash; they differ when SAM &ne; takt.</span>
         </div>
-        <div style="overflow-x:auto;">
+        <div class="report-scroll">
         <table style="border-collapse:collapse;width:max-content;min-width:100%;">
             <thead>
                 <tr>
                     <th colspan="${fixedCols}" style="${thS}">WORKER</th>
                     ${hourGroupHeaders}
                     ${otGroupHeader}
-                    <th colspan="3" style="${thS}">CUMULATIVE</th>
+                    <th colspan="3" style="${thS}">CUMULATIVE${hasOt ? '<br><span style="font-weight:400;font-size:9px;">REG + OT</span>' : ''}</th>
                     <th rowspan="2" style="${thS}">DOWNFALL REASON</th>
                 </tr>
                 <tr>

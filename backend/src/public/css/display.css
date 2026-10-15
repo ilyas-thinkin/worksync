@@ -625,6 +625,37 @@ col.col-day-eff { width: 5.2rem; }
 .tp-code .tag { vertical-align: 0.1rem; }
 .tp-out { font-size: 0.78rem; font-weight: 700; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tp-process { grid-column: 2 / span 2; font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A station in SCO on the Line output card: its card plus the "which data?" question under it. */
+.tp-cell { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+.tp-sco {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.3rem;
+    padding: 0.45rem 0.5rem 0.5rem;
+    border: 1px solid #92400E;
+    border-radius: 0.5rem;
+    background: #1F1606;
+}
+.tp-sco[hidden] { display: none; }
+.tp-sco-q { grid-column: 1 / -1; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #FDE68A; }
+.tp-sco-opt {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    min-width: 0;
+    padding: 0.35rem 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 0.4rem;
+    background: var(--surface-2);
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+.tp-sco-opt:hover { border-color: #3B4F75; }
+.tp-sco-opt.is-on { border-color: var(--accent); background: #0C2A3F; }
+.tp-sco-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.tp-sco-opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tp-sco-label { font-size: 0.78rem; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-sco-pcs { font-size: 0.7rem; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
 .tp-empty { grid-column: 1 / -1; margin: 1rem 0; font-size: 1rem; color: var(--muted); }
 .tag-fs { background: #0C4A6E; color: #BAE6FD; }
 
@@ -656,5 +687,5 @@ col.col-day-eff { width: 5.2rem; }
 @media (prefers-reduced-motion: reduce) {
     .live-status.good::before { animation: none; }
     .picker-line, .back-btn, .switch, .switch-track, .switch-thumb, .flip-time, .step-btn,
-    .kpi-pick, .tp-station, .tp-btn, .ov-row .sup-block, .ov-row .plan-card, .ov-row .kpi { transition: none; }
+    .kpi-pick, .tp-station, .tp-sco-opt, .tp-btn, .ov-row .sup-block, .ov-row .plan-card, .ov-row .kpi { transition: none; }
 }
