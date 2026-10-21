@@ -14,6 +14,7 @@ const { validateBody, validateQuery, sanitizeInputs, schemas } = require('../mid
 const { logAudit: enhancedLogAudit, AuditAction, getAuditSummary, searchAuditLogs } = require('../middleware/audit');
 const { withTransaction, withRetry, lockForUpdate } = require('../middleware/transaction');
 const qrUtils = require('../utils/qr');
+const { trackPlanChange, recordPlanChange, ARCHIVE_DIR: PLAN_UPLOAD_ARCHIVE_DIR } = require('../utils/plan-change-log');
 
 // Multer setup for Excel file uploads (memory storage)
 const excelUpload = multer({
@@ -2905,13 +2906,17 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
             return null;
         }
 
+        // carried_forward_from marks the plan as "copied by the system, not confirmed by the IE"
+        // until someone saves, uploads or copies a plan for this line/date. On 2026-10-21 both
+        // Vimala and Rumiya started the day on yesterday's style and seating this way and
+        // supervisors linked operators onto it before the IE's real plan arrived.
         const insertResult = await db.query(
             `INSERT INTO line_daily_plans
                (line_id, product_id, work_date, target_units,
                 incoming_product_id, incoming_target_units, changeover_sequence,
                 overtime_minutes, overtime_target, ot_enabled, changeover_started_at,
-                created_by, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+                created_by, updated_by, carried_forward_from, carried_forward_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13, NOW())
              ON CONFLICT (line_id, work_date) DO NOTHING
              RETURNING *`,
             [
@@ -2926,7 +2931,8 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
                 sourcePlan.overtime_target || 0,
                 !!sourcePlan.ot_enabled,
                 null,
-                sourcePlan.updated_by || sourcePlan.created_by || null
+                sourcePlan.updated_by || sourcePlan.created_by || null,
+                sourcePlan.work_date
             ]
         );
         const insertedPlan = insertResult.rows[0];
@@ -2961,7 +2967,32 @@ async function ensureDailyPlanCarryForwardForLine(lineId, workDate, client = nul
              LIMIT 1`,
             [lineId, workDate]
         );
+        const copiedEmployees = await db.query(
+            `SELECT COUNT(*)::int AS n
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND is_overtime = false`,
+            [lineId, workDate]
+        );
         if (ownsClient) await db.query('COMMIT');
+        const lineCodeRow = await pool.query(`SELECT line_code FROM production_lines WHERE id = $1`, [lineId]);
+        const productCodeRow = await pool.query(`SELECT product_code FROM products WHERE id = $1`, [sourcePlan.product_id]);
+        recordPlanChange({
+            event: 'carry_forward',
+            outcome: 'success',
+            line_id: lineId,
+            line_code: lineCodeRow.rows[0]?.line_code || null,
+            work_date: workDate,
+            product_id: sourcePlan.product_id,
+            product_code: productCodeRow.rows[0]?.product_code || null,
+            product_mode: 'primary',
+            role: 'system',
+            employees_assigned: copiedEmployees.rows[0]?.n ?? null,
+            details: {
+                copied_from_date: String(sourcePlan.work_date).slice(0, 10),
+                with_employees: true,
+                incoming_product_id: sourcePlan.incoming_product_id || null
+            }
+        });
         return refreshed.rows[0] || insertedPlan;
     } catch (err) {
         if (ownsClient) {
@@ -2996,6 +3027,34 @@ async function ensureDailyPlansCarryForward(workDate, client = null) {
         if (inserted) createdCount += 1;
     }
     return createdCount;
+}
+
+// The IE has now explicitly planned this line/date (saved, uploaded or copied a plan), so it is
+// no longer the system's unconfirmed overnight copy.
+async function markDailyPlanConfirmed(db, lineId, workDate) {
+    if (!lineId || !workDate) return;
+    await (db || pool).query(
+        `UPDATE line_daily_plans
+         SET carried_forward_from = NULL, carried_forward_at = NULL
+         WHERE line_id = $1 AND work_date = $2 AND carried_forward_from IS NOT NULL`,
+        [lineId, workDate]
+    );
+}
+
+// Unconfirmed overnight copy for a line/date, with how many operators supervisors have already
+// linked on it. Null when the plan was set by the IE.
+async function getUnconfirmedCarriedPlan(db, lineId, workDate) {
+    const result = await (db || pool).query(
+        `SELECT ldp.carried_forward_from, ldp.product_id, p.product_code,
+                (SELECT COUNT(*)::int FROM employee_workstation_assignments ewa
+                 WHERE ewa.line_id = ldp.line_id AND ewa.work_date = ldp.work_date
+                   AND ewa.is_overtime = false AND ewa.is_linked = true) AS linked_operators
+         FROM line_daily_plans ldp
+         LEFT JOIN products p ON p.id = ldp.product_id
+         WHERE ldp.line_id = $1 AND ldp.work_date = $2 AND ldp.carried_forward_from IS NOT NULL`,
+        [lineId, workDate]
+    );
+    return result.rows[0] || null;
 }
 
 async function getRegularAssignmentStateByEmployee(db, workDate) {
@@ -4092,7 +4151,7 @@ router.get('/daily-plans', async (req, res) => {
             `SELECT lp.id, lp.line_id, lp.product_id, lp.work_date, lp.target_units, lp.is_locked,
                     lp.incoming_product_id, lp.incoming_target_units, lp.changeover_sequence,
                     lp.overtime_minutes, lp.overtime_target, lp.ot_enabled,
-                    lp.changeover_started_at,
+                    lp.changeover_started_at, lp.carried_forward_from,
                     pl.line_code, pl.line_name,
                     p.product_code, p.product_name, p.target_qty,
                     ip.product_code as incoming_product_code, ip.product_name as incoming_product_name,
@@ -4283,6 +4342,7 @@ router.post('/daily-plans', async (req, res) => {
             realtime.broadcast('data_change', { entity: 'lines', action: 'update', id: line_id });
         }
         await logAudit('line_daily_plans', result.rows[0].id, before.rowCount ? 'update' : 'create', result.rows[0], before.rows[0] || null);
+        await markDailyPlanConfirmed(pool, line_id, work_date);
 
         // Auto-copy workstation plan from most recent day with same product, if none exists yet for today
         let copied_from = null;
@@ -4472,6 +4532,7 @@ router.patch('/daily-plans', async (req, res) => {
         // This was the one daily-plan write path with no audit row, which is why a zeroed
         // target could not be traced back to a request. Every plan edit is logged now.
         await logAudit('line_daily_plans', result.rows[0].id, 'update', result.rows[0], before, req);
+        await markDailyPlanConfirmed(pool, line_id, work_date);
 
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'update', line_id, work_date });
         res.json({ success: true, data: result.rows[0], cap_warning: capWarning || null });
@@ -4570,6 +4631,12 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
         product_mode,               // 'primary' (default) | 'changeover' — which slot on the TARGET day to write into
         employee_workstation_codes  // optional array of workstation_code — when present, only these get an employee copied
     } = req.body;
+    const planLog = trackPlanChange(req, res, 'plan_copy');
+    planLog.line_id = toLineId;
+    planLog.work_date = to_date || null;
+    planLog.product_id = product_id || null;
+    planLog.product_mode = product_mode === 'changeover' ? 'changeover' : 'primary';
+    planLog.details = { from_date: from_date || null, from_line_id: from_line_id || toLineId, copy_employees: copy_employees !== false && copy_employees !== 'false' };
     if (!from_date || !to_date || !product_id) {
         return res.status(400).json({ success: false, error: 'from_date, to_date, product_id required' });
     }
@@ -4736,6 +4803,7 @@ router.post('/lines/:lineId/workstation-plan/copy-from-date', async (req, res) =
             await client.query('ROLLBACK');
             return res.status(404).json({ success: false, error: `No workstation plan found for ${from_date}` });
         }
+        if (!isChangeoverTarget) await markDailyPlanConfirmed(client, toLineId, to_date);
         await client.query('COMMIT');
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'copied', line_id: toLineId, work_date: to_date });
         realtime.broadcast('data_change', { entity: 'workstations', action: 'copied', line_id: toLineId, work_date: to_date });
@@ -6850,6 +6918,10 @@ router.delete('/daily-plans', async (req, res) => {
 // POST /daily-plans/copy — copy a plan from source_date to target_date for a line
 router.post('/daily-plans/copy', async (req, res) => {
     const { line_id, source_date, target_date } = req.body;
+    const planLog = trackPlanChange(req, res, 'plan_copy');
+    planLog.line_id = line_id || null;
+    planLog.work_date = target_date || null;
+    planLog.details = { from_date: source_date || null, from_line_id: line_id || null, whole_daily_plan: true };
     if (!line_id || !source_date || !target_date) {
         return res.status(400).json({ success: false, error: 'line_id, source_date and target_date are required' });
     }
@@ -6990,6 +7062,7 @@ router.post('/daily-plans/copy', async (req, res) => {
             }
         }
 
+        await markDailyPlanConfirmed(client, line_id, target_date);
         await client.query('COMMIT');
 
         realtime.broadcast('data_change', { entity: 'daily_plans', action: 'copy', line_id, source_date, target_date });
@@ -8013,6 +8086,7 @@ router.get('/products/upload-template', async (req, res) => {
 
 // Upload Excel to create/update product with processes (no line/workstation/employee assignment)
 router.post('/products/upload-excel', excelUpload.single('file'), async (req, res) => {
+    const planLog = trackPlanChange(req, res, 'product_upload');
     if (!req.file) {
         return res.status(400).json({ success: false, error: 'No file uploaded. Please upload an Excel file (.xlsx).' });
     }
@@ -8127,12 +8201,65 @@ router.post('/products/upload-excel', excelUpload.single('file'), async (req, re
         let autoSeq = 1;
 
         const existingPpRows = await client.query(
-            `SELECT id, sequence_number FROM product_processes WHERE product_id = $1 ORDER BY is_active DESC, id DESC`,
+            `SELECT pp.id, pp.sequence_number, pp.operation_id, pp.operation_sah, pp.is_active,
+                    o.operation_name
+             FROM product_processes pp
+             LEFT JOIN operations o ON o.id = pp.operation_id
+             WHERE pp.product_id = $1
+             ORDER BY pp.is_active DESC, pp.id DESC`,
             [productId]
         );
         const existingPpBySeq = new Map();
         for (const r of existingPpRows.rows) {
             if (!existingPpBySeq.has(r.sequence_number)) existingPpBySeq.set(r.sequence_number, r);
+        }
+
+        planLog.product_id = productId;
+        planLog.product_code = styleNo;
+
+        // This upload has no line or date, but it rewrites the same shared process list as the
+        // line plan upload. Refuse when a line is running this style today on processes the file
+        // would rename or switch off, unless the user explicitly overrides.
+        const factoryToday = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        const sharedImpact = await findSharedProcessImpact(client, {
+            productId,
+            lineId: null,
+            workDate: factoryToday,
+            rows: processRows.map((row, index) => ({
+                seq: row.sequence_override || (index + 1),
+                opId: null,
+                opCode: String(row.process_code || '').trim(),
+                opName: row.process_name,
+                sah: row.sam_seconds > 0 ? row.sam_seconds / 3600 : 0
+            })),
+            existingRows: existingPpRows.rows
+        });
+        planLog.work_date = factoryToday;
+        planLog.processes = processRows.length;
+        const confirmSharedOverride = String(req.body?.confirm_shared_processes || '').trim().toLowerCase() === 'override';
+        if (sharedImpact.otherLines.length && !confirmSharedOverride) {
+            await client.query('ROLLBACK');
+            const lineList = sharedImpact.otherLines.map(l => l.line_code).join(', ');
+            const message = `${styleNo} is running on ${lineList} today. `
+                + `This file would change processes those lines are using.`;
+            return res.status(409).json({
+                success: false,
+                code: 'SHARED_PROCESSES_IN_USE',
+                message,
+                error: message,
+                product_code: styleNo,
+                work_date: factoryToday,
+                processes_changed: sharedImpact.changedCount,
+                processes_deactivated: sharedImpact.deactivatedCount,
+                other_lines: sharedImpact.otherLines
+            });
+        }
+        if (sharedImpact.otherLines.length) {
+            planLog.details.shared_processes_override = {
+                processes_changed: sharedImpact.changedCount,
+                processes_deactivated: sharedImpact.deactivatedCount,
+                other_lines: sharedImpact.otherLines
+            };
         }
 
         for (const row of processRows) {
@@ -10619,6 +10746,9 @@ router.get('/lines/:lineId/downtime-summary', async (req, res) => {
 router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
     const { lineId } = req.params;
     const { work_date, rows, product_id: bodyProductId, target_units: bodyTarget } = req.body;
+    const planLog = trackPlanChange(req, res, 'plan_save');
+    planLog.line_id = lineId;
+    planLog.work_date = work_date || null;
     if (!work_date || !Array.isArray(rows)) {
         return res.status(400).json({ success: false, error: 'work_date and rows are required' });
     }
@@ -10639,6 +10769,8 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
         if (!product_id) {
             return res.status(400).json({ success: false, error: 'No product selected for this line and date' });
         }
+        planLog.product_id = product_id;
+        planLog.product_mode = isChangeoverSave ? 'changeover' : 'primary';
 
         // Working seconds = (out_time - in_time) - lunch_break_minutes
         const inTime = await getSettingValue('default_in_time', '08:00');
@@ -10842,6 +10974,8 @@ router.post('/lines/:lineId/workstation-plan/save', async (req, res) => {
             productId: product_id
         });
 
+        planLog.workstations = wsEntries.length;
+        if (!isChangeoverSave) await markDailyPlanConfirmed(client, lineId, work_date);
         await client.query('COMMIT');
         if (syncedTarget) {
             realtime.broadcast('data_change', { entity: 'daily_plan', action: 'update', line_id: lineId, work_date });
@@ -11776,8 +11910,129 @@ router.get('/lines/plan-upload-template/filled', async (req, res) => {
     }
 });
 
+// What an upload would do to a style's SHARED product_processes list, and which other lines use
+// the affected rows on the same date. Read-only: run before anything is written.
+//
+// The upload updates rows in place by sequence number and deactivates sequences the file does
+// not have. A line whose plan points at those rows then shows the uploader's operations, or no
+// processes at all. On 2026-10-21 Rumiya's 85-step C2862 file renamed Vimala's steps 1-85 and
+// deactivated 86-150, leaving 25 of Vimala's 45 workstations empty mid-shift.
+//
+// A row only counts as changed when what the other line would see changes: the operation (by
+// id, or by name when the file re-creates an operation under a new id) or its SAH.
+async function findSharedProcessImpact(db, { productId, lineId, workDate, rows, existingRows }) {
+    const normalizeOpName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toUpperCase();
+    const existingBySeq = new Map();
+    for (const r of existingRows) {
+        if (!existingBySeq.has(r.sequence_number)) existingBySeq.set(r.sequence_number, r);
+    }
+    const opIdByCode = new Map();
+    const changedIds = new Set();
+    const matchedIds = new Set();
+    for (const row of rows) {
+        const existing = existingBySeq.get(row.seq);
+        if (!existing) continue;
+        matchedIds.add(existing.id);
+        let opId = row.opId || null;
+        if (!opId && row.opCode) {
+            const key = String(row.opCode).trim().toUpperCase();
+            if (!opIdByCode.has(key)) {
+                const byCode = await db.query(
+                    `SELECT id FROM operations WHERE UPPER(TRIM(operation_code)) = $1 LIMIT 1`,
+                    [key]
+                );
+                opIdByCode.set(key, byCode.rows[0]?.id || null);
+            }
+            opId = opIdByCode.get(key);
+        }
+        const sameOperation = (opId && Number(opId) === Number(existing.operation_id))
+            || normalizeOpName(existing.operation_name) === normalizeOpName(row.opName);
+        const sameSah = Number(existing.operation_sah || 0).toFixed(4) === Number(row.sah || 0).toFixed(4);
+        if (!sameOperation || !sameSah) changedIds.add(existing.id);
+    }
+    const deactivatedIds = new Set(
+        existingRows.filter(r => r.is_active && !matchedIds.has(r.id)).map(r => r.id)
+    );
+    const affectedIds = [...changedIds, ...deactivatedIds];
+    if (!affectedIds.length) {
+        return { otherLines: [], changedCount: 0, deactivatedCount: 0 };
+    }
+
+    const regularUse = await db.query(
+        `SELECT w.line_id, pl.line_code, pl.line_name,
+                COUNT(DISTINCT w.id)::int AS workstations,
+                ARRAY_AGG(DISTINCT p.product_process_id) AS process_ids
+         FROM line_plan_workstation_processes p
+         JOIN line_plan_workstations w ON w.id = p.workstation_id
+         JOIN production_lines pl ON pl.id = w.line_id
+         -- Only lines whose plan for the day names this style (primary or changeover slot).
+         -- A line that switched to another style keeps its old workstation set as a leftover;
+         -- counting those would block every later upload of the style for the rest of the day.
+         JOIN line_daily_plans ldp
+           ON ldp.line_id = w.line_id
+          AND ldp.work_date = w.work_date
+          AND w.product_id IN (ldp.product_id, ldp.incoming_product_id)
+         WHERE w.work_date = $1
+           AND w.line_id IS DISTINCT FROM $2::int
+           AND p.product_process_id = ANY($3::int[])
+         GROUP BY w.line_id, pl.line_code, pl.line_name`,
+        [workDate, lineId, affectedIds]
+    );
+    const otUse = await db.query(
+        `SELECT op.line_id, pl.line_code, pl.line_name,
+                COUNT(DISTINCT w.id)::int AS workstations,
+                ARRAY_AGG(DISTINCT p.product_process_id) AS process_ids
+         FROM line_ot_workstation_processes p
+         JOIN line_ot_workstations w ON w.id = p.ot_workstation_id
+         JOIN line_ot_plans op ON op.id = w.ot_plan_id
+         JOIN production_lines pl ON pl.id = op.line_id
+         WHERE op.work_date = $1
+           AND op.line_id IS DISTINCT FROM $2::int
+           AND p.product_process_id = ANY($3::int[])
+         GROUP BY op.line_id, pl.line_code, pl.line_name`,
+        [workDate, lineId, affectedIds]
+    );
+
+    const byLine = new Map();
+    const addUse = (row, kind) => {
+        const key = String(row.line_id);
+        if (!byLine.has(key)) {
+            byLine.set(key, {
+                line_id: row.line_id,
+                line_code: row.line_code,
+                line_name: row.line_name,
+                workstations: 0,
+                ot_workstations: 0,
+                processIds: new Set()
+            });
+        }
+        const entry = byLine.get(key);
+        if (kind === 'ot') entry.ot_workstations += row.workstations;
+        else entry.workstations += row.workstations;
+        for (const id of row.process_ids || []) entry.processIds.add(id);
+    };
+    regularUse.rows.forEach(row => addUse(row, 'regular'));
+    otUse.rows.forEach(row => addUse(row, 'ot'));
+
+    const otherLines = [...byLine.values()].map(entry => {
+        const ids = [...entry.processIds];
+        return {
+            line_id: entry.line_id,
+            line_code: entry.line_code,
+            line_name: entry.line_name,
+            workstations: entry.workstations,
+            ot_workstations: entry.ot_workstations,
+            processes_changed: ids.filter(id => changedIds.has(id)).length,
+            processes_deactivated: ids.filter(id => deactivatedIds.has(id)).length
+        };
+    }).sort((a, b) => String(a.line_code).localeCompare(String(b.line_code)));
+
+    return { otherLines, changedCount: changedIds.size, deactivatedCount: deactivatedIds.size };
+}
+
 // POST /lines/plan-upload-excel — bulk import line plan from Excel template
 router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, res) => {
+    const planLog = trackPlanChange(req, res, 'excel_upload');
     if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
     const client = await pool.connect();
     try {
@@ -11848,6 +12103,12 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         const coProductCode = normalizeCode(getCellStr(11, 2));
         const coTarget      = Math.round(getCellNum(12, 2)) || 0;
         const lineLeader    = getCellStr(13, 2) || null;
+
+        planLog.line_code = lineCode || null;
+        planLog.work_date = ISO_WORK_DATE_RE.test(workDate) ? workDate : null;
+        planLog.product_code = productCode || null;
+        planLog.product_mode = requestedProductMode;
+        if (isDetailMode) planLog.line_id = requestedLineId;
 
         if (!lineCode)                         throw new Error('Line Code is required (row 3)');
         if (!workDate || !ISO_WORK_DATE_RE.test(workDate)) throw new Error('Date must be in YYYY-MM-DD format (row 5)');
@@ -11972,6 +12233,8 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
             lineId = requestedLineId;
             summaryLineCode = detailPlan?.line_code || summaryLineCode;
+            // The line comes from the request here, not the file's LINE CODE.
+            planLog.line_code = detailPlan?.line_code || null;
             if (requestedProductMode === 'changeover') {
                 // Always resolve the changeover product from the uploaded template's
                 // Product Code (row 6). This bootstraps the incoming product on the
@@ -12035,8 +12298,11 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
 
                     if (uploadProductCode && planProductCode && uploadProductCode !== planProductCode
                         && planProductChoice !== 'switch' && planProductChoice !== 'keep') {
+                        const carriedPlan = await getUnconfirmedCarriedPlan(client, requestedLineId, workDate);
                         await client.query('ROLLBACK');
                         return res.status(409).json({
+                            carried_forward_from: carriedPlan?.carried_forward_from || null,
+                            linked_operators: carriedPlan?.linked_operators || 0,
                             success: false,
                             code: 'PLAN_PRODUCT_MISMATCH',
                             message: `This file is for ${effectiveProdCode}, but the plan on this line/date is ${detailPlan.primary_product_code}.`,
@@ -12176,6 +12442,42 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
                     [coProductCode]
                 );
                 coProductId = coResult.rows[0]?.id || null;
+            }
+        }
+
+        planLog.line_id = lineId;
+        planLog.line_code = summaryLineCode;
+        planLog.product_id = productId;
+        planLog.product_code = summaryProductCode;
+
+        // The line is still on the system's overnight copy of an earlier day, the upload brings a
+        // different style, and supervisors have already linked operators on the copy. Say so
+        // before re-seating them: the copy's employees came from the old style's layout.
+        if (requestedProductMode === 'primary') {
+            const carriedPlan = await getUnconfirmedCarriedPlan(client, lineId, workDate);
+            const confirmReplaceCarried = ['1', 'true', 'yes'].includes(
+                String(req.body?.confirm_replace_carried || '').toLowerCase()
+            );
+            if (carriedPlan
+                && parseInt(carriedPlan.product_id, 10) !== parseInt(productId, 10)
+                && carriedPlan.linked_operators > 0
+                && !confirmReplaceCarried) {
+                await client.query('ROLLBACK');
+                const message = `${summaryLineCode} is running the plan the system copied from `
+                    + `${carriedPlan.carried_forward_from} (${carriedPlan.product_code || 'previous style'}), and `
+                    + `${carriedPlan.linked_operators} operator(s) are already linked on it.`;
+                return res.status(409).json({
+                    success: false,
+                    code: 'CARRIED_PLAN_STYLE_CHANGE',
+                    message,
+                    error: message,
+                    line_code: summaryLineCode,
+                    work_date: workDate,
+                    carried_forward_from: carriedPlan.carried_forward_from,
+                    carried_product_code: carriedPlan.product_code || null,
+                    upload_product_code: summaryProductCode,
+                    linked_operators: carriedPlan.linked_operators
+                });
             }
         }
 
@@ -12481,12 +12783,65 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         // i.e. looked "deleted". Fix: match by sequence_number and UPDATE in place so existing
         // ids (and therefore every other line's references to them) survive the re-upload.
         const existingPpRows = await client.query(
-            `SELECT id, sequence_number FROM product_processes WHERE product_id = $1 ORDER BY is_active DESC, id DESC`,
+            `SELECT pp.id, pp.sequence_number, pp.operation_id, pp.operation_sah, pp.is_active,
+                    o.operation_name
+             FROM product_processes pp
+             LEFT JOIN operations o ON o.id = pp.operation_id
+             WHERE pp.product_id = $1
+             ORDER BY pp.is_active DESC, pp.id DESC`,
             [productId]
         );
         const existingPpBySeq = new Map();
         for (const r of existingPpRows.rows) {
             if (!existingPpBySeq.has(r.sequence_number)) existingPpBySeq.set(r.sequence_number, r);
+        }
+
+        // Matching by sequence only protects other lines whose file has the same breakdown. When
+        // another line runs this style today on a different breakdown, this upload would rename
+        // or switch off the processes its workstations show. Stop and offer a line-specific copy
+        // of the style instead; "override" is an explicit choice to change the other lines too.
+        const sharedImpact = await findSharedProcessImpact(client, {
+            productId,
+            lineId,
+            workDate,
+            rows: dataRows,
+            existingRows: existingPpRows.rows
+        });
+        const confirmSharedOverride = String(req.body?.confirm_shared_processes || '').trim().toLowerCase() === 'override';
+        if (sharedImpact.otherLines.length && !confirmSharedOverride) {
+            await client.query('ROLLBACK');
+            const baseCode = `${summaryProductCode}-${summaryLineCode}`;
+            let suggestedCopyCode = baseCode;
+            for (let suffix = 2; suffix <= 20; suffix++) {
+                const dupe = await pool.query(`SELECT 1 FROM products WHERE product_code = $1 LIMIT 1`, [suggestedCopyCode]);
+                if (!dupe.rows[0]) break;
+                suggestedCopyCode = `${baseCode}-${suffix}`;
+            }
+            const lineList = sharedImpact.otherLines.map(l => l.line_code).join(', ');
+            const message = `${summaryProductCode} is also running on ${lineList} on ${workDate}. `
+                + `This file would change processes those lines are using.`;
+            return res.status(409).json({
+                success: false,
+                code: 'SHARED_PROCESSES_IN_USE',
+                message,
+                error: message,
+                product_code: summaryProductCode,
+                line_code: summaryLineCode,
+                work_date: workDate,
+                is_detail_mode: isDetailMode,
+                product_mode: requestedProductMode,
+                processes_changed: sharedImpact.changedCount,
+                processes_deactivated: sharedImpact.deactivatedCount,
+                other_lines: sharedImpact.otherLines,
+                suggested_copy_code: suggestedCopyCode
+            });
+        }
+        if (sharedImpact.otherLines.length) {
+            planLog.details.shared_processes_override = {
+                processes_changed: sharedImpact.changedCount,
+                processes_deactivated: sharedImpact.deactivatedCount,
+                other_lines: sharedImpact.otherLines
+            };
         }
 
         // Upsert operations + product_processes.
@@ -12745,6 +13100,7 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
             wsNumber++;
         }
 
+        if (requestedProductMode === 'primary') await markDailyPlanConfirmed(client, lineId, workDate);
         await client.query('COMMIT');
 
         // Generate workstation QR codes for newly created lines (non-blocking)
@@ -12789,6 +13145,65 @@ router.post('/lines/plan-upload-excel', excelUpload.single('file'), async (req, 
         res.status(err.statusCode || 500).json({ success: false, error: err.message });
     } finally {
         client.release();
+    }
+});
+
+// ============================================================================
+// Plan change log (IE/admin) — who changed which line's plan, when, and with which file
+// ============================================================================
+router.get('/ie/plan-change-log', async (req, res) => {
+    const date = String(req.query.date || '').trim();
+    const lineId = parseInt(String(req.query.line_id || ''), 10);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '200'), 10) || 200, 1), 1000);
+    if (date && !ISO_WORK_DATE_RE.test(date)) {
+        return res.status(400).json({ success: false, error: 'date must be YYYY-MM-DD' });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT l.id, l.created_at, l.event, l.outcome, l.outcome_code,
+                    l.line_id, COALESCE(l.line_code, pl.line_code) AS line_code,
+                    l.work_date, l.product_id, COALESCE(l.product_code, p.product_code) AS product_code,
+                    l.product_mode, l.file_name, l.file_size, l.file_sha256,
+                    (l.file_saved_path IS NOT NULL) AS file_available,
+                    l.role, l.ip_address, l.user_agent, l.workstations, l.processes,
+                    l.employees_assigned, l.confirmations, l.details, l.error
+             FROM plan_change_log l
+             LEFT JOIN production_lines pl ON pl.id = l.line_id
+             LEFT JOIN products p ON p.id = l.product_id
+             WHERE ($1::date IS NULL OR l.work_date = $1::date OR l.created_at::date = $1::date)
+               AND ($2::int IS NULL OR l.line_id = $2::int)
+             ORDER BY l.created_at DESC, l.id DESC
+             LIMIT $3`,
+            [date || null, Number.isFinite(lineId) ? lineId : null, limit]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+router.get('/ie/plan-change-log/:id/file', async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
+    try {
+        const result = await pool.query(
+            `SELECT file_name, file_saved_path FROM plan_change_log WHERE id = $1`,
+            [id]
+        );
+        const row = result.rows[0];
+        if (!row?.file_saved_path) {
+            return res.status(404).json({ success: false, error: 'No file stored for this entry' });
+        }
+        const archiveRoot = path.resolve(PLAN_UPLOAD_ARCHIVE_DIR);
+        const filePath = path.resolve(row.file_saved_path);
+        if (!filePath.startsWith(archiveRoot + path.sep) || !fs.existsSync(filePath)) {
+            return res.status(404).json({ success: false, error: 'Stored file not found' });
+        }
+        const downloadName = String(row.file_name || path.basename(filePath)).replace(/["\\\r\n]/g, '_');
+        res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+        res.sendFile(filePath);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -13691,9 +14106,12 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
         // Fetch daily-plan meta for changeover state and targets
         const metaResult = await pool.query(
             `SELECT ldp.target_units, ldp.incoming_target_units, ldp.changeover_started_at,
-                    ip.product_code AS incoming_product_code, ip.product_name AS incoming_product_name
+                    ldp.carried_forward_from,
+                    ip.product_code AS incoming_product_code, ip.product_name AS incoming_product_name,
+                    pp.product_code AS primary_product_code
              FROM line_daily_plans ldp
              LEFT JOIN products ip ON ip.id = ldp.incoming_product_id
+             LEFT JOIN products pp ON pp.id = ldp.product_id
              WHERE ldp.line_id = $1 AND ldp.work_date = $2`,
             [lineId, date]
         );
@@ -13750,7 +14168,12 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             co_only_workstation_count: 0,
             changeover_sequence: changeoverSequence,
             incoming_max_sequence: incomingMaxSequence,
-            changeover_enabled: CHANGEOVER_ENABLED
+            changeover_enabled: CHANGEOVER_ENABLED,
+            // Set while the day's plan is still the system's overnight copy of an earlier day
+            // (style and seating included) and the IE has not saved or uploaded one yet.
+            plan_carried_forward: meta.carried_forward_from
+                ? { from_date: meta.carried_forward_from, product_code: meta.primary_product_code || null }
+                : null
         };
 
         // Helper to build workstation query for a given product

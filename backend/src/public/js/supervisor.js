@@ -423,6 +423,7 @@ async function reloadMorningAssignments() {
 
     const response = await fetch(`${API_BASE}/supervisor/processes/${lineId}?date=${date}`, { cache: 'no-store' });
     const result = await response.json();
+    morningState.planCarriedForward = result.plan_carried_forward || null;
 
     if (result.has_plan && result.workstation_plan?.length > 0) {
         morningState.workstations = result.workstation_plan;
@@ -435,6 +436,33 @@ async function reloadMorningAssignments() {
         morningState.targetQty = morningState.processes.length > 0 ? (morningState.processes[0].target_qty || 0) : 0;
         renderMorningAssignments(false);
     }
+    renderCarriedPlanBanner();
+}
+
+// The day's plan is still the system's automatic copy of an earlier day — style and seating
+// included — because the IE has not saved or uploaded one yet. Linking operators onto it is
+// how 2026-10-21 started on yesterday's layout on two lines, so say it plainly before mapping.
+function renderCarriedPlanBanner() {
+    const container = document.getElementById('morning-assignments');
+    if (!container) return;
+    container.querySelector('.carried-plan-banner')?.remove();
+    const carried = morningState.planCarriedForward;
+    if (!carried) return;
+
+    const banner = document.createElement('div');
+    banner.className = 'alert carried-plan-banner';
+    banner.style.cssText = 'background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:14px;line-height:1.5;';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:700;margin-bottom:4px;';
+    title.textContent = '\u26a0 Plan copied from ' + carried.from_date + ' \u2014 not confirmed by IE';
+    const body = document.createElement('div');
+    body.textContent = 'Today\'s plan was copied automatically from ' + carried.from_date
+        + (carried.product_code ? ' (' + carried.product_code + ')' : '')
+        + ', including who sits where. If the line is running a different style or seating today, '
+        + 'ask IE to upload today\'s plan before linking operators.';
+    banner.appendChild(title);
+    banner.appendChild(body);
+    container.prepend(banner);
 }
 
 async function loadMorningProcedure() {
