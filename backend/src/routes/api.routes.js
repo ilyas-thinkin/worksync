@@ -4565,6 +4565,32 @@ router.post('/daily-plans/lock', async (req, res) => {
     }
 });
 
+// The IE checked the overnight copy and it is right as-is. Clears only the "copied, not confirmed"
+// flag — the plan, its operators and any output are left exactly as they are.
+router.post('/daily-plans/confirm-carried', async (req, res) => {
+    const { line_id, work_date } = req.body;
+    const planLog = trackPlanChange(req, res, 'plan_confirm');
+    planLog.line_id = line_id || null;
+    planLog.work_date = work_date || null;
+    if (!line_id || !work_date) {
+        return res.status(400).json({ success: false, error: 'line_id and work_date are required' });
+    }
+    try {
+        const carried = await getUnconfirmedCarriedPlan(pool, line_id, work_date);
+        if (!carried) {
+            return res.json({ success: true, data: { already_confirmed: true } });
+        }
+        planLog.product_id = carried.product_id;
+        planLog.product_code = carried.product_code;
+        planLog.details = { carried_forward_from: carried.carried_forward_from, linked_operators: carried.linked_operators };
+        await markDailyPlanConfirmed(pool, line_id, work_date);
+        realtime.broadcast('data_change', { entity: 'daily_plans', action: 'confirm_carried', line_id, work_date });
+        res.json({ success: true, data: { already_confirmed: false } });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 router.post('/daily-plans/unlock', async (req, res) => {
     const { line_id, work_date } = req.body;
     if (!line_id || !work_date) {

@@ -5479,7 +5479,8 @@ async function loadDailyPlanData() {
                                     <strong>${line.line_code}</strong>
                                     <div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div>
                                     ${hasChangeover ? '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">CHANGEOVER</span>' : ''}
-                                    ${plan?.carried_forward_from ? `<div title="The system copied this plan, with its style and operators, from ${escHtml(plan.carried_forward_from)} because nothing was planned for this day. Save, upload or copy a plan to confirm it." style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:4px;">&#9888; COPIED FROM ${escHtml(plan.carried_forward_from)} &middot; NOT CONFIRMED</div>` : ''}
+                                    ${plan?.carried_forward_from ? `<div title="The system copied this plan, with its style and operators, from ${escHtml(plan.carried_forward_from)} because nothing was planned for this day. Save, upload or copy a plan to confirm it." style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:4px;">&#9888; COPIED FROM ${escHtml(plan.carried_forward_from)} &middot; NOT CONFIRMED</div>
+                                        <button class="btn btn-secondary btn-sm" style="margin-top:4px;font-size:11px;padding:2px 8px;" onclick="event.stopPropagation(); confirmCarriedPlan(${line.id}, '${escHtml(plan.carried_forward_from)}')" title="The copied plan is correct for today — keep it exactly as it is and remove this warning">&#10003; Mark verified</button>` : ''}
                                     ${!planExists ? '<div style="color:#b45309;font-size:11px;font-weight:600;margin-top:4px;">Save daily plan to open details</div>' : ''}
                                     ${primaryOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ OVER-PRODUCED +${(primaryCum - primaryOQ).toLocaleString()}</span>` : primaryComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ ORDER COMPLETE</span>' : ''}
                                     ${incomingOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ INCOMING OVER +${(incomingCum - incomingOQ).toLocaleString()}</span>` : incomingComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ INCOMING COMPLETE</span>' : ''}
@@ -8304,6 +8305,29 @@ async function lockDailyPlan(lineId) {
             return;
         }
         showToast('Plan locked', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function confirmCarriedPlan(lineId, fromDate) {
+    const date = document.getElementById('plan-date').value;
+    if (!confirm(`This plan was copied automatically from ${fromDate}. Mark it as verified for ${date}?\n\nNothing in the plan, operators or output changes — only the warning is removed.`)) {
+        return;
+    }
+    try {
+        const response = await fetch('/api/daily-plans/confirm-carried', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Plan marked as verified', 'success');
         loadDailyPlanData();
     } catch (err) {
         showToast(err.message, 'error');
