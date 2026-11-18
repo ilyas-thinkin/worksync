@@ -15900,7 +15900,7 @@ const handleCloseSurplusWorkstation = async (req, res, action) => {
     }
 
     await logAudit('employee_workstation_assignments', 0,
-        closed.reason === 'finished' ? 'changeover_surplus_finished' : 'changeover_release_surplus', {
+        closed.reason === 'finished' ? 'surplus_finished' : 'surplus_released', {
             line_id,
             work_date,
             workstation_plan_id: lpw.id,
@@ -16136,12 +16136,12 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
     const { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits, releasedSurplus } = result;
 
     await logAudit('changeover_primary_promotions', archiveRecord.id, 'create', archiveRecord, null, req);
-    await logAudit('line_daily_plans', updatedPlan.id, 'changeover_finalize_primary',
+    await logAudit('line_daily_plans', updatedPlan.id, 'co_finalize_primary',
         { ...updatedPlan, archived_promotion_id: archiveRecord.id }, beforePlan, req);
     // The archive RETURNING clause omits the snapshot, so record the released operators separately —
     // otherwise the only trace of them leaving their stations is the deleted assignment rows.
     if (releasedSurplus && releasedSurplus.length > 0) {
-        await logAudit('employee_workstation_assignments', 0, 'changeover_release_surplus', {
+        await logAudit('employee_workstation_assignments', 0, 'surplus_released', {
             line_id,
             work_date,
             archived_promotion_id: archiveRecord.id,
