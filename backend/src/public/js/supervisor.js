@@ -2706,8 +2706,9 @@ function showFinalizeChangeoverPrompt() {
                     ${surplus.map(ws => `<div><strong>${ws.workstation_code}</strong> &nbsp;${[ws.emp_code, ws.emp_name].filter(Boolean).join(' – ') || ''}</div>`).join('')}
                 </div>
                 <div style="font-size:11px;color:#166534;margin-top:8px;">
-                    These keep running primary after converting, and you can still enter their output.
-                    Press <strong>Finish primary</strong> on each when its work is done.
+                    Converting leaves these as they are: they stay on the board marked
+                    <strong>OLD WS</strong>, still running the current style, and you can keep entering
+                    their output. Press <strong>Finish primary</strong> on each when its work is done.
                 </div>
             </div>`
         : '';
@@ -3009,14 +3010,16 @@ function renderHourlySummary() {
             const closedForHour = isSurplusClosedForHour(ws, hour);
             const noEmployee  = !surplusClosed && !ws.assigned_emp_name && wsStatus !== 'covered';
             const notMapped   = !surplusClosed && !noEmployee && wsStatus !== 'covered' && wsStatus !== 'vacant' && !ws.assigned_is_linked;
-            let surplusBadge = '';
+            // After Convert to Primary, a station the new style lacks is kept on the board as an
+            // OLD WS card (still the previous style) until Finish primary / Release closes it.
+            let surplusBadge = ws.is_primary_tail
+                ? `<span style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
+                    title="Old workstation — not in the new style, still running ${ws.tail_product_code || 'the previous style'}">OLD WS${ws.tail_product_code ? ' · ' + ws.tail_product_code : ''}</span>`
+                : '';
             if (surplusClosed) {
                 const closedLabel = ws.surplus_close_reason === 'finished' ? '&#10003; Primary finished' : 'Released';
-                surplusBadge = `<span style="background:#f3f4f6;color:#4b5563;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
+                surplusBadge += `<span style="background:#f3f4f6;color:#4b5563;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
                     title="Closed after ${supHourLabel(ws.surplus_closed_hour)}">${closedLabel} · ${String(ws.surplus_closed_hour).padStart(2, '0')}:00</span>`;
-            } else if (ws.is_primary_tail) {
-                surplusBadge = `<span style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
-                    title="Not in the new style — still finishing the previous style">Finishing ${ws.tail_product_code || 'primary'}</span>`;
             }
 
             // Status badge for card header
