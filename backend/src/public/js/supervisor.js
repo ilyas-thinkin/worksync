@@ -2602,36 +2602,84 @@ function enableHourlyChangeover() {
     renderHourlySummary();
 }
 
-// Auto-prompt shown the moment every staffed workstation has switched to CO —
-// no button needs to be pressed to surface it, it just appears with a single OK.
-// Releasing an operator from a station the changeover style does not use. They stay on shift —
-// the supervisor puts them on another workstation afterwards — so this is deliberately worded as a
-// release, not a departure.
+// Surplus workstations (in the outgoing style only) keep running primary through the changeover and
+// after Convert — they still have bundles to finish. The supervisor closes each one with one of two
+// buttons, and both free the operator to be placed elsewhere:
+//   Finish primary — the work is done; asks which hour it ended in (hours up to it still count).
+//   Release        — the operator is taken off with work still pending.
 function promptReleaseSurplusWs(btn) {
+    const wsCode = btn.dataset.wsCode;
+    const empCode = btn.dataset.empCode || '';
+    const empName = btn.dataset.empName || '';
+    const who = [empCode, empName].filter(Boolean).join(' – ') || 'the operator';
+    if (!confirm(
+        `Release ${who} from ${wsCode} with primary work still pending?\n\n`
+        + `Their hours on this station up to now still count. No more output can be entered here `
+        + `afterwards. Use "Finish primary" instead if the work is done.`
+    )) return;
+    closeSurplusWorkstation(btn.dataset.wsId, btn.dataset.date, 'release', null, wsCode);
+}
+
+function promptFinishSurplusWs(btn) {
     const wsCode = btn.dataset.wsCode;
     const date = btn.dataset.date;
     const empCode = btn.dataset.empCode || '';
     const empName = btn.dataset.empName || '';
     const who = [empCode, empName].filter(Boolean).join(' – ') || 'the operator';
-    if (!confirm(
-        `${wsCode} is not part of the changeover style.\n\n`
-        + `Release ${who} from this workstation?\n\n`
-        + `Their hours on this station up to now still count. The station is freed so you can `
-        + `assign them elsewhere.`
-    )) return;
-    releaseSurplusWorkstation(wsCode, date);
+    // Hours the station could have finished in: up to the hour now in progress. Default is the
+    // current hour, the same rounding a release uses.
+    const nowHour = new Date().getHours();
+    const isToday = date === new Date().toISOString().slice(0, 10);
+    const hours = SUP_WORK_HOURS.filter(h => !isToday || h <= nowHour);
+    if (!hours.length) { showToast('No working hour has started yet', 'error'); return; }
+    const defaultHour = hours[hours.length - 1];
+
+    document.getElementById('surplus-finish-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'surplus-finish-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3200;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:22px;width:min(420px,95vw);box-shadow:0 20px 60px rgba(0,0,0,.3);">
+            <h3 style="margin:0 0 8px;font-size:16px;font-weight:700;color:#111827;">&#10003; Finish primary — ${wsCode}</h3>
+            <p style="margin:0 0 14px;font-size:13px;color:#4b5563;line-height:1.5;">
+                ${who} has finished the primary work on this station. Their hours up to the hour below
+                count; after that the station is closed and they are free to assign elsewhere.
+            </p>
+            <label class="form-label" for="surplus-finish-hour">Finished during</label>
+            <select id="surplus-finish-hour" class="form-control" style="margin-bottom:16px;">
+                ${hours.map(h => `<option value="${h}" ${h === defaultHour ? 'selected' : ''}>${supHourLabel(h)}</option>`).join('')}
+            </select>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn btn-secondary" onclick="document.getElementById('surplus-finish-modal')?.remove()">Cancel</button>
+                <button id="surplus-finish-ok" class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;">Finish primary</button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+    document.getElementById('surplus-finish-ok').addEventListener('click', async (e) => {
+        const hour = parseInt(document.getElementById('surplus-finish-hour')?.value, 10);
+        e.target.disabled = true;
+        const ok = await closeSurplusWorkstation(btn.dataset.wsId, date, 'finish', hour, wsCode);
+        if (ok) modal.remove();
+        else e.target.disabled = false;
+    });
 }
 
-async function releaseSurplusWorkstation(wsCode, date) {
+async function closeSurplusWorkstation(planId, date, action, finishedHour, wsCode) {
     try {
-        const response = await fetch(`${API_BASE}/supervisor/changeover/release-workstation`, {
+        const response = await fetch(`${API_BASE}/supervisor/changeover/close-surplus-workstation`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: hourlyState.lineId, work_date: date, workstation_code: wsCode })
+            body: JSON.stringify({
+                line_id: hourlyState.lineId,
+                work_date: date,
+                workstation_plan_id: parseInt(planId, 10),
+                action,
+                finished_hour: finishedHour
+            })
         });
         const result = await response.json();
-        if (!result.success) throw new Error(result.error || 'Failed to release workstation');
-        showToast(result.message || `${wsCode} released`, 'success');
+        if (!result.success) throw new Error(result.error || `Failed to close ${wsCode}`);
+        showToast(result.message || `${wsCode} closed`, 'success');
         await onHourlyLineChange();
         return true;
     } catch (err) {
@@ -2640,25 +2688,26 @@ async function releaseSurplusWorkstation(wsCode, date) {
     }
 }
 
+// Auto-prompt shown the moment every staffed workstation has switched to CO —
+// no button needs to be pressed to surface it, it just appears with a single OK.
 function showFinalizeChangeoverPrompt() {
     if (document.getElementById('co-finalize-modal')) return;
     hourlyState.finalizePromptShown = true;
 
-    // Stations the incoming style has no work for. Their operators come off the line as part of the
-    // promotion, so the supervisor is shown exactly who that is before confirming — this is the
-    // bulk counterpart of the per-station Release button.
+    // Stations the incoming style has no work for. They are NOT released by converting: they stay on
+    // the board finishing primary until the supervisor presses Finish primary / Release on each.
     const surplus = hourlyState.surplusWorkstations || [];
     const surplusHtml = surplus.length
-        ? `<div style="text-align:left;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin:0 0 16px;">
-                <div style="font-size:12px;font-weight:700;color:#b91c1c;margin-bottom:6px;">
+        ? `<div style="text-align:left;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;margin:0 0 16px;">
+                <div style="font-size:12px;font-weight:700;color:#166534;margin-bottom:6px;">
                     ${surplus.length} workstation${surplus.length === 1 ? '' : 's'} not in the new style
                 </div>
-                <div style="font-size:12px;color:#7f1d1d;line-height:1.5;max-height:150px;overflow-y:auto;">
+                <div style="font-size:12px;color:#14532d;line-height:1.5;max-height:150px;overflow-y:auto;">
                     ${surplus.map(ws => `<div><strong>${ws.workstation_code}</strong> &nbsp;${[ws.emp_code, ws.emp_name].filter(Boolean).join(' – ') || ''}</div>`).join('')}
                 </div>
-                <div style="font-size:11px;color:#991b1b;margin-top:8px;">
-                    These operators are released from their workstations. Hours already worked still
-                    count; assign them to other workstations after converting.
+                <div style="font-size:11px;color:#166534;margin-top:8px;">
+                    These keep running primary after converting, and you can still enter their output.
+                    Press <strong>Finish primary</strong> on each when its work is done.
                 </div>
             </div>`
         : '';
@@ -2678,7 +2727,7 @@ function showFinalizeChangeoverPrompt() {
             <div style="display:flex;gap:8px;justify-content:center;">
                 <button class="btn btn-secondary" style="min-width:100px;" onclick="closeFinalizeChangeoverPrompt()">Cancel</button>
                 <button id="co-finalize-ok-btn" class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;min-width:140px;" onclick="confirmFinalizeChangeoverPrimary()">
-                    ${surplus.length ? 'Release &amp; Convert' : 'Convert to Primary'}
+                    Convert to Primary
                 </button>
             </div>
         </div>`;
@@ -2691,12 +2740,9 @@ function closeFinalizeChangeoverPrompt() {
 
 async function confirmFinalizeChangeoverPrimary() {
     const okBtn = document.getElementById('co-finalize-ok-btn');
-    const hadSurplus = (hourlyState.surplusWorkstations || []).length > 0;
-    const originalLabel = hadSurplus ? 'Release & Convert' : 'Convert to Primary';
+    const originalLabel = 'Convert to Primary';
     if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Converting...'; }
-    // The modal lists the surplus operators above this button, so pressing it IS the supervisor
-    // authorizing their release.
-    const success = await finalizeChangeoverPrimary({ releaseSurplus: hadSurplus });
+    const success = await finalizeChangeoverPrimary();
     if (success) {
         closeFinalizeChangeoverPrompt();
     } else if (okBtn) {
@@ -2723,21 +2769,7 @@ async function finalizeChangeoverPrimary({ releaseSurplus = false } = {}) {
             body: JSON.stringify({ line_id: lineId, work_date: workDate, release_surplus: releaseSurplus })
         });
         const result = await response.json();
-        if (!result.success) {
-            // The server found surplus operators the client did not know about (someone was
-            // assigned since this page last loaded). Refresh the list and re-ask rather than
-            // releasing people the supervisor was never shown.
-            if (result.code === 'SURPLUS_WORKSTATIONS_PENDING') {
-                hourlyState.surplusWorkstations = result.surplus_workstations || [];
-                hourlyState.finalizePrimaryBusy = false;
-                closeFinalizeChangeoverPrompt();
-                hourlyState.finalizePromptShown = false;
-                renderHourlySummary();
-                showToast(result.error || 'Some workstations still need releasing', 'error');
-                return false;
-            }
-            throw new Error(result.error || 'Failed to convert CO as primary');
-        }
+        if (!result.success) throw new Error(result.error || 'Failed to convert CO as primary');
         if (hourlyState.changeoverUiEnabledKey) {
             try { sessionStorage.removeItem(hourlyState.changeoverUiEnabledKey); } catch (_) {}
         }
@@ -2754,6 +2786,11 @@ async function finalizeChangeoverPrimary({ releaseSurplus = false } = {}) {
 
 // Surfaces hours that were started but never finished, before the grace window closes on them.
 // Without this the gap is invisible until the numbers are already missing from the reports.
+// A surplus station closed with Finish primary / Release takes no output after its close hour.
+function isSurplusClosedForHour(ws, hour) {
+    return !!ws?.surplus_closed_at && ws.surplus_closed_hour != null && hour > ws.surplus_closed_hour;
+}
+
 function buildPendingHoursBanner() {
     const workstations = hourlyState.workstations || [];
     if (!workstations.length) return '';
@@ -2774,6 +2811,7 @@ function buildPendingHoursBanner() {
         const missing = [];
         let anyEntered = false;
         for (const ws of workstations) {
+            if (isSurplusClosedForHour(ws, h)) continue;
             const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
             if (!wsProcessIds.length) continue;
             const hasEntry = progress.some(d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === h);
@@ -2837,7 +2875,7 @@ function renderHourlySummary() {
         const finalizeReady = !!hourlyState.canFinalizePrimary;
         const surplusCount = (hourlyState.surplusWorkstations || []).length;
         const surplusNote = surplusCount > 0
-            ? ` ${surplusCount} workstation${surplusCount === 1 ? '' : 's'} not used by the new style — release the operator${surplusCount === 1 ? '' : 's'} to finish.`
+            ? ` ${surplusCount} workstation${surplusCount === 1 ? '' : 's'} not used by the new style keep running primary — press Finish primary on each when its work is done.`
             : '';
         if (hourlyState.changeoverActive) {
             // CO is running — show CO output vs CO target (mirrors the pre-CO primary progress bar)
@@ -2952,7 +2990,9 @@ function renderHourlySummary() {
             } else {
                 workerHtml = displayEmpName
                     ? `${displayEmpCode} – ${displayEmpName}`
-                    : '<span style="color:#dc2626;">Unassigned</span>';
+                    : ws.surplus_closed_at
+                        ? '<span style="color:#9ca3af;">Station closed</span>'
+                        : '<span style="color:#dc2626;">Unassigned</span>';
             }
 
             const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
@@ -2963,8 +3003,21 @@ function renderHourlySummary() {
 
             // Block hourly input if no daily plan, no employee assigned, or employee not mapped
             const noDailyPlan = !hourlyState.hasDailyPlan;
-            const noEmployee  = !ws.assigned_emp_name && wsStatus !== 'covered';
-            const notMapped   = !noEmployee && wsStatus !== 'covered' && wsStatus !== 'vacant' && !ws.assigned_is_linked;
+            // A closed surplus station has no operator row any more, but its hours up to the close
+            // stay editable (the server credits whoever ran them) — so it is never "not assigned".
+            const surplusClosed = !!ws.surplus_closed_at;
+            const closedForHour = isSurplusClosedForHour(ws, hour);
+            const noEmployee  = !surplusClosed && !ws.assigned_emp_name && wsStatus !== 'covered';
+            const notMapped   = !surplusClosed && !noEmployee && wsStatus !== 'covered' && wsStatus !== 'vacant' && !ws.assigned_is_linked;
+            let surplusBadge = '';
+            if (surplusClosed) {
+                const closedLabel = ws.surplus_close_reason === 'finished' ? '&#10003; Primary finished' : 'Released';
+                surplusBadge = `<span style="background:#f3f4f6;color:#4b5563;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
+                    title="Closed after ${supHourLabel(ws.surplus_closed_hour)}">${closedLabel} · ${String(ws.surplus_closed_hour).padStart(2, '0')}:00</span>`;
+            } else if (ws.is_primary_tail) {
+                surplusBadge = `<span style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
+                    title="Not in the new style — still finishing the previous style">Finishing ${ws.tail_product_code || 'primary'}</span>`;
+            }
 
             // Status badge for card header
             let statusBadge = '';
@@ -2992,6 +3045,8 @@ function renderHourlySummary() {
             // Footer buttons — block if no daily plan, no employee, not mapped, or vacant
             const enterOutputBtn = noDailyPlan
                 ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="No production day plan set for this line">&#128683; No Plan</button>`
+                : closedForHour
+                ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Station closed after ${supHourLabel(ws.surplus_closed_hour)}">Closed</button>`
                 : wsStatus === 'vacant'
                     ? `<button class="btn ws-card-action" style="background:#e5e7eb;color:#9ca3af;cursor:not-allowed;" disabled title="Workstation is vacant">Enter Output</button>`
                     : noEmployee
@@ -3008,22 +3063,31 @@ function renderHourlySummary() {
                 // away from — it just needs an operator before the new style goes primary.
                 coBtn = `<span class="ws-card-action" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
                     title="This workstation only exists in the changeover style — assign an operator in the Morning section">&#10023; NEW IN CO</span>`;
+            } else if (ws.is_surplus && (ws.is_primary_tail || (canStartWorkstationChangeover && hasChangeover && coLayoutExists))) {
+                // Not part of the new style, so it can never switch to CO — but it still has primary
+                // work to finish, so output entry stays open. The supervisor closes it when done
+                // (Finish primary) or takes the operator off early (Release). Neither blocks Convert.
+                const empData = `data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
+                        data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
+                        data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"`;
+                if (surplusClosed) {
+                    coBtn = '';
+                } else if (ws.assigned_employee_id) {
+                    coBtn = `<button class="btn ws-card-action" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;"
+                        ${empData}
+                        title="Primary work on this station is done — close it and free the operator"
+                        onclick="promptFinishSurplusWs(this)">&#10003; Finish primary</button>
+                    <button class="btn ws-card-action" style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
+                        ${empData}
+                        title="Take the operator off this station with primary work still pending"
+                        onclick="promptReleaseSurplusWs(this)">&#8599; Release</button>`;
+                } else {
+                    coBtn = `<span class="ws-card-action" style="background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
+                        title="Not part of the changeover style">NOT IN CO</span>`;
+                }
             } else if (isWsChangeover) {
                 coBtn = `<button class="btn ws-card-action" style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;"
                     onclick="revertWsChangeover('${ws.workstation_code}', '${date}')">&#8617; Primary</button>`;
-            } else if (canStartWorkstationChangeover && hasChangeover && coLayoutExists && !ws.has_co_plan) {
-                // Not part of the changeover layout, so it can never switch to CO. Offering the CO
-                // button here just produced a server rejection; releasing the operator is the real
-                // action, and it is what unblocks promotion.
-                coBtn = ws.assigned_employee_id
-                    ? `<button class="btn ws-card-action" style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
-                        data-ws-code="${ws.workstation_code}" data-date="${date}"
-                        data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
-                        data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"
-                        title="Not required for the changeover style — release the operator for reassignment"
-                        onclick="promptReleaseSurplusWs(this)">&#8599; Release</button>`
-                    : `<span class="ws-card-action" style="background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
-                        title="Not part of the changeover style">NOT IN CO</span>`;
             } else if (canStartWorkstationChangeover && hasChangeover) {
                 const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
                 coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
@@ -3100,7 +3164,7 @@ function renderHourlySummary() {
                 <div class="ws-card ${cardClass}" id="hourly-ws-card-${ws.id}">
                     <div class="ws-card-header">
                         <span class="ws-card-code">${ws.workstation_code} <span style="font-size:12px;font-weight:600;color:${workloadColor};">${parseFloat(ws.workload_pct||0).toFixed(0)}%</span></span>
-                        <div class="ws-card-badges">${statusBadge}</div>
+                        <div class="ws-card-badges">${surplusBadge}${statusBadge}</div>
                     </div>
                     <div class="ws-card-body">
                         <div class="ws-card-row">
@@ -3269,7 +3333,7 @@ function openQuickEntry() {
     const workstations = hourlyState.workstations || [];
     const progress = hourlyState.progressData || [];
 
-    const rows = workstations.map(ws => {
+    const rows = workstations.filter(ws => !isSurplusClosedForHour(ws, hour)).map(ws => {
         const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
         const existing = progress.find(d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour);
         const value = existing ? parseInt(existing.quantity || 0, 10) : '';

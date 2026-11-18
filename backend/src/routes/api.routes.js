@@ -2702,6 +2702,195 @@ async function releaseSurplusWorkstation(db, { lineId, workDate, workstationCode
     return { employeeId, workstationCode };
 }
 
+// A surplus station is not idle just because the line has started its changeover: on the floor it
+// keeps finishing primary bundles (line 13 / 2026-11-18, WS75–WS85 under an 85→74 station
+// changeover). So it stays on the hourly board — through Convert to Primary, as a "primary tail"
+// card — until the supervisor closes it: 'finished' (the work is done) or 'released' (the operator
+// is taken off with work still pending). Both free the operator; the reason is what the record says.
+//
+// Two phases qualify a plan row as surplus:
+//   changeover — row of the current primary, no counterpart in the incoming layout;
+//   tail       — row of the product this line was promoted away from today, no counterpart in the
+//                new primary layout.
+async function resolveSurplusWorkstation(db, { lineId, workDate, workstationPlanId = null, workstationCode = null }) {
+    const fail = (status, message) => {
+        const err = new Error(message);
+        err.status = status;
+        throw err;
+    };
+
+    const planResult = await db.query(
+        `SELECT product_id, incoming_product_id, is_locked
+         FROM line_daily_plans WHERE line_id = $1 AND work_date = $2 FOR UPDATE`,
+        [lineId, workDate]
+    );
+    const plan = planResult.rows[0];
+    if (!plan) fail(404, 'No daily plan found');
+    if (plan.is_locked) fail(403, 'Daily plan is locked');
+
+    const promoResult = await db.query(
+        `SELECT previous_primary_product_id
+         FROM changeover_primary_promotions
+         WHERE line_id = $1 AND work_date = $2 AND new_primary_product_id = $3
+         ORDER BY id DESC LIMIT 1`,
+        [lineId, workDate, plan.product_id]
+    );
+    const tailProductId = promoResult.rows[0]?.previous_primary_product_id || null;
+
+    const candidateProducts = [plan.product_id, tailProductId].filter(Boolean);
+    const rowsResult = await db.query(
+        `SELECT id, product_id, workstation_code, workstation_number,
+                surplus_closed_at, surplus_close_reason, surplus_closed_hour
+         FROM line_plan_workstations
+         WHERE line_id = $1 AND work_date = $2 AND product_id = ANY($3::int[])
+         FOR UPDATE`,
+        [lineId, workDate, candidateProducts]
+    );
+    const targetKey = workstationCode ? normalizeWsCode(workstationCode) : null;
+    const lpw = workstationPlanId
+        ? rowsResult.rows.find(r => parseInt(r.id, 10) === parseInt(workstationPlanId, 10))
+        // By code (older clients): the current primary's row wins over a tail row.
+        : rowsResult.rows
+            .filter(r => normalizeWsCode(r.workstation_code) === targetKey)
+            .sort((a, b) => (a.product_id === plan.product_id ? 0 : 1) - (b.product_id === plan.product_id ? 0 : 1))[0];
+    if (!lpw) fail(400, `Workstation ${workstationCode || workstationPlanId} is not in this line's plan`);
+
+    const key = normalizeWsCode(lpw.workstation_code);
+    if (plan.incoming_product_id && lpw.product_id === plan.product_id) {
+        const layout = await classifyChangeoverWorkstations(db, {
+            lineId,
+            workDate,
+            primaryProductId: plan.product_id,
+            incomingProductId: plan.incoming_product_id
+        });
+        // Without an uploaded changeover layout every station looks surplus. Closing on that
+        // basis would empty the line, so refuse until the incoming plan actually exists.
+        if (layout.matched.length === 0 && layout.coOnly.length === 0) {
+            fail(400, 'No changeover workstation plan exists for this line/date yet');
+        }
+        // A station the new style still uses must go through activate-workstation instead —
+        // closing it would quietly drop it out of the changeover rather than switching it over.
+        if (layout.matched.some(ws => ws.key === key)) {
+            fail(400, `Workstation ${lpw.workstation_code} is part of the changeover layout — switch it to CO instead`);
+        }
+        return { lpw, phase: 'changeover', plan };
+    }
+    if (tailProductId && lpw.product_id === tailProductId) {
+        const inNewLayout = rowsResult.rows.some(r =>
+            r.product_id === plan.product_id && normalizeWsCode(r.workstation_code) === key);
+        if (inNewLayout) fail(400, `Workstation ${lpw.workstation_code} belongs to the new primary layout`);
+        return { lpw, phase: 'tail', plan };
+    }
+    fail(400, plan.incoming_product_id
+        ? `Workstation ${lpw.workstation_code} is not a surplus workstation`
+        : 'No changeover product configured for this line');
+}
+
+// Closes a surplus station. The operator's history window ends at closedHour, so the hours they
+// ran the outgoing style still count and nothing after does. 'released' uses the default rounding
+// (the hour in progress stays with the outgoing operator, same as every other release); 'finished'
+// lets the supervisor name the hour the work ended, since Finish is often pressed after the fact.
+async function closeSurplusWorkstation(db, { lineId, workDate, lpw, action, finishedHour = null }) {
+    const fail = (status, message) => {
+        const err = new Error(message);
+        err.status = status;
+        throw err;
+    };
+    const reason = action === 'finish' ? 'finished' : 'released';
+    if (lpw.surplus_closed_at) {
+        return { alreadyClosed: true, reason: lpw.surplus_close_reason, closedHour: lpw.surplus_closed_hour, employeeId: null };
+    }
+
+    const hours = getHistoryHours(false);
+    const isToday = workDate === new Date().toISOString().slice(0, 10);
+    const defaultToHour = isToday ? resolveHistoryEffectiveToHour(workDate, false) : hours[hours.length - 1];
+
+    const lastOutputResult = await db.query(
+        `SELECT MAX(p.hour_slot) AS last_hour
+         FROM line_process_hourly_progress p
+         JOIN line_plan_workstation_processes lpwp ON lpwp.product_process_id = p.process_id
+         WHERE lpwp.workstation_id = $1 AND p.line_id = $2 AND p.work_date = $3`,
+        [lpw.id, lineId, workDate]
+    );
+    const lastOutputHour = lastOutputResult.rows[0]?.last_hour != null
+        ? parseInt(lastOutputResult.rows[0].last_hour, 10)
+        : null;
+
+    let closedHour = defaultToHour;
+    if (action === 'finish' && finishedHour !== null && finishedHour !== undefined && finishedHour !== '') {
+        const requested = parseInt(finishedHour, 10);
+        if (!hours.includes(requested)) fail(400, `Finished hour must be one of ${hours.join(', ')}`);
+        if (requested > defaultToHour) fail(400, 'Finished hour cannot be in the future');
+        closedHour = requested;
+    }
+    // Output already recorded after the close hour would be left with no owner (the orphaned-output
+    // case), so the station cannot be closed before its last entered hour.
+    if (lastOutputHour !== null && closedHour < lastOutputHour) {
+        fail(400, `${lpw.workstation_code} already has output for hour ${lastOutputHour} — choose that hour or later`);
+    }
+
+    const ewaResult = await db.query(
+        `SELECT ewa.employee_id, h.effective_from_hour
+         FROM employee_workstation_assignments ewa
+         LEFT JOIN LATERAL (
+             SELECT effective_from_hour FROM employee_workstation_assignment_history
+             WHERE employee_id = ewa.employee_id AND work_date = ewa.work_date
+               AND is_overtime = false AND effective_to_hour IS NULL
+             ORDER BY effective_from_hour DESC, id DESC LIMIT 1
+         ) h ON true
+         WHERE ewa.line_id = $1 AND ewa.work_date = $2 AND ewa.workstation_code = $3
+           AND ewa.is_overtime = false
+         LIMIT 1`,
+        [lineId, workDate, lpw.workstation_code]
+    );
+    const openFrom = ewaResult.rows[0]?.effective_from_hour;
+    // closeAssignmentHistoryForEmployee deletes a window that would end before it starts, which
+    // would wipe the operator's whole stint here — refuse instead.
+    if (openFrom != null && closedHour < parseInt(openFrom, 10)) {
+        fail(400, `The operator only started on ${lpw.workstation_code} at hour ${openFrom} — choose that hour or later`);
+    }
+
+    const released = await releaseSurplusWorkstation(db, {
+        lineId,
+        workDate,
+        workstationCode: lpw.workstation_code,
+        effectiveToHour: closedHour
+    });
+    await db.query(
+        `UPDATE line_plan_workstations
+         SET surplus_closed_at = NOW(), surplus_close_reason = $2, surplus_closed_hour = $3, updated_at = NOW()
+         WHERE id = $1`,
+        [lpw.id, reason, closedHour]
+    );
+    return { alreadyClosed: false, reason, closedHour, employeeId: released?.employeeId || null };
+}
+
+// Who to credit an hourly entry to on a surplus station that has been closed. The assignment row is
+// gone by then, but the hours up to the close still belong to whoever ran them — the history window
+// says who. Hours after the close are refused: the station has stopped.
+async function resolveClosedSurplusEntryEmployee(db, { lineId, workDate, lpwId, workstationCode, closedHour, closeReason, hour }) {
+    if (hour > closedHour) {
+        return {
+            error: `${workstationCode} was ${closeReason === 'finished' ? 'marked primary finished' : 'released'} `
+                + `after hour ${closedHour} — no output can be entered for later hours`
+        };
+    }
+    const histResult = await db.query(
+        `SELECT employee_id
+         FROM employee_workstation_assignment_history
+         WHERE line_id = $1 AND work_date = $2 AND is_overtime = false
+           AND (line_plan_workstation_id = $3 OR workstation_code = $4)
+           AND effective_from_hour <= $5
+           AND (effective_to_hour IS NULL OR effective_to_hour >= $5)
+         ORDER BY (line_plan_workstation_id = $3) DESC NULLS LAST, id DESC
+         LIMIT 1`,
+        [lineId, workDate, lpwId, workstationCode, hour]
+    );
+    const employeeId = histResult.rows[0]?.employee_id || null;
+    if (!employeeId) return { error: `No operator was on ${workstationCode} in hour ${hour}` };
+    return { employeeId };
+}
+
 async function buildChangeoverPromotionSnapshot(db, {
     lineId,
     workDate,
@@ -14209,6 +14398,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     lpw.product_id, lpw.group_name, lpw.co_employee_id,
                     e_co.emp_code AS co_emp_code, e_co.emp_name AS co_emp_name,
                     lpw.ws_changeover_active, lpw.ws_changeover_started_at,
+                    lpw.surplus_closed_at, lpw.surplus_close_reason, lpw.surplus_closed_hour,
                     wce.feed_given AS changeover_feed_given,
                     wce.feed_quantity AS changeover_feed_quantity,
                     wce.primary_output_quantity AS changeover_primary_output_quantity,
@@ -14300,100 +14490,113 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 coWsMap.get(nk).rows.push(row);
             }
 
+            // Builds one card from a plan row. coLookup is the incoming layout (empty for cards that
+            // can never switch); ownProductId is the product the row belongs to.
+            const hasCoLayoutForCards = !!incomingId && coWsMap.size > 0;
+            const makeWsCard = (row, coLookup, ownProductId) => {
+                const nwk = normalizeWsCode(row.workstation_code);
+                const isCoActive = row.ws_changeover_active && incomingId && coLookup.has(nwk);
+                const coData = isCoActive ? coLookup.get(nwk) : null;
+                const firstCoRow = coData ? coData.rows[0] : null;
+                const primaryTaktTimeSeconds = parseFloat(row.takt_time_seconds || 0) || 0;
+                const primaryTargetUnits = primaryTaktTimeSeconds > 0
+                    ? computeTargetUnitsFromTakt(primaryTaktTimeSeconds, workingSeconds)
+                    : primaryTarget;
+                const primaryHourlyTargetUnits = primaryTaktTimeSeconds > 0
+                    ? computeHourlyTargetFromTakt(primaryTaktTimeSeconds)
+                    : perHourTarget;
+                const coTaktTimeSeconds = parseFloat(firstCoRow?.takt_time_seconds || 0) || 0;
+                const coTargetUnits = coTaktTimeSeconds > 0
+                    ? computeTargetUnitsFromTakt(coTaktTimeSeconds, workingSeconds)
+                    : incomingTarget;
+                const coHourlyTargetUnits = coTaktTimeSeconds > 0
+                    ? computeHourlyTargetFromTakt(coTaktTimeSeconds)
+                    : perHourIncomingTarget;
+                const effectiveTargetUnits = isCoActive ? coTargetUnits : primaryTargetUnits;
+                const effectiveHourlyTargetUnits = isCoActive ? coHourlyTargetUnits : primaryHourlyTargetUnits;
+
+                // Calculate per-WS changeover target (per_hour_incoming * remaining hours)
+                let wsChangeoverTarget = null;
+                let wsChangeoverRemainingHours = null;
+                if (isCoActive && row.ws_changeover_started_at) {
+                    wsChangeoverRemainingHours = getRemainingShiftHours(row.ws_changeover_started_at, inTime, outTime, lunchMins);
+                    wsChangeoverTarget = roundMetric(coHourlyTargetUnits * wsChangeoverRemainingHours, 2);
+                }
+
+                // CO employee suggestion — from incoming product's WS plan (IE pre-assignment)
+                const incomingCoData = coLookup.get(nwk) ?? null;
+
+                return {
+                    id: isCoActive ? coData.plan_id : row.workstation_plan_id,
+                    primary_ws_id: row.workstation_plan_id,
+                    workstation_number: row.workstation_number,
+                    workstation_code: row.workstation_code,
+                    group_name: row.group_name || null,
+                    has_co_plan: coLookup.has(nwk),
+                    co_suggested_emp_id: incomingCoData?.co_emp_id ?? null,
+                    co_suggested_emp_code: incomingCoData?.co_emp_code ?? null,
+                    co_suggested_emp_name: incomingCoData?.co_emp_name ?? null,
+                    takt_time_seconds: isCoActive ? (firstCoRow?.takt_time_seconds ?? row.takt_time_seconds) : row.takt_time_seconds,
+                    target_units: roundMetric(effectiveTargetUnits, 2),
+                    hourly_target_units: roundMetric(effectiveHourlyTargetUnits, 2),
+                    actual_sam_seconds: isCoActive ? (firstCoRow?.actual_sam_seconds ?? row.actual_sam_seconds) : row.actual_sam_seconds,
+                    workload_pct: isCoActive ? (firstCoRow?.workload_pct ?? row.workload_pct) : row.workload_pct,
+                    ws_changeover_active: !!row.ws_changeover_active,
+                    ws_changeover_started_at: row.ws_changeover_started_at || null,
+                    ws_changeover_target: wsChangeoverTarget,
+                    ws_changeover_remaining_hours: wsChangeoverRemainingHours,
+                    ws_changeover_hourly_target: roundMetric(coHourlyTargetUnits, 2),
+                    primary_target_units: roundMetric(primaryTargetUnits, 2),
+                    primary_hourly_target_units: roundMetric(primaryHourlyTargetUnits, 2),
+                    co_target_units: roundMetric(coTargetUnits, 2),
+                    co_hourly_target_units: roundMetric(coHourlyTargetUnits, 2),
+                    assigned_employee_id: isCoActive ? (firstCoRow?.assigned_employee_id ?? row.assigned_employee_id) : row.assigned_employee_id,
+                    assigned_emp_code: isCoActive ? (firstCoRow?.assigned_emp_code ?? row.assigned_emp_code) : row.assigned_emp_code,
+                    assigned_emp_name: isCoActive ? (firstCoRow?.assigned_emp_name ?? row.assigned_emp_name) : row.assigned_emp_name,
+                    assigned_is_linked: isCoActive ? (firstCoRow?.assigned_is_linked ?? row.assigned_is_linked) : row.assigned_is_linked,
+                    material_provided: (isCoActive ? (firstCoRow?.material_provided ?? row.material_provided) : row.material_provided) ?? null,
+                    changeover_feed_given: !!row.changeover_feed_given,
+                    changeover_feed_quantity: parseInt(row.changeover_feed_quantity || 0, 10),
+                    changeover_primary_output_quantity: parseInt(row.changeover_primary_output_quantity || 0, 10),
+                    changeover_primary_target_quantity: parseInt(row.changeover_primary_target_quantity || 0, 10),
+                    changeover_primary_balance_quantity: parseInt(row.changeover_primary_balance_quantity || 0, 10),
+                    changeover_primary_pending_wip: parseInt(row.changeover_primary_pending_wip || 0, 10),
+                    changeover_same_employee: row.changeover_same_employee === true,
+                    // Whether this station actually cut over on THIS date. A changeover running
+                    // across a day boundary carries ws_changeover_active forward, but the cutover
+                    // itself happened on the earlier day and its snapshot belongs to that day —
+                    // fabricating one here would assert a second cutover and double-count the
+                    // balance and WIP it records. The client uses this to avoid presenting the
+                    // absent snapshot as a row of real zeros.
+                    has_changeover_event: !!row.changeover_event_id,
+                    product_id: isCoActive ? incomingId : ownProductId,
+                    departure_id: row.departure_id || null,
+                    departure_time: row.departure_time || null,
+                    departure_reason: row.departure_reason || null,
+                    adjustment_id: row.adjustment_id || null,
+                    coverage_type: row.coverage_type || null,
+                    reassignment_time: row.reassignment_time || null,
+                    covering_emp_code: row.covering_emp_code || null,
+                    covering_emp_name: row.covering_emp_name || null,
+                    covering_from_ws: row.covering_from_ws || null,
+                    ws_status: row.coverage_type ? 'covered' : (!row.departure_id ? 'active' : (!row.adjustment_id ? 'vacant' : 'covered')),
+                    // Primary-only station while a changeover layout exists: it keeps running the
+                    // outgoing style until the supervisor closes it (Finish primary / Release).
+                    is_surplus: hasCoLayoutForCards && !coLookup.has(nwk),
+                    surplus_closed_at: row.surplus_closed_at || null,
+                    surplus_close_reason: row.surplus_close_reason || null,
+                    surplus_closed_hour: row.surplus_closed_hour != null ? parseInt(row.surplus_closed_hour, 10) : null,
+                    processes: [],
+                    co_processes: []
+                };
+            };
+
             // Group primary WS rows; for ws_changeover_active WSes swap in changeover data
             const wsMap = new Map();
             for (const row of primaryPlanResult.rows) {
                 const primaryWsId = row.workstation_plan_id;
                 if (!wsMap.has(primaryWsId)) {
-                    const nwk = normalizeWsCode(row.workstation_code);
-                    const isCoActive = row.ws_changeover_active && incomingId && coWsMap.has(nwk);
-                    const coData = isCoActive ? coWsMap.get(nwk) : null;
-                    const firstCoRow = coData ? coData.rows[0] : null;
-                    const primaryTaktTimeSeconds = parseFloat(row.takt_time_seconds || 0) || 0;
-                    const primaryTargetUnits = primaryTaktTimeSeconds > 0
-                        ? computeTargetUnitsFromTakt(primaryTaktTimeSeconds, workingSeconds)
-                        : primaryTarget;
-                    const primaryHourlyTargetUnits = primaryTaktTimeSeconds > 0
-                        ? computeHourlyTargetFromTakt(primaryTaktTimeSeconds)
-                        : perHourTarget;
-                    const coTaktTimeSeconds = parseFloat(firstCoRow?.takt_time_seconds || 0) || 0;
-                    const coTargetUnits = coTaktTimeSeconds > 0
-                        ? computeTargetUnitsFromTakt(coTaktTimeSeconds, workingSeconds)
-                        : incomingTarget;
-                    const coHourlyTargetUnits = coTaktTimeSeconds > 0
-                        ? computeHourlyTargetFromTakt(coTaktTimeSeconds)
-                        : perHourIncomingTarget;
-                    const effectiveTargetUnits = isCoActive ? coTargetUnits : primaryTargetUnits;
-                    const effectiveHourlyTargetUnits = isCoActive ? coHourlyTargetUnits : primaryHourlyTargetUnits;
-
-                    // Calculate per-WS changeover target (per_hour_incoming * remaining hours)
-                    let wsChangeoverTarget = null;
-                    let wsChangeoverRemainingHours = null;
-                    if (isCoActive && row.ws_changeover_started_at) {
-                        wsChangeoverRemainingHours = getRemainingShiftHours(row.ws_changeover_started_at, inTime, outTime, lunchMins);
-                        wsChangeoverTarget = roundMetric(coHourlyTargetUnits * wsChangeoverRemainingHours, 2);
-                    }
-
-                    // CO employee suggestion — from incoming product's WS plan (IE pre-assignment)
-                    const incomingCoData = coWsMap.get(nwk) ?? null;
-
-                    wsMap.set(primaryWsId, {
-                        id: isCoActive ? coData.plan_id : primaryWsId,
-                        primary_ws_id: primaryWsId,
-                        workstation_number: row.workstation_number,
-                        workstation_code: row.workstation_code,
-                        group_name: row.group_name || null,
-                        has_co_plan: coWsMap.has(nwk),
-                        co_suggested_emp_id: incomingCoData?.co_emp_id ?? null,
-                        co_suggested_emp_code: incomingCoData?.co_emp_code ?? null,
-                        co_suggested_emp_name: incomingCoData?.co_emp_name ?? null,
-                        takt_time_seconds: isCoActive ? (firstCoRow?.takt_time_seconds ?? row.takt_time_seconds) : row.takt_time_seconds,
-                        target_units: roundMetric(effectiveTargetUnits, 2),
-                        hourly_target_units: roundMetric(effectiveHourlyTargetUnits, 2),
-                        actual_sam_seconds: isCoActive ? (firstCoRow?.actual_sam_seconds ?? row.actual_sam_seconds) : row.actual_sam_seconds,
-                        workload_pct: isCoActive ? (firstCoRow?.workload_pct ?? row.workload_pct) : row.workload_pct,
-                        ws_changeover_active: !!row.ws_changeover_active,
-                        ws_changeover_started_at: row.ws_changeover_started_at || null,
-                        ws_changeover_target: wsChangeoverTarget,
-                        ws_changeover_remaining_hours: wsChangeoverRemainingHours,
-                        ws_changeover_hourly_target: roundMetric(coHourlyTargetUnits, 2),
-                        primary_target_units: roundMetric(primaryTargetUnits, 2),
-                        primary_hourly_target_units: roundMetric(primaryHourlyTargetUnits, 2),
-                        co_target_units: roundMetric(coTargetUnits, 2),
-                        co_hourly_target_units: roundMetric(coHourlyTargetUnits, 2),
-                        assigned_employee_id: isCoActive ? (firstCoRow?.assigned_employee_id ?? row.assigned_employee_id) : row.assigned_employee_id,
-                        assigned_emp_code: isCoActive ? (firstCoRow?.assigned_emp_code ?? row.assigned_emp_code) : row.assigned_emp_code,
-                        assigned_emp_name: isCoActive ? (firstCoRow?.assigned_emp_name ?? row.assigned_emp_name) : row.assigned_emp_name,
-                        assigned_is_linked: isCoActive ? (firstCoRow?.assigned_is_linked ?? row.assigned_is_linked) : row.assigned_is_linked,
-                        material_provided: (isCoActive ? (firstCoRow?.material_provided ?? row.material_provided) : row.material_provided) ?? null,
-                        changeover_feed_given: !!row.changeover_feed_given,
-                        changeover_feed_quantity: parseInt(row.changeover_feed_quantity || 0, 10),
-                        changeover_primary_output_quantity: parseInt(row.changeover_primary_output_quantity || 0, 10),
-                        changeover_primary_target_quantity: parseInt(row.changeover_primary_target_quantity || 0, 10),
-                        changeover_primary_balance_quantity: parseInt(row.changeover_primary_balance_quantity || 0, 10),
-                        changeover_primary_pending_wip: parseInt(row.changeover_primary_pending_wip || 0, 10),
-                        changeover_same_employee: row.changeover_same_employee === true,
-                        // Whether this station actually cut over on THIS date. A changeover running
-                        // across a day boundary carries ws_changeover_active forward, but the cutover
-                        // itself happened on the earlier day and its snapshot belongs to that day —
-                        // fabricating one here would assert a second cutover and double-count the
-                        // balance and WIP it records. The client uses this to avoid presenting the
-                        // absent snapshot as a row of real zeros.
-                        has_changeover_event: !!row.changeover_event_id,
-                        product_id: isCoActive ? incomingId : primaryId,
-                        departure_id: row.departure_id || null,
-                        departure_time: row.departure_time || null,
-                        departure_reason: row.departure_reason || null,
-                        adjustment_id: row.adjustment_id || null,
-                        coverage_type: row.coverage_type || null,
-                        reassignment_time: row.reassignment_time || null,
-                        covering_emp_code: row.covering_emp_code || null,
-                        covering_emp_name: row.covering_emp_name || null,
-                        covering_from_ws: row.covering_from_ws || null,
-                        ws_status: row.coverage_type ? 'covered' : (!row.departure_id ? 'active' : (!row.adjustment_id ? 'vacant' : 'covered')),
-                        processes: [],
-                        co_processes: []
-                    });
+                    wsMap.set(primaryWsId, makeWsCard(row, coWsMap, primaryId));
                 }
 
                 const ws = wsMap.get(primaryWsId);
@@ -14552,6 +14755,50 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 }
             }
 
+            // Primary tail: after Convert to Primary, the stations the old style had and the new one
+            // lacks are still finishing old-style work. Without these cards they vanished from the
+            // board the moment the line converted and their output had nowhere to go. Shown while
+            // staffed, and greyed once closed so the last hours can still be corrected.
+            const promotionResult = await pool.query(
+                `SELECT cpp.previous_primary_product_id, p.product_code
+                 FROM changeover_primary_promotions cpp
+                 LEFT JOIN products p ON p.id = cpp.previous_primary_product_id
+                 WHERE cpp.line_id = $1 AND cpp.work_date = $2 AND cpp.new_primary_product_id = $3
+                 ORDER BY cpp.id DESC LIMIT 1`,
+                [lineId, date, primaryId]
+            );
+            const tailProductId = promotionResult.rows[0]?.previous_primary_product_id || null;
+            if (tailProductId && tailProductId !== primaryId) {
+                const tailPlanResult = await buildWsPlanQuery(tailProductId);
+                const boardKeys = new Set(
+                    Array.from(wsMap.values()).map(ws => normalizeWsCode(ws.workstation_code))
+                );
+                const tailCards = new Map();
+                for (const row of tailPlanResult.rows) {
+                    if (boardKeys.has(normalizeWsCode(row.workstation_code))) continue;
+                    if (!row.assigned_employee_id && !row.surplus_closed_at) continue;
+                    if (!tailCards.has(row.workstation_plan_id)) {
+                        tailCards.set(row.workstation_plan_id, {
+                            ...makeWsCard(row, new Map(), tailProductId),
+                            is_surplus: true,
+                            is_primary_tail: true,
+                            tail_product_code: promotionResult.rows[0].product_code || null
+                        });
+                    }
+                    tailCards.get(row.workstation_plan_id).processes.push({
+                        id: row.process_id,
+                        sequence_number: row.sequence_number,
+                        operation_code: row.operation_code,
+                        operation_name: row.operation_name,
+                        operation_sah: row.operation_sah,
+                        product_code: row.product_code,
+                        target_qty: row.target_qty,
+                        sequence_in_workstation: row.sequence_in_workstation
+                    });
+                }
+                for (const [planId, card] of tailCards) wsMap.set(`tail:${planId}`, card);
+            }
+
             // Sorted by station number so the changeover-only cards appended above land in their
             // real position on the line. The group-leader pass below depends on this order.
             const workstations = Array.from(wsMap.values()).sort(
@@ -14619,7 +14866,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
             // Vacant workstations (nobody assigned) can never be switched to CO, so they
             // shouldn't block the "all workstations converted" gate — nothing is produced
             // there regardless of which product it's nominally attributed to.
-            const staffedWorkstations = workstations.filter(ws => ws.assigned_employee_id && !ws.is_co_only);
+            const staffedWorkstations = workstations.filter(ws => ws.assigned_employee_id && !ws.is_co_only && !ws.is_primary_tail);
 
             // Only stations that exist in BOTH layouts can switch, so only those decide whether
             // promotion is possible. When a 100-station style changes over to an 80-station one the
@@ -15588,17 +15835,18 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
     }
 });
 
-// Releases the operator from a workstation the incoming style does not use, so promotion is no
-// longer blocked on a station that can never switch to CO. This is the per-station counterpart of
-// the bulk release the finalize modal performs; supervisors use it as each surplus station finishes
-// its outgoing-style work, rather than waiting until promotion.
-//
-// The operator is not marked absent or departed — they are still on shift, and the supervisor
-// assigns them to another workstation afterwards. Only their window at *this* station is closed.
-router.post('/supervisor/changeover/release-workstation', async (req, res) => {
-    const { line_id, work_date, workstation_code } = req.body;
-    if (!line_id || !work_date || !workstation_code) {
-        return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
+// Closes a surplus workstation (see resolveSurplusWorkstation): 'finish' when its primary work is
+// done, 'release' when the operator is taken off with work still pending. Either way the operator is
+// not marked absent or departed — they are still on shift, and the supervisor assigns them to
+// another workstation afterwards. Only their window at *this* station is closed. Neither is needed
+// for Convert to Primary any more; the station keeps running primary until one of them is pressed.
+const handleCloseSurplusWorkstation = async (req, res, action) => {
+    const { line_id, work_date, workstation_plan_id, workstation_code, finished_hour } = req.body;
+    if (!line_id || !work_date || (!workstation_plan_id && !workstation_code)) {
+        return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_plan_id are required' });
+    }
+    if (action !== 'finish' && action !== 'release') {
+        return res.status(400).json({ success: false, error: "action must be 'finish' or 'release'" });
     }
     if (!CHANGEOVER_ENABLED) {
         return res.status(403).json({ success: false, error: 'Changeover is disabled' });
@@ -15608,108 +15856,90 @@ router.post('/supervisor/changeover/release-workstation', async (req, res) => {
     }
 
     const client = await pool.connect();
+    let resolved;
+    let closed;
+    let operator = null;
     try {
         await client.query('BEGIN');
-
-        const planResult = await client.query(
-            `SELECT product_id, incoming_product_id, is_locked
-             FROM line_daily_plans WHERE line_id = $1 AND work_date = $2 FOR UPDATE`,
-            [line_id, work_date]
+        resolved = await resolveSurplusWorkstation(client, {
+            lineId: line_id,
+            workDate: work_date,
+            workstationPlanId: workstation_plan_id || null,
+            workstationCode: workstation_code || null
+        });
+        const opResult = await client.query(
+            `SELECT e.id, e.emp_code, e.emp_name
+             FROM employee_workstation_assignments ewa JOIN employees e ON e.id = ewa.employee_id
+             WHERE ewa.line_id = $1 AND ewa.work_date = $2 AND ewa.workstation_code = $3 AND ewa.is_overtime = false
+             LIMIT 1`,
+            [line_id, work_date, resolved.lpw.workstation_code]
         );
-        const plan = planResult.rows[0];
-        if (!plan) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ success: false, error: 'No daily plan found' });
-        }
-        if (plan.is_locked) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ success: false, error: 'Daily plan is locked' });
-        }
-        if (!plan.incoming_product_id) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ success: false, error: 'No changeover product configured for this line' });
-        }
-
-        const layout = await classifyChangeoverWorkstations(client, {
+        operator = opResult.rows[0] || null;
+        closed = await closeSurplusWorkstation(client, {
             lineId: line_id,
             workDate: work_date,
-            primaryProductId: plan.product_id,
-            incomingProductId: plan.incoming_product_id,
-            forUpdate: true
+            lpw: resolved.lpw,
+            action,
+            finishedHour: finished_hour
         });
-
-        // Without an uploaded changeover layout every station looks surplus. Releasing on that
-        // basis would empty the line, so refuse until the incoming plan actually exists.
-        if (layout.matched.length === 0 && layout.coOnly.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({
-                success: false,
-                error: 'No changeover workstation plan exists for this line/date yet'
-            });
-        }
-
-        const target = normalizeWsCode(workstation_code);
-        // Only genuinely surplus stations may be released here. A station the new style still uses
-        // must go through activate-workstation instead — releasing it would quietly drop it out of
-        // the changeover rather than switching it over.
-        const surplus = layout.surplus.find(ws => ws.key === target);
-        if (!surplus) {
-            const matched = layout.matched.find(ws => ws.key === target);
-            await client.query('ROLLBACK');
-            return res.status(400).json({
-                success: false,
-                error: matched
-                    ? `Workstation ${workstation_code} is part of the changeover layout — switch it to CO instead of releasing it`
-                    : `Workstation ${workstation_code} is not in the primary workstation plan`
-            });
-        }
-        if (!surplus.employee_id) {
-            await client.query('ROLLBACK');
-            return res.json({
-                success: true,
-                message: `Workstation ${workstation_code} already has no operator`,
-                data: { workstation_code, employee_id: null, already_vacant: true }
-            });
-        }
-
-        const released = await releaseSurplusWorkstation(client, {
-            lineId: line_id,
-            workDate: work_date,
-            workstationCode: surplus.workstation_code
-        });
-
         await client.query('COMMIT');
-
-        await logAudit('employee_workstation_assignments', 0, 'changeover_release_surplus', {
-            line_id,
-            work_date,
-            workstation_code: surplus.workstation_code,
-            employee_id: released?.employeeId || surplus.employee_id,
-            primary_product_id: plan.product_id,
-            incoming_product_id: plan.incoming_product_id,
-            context: 'workstation_not_in_changeover_layout'
-        }, null, req).catch(() => {});
-
-        realtime.broadcast('data_change', { entity: 'changeover', action: 'ws_released', line_id, work_date, workstation_code: surplus.workstation_code });
-        realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, work_date, workstation_code: surplus.workstation_code });
-
-        return res.json({
-            success: true,
-            message: `${surplus.emp_name || 'Operator'} released from ${surplus.workstation_code} — not required for the changeover style`,
-            data: {
-                workstation_code: surplus.workstation_code,
-                employee_id: released?.employeeId || surplus.employee_id,
-                emp_code: surplus.emp_code,
-                emp_name: surplus.emp_name
-            }
-        });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         return res.status(err.status || 500).json({ success: false, error: err.message });
     } finally {
         client.release();
     }
-});
+
+    const { lpw, phase, plan } = resolved;
+    if (closed.alreadyClosed) {
+        return res.json({
+            success: true,
+            message: `Workstation ${lpw.workstation_code} is already closed`,
+            data: { workstation_code: lpw.workstation_code, already_closed: true, close_reason: closed.reason, closed_hour: closed.closedHour }
+        });
+    }
+
+    await logAudit('employee_workstation_assignments', 0,
+        closed.reason === 'finished' ? 'changeover_surplus_finished' : 'changeover_release_surplus', {
+            line_id,
+            work_date,
+            workstation_plan_id: lpw.id,
+            workstation_code: lpw.workstation_code,
+            employee_id: closed.employeeId || operator?.id || null,
+            closed_hour: closed.closedHour,
+            phase,
+            primary_product_id: plan.product_id,
+            incoming_product_id: plan.incoming_product_id,
+            context: phase === 'tail' ? 'primary_tail_after_promotion' : 'workstation_not_in_changeover_layout'
+        }, null, req).catch(() => {});
+
+    realtime.broadcast('data_change', { entity: 'changeover', action: closed.reason === 'finished' ? 'ws_finished' : 'ws_released', line_id, work_date, workstation_code: lpw.workstation_code });
+    realtime.broadcast('data_change', { entity: 'workstation_assignments', action: 'update', line_id, work_date, workstation_code: lpw.workstation_code });
+
+    const who = operator?.emp_name || 'Operator';
+    return res.json({
+        success: true,
+        message: closed.reason === 'finished'
+            ? `${lpw.workstation_code} primary finished (hour ${closed.closedHour}) — ${who} is free to reassign`
+            : `${who} released from ${lpw.workstation_code}`,
+        data: {
+            workstation_plan_id: lpw.id,
+            workstation_code: lpw.workstation_code,
+            close_reason: closed.reason,
+            closed_hour: closed.closedHour,
+            employee_id: closed.employeeId || operator?.id || null,
+            emp_code: operator?.emp_code || null,
+            emp_name: operator?.emp_name || null
+        }
+    });
+};
+
+router.post('/supervisor/changeover/close-surplus-workstation', (req, res) =>
+    handleCloseSurplusWorkstation(req, res, req.body?.action));
+
+// Older clients: release by workstation_code.
+router.post('/supervisor/changeover/release-workstation', (req, res) =>
+    handleCloseSurplusWorkstation(req, res, 'release'));
 
 // Helper: runs the full changeover promotion (used by both the route and auto-promote).
 // Returns { archiveRecord, updatedPlan, beforePlan, promotedProductId, promotedTargetUnits }
@@ -15787,25 +16017,13 @@ async function performChangeoverPromotion(lineId, workDate, userId, { releaseSur
         if (pendingWorkstations.length > 0)
             fail(400, `All workstations must switch to CO before promotion. Pending: ${pendingWorkstations.join(', ')}`);
 
-        // Surplus stations still holding an operator: the supervisor has to have agreed to release
-        // them, because it takes those operators off this line's clock. Releasing is deliberately
-        // not silent — the error names the stations so the caller can show them and ask.
+        // Surplus stations still holding an operator do NOT block promotion: on the floor they keep
+        // finishing primary bundles after the new style takes over, and stay on the hourly board as
+        // primary-tail cards until the supervisor presses Finish primary / Release on each. Demanding
+        // a release here took operators with real work left off the line's clock. A caller can still
+        // ask for the old bulk release with release_surplus.
         const staffedSurplus = layout.surplus.filter(ws => ws.employee_id != null);
-        if (staffedSurplus.length > 0 && !releaseSurplus) {
-            const err = new Error(
-                `${staffedSurplus.length} workstation(s) are not part of the changeover layout and still have an operator: `
-                + `${staffedSurplus.map(ws => ws.workstation_code).join(', ')}. Release them to continue.`
-            );
-            err.status = 409;
-            err.code = 'SURPLUS_WORKSTATIONS_PENDING';
-            err.surplusWorkstations = staffedSurplus.map(ws => ({
-                workstation_code: ws.workstation_code,
-                employee_id: ws.employee_id,
-                emp_code: ws.emp_code,
-                emp_name: ws.emp_name
-            }));
-            throw err;
-        }
+        const surplusToRelease = releaseSurplus ? staffedSurplus : [];
 
         const snapshot = await buildChangeoverPromotionSnapshot(client, {
             lineId,
@@ -15813,7 +16031,7 @@ async function performChangeoverPromotion(lineId, workDate, userId, { releaseSur
             previousPrimaryProductId,
             newPrimaryProductId: promotedProductId,
             beforePlan,
-            releasedSurplusWorkstations: staffedSurplus.map(ws => ({
+            releasedSurplusWorkstations: surplusToRelease.map(ws => ({
                 workstation_code: ws.workstation_code,
                 employee_id: ws.employee_id,
                 emp_code: ws.emp_code,
@@ -15837,17 +16055,17 @@ async function performChangeoverPromotion(lineId, workDate, userId, { releaseSur
         );
         archiveRecord = archiveInsertResult.rows[0];
 
-        // Snapshot and archive are written, so the pre-release state is preserved. Now take the
-        // surplus operators off their stations: their history window closes at the last completed
-        // hour and the station is freed, leaving them unassigned and available for the supervisor
-        // to place elsewhere.
-        for (const ws of staffedSurplus) {
-            const released = await releaseSurplusWorkstation(client, {
+        // Snapshot and archive are written, so the pre-release state is preserved. Only when the
+        // caller asked for it: take the surplus operators off their stations (window closed, station
+        // stamped 'released'), leaving them unassigned for the supervisor to place elsewhere.
+        for (const ws of surplusToRelease) {
+            const closed = await closeSurplusWorkstation(client, {
                 lineId,
                 workDate,
-                workstationCode: ws.workstation_code
+                lpw: { id: ws.primary_workstation_id, workstation_code: ws.workstation_code, surplus_closed_at: null },
+                action: 'release'
             });
-            if (released) releasedSurplus.push(released);
+            if (closed.employeeId) releasedSurplus.push({ employeeId: closed.employeeId, workstationCode: ws.workstation_code });
         }
 
         await normalizeRegularAssignmentsToProductWorkstations(client, {
@@ -15912,16 +16130,6 @@ router.post('/supervisor/changeover/finalize-primary', async (req, res) => {
             releaseSurplus: release_surplus === true || release_surplus === 'true'
         });
     } catch (err) {
-        // Surplus stations still staffed: hand the list back so the client can name the operators
-        // it is about to take off the line and ask before retrying with release_surplus.
-        if (err.code === 'SURPLUS_WORKSTATIONS_PENDING') {
-            return res.status(err.status || 409).json({
-                success: false,
-                error: err.message,
-                code: err.code,
-                surplus_workstations: err.surplusWorkstations || []
-            });
-        }
         return res.status(err.status || 500).json({ success: false, error: err.message });
     }
 
@@ -17200,6 +17408,7 @@ router.post('/supervisor/progress', async (req, res) => {
                 // per employee_id, leaving rows[0] — and so who the output was credited to —
                 // dependent on scan order. Regular-hours entry must never pick up an OT row.
                 `SELECT lpw.id, lpw.workstation_code,
+                        lpw.surplus_closed_at, lpw.surplus_close_reason, lpw.surplus_closed_hour,
                         ewa.employee_id,
                         array_agg(lpwp.product_process_id ORDER BY lpwp.sequence_in_workstation) as process_ids
                  FROM line_plan_workstations lpw
@@ -17216,13 +17425,29 @@ router.post('/supervisor/progress', async (req, res) => {
                      LIMIT 1
                  ) ewa ON true
                  WHERE lpw.id = $1 AND lpw.line_id = $2
-                 GROUP BY lpw.id, lpw.workstation_code, ewa.employee_id`,
+                 GROUP BY lpw.id, lpw.workstation_code, lpw.surplus_closed_at, lpw.surplus_close_reason,
+                          lpw.surplus_closed_hour, ewa.employee_id`,
                 [workstation_plan_id, line_id]
             );
             if (!wsResult.rows[0]) {
                 return res.status(400).json({ success: false, error: 'Workstation plan not found' });
             }
             const ws = wsResult.rows[0];
+            // A closed surplus station has no assignment row any more; its hours up to the close
+            // still belong to whoever ran them, and nothing after the close is accepted.
+            if (ws.surplus_closed_at) {
+                const owner = await resolveClosedSurplusEntryEmployee(pool, {
+                    lineId: line_id,
+                    workDate: work_date,
+                    lpwId: ws.id,
+                    workstationCode: ws.workstation_code,
+                    closedHour: parseInt(ws.surplus_closed_hour, 10),
+                    closeReason: ws.surplus_close_reason,
+                    hour: hourValue
+                });
+                if (owner.error) return res.status(400).json({ success: false, error: owner.error });
+                ws.employee_id = owner.employeeId;
+            }
             if (!ws.employee_id) {
                 return res.status(400).json({ success: false, error: 'No employee assigned to this workstation' });
             }
@@ -17578,6 +17803,7 @@ router.post('/supervisor/progress/batch', async (req, res) => {
         const wsResult = await client.query(
             `SELECT lpw.id, lpw.workstation_code,
                     COALESCE(lpw.group_name, lpw.workstation_code) AS group_identifier,
+                    lpw.surplus_closed_at, lpw.surplus_close_reason, lpw.surplus_closed_hour,
                     ewa.employee_id,
                     array_agg(lpwp.product_process_id ORDER BY lpwp.sequence_in_workstation) AS process_ids
              FROM line_plan_workstations lpw
@@ -17594,7 +17820,8 @@ router.post('/supervisor/progress/batch', async (req, res) => {
                  LIMIT 1
              ) ewa ON true
              WHERE lpw.id = ANY($1::int[]) AND lpw.line_id = $2
-             GROUP BY lpw.id, lpw.workstation_code, group_identifier, ewa.employee_id`,
+             GROUP BY lpw.id, lpw.workstation_code, group_identifier, lpw.surplus_closed_at,
+                      lpw.surplus_close_reason, lpw.surplus_closed_hour, ewa.employee_id`,
             [planIds, line_id]
         );
         const wsById = new Map(wsResult.rows.map(r => [parseInt(r.id, 10), r]));
@@ -17605,6 +17832,19 @@ router.post('/supervisor/progress/batch', async (req, res) => {
             const planId = parseInt(entry.workstation_plan_id, 10);
             const ws = wsById.get(planId);
             if (!ws) { skipped.push({ workstation_plan_id: planId, error: 'Workstation plan not found' }); continue; }
+            if (ws.surplus_closed_at) {
+                const owner = await resolveClosedSurplusEntryEmployee(client, {
+                    lineId: line_id,
+                    workDate: work_date,
+                    lpwId: ws.id,
+                    workstationCode: ws.workstation_code,
+                    closedHour: parseInt(ws.surplus_closed_hour, 10),
+                    closeReason: ws.surplus_close_reason,
+                    hour: hourValue
+                });
+                if (owner.error) { skipped.push({ workstation_plan_id: planId, workstation_code: ws.workstation_code, error: owner.error }); continue; }
+                ws.employee_id = owner.employeeId;
+            }
             if (!ws.employee_id) { skipped.push({ workstation_plan_id: planId, workstation_code: ws.workstation_code, error: 'No employee assigned' }); continue; }
 
             const completed = parseInt(entry.quantity ?? 0, 10) || 0;
