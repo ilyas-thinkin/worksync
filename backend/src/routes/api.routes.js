@@ -424,6 +424,116 @@ async function findCurrentHourSwap(db, {
     return { hour, outgoing, incoming };
 }
 
+// ── When did the operator actually start the other style? ───────────────────────────────────
+// A same-operator style switch (CO on, or back to primary) used to take the clock: the hour in
+// progress stayed on the old style and the new one started at the next hour. Supervisors switch
+// stations while walking the line to enter the hour just finished, so on line 13 / 2026-11-18 the
+// next entries landed on the new style while the windows said old style, and 6,160 pieces were
+// credited to nobody. The supervisor now says when the new style started, in quarter hours; :00
+// moves the whole hour, :15/:30/:45 splits it between the two styles (migration 055).
+const STYLE_SWITCH_MINUTES = [0, 15, 30, 45];
+
+function parseStyleSwitchTime(hour, minute) {
+    if (hour === undefined || hour === null || hour === '') return null;
+    const h = parseInt(hour, 10);
+    const m = parseInt(minute ?? 0, 10);
+    return Number.isFinite(h) && Number.isFinite(m) ? { hour: h, minute: m } : null;
+}
+
+const formatSwitchTime = ({ hour, minute }) => `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+
+// fromWorkstationId is the plan row the operator is on now, toWorkstationId the one they move to.
+// Returns { isToday, options: [{hour, minutes: [..]}], defaultTime, validate(time) -> error|null }.
+async function getStyleSwitchContext(db, {
+    lineId,
+    workDate,
+    workstationCode,
+    employeeId,
+    fromWorkstationId,
+    toWorkstationId,
+    fromLabel = 'primary',
+    toLabel = 'CO'
+}) {
+    const hours = getHistoryHours(false);
+    const now = new Date();
+    const isToday = workDate === now.toISOString().slice(0, 10);
+    const nowMark = isToday ? windowMinuteMark(now.getHours(), now.getMinutes()) : null;
+
+    const windowResult = await db.query(
+        `SELECT effective_from_hour, effective_from_minute
+         FROM employee_workstation_assignment_history
+         WHERE employee_id = $1 AND work_date = $2 AND is_overtime = false AND effective_to_hour IS NULL
+         ORDER BY effective_from_hour DESC, id DESC
+         LIMIT 1`,
+        [employeeId, workDate]
+    );
+    const openWindow = windowResult.rows[0];
+    const windowStart = openWindow
+        ? windowMinuteMark(parseInt(openWindow.effective_from_hour, 10), parseInt(openWindow.effective_from_minute || 0, 10))
+        : null;
+
+    const outputHours = async (workstationId) => {
+        const result = await db.query(
+            `SELECT DISTINCT lph.hour_slot
+             FROM line_plan_workstation_processes lpwp
+             JOIN line_process_hourly_progress lph
+               ON lph.process_id = lpwp.product_process_id AND lph.line_id = $2 AND lph.work_date = $3
+             WHERE lpwp.workstation_id = $1`,
+            [workstationId, lineId, workDate]
+        );
+        return result.rows.map(r => parseInt(r.hour_slot, 10));
+    };
+    const fromHours = await outputHours(fromWorkstationId);
+    const toHours = await outputHours(toWorkstationId);
+
+    const validate = ({ hour, minute }) => {
+        if (!hours.includes(hour) || !STYLE_SWITCH_MINUTES.includes(minute)) {
+            return 'Pick a working hour and :00, :15, :30 or :45';
+        }
+        const mark = windowMinuteMark(hour, minute);
+        if (nowMark !== null && mark > nowMark) return `${formatSwitchTime({ hour, minute })} has not happened yet`;
+        if (windowStart !== null && mark < windowStart) {
+            return `The operator only started on ${workstationCode} at ${formatSwitchTime({ hour: Math.floor(windowStart / 60), minute: windowStart % 60 })}`;
+        }
+        // Output already entered on the old style after this time would be credited to nobody.
+        const lateFrom = fromHours.filter(h => (minute === 0 ? h >= hour : h > hour));
+        if (lateFrom.length) {
+            return `${workstationCode} already has ${fromLabel} output for hour ${Math.max(...lateFrom)} — `
+                + `the ${toLabel} start must be after that hour (or part-way through it)`;
+        }
+        // Output on the new style before this time (while the operator was still on the old one).
+        const windowStartHour = windowStart !== null ? Math.floor(windowStart / 60) : hours[0];
+        const earlyTo = toHours.filter(h => h >= windowStartHour && h < hour);
+        if (earlyTo.length) {
+            return `${workstationCode} already has ${toLabel} output for hour ${Math.min(...earlyTo)} — `
+                + `the ${toLabel} start must be at or before that hour`;
+        }
+        return null;
+    };
+
+    const nowHour = isToday ? now.getHours() : hours[hours.length - 1];
+    const options = hours
+        .filter(h => h <= nowHour)
+        .map(h => ({ hour: h, minutes: STYLE_SWITCH_MINUTES.filter(m => !validate({ hour: h, minute: m })) }))
+        .filter(o => o.minutes.length);
+    const last = options[options.length - 1];
+    const defaultTime = last ? { hour: last.hour, minute: last.minutes[last.minutes.length - 1] } : null;
+    return { isToday, options, defaultTime, validate };
+}
+
+function sendStyleSwitchTimeRequired(res, ctx, workstationCode, context) {
+    return res.status(409).json({
+        success: false,
+        error_code: 'switch_time_required',
+        error: `Say when ${workstationCode} started the ${context === 'revert' ? 'primary' : 'changeover'} style `
+            + `(switch_hour, switch_minute in :00/:15/:30/:45).`,
+        context,
+        workstation_code: workstationCode,
+        options: ctx.options,
+        default: ctx.defaultTime
+    });
+}
+
 function sendCurrentHourOwnerRequired(res, swap, workstationCode, context = 'replace') {
     const outgoingNames = swap.outgoing.map(o => o.emp_name).join(', ');
     return res.status(409).json({
@@ -515,11 +625,27 @@ function buildAttributionNotice(historySync, workstationCode) {
     };
 }
 
+// Window boundaries as minutes since midnight. A window covers [start, end): it starts at
+// from_hour:from_minute and ends at to_hour:to_minute, where to_minute 60 means "end of that hour".
+const windowMinuteMark = (hour, minute = 0) => hour * 60 + minute;
+
+// Where a new window may start once an existing one ends at endHour:endMinute. A window that ends
+// part-way through an hour (a split) hands over at that minute; one that ends with the hour hands
+// over at the next working hour. With no working hour left it falls back to the last one, and the
+// trim pass before the insert resolves the boundary.
+function resolveStartAfterWindowEnd(hours, endHour, endMinute) {
+    if (endMinute > 0 && endMinute < 60) return { hour: endHour, minute: endMinute };
+    const next = hours.find(h => h > endHour);
+    return { hour: next ?? hours[hours.length - 1], minute: 0 };
+}
+
 async function closeAssignmentHistoryForEmployee(db, {
     employeeId,
     workDate,
     isOvertime = false,
-    effectiveToHour = null
+    effectiveToHour = null,
+    // Split hour: the window ends part-way through effectiveToHour (see migration 055).
+    effectiveToMinute = 60
 }) {
     const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
     if (!normalizedEmployeeId || !workDate) return null;
@@ -529,8 +655,10 @@ async function closeAssignmentHistoryForEmployee(db, {
         ? effectiveToHour
         : resolveHistoryEffectiveToHour(workDate, isOvertime);
 
+    const toMinute = Number.isFinite(effectiveToMinute) && Number.isFinite(effectiveToHour) ? effectiveToMinute : 60;
+
     const activeResult = await db.query(
-        `SELECT id, effective_from_hour
+        `SELECT id, effective_from_hour, effective_from_minute
          FROM employee_workstation_assignment_history
          WHERE employee_id = $1
            AND work_date = $2
@@ -543,7 +671,8 @@ async function closeAssignmentHistoryForEmployee(db, {
     const activeRow = activeResult.rows[0];
     if (!activeRow) return null;
 
-    if (boundedToHour < parseInt(activeRow.effective_from_hour, 10)) {
+    if (windowMinuteMark(boundedToHour, toMinute)
+        <= windowMinuteMark(parseInt(activeRow.effective_from_hour, 10), parseInt(activeRow.effective_from_minute || 0, 10))) {
         await db.query(
             `DELETE FROM employee_workstation_assignment_history
              WHERE id = $1`,
@@ -555,9 +684,10 @@ async function closeAssignmentHistoryForEmployee(db, {
     await db.query(
         `UPDATE employee_workstation_assignment_history
          SET effective_to_hour = $1,
+             effective_to_minute = $3,
              updated_at = NOW()
          WHERE id = $2`,
-        [boundedToHour, activeRow.id]
+        [boundedToHour, activeRow.id, toMinute]
     );
     return { closed: true, deleted: false };
 }
@@ -572,34 +702,40 @@ async function trimHistoryWindowsOverlapping(db, {
     workstationCode,
     isOvertime = false,
     employeeId,
-    fromHour
+    fromHour,
+    // A window starting part-way through fromHour (split hour) only overlaps what ends after
+    // that minute; anything trimmed ends at fromHour:fromMinute instead of the hour before.
+    fromMinute = 0
 }) {
     if (!workDate || !Number.isFinite(fromHour)) return { trimmed: 0, deleted: 0 };
+    const startMark = windowMinuteMark(fromHour, fromMinute);
     const overlapping = await db.query(
-        `SELECT id, effective_from_hour
+        `SELECT id, effective_from_hour, effective_from_minute
          FROM employee_workstation_assignment_history
          WHERE work_date = $1
            AND is_overtime = $2
            AND effective_to_hour IS NOT NULL
-           AND effective_to_hour >= $3
+           AND effective_to_hour * 60 + effective_to_minute > $3
            AND (
                  (line_id = $4 AND workstation_code = $5 AND employee_id <> $6)
               OR employee_id = $6
            )`,
-        [workDate, !!isOvertime, fromHour, lineId, workstationCode, employeeId]
+        [workDate, !!isOvertime, startMark, lineId, workstationCode, employeeId]
     );
+    const trimTo = fromMinute > 0 ? { hour: fromHour, minute: fromMinute } : { hour: fromHour - 1, minute: 60 };
     let trimmed = 0;
     let deleted = 0;
     for (const row of overlapping.rows) {
-        if (fromHour - 1 < parseInt(row.effective_from_hour, 10)) {
+        const rowStart = windowMinuteMark(parseInt(row.effective_from_hour, 10), parseInt(row.effective_from_minute || 0, 10));
+        if (rowStart >= startMark) {
             await db.query(`DELETE FROM employee_workstation_assignment_history WHERE id = $1`, [row.id]);
             deleted += 1;
         } else {
             await db.query(
                 `UPDATE employee_workstation_assignment_history
-                 SET effective_to_hour = $1, updated_at = NOW()
-                 WHERE id = $2`,
-                [fromHour - 1, row.id]
+                 SET effective_to_hour = $1, effective_to_minute = $2, updated_at = NOW()
+                 WHERE id = $3`,
+                [trimTo.hour, trimTo.minute, row.id]
             );
             trimmed += 1;
         }
@@ -625,13 +761,16 @@ async function syncAssignmentHistoryForCurrentRow(db, {
     // 14 — the worker missed most of hour 13. Deriving the two independently puts output in a
     // window that is not in the worker's efficiency denominator.
     // The prior-window guards below still apply and can only push this FORWARD, never back.
-    forceFromHour = null
+    forceFromHour = null,
+    // Split hour (with forceFromHour): the new window starts at forceFromHour:forceFromMinute and
+    // the active one is closed at that same minute, so both share the hour (migration 055).
+    forceFromMinute = 0
 }) {
     const normalizedEmployeeId = employeeId ? parseInt(employeeId, 10) : null;
     if (!normalizedEmployeeId || !workDate || !workstationCode || !isLinked) return null;
 
     const activeResult = await db.query(
-        `SELECT id, line_id, workstation_code, line_plan_workstation_id, effective_from_hour
+        `SELECT id, line_id, workstation_code, line_plan_workstation_id, effective_from_hour, effective_from_minute
          FROM employee_workstation_assignment_history
          WHERE employee_id = $1
            AND work_date = $2
@@ -664,6 +803,7 @@ async function syncAssignmentHistoryForCurrentRow(db, {
     }
     const useCurrentHourStart = forceCurrentHourStart && hasHistoryToday;
 
+    let fromMinute = Number.isFinite(forceFromHour) && Number.isFinite(forceFromMinute) ? forceFromMinute : 0;
     let fromHour = Number.isFinite(forceFromHour)
         ? forceFromHour
         : useCurrentHourStart
@@ -678,23 +818,25 @@ async function syncAssignmentHistoryForCurrentRow(db, {
     // window on this exact workstation/date ends — otherwise "credit full shift" (linked before
     // 9am, or late_reason linking_took_time/meeting) double-credits the handover hours to both
     // employees instead of starting the new employee right after the previous one left.
+    // Window ends are compared in minutes (migration 055): a window closed part-way through an
+    // hour hands over at that minute rather than at the next hour.
     const priorOccupantResult = await db.query(
-        `SELECT MAX(effective_to_hour) AS max_to
+        `SELECT effective_to_hour AS max_to, effective_to_minute AS max_to_minute
          FROM employee_workstation_assignment_history
          WHERE line_id = $1 AND work_date = $2 AND workstation_code = $3 AND is_overtime = $4
-           AND employee_id <> $5 AND effective_to_hour IS NOT NULL`,
+           AND employee_id <> $5 AND effective_to_hour IS NOT NULL
+         ORDER BY effective_to_hour * 60 + effective_to_minute DESC
+         LIMIT 1`,
         [lineId, workDate, workstationCode, !!isOvertime, normalizedEmployeeId]
     );
-    const priorMaxTo = priorOccupantResult.rows[0]?.max_to != null
-        ? parseInt(priorOccupantResult.rows[0].max_to, 10)
-        : null;
-    if (priorMaxTo !== null && fromHour <= priorMaxTo) {
-        const hours = getHistoryHours(isOvertime);
-        const nextAvailable = hours.find(h => h > priorMaxTo);
+    const priorEnd = priorOccupantResult.rows[0];
+    if (priorEnd && windowMinuteMark(fromHour, fromMinute)
+        < windowMinuteMark(parseInt(priorEnd.max_to, 10), parseInt(priorEnd.max_to_minute, 10))) {
         // No hour left after the previous occupant (a takeover inside the last hour of the
-        // shift): the fallback below parks this worker ON that same hour, so the trim pass
+        // shift): the fallback parks this worker ON that same hour, so the trim pass
         // before the INSERT hands the boundary hour to whoever is standing there now.
-        fromHour = nextAvailable ?? hours[hours.length - 1];
+        ({ hour: fromHour, minute: fromMinute } = resolveStartAfterWindowEnd(
+            getHistoryHours(isOvertime), parseInt(priorEnd.max_to, 10), parseInt(priorEnd.max_to_minute, 10)));
     }
 
     // Same guard for THIS employee's own already-closed windows, on any workstation or line.
@@ -703,25 +845,26 @@ async function syncAssignmentHistoryForCurrentRow(db, {
     // branch above backdates the new window to the shift start — overlapping the hours he was
     // still at the old workstation and double-counting them on the worker efficiency report.
     const ownPriorResult = await db.query(
-        `SELECT MAX(effective_to_hour) AS max_to
+        `SELECT effective_to_hour AS max_to, effective_to_minute AS max_to_minute
          FROM employee_workstation_assignment_history
          WHERE work_date = $1 AND is_overtime = $2
-           AND employee_id = $3 AND effective_to_hour IS NOT NULL`,
+           AND employee_id = $3 AND effective_to_hour IS NOT NULL
+         ORDER BY effective_to_hour * 60 + effective_to_minute DESC
+         LIMIT 1`,
         [workDate, !!isOvertime, normalizedEmployeeId]
     );
-    const ownMaxTo = ownPriorResult.rows[0]?.max_to != null
-        ? parseInt(ownPriorResult.rows[0].max_to, 10)
-        : null;
-    if (ownMaxTo !== null && fromHour <= ownMaxTo) {
-        const hours = getHistoryHours(isOvertime);
-        const nextAvailable = hours.find(h => h > ownMaxTo);
-        fromHour = nextAvailable ?? hours[hours.length - 1];
+    const ownEnd = ownPriorResult.rows[0];
+    if (ownEnd && windowMinuteMark(fromHour, fromMinute)
+        < windowMinuteMark(parseInt(ownEnd.max_to, 10), parseInt(ownEnd.max_to_minute, 10))) {
+        ({ hour: fromHour, minute: fromMinute } = resolveStartAfterWindowEnd(
+            getHistoryHours(isOvertime), parseInt(ownEnd.max_to, 10), parseInt(ownEnd.max_to_minute, 10)));
     }
 
     const startShifted = fromHour !== requestedFromHour;
 
     if (activeRow) {
         const activeFrom = parseInt(activeRow.effective_from_hour, 10);
+        const activeFromMinute = parseInt(activeRow.effective_from_minute || 0, 10);
         const activePlanWsId = activeRow.line_plan_workstation_id ? parseInt(activeRow.line_plan_workstation_id, 10) : null;
         const nextPlanWsId = linePlanWorkstationId ? parseInt(linePlanWorkstationId, 10) : null;
         if (
@@ -740,16 +883,19 @@ async function syncAssignmentHistoryForCurrentRow(db, {
             );
             return { reused: true, effective_from_hour: activeFrom, start_shifted: false };
         }
-        const closeHour = fromHour - 1;
-        if (closeHour < activeFrom) {
+        // Whole-hour handover closes at the hour before; a split closes at the same minute.
+        const closeHour = fromMinute > 0 ? fromHour : fromHour - 1;
+        const closeMinute = fromMinute > 0 ? fromMinute : 60;
+        if (windowMinuteMark(closeHour, closeMinute) <= windowMinuteMark(activeFrom, activeFromMinute)) {
             await db.query(`DELETE FROM employee_workstation_assignment_history WHERE id = $1`, [activeRow.id]);
         } else {
             await db.query(
                 `UPDATE employee_workstation_assignment_history
                  SET effective_to_hour = $1,
+                     effective_to_minute = $3,
                      updated_at = NOW()
                  WHERE id = $2`,
-                [closeHour, activeRow.id]
+                [closeHour, activeRow.id, closeMinute]
             );
         }
     }
@@ -767,14 +913,16 @@ async function syncAssignmentHistoryForCurrentRow(db, {
         workstationCode,
         isOvertime,
         employeeId: normalizedEmployeeId,
-        fromHour
+        fromHour,
+        fromMinute
     });
 
     await db.query(
         `INSERT INTO employee_workstation_assignment_history
            (line_id, work_date, employee_id, workstation_code, line_plan_workstation_id, is_overtime,
-            effective_from_hour, effective_to_hour, linked_at, attendance_start, late_reason)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10)`,
+            effective_from_hour, effective_to_hour, linked_at, attendance_start, late_reason,
+            effective_from_minute)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10, $11)`,
         [
             lineId,
             workDate,
@@ -785,12 +933,14 @@ async function syncAssignmentHistoryForCurrentRow(db, {
             fromHour,
             linkedAt || null,
             attendanceStart || null,
-            lateReason || null
+            lateReason || null,
+            fromMinute
         ]
     );
     return {
         reused: false,
         effective_from_hour: fromHour,
+        effective_from_minute: fromMinute,
         requested_from_hour: requestedFromHour,
         start_shifted: startShifted
     };
@@ -804,7 +954,8 @@ async function closeHistoryForWorkstationAssignmentIfNeeded(db, {
     nextEmployeeId = null,
     // From resolveCurrentHourSplit when the supervisor gave the hour in progress to the
     // incoming worker; null keeps the default rounding.
-    effectiveToHour = null
+    effectiveToHour = null,
+    effectiveToMinute = 60
 }) {
     if (!lineId || !workDate || !workstationCode) return null;
     const existingResult = await db.query(
@@ -827,7 +978,8 @@ async function closeHistoryForWorkstationAssignmentIfNeeded(db, {
             employeeId: existingEmployeeId,
             workDate,
             isOvertime,
-            effectiveToHour
+            effectiveToHour,
+            effectiveToMinute
         });
     }
     return existingRow;
@@ -2865,6 +3017,28 @@ async function closeSurplusWorkstation(db, { lineId, workDate, lpw, action, fini
     return { alreadyClosed: false, reason, closedHour, employeeId: released?.employeeId || null };
 }
 
+// The reports credit a station-hour through the history window(s) covering it, and each window
+// points at one style's plan row. Output saved to the other style's row is credited to nobody —
+// that is how 6,160 pieces went missing on line 13 / 2026-11-18. When windows cover the hour, the
+// posted row must be one of theirs (a split hour has two). No window, or a legacy window with no
+// plan row, keeps the old behaviour.
+async function checkEntryStyleForHour(db, { lineId, workDate, workstationPlanId, workstationCode, hour }) {
+    const result = await db.query(
+        `SELECT DISTINCT h.line_plan_workstation_id, l.product_id, p.product_code
+         FROM employee_workstation_assignment_history h
+         LEFT JOIN line_plan_workstations l ON l.id = h.line_plan_workstation_id
+         LEFT JOIN products p ON p.id = l.product_id
+         WHERE h.line_id = $1 AND h.work_date = $2 AND h.is_overtime = false
+           AND h.workstation_code = $3
+           AND h.effective_from_hour <= $4 AND COALESCE(h.effective_to_hour, 999) >= $4`,
+        [lineId, workDate, workstationCode, hour]
+    );
+    if (!result.rows.length || result.rows.some(r => r.line_plan_workstation_id == null)) return null;
+    if (result.rows.some(r => parseInt(r.line_plan_workstation_id, 10) === parseInt(workstationPlanId, 10))) return null;
+    const styles = result.rows.map(r => r.product_code).filter(Boolean).join(' / ');
+    return `${workstationCode} was on ${styles || 'the other style'} in hour ${hour} — refresh the page and enter it there`;
+}
+
 // Who to credit an hourly entry to on a surplus station that has been closed. The assignment row is
 // gone by then, but the hours up to the close still belong to whoever ran them — the history window
 // says who. Hours after the close are refused: the station has stopped.
@@ -3426,8 +3600,10 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
     let windowEndHour = defaultWindowEnd;
     let hourPredicate = '';
     let assignmentWindowPredicate = '';
+    let exactHourIndex = null;
     if (Number.isFinite(exactHour)) {
         params.push(parseInt(exactHour, 10));
+        exactHourIndex = params.length;
         windowEndHour = parseInt(exactHour, 10);
         hourPredicate = `AND lph.hour_slot = $${params.length}`;
         assignmentWindowPredicate = `AND hist.effective_from_hour <= $${params.length}
@@ -3527,6 +3703,31 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                )
            )`;
 
+    // Exact-hour views: the windows covering that hour, with the minutes each one ran. One part is
+    // the normal case; a split hour (style switch at :15/:30/:45, migration 055) has two, and the
+    // hourly report weights each style's target by its minutes.
+    const hourPartsCte = exactHourIndex
+        ? `,
+         employee_hour_parts AS (
+             SELECT a.employee_id,
+                    jsonb_agg(jsonb_build_object(
+                        'source_product_id', a.source_product_id,
+                        'workstation_id', a.workstation_id,
+                        'minutes', (CASE WHEN a.raw_to_hour = $${exactHourIndex} THEN a.effective_to_minute ELSE 60 END)
+                                 - (CASE WHEN a.effective_from_hour = $${exactHourIndex} THEN a.effective_from_minute ELSE 0 END),
+                        'output', ast.total_output,
+                        'takt_time_seconds', a.takt_time_seconds,
+                        'is_custom_takt', a.is_custom_takt,
+                        'entered', ast.last_updated IS NOT NULL
+                    ) ORDER BY a.effective_from_hour, a.effective_from_minute, a.history_id) AS hour_parts
+             FROM assignments a
+             JOIN assignment_stats ast ON ast.history_id = a.history_id
+             GROUP BY a.employee_id
+         )`
+        : '';
+    const hourPartsField = exactHourIndex ? 'ehp.hour_parts' : 'NULL';
+    const hourPartsJoin = exactHourIndex ? 'LEFT JOIN employee_hour_parts ehp ON ehp.employee_id = et.employee_id' : '';
+
     const result = await db.query(
         `WITH assignments AS (
              SELECT hist.id AS history_id,
@@ -3534,6 +3735,9 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     hist.workstation_code,
                     hist.line_plan_workstation_id,
                     hist.effective_from_hour,
+                    hist.effective_from_minute,
+                    hist.effective_to_minute,
+                    hist.effective_to_hour AS raw_to_hour,
                     (hist.effective_to_hour IS NOT NULL) AS window_closed,
                     COALESCE(hist.effective_to_hour, 999) AS effective_to_hour,
                     ws.id AS workstation_id,
@@ -3654,7 +3858,7 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                     source_product_id
              FROM assignments
              ORDER BY employee_id, effective_from_hour DESC, history_id DESC
-         )
+         )${hourPartsCte}
          SELECT e.id,
                 e.emp_code,
                 e.emp_name,
@@ -3672,10 +3876,12 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                 COALESCE(et.total_rejection, 0) AS total_rejection,
                 COALESCE(et.total_sah_hours, 0) AS total_sah_hours,
                 et.last_updated,
-                er.reason_hours
+                er.reason_hours,
+                ${hourPartsField} AS hour_parts
          FROM employee_totals et
          JOIN employees e ON e.id = et.employee_id
          LEFT JOIN current_assignment ca ON ca.employee_id = et.employee_id
+         ${hourPartsJoin}
          LEFT JOIN employee_reasons er ON er.employee_id = et.employee_id${reasonJoinPredicate}
          ${ghostRowFilter}
          ORDER BY ca.workstation_number NULLS LAST, ca.workstation_code, e.emp_code`,
@@ -3719,7 +3925,18 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
             total_sah_hours: sahHours,
             efficiency_percent: efficiency,
             last_updated: row.last_updated,
-            shortfall_reasons: formatReasonHours(reasonHours)
+            shortfall_reasons: formatReasonHours(reasonHours),
+            hour_parts: Array.isArray(row.hour_parts)
+                ? row.hour_parts.map(part => ({
+                    source_product_id: part.source_product_id != null ? parseInt(part.source_product_id, 10) : null,
+                    is_changeover: !useOt && !!incomingProductId && parseInt(part.source_product_id, 10) === incomingProductId,
+                    minutes: parseInt(part.minutes, 10),
+                    output: parseInt(part.output || 0, 10),
+                    takt_time_seconds: parseFloat(part.takt_time_seconds || 0),
+                    is_custom_takt: !!part.is_custom_takt,
+                    entered: !!part.entered
+                }))
+                : null
         };
     });
 }
@@ -3968,10 +4185,14 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
               ${hourPredicate}
              GROUP BY a.workstation_id, lph.hour_slot
          ),
+         -- One row per plan row and hour: several operators' windows on the same row count its
+         -- output once, while a split hour (both styles' rows covered, migration 055) keeps both,
+         -- each with its own SAM, and the outer SUM adds them.
          covered_ws_hours AS (
              SELECT a.workstation_code,
                     a.workstation_number,
                     a.group_name,
+                    a.workstation_id,
                     ${splitBySource ? 'a.source_product_id,' : ''}
                     wh.hour_slot,
                     MAX(COALESCE(wh.hour_output, 0)) AS hour_output,
@@ -3983,7 +4204,7 @@ async function getWorkstationProgressForWindow(db, lineId, workDate, { exactHour
                ON wh.workstation_id = a.workstation_id
               AND wh.hour_slot >= a.effective_from_hour
               AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
-             GROUP BY a.workstation_code, a.workstation_number, a.group_name${coveredSourceGroup}, wh.hour_slot
+             GROUP BY a.workstation_code, a.workstation_number, a.group_name, a.workstation_id${coveredSourceGroup}, wh.hour_slot
          )
          SELECT workstation_code,
                 workstation_number,
@@ -14586,6 +14807,10 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                     surplus_closed_at: row.surplus_closed_at || null,
                     surplus_close_reason: row.surplus_close_reason || null,
                     surplus_closed_hour: row.surplus_closed_hour != null ? parseInt(row.surplus_closed_hour, 10) : null,
+                    // Both styles' plan rows and process lists, so the card can show whichever style
+                    // the operator's history window says for the selected hour (resolveCardForHour).
+                    co_ws_id: coLookup.get(nwk)?.plan_id ?? null,
+                    primary_processes: [],
                     processes: [],
                     co_processes: []
                 };
@@ -14600,6 +14825,16 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 }
 
                 const ws = wsMap.get(primaryWsId);
+                ws.primary_processes.push({
+                    id: row.process_id,
+                    sequence_number: row.sequence_number,
+                    operation_code: row.operation_code,
+                    operation_name: row.operation_name,
+                    operation_sah: row.operation_sah,
+                    product_code: row.product_code,
+                    target_qty: row.target_qty,
+                    sequence_in_workstation: row.sequence_in_workstation
+                });
                 // If this WS is in changeover, skip primary processes (will add co ones after)
                 if (!ws.ws_changeover_active) {
                     ws.processes.push({
@@ -14686,6 +14921,8 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         // Only exists in the incoming style, so there is no primary work here to
                         // finish and nothing to "switch" — it follows the line-level changeover.
                         is_co_only: true,
+                        co_ws_id: coData.plan_id,
+                        primary_processes: [],
                         workstation_number: firstCoRow.workstation_number,
                         workstation_code: firstCoRow.workstation_code,
                         group_name: firstCoRow.group_name || null,
@@ -14785,7 +15022,7 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                             tail_product_code: promotionResult.rows[0].product_code || null
                         });
                     }
-                    tailCards.get(row.workstation_plan_id).processes.push({
+                    const tailProcess = {
                         id: row.process_id,
                         sequence_number: row.sequence_number,
                         operation_code: row.operation_code,
@@ -14794,7 +15031,9 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                         product_code: row.product_code,
                         target_qty: row.target_qty,
                         sequence_in_workstation: row.sequence_in_workstation
-                    });
+                    };
+                    tailCards.get(row.workstation_plan_id).processes.push(tailProcess);
+                    tailCards.get(row.workstation_plan_id).primary_processes.push(tailProcess);
                 }
                 for (const [planId, card] of tailCards) wsMap.set(`tail:${planId}`, card);
             }
@@ -15134,7 +15373,9 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         feed_quantity,
         change_reason,
         confirm_absent_with_output,
-        current_hour_owner
+        current_hour_owner,
+        switch_hour,
+        switch_minute
     } = req.body;
     if (!line_id || !work_date || !workstation_code)
         return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
@@ -15243,6 +15484,31 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
             late_reason: currentAssignment?.late_reason || null
         };
         const existingMaterialProvided = parseInt(currentAssignment?.material_provided || 0, 10) || 0;
+
+        // Same operator stays: ask when CO actually started (a person change keeps the
+        // current-hour owner prompt instead). Today it is required; other dates fall back to the
+        // old rounding unless a time is given.
+        let switchAt = null;
+        if (sameEmployeeMode && preservedState.is_linked) {
+            const switchCtx = await getStyleSwitchContext(pool, {
+                lineId: line_id,
+                workDate: work_date,
+                workstationCode: workstation_code,
+                employeeId: currentEmployeeId,
+                fromWorkstationId: ws.primary_workstation_id,
+                toWorkstationId: ws.incoming_workstation_id,
+                fromLabel: 'primary',
+                toLabel: 'CO'
+            });
+            const requested = parseStyleSwitchTime(switch_hour, switch_minute);
+            if (requested) {
+                const problem = switchCtx.validate(requested);
+                if (problem) return res.status(400).json({ success: false, error: problem });
+                switchAt = requested;
+            } else if (switchCtx.isToday) {
+                return sendStyleSwitchTimeRequired(res, switchCtx, workstation_code, 'activate');
+            }
+        }
         const snapshot = await getWorkstationChangeoverSnapshot(pool, {
             lineId: line_id,
             workDate: work_date,
@@ -15308,19 +15574,24 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
                 }
             }
 
+            // ws_changeover_started_at is the real start, not the click: remaining-hours targets
+            // and the efficiency report's CO start hour both read it.
+            // $2 = work_date, $3/$4 = switch hour/minute in both statements below.
+            const startedAtSql = switchAt ? `($2::date + make_time($3, $4, 0))::timestamptz` : `NOW()`;
+            const switchParams = switchAt ? [switchAt.hour, switchAt.minute] : [];
             await client.query(
                 `UPDATE line_plan_workstations
-                 SET ws_changeover_active = true, ws_changeover_started_at = NOW(), updated_at = NOW()
-                 WHERE id = $1`,
-                [ws.primary_workstation_id]
+                 SET ws_changeover_active = true, ws_changeover_started_at = ${startedAtSql}, updated_at = NOW()
+                 WHERE id = $1 AND work_date = $2`,
+                [ws.primary_workstation_id, work_date, ...switchParams]
             );
 
             await client.query(
                 `UPDATE line_daily_plans
-                 SET changeover_started_at = COALESCE(changeover_started_at, NOW()),
+                 SET changeover_started_at = COALESCE(changeover_started_at, ${startedAtSql}),
                      updated_at = NOW()
                  WHERE line_id = $1 AND work_date = $2`,
-                [line_id, work_date]
+                [line_id, work_date, ...switchParams]
             );
 
             await closeHistoryForWorkstationAssignmentIfNeeded(client, {
@@ -15381,7 +15652,8 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
                     attendanceStart: preservedState.attendance_start,
                     lateReason: preservedState.late_reason,
                     forceCurrentHourStart: true,
-                    forceFromHour: hourSplit ? hourSplit.incomingFromHour : null
+                    forceFromHour: hourSplit ? hourSplit.incomingFromHour : (switchAt ? switchAt.hour : null),
+                    forceFromMinute: hourSplit ? 0 : (switchAt ? switchAt.minute : 0)
                 });
             }
 
@@ -15500,6 +15772,7 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
             data: {
                 workstation_code,
                 same_employee: sameEmployeeMode,
+                switch_time: switchAt ? formatSwitchTime(switchAt) : null,
                 feed_given: feedGiven,
                 feed_quantity: normalizedFeedQty,
                 primary_output_quantity: snapshot.workstationOutput,
@@ -15517,7 +15790,7 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
 // Existing CO progress remains under the CO process IDs; only the live assignment
 // pointer and effective workstation source are switched back to primary.
 router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
-    const { line_id, work_date, workstation_code, employee_id, change_reason, confirm_absent_with_output, current_hour_owner } = req.body;
+    const { line_id, work_date, workstation_code, employee_id, change_reason, confirm_absent_with_output, current_hour_owner, switch_hour, switch_minute } = req.body;
     if (!line_id || !work_date || !workstation_code) {
         return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
     }
@@ -15600,6 +15873,29 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
             late_reason: currentAssignment?.late_reason || null
         };
         const materialProvided = parseInt(currentAssignment?.material_provided || 0, 10) || 0;
+
+        // Same operator goes back to primary: ask when (see getStyleSwitchContext).
+        let switchAt = null;
+        if (currentEmployeeId && nextEmployeeId === currentEmployeeId && preservedState.is_linked) {
+            const switchCtx = await getStyleSwitchContext(pool, {
+                lineId: line_id,
+                workDate: work_date,
+                workstationCode: workstation_code,
+                employeeId: currentEmployeeId,
+                fromWorkstationId: ws.incoming_workstation_id,
+                toWorkstationId: ws.primary_workstation_id,
+                fromLabel: 'CO',
+                toLabel: 'primary'
+            });
+            const requested = parseStyleSwitchTime(switch_hour, switch_minute);
+            if (requested) {
+                const problem = switchCtx.validate(requested);
+                if (problem) return res.status(400).json({ success: false, error: problem });
+                switchAt = requested;
+            } else if (switchCtx.isToday) {
+                return sendStyleSwitchTimeRequired(res, switchCtx, workstation_code, 'revert');
+            }
+        }
         const groupIdentifier = ws.primary_group_name || ws.incoming_group_name || workstation_code;
 
         let reasonOutcome = null;
@@ -15739,7 +16035,8 @@ router.post('/supervisor/changeover/revert-workstation', async (req, res) => {
                         attendanceStart: preservedState.attendance_start,
                         lateReason: preservedState.late_reason,
                         forceCurrentHourStart: true,
-                        forceFromHour: hourSplit ? hourSplit.incomingFromHour : null
+                        forceFromHour: hourSplit ? hourSplit.incomingFromHour : (switchAt ? switchAt.hour : null),
+                        forceFromMinute: hourSplit ? 0 : (switchAt ? switchAt.minute : 0)
                     });
                 }
             } else {
@@ -17433,6 +17730,14 @@ router.post('/supervisor/progress', async (req, res) => {
                 return res.status(400).json({ success: false, error: 'Workstation plan not found' });
             }
             const ws = wsResult.rows[0];
+            const styleProblem = await checkEntryStyleForHour(pool, {
+                lineId: line_id,
+                workDate: work_date,
+                workstationPlanId: ws.id,
+                workstationCode: ws.workstation_code,
+                hour: hourValue
+            });
+            if (styleProblem) return res.status(400).json({ success: false, error: styleProblem });
             // A closed surplus station has no assignment row any more; its hours up to the close
             // still belong to whoever ran them, and nothing after the close is accepted.
             if (ws.surplus_closed_at) {
@@ -17702,6 +18007,10 @@ router.get('/supervisor/ws-employees', async (req, res) => {
         const result = await pool.query(
             `SELECT hist.workstation_code,
                     hist.effective_from_hour,
+                    hist.effective_to_hour,
+                    hist.effective_from_minute,
+                    hist.effective_to_minute,
+                    hist.line_plan_workstation_id,
                     hist.id,
                     e.emp_code,
                     e.emp_name,
@@ -17716,21 +18025,37 @@ router.get('/supervisor/ws-employees', async (req, res) => {
              ORDER BY hist.effective_from_hour DESC, hist.id DESC`,
             [line_id, work_date, hourInt]
         );
-        // Keep most recent per normalized workstation code
-        const seen = new Set();
-        const employees = [];
+        // Most recent per normalized workstation code, plus every window covering the hour as a
+        // `parts` entry. The card shows the style each part's plan row belongs to for that hour —
+        // the same row the reports credit — and a split hour comes back as two parts.
+        const byKey = new Map();
         for (const row of result.rows) {
             const nk = String(parseInt(String(row.workstation_code || '').replace(/[^0-9]/g, ''), 10) || row.workstation_code);
-            if (seen.has(nk)) continue;
-            seen.add(nk);
-            employees.push({
-                workstation_code: row.workstation_code,
-                workstation_key: nk,
+            if (!byKey.has(nk)) {
+                byKey.set(nk, {
+                    workstation_code: row.workstation_code,
+                    workstation_key: nk,
+                    employee_id: row.employee_id,
+                    emp_code: row.emp_code,
+                    emp_name: row.emp_name,
+                    parts: []
+                });
+            }
+            const fromMinute = parseInt(row.effective_from_hour, 10) === hourInt ? parseInt(row.effective_from_minute || 0, 10) : 0;
+            const toMinute = row.effective_to_hour != null && parseInt(row.effective_to_hour, 10) === hourInt
+                ? parseInt(row.effective_to_minute ?? 60, 10)
+                : 60;
+            byKey.get(nk).parts.push({
+                line_plan_workstation_id: row.line_plan_workstation_id ? parseInt(row.line_plan_workstation_id, 10) : null,
                 employee_id: row.employee_id,
                 emp_code: row.emp_code,
-                emp_name: row.emp_name
+                emp_name: row.emp_name,
+                from_minute: fromMinute,
+                to_minute: toMinute
             });
         }
+        const employees = Array.from(byKey.values());
+        for (const entry of employees) entry.parts.sort((a, b) => a.from_minute - b.from_minute);
         res.json({ success: true, data: employees });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -17832,6 +18157,14 @@ router.post('/supervisor/progress/batch', async (req, res) => {
             const planId = parseInt(entry.workstation_plan_id, 10);
             const ws = wsById.get(planId);
             if (!ws) { skipped.push({ workstation_plan_id: planId, error: 'Workstation plan not found' }); continue; }
+            const styleProblem = await checkEntryStyleForHour(client, {
+                lineId: line_id,
+                workDate: work_date,
+                workstationPlanId: ws.id,
+                workstationCode: ws.workstation_code,
+                hour: hourValue
+            });
+            if (styleProblem) { skipped.push({ workstation_plan_id: planId, workstation_code: ws.workstation_code, error: styleProblem }); continue; }
             if (ws.surplus_closed_at) {
                 const owner = await resolveClosedSurplusEntryEmployee(client, {
                     lineId: line_id,
@@ -20222,6 +20555,14 @@ router.get('/hourly-report', async (req, res) => {
             }
             return (r.is_changeover && lineCoHourlyTarget > 0) ? lineCoHourlyTarget : lineHourlyTarget;
         };
+        // A split hour (style switch at :15/:30/:45) carries one part per style; each style's
+        // hourly target counts for the minutes it ran, so 30 min primary + 30 min CO targets half
+        // of each. One part — every ordinary hour — is the plain per-hour target.
+        const cellTargetFor = (r) => {
+            const parts = Array.isArray(r.hour_parts) ? r.hour_parts.filter(p => p.minutes > 0) : [];
+            if (parts.length < 2) return hourlyTargetFor(r);
+            return Math.round(parts.reduce((sum, part) => sum + hourlyTargetFor(part) * part.minutes / 60, 0));
+        };
 
         // The cumulative set is the row spine: it carries the ghost-row filter that
         // hides no-shows and stale plan-swap rows. The per-hour sets skip that filter
@@ -20269,7 +20610,17 @@ router.get('/hourly-report', async (req, res) => {
                     output: r.total_output,
                     rejection: r.total_rejection,
                     efficiency_percent: r.efficiency_percent,
-                    target: hourlyTargetFor(r),
+                    target: cellTargetFor(r),
+                    // Present only for a split hour: what each style contributed.
+                    parts: Array.isArray(r.hour_parts) && r.hour_parts.length > 1
+                        ? r.hour_parts.map(part => ({
+                            is_changeover: part.is_changeover,
+                            minutes: part.minutes,
+                            output: part.output,
+                            target: Math.round(hourlyTargetFor(part) * part.minutes / 60),
+                            entered: part.entered
+                        }))
+                        : null,
                     // last_updated is MAX(lph.updated_at) over the matched hour and is
                     // non-null iff a progress row exists — that is what separates
                     // "supervisor never entered this hour" from "entered a real 0".

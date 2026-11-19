@@ -842,6 +842,69 @@ function _confirmAbsentOutput(occupantName, totalOutput) {
 // Asks who worked the hour in progress when a link/unlink/replacement lands mid-hour
 // (server 409 current_hour_owner_required). `info` is that 409 body.
 // Returns 'outgoing' | 'incoming' | 'absent' (unlink of one station only) | false if cancelled.
+// When did the operator actually start the other style? Asked on a same-operator CO switch and on
+// a switch back to primary (409 switch_time_required). :00 moves the whole hour to the new style;
+// :15/:30/:45 splits it, and that hour then takes one output entry per style. Resolves
+// {hour, minute} or false when cancelled.
+function _pickSwitchTime(wsCode, info) {
+    return new Promise(resolve => {
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        document.getElementById('switch-time-modal')?.remove();
+        const options = Array.isArray(info?.options) ? info.options : [];
+        const styleName = info?.context === 'revert' ? 'primary' : 'changeover (CO)';
+        if (!options.length) {
+            showToast(info?.error || `No valid start time for ${wsCode} — check the hours already entered`, 'error');
+            resolve(false);
+            return;
+        }
+        const fallback = options[options.length - 1];
+        let hour = info?.default?.hour ?? fallback.hour;
+        let minute = info?.default?.minute ?? fallback.minutes[fallback.minutes.length - 1];
+        const pad = n => String(n).padStart(2, '0');
+
+        const modal = document.createElement('div');
+        modal.id = 'switch-time-modal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9100;display:flex;align-items:center;justify-content:center;padding:16px;';
+        const render = () => {
+            const current = options.find(o => o.hour === hour) || fallback;
+            if (!current.minutes.includes(minute)) minute = current.minutes[current.minutes.length - 1];
+            const splitNote = minute === 0
+                ? `The whole ${pad(hour)}:00–${pad(hour + 1)}:00 hour counts as ${esc(styleName)}.`
+                : `${pad(hour)}:00–${pad(hour)}:${pad(minute)} stays on the old style and ${pad(hour)}:${pad(minute)}–${pad(hour + 1)}:00 is ${esc(styleName)}. That hour gets one output entry for each.`;
+            modal.innerHTML = `
+                <div style="background:#fff;border-radius:12px;padding:22px;max-width:400px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                    <h3 style="margin:0 0 6px;font-size:1rem;font-weight:700;color:#111827;">${esc(wsCode)} — when did ${esc(styleName)} start?</h3>
+                    <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">Pick when the operator actually started sewing the new style, not when you are pressing this.</p>
+                    <label class="form-label" for="switch-time-hour">Hour</label>
+                    <select id="switch-time-hour" class="form-control" style="margin-bottom:12px;">
+                        ${options.map(o => `<option value="${o.hour}" ${o.hour === hour ? 'selected' : ''}>${esc(supHourLabel(o.hour))}</option>`).join('')}
+                    </select>
+                    <div style="display:flex;gap:8px;margin-bottom:12px;">
+                        ${[0, 15, 30, 45].map(m => {
+                            const allowed = current.minutes.includes(m);
+                            const active = m === minute;
+                            return `<button type="button" class="switch-time-min" data-minute="${m}" ${allowed ? '' : 'disabled'}
+                                style="flex:1;padding:10px 0;border-radius:8px;font-weight:700;font-size:14px;cursor:${allowed ? 'pointer' : 'not-allowed'};
+                                       border:1px solid ${active ? '#7c3aed' : '#d1d5db'};background:${active ? '#ede9fe' : (allowed ? '#fff' : '#f3f4f6')};
+                                       color:${allowed ? (active ? '#5b21b6' : '#111827') : '#9ca3af'};">${pad(hour)}:${pad(m)}</button>`;
+                        }).join('')}
+                    </div>
+                    <div style="font-size:12px;color:#4b5563;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:16px;">${splitNote}</div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                        <button id="switch-time-cancel" class="btn btn-secondary">Cancel</button>
+                        <button id="switch-time-ok" class="btn btn-primary">Start at ${pad(hour)}:${pad(minute)}</button>
+                    </div>
+                </div>`;
+            modal.querySelector('#switch-time-hour').addEventListener('change', e => { hour = parseInt(e.target.value, 10); render(); });
+            modal.querySelectorAll('.switch-time-min').forEach(b => b.addEventListener('click', () => { minute = parseInt(b.dataset.minute, 10); render(); }));
+            modal.querySelector('#switch-time-cancel').addEventListener('click', () => { modal.remove(); resolve(false); });
+            modal.querySelector('#switch-time-ok').addEventListener('click', () => { modal.remove(); resolve({ hour, minute }); });
+        };
+        document.body.appendChild(modal);
+        render();
+    });
+}
+
 function _pickCurrentHourOwner(wsCode, info) {
     return new Promise(resolve => {
         const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1639,18 +1702,13 @@ function checkHourPendingReasons(hour) {
 
     if (hourlyState.workstations?.length > 0) {
         hourlyState.workstations.forEach(ws => {
-            const hourlyTarget = getWorkstationHourlyTarget(ws);
-            if (!(hourlyTarget > 0)) return;
-            const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
-            const progress = hourlyState.progressData.find(
-                d => wsProcessIds.includes(parseInt(d.process_id, 10)) && parseInt(d.hour_slot, 10) === hour
-            );
-            if (progress) {
-                const qty = parseInt(progress.quantity || 0, 10);
-                if (qty < hourlyTarget && !progress.shortfall_reason) {
-                    violations.push(ws.workstation_code);
-                }
-            }
+            // Each style of the hour against its own target (a split hour has two).
+            const short = resolveCardForHour(ws, hour).some(part => {
+                if (!(part.target > 0)) return false;
+                const progress = findPartProgress(part, hour);
+                return progress && parseInt(progress.quantity || 0, 10) < part.target && !progress.shortfall_reason;
+            });
+            if (short) violations.push(ws.workstation_code);
         });
     } else {
         const hourlyTarget = hourlyState.hourlyTarget;
@@ -1985,6 +2043,76 @@ async function refreshHourlySummary() {
     renderHourlySummary();
 }
 
+const wsHistoryKey = (ws) => String(parseInt(String(ws?.workstation_code || '').replace(/[^0-9]/g, ''), 10) || ws?.workstation_code);
+
+// Which style(s) a station ran in an hour, read from the operator's history windows for the
+// selected hour (GET /supervisor/ws-employees `parts`) — the same windows the reports credit.
+// Normally one part; a split hour (style switch at :15/:30/:45) has two, entered separately.
+// Without history for the hour (unstaffed, or another hour than the one loaded) it falls back to
+// the card's current style, as before. Each part:
+//   { planId, processes, hourlyTarget, target, minutes, fromMinute, toMinute, label }
+// label is set when the part is not the card's current style ('Primary' / 'CO'), or on every
+// part of a split hour.
+function resolveCardForHour(ws, hour) {
+    const currentTarget = getWorkstationHourlyTarget(ws);
+    const fallback = [{
+        planId: ws.id, processes: ws.processes || [], hourlyTarget: currentTarget, target: currentTarget,
+        minutes: 60, fromMinute: 0, toMinute: 60, label: null
+    }];
+    const loadedHour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
+    if (hour !== loadedHour) return fallback;
+    const parts = hourlyState.historyEmployeeMap?.get(wsHistoryKey(ws))?.parts || [];
+    if (!parts.length) return fallback;
+
+    const resolved = [];
+    for (const part of parts) {
+        const planId = part.line_plan_workstation_id;
+        let processes;
+        let hourlyTarget;
+        let label;
+        if (planId && planId === ws.primary_ws_id && ws.primary_processes?.length) {
+            processes = ws.primary_processes;
+            hourlyTarget = Math.round(parseFloat(ws.primary_hourly_target_units || 0)) || Math.round(hourlyState.perHourTarget || 0);
+            label = 'Primary';
+        } else if (planId && planId === ws.co_ws_id && ws.co_processes?.length) {
+            processes = ws.co_processes;
+            hourlyTarget = Math.round(parseFloat(ws.co_hourly_target_units || ws.ws_changeover_hourly_target || 0)) || Math.round(hourlyState.perHourIncomingTarget || 0);
+            label = 'CO';
+        } else if (planId && planId === ws.id) {
+            processes = ws.processes || [];
+            hourlyTarget = currentTarget;
+            label = null;
+        } else {
+            return fallback;
+        }
+        const fromMinute = parseInt(part.from_minute ?? 0, 10);
+        const toMinute = parseInt(part.to_minute ?? 60, 10);
+        const existing = resolved.find(r => r.planId === planId);
+        if (existing) {
+            // Two operators on the same plan row inside one hour are still one entry.
+            existing.minutes += Math.max(0, toMinute - fromMinute);
+            existing.toMinute = Math.max(existing.toMinute, toMinute);
+            continue;
+        }
+        resolved.push({ planId, processes, hourlyTarget, minutes: Math.max(0, toMinute - fromMinute), fromMinute, toMinute, label });
+    }
+    if (resolved.length === 1) {
+        const only = resolved[0];
+        return [{ ...only, target: only.hourlyTarget, minutes: 60, fromMinute: 0, toMinute: 60, label: only.planId === ws.id ? null : only.label }];
+    }
+    return resolved.map(part => ({ ...part, target: Math.round(part.hourlyTarget * part.minutes / 60) }));
+}
+
+// The progress row for one part of an hour (any of its processes; the save fans out to all).
+function findPartProgress(part, hour) {
+    const ids = (part.processes || []).map(p => parseInt(p.process_id || p.id, 10));
+    return (hourlyState.progressData || []).find(d => ids.includes(parseInt(d.process_id, 10)) && parseInt(d.hour_slot, 10) === hour) || null;
+}
+
+const formatPartWindow = (hour, part) =>
+    `${String(hour).padStart(2, '0')}:${String(part.fromMinute).padStart(2, '0')}–`
+    + (part.toMinute >= 60 ? `${String(hour + 1).padStart(2, '0')}:00` : `${String(hour).padStart(2, '0')}:${String(part.toMinute).padStart(2, '0')}`);
+
 function getWorkstationHourlyTarget(ws) {
     if (!ws) return hourlyState.hourlyTarget || 0;
     const effectiveHourlyTarget = parseFloat(ws.hourly_target_units || 0) || 0;
@@ -2178,12 +2306,21 @@ async function revertWsChangeover(wsCode, date) {
         return;
     }
     try {
-        const r = await fetch(`${API_BASE}/supervisor/changeover/revert-workstation`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_id: lineId, work_date: date, workstation_code: wsCode })
-        });
-        const data = await r.json();
+        const body = { line_id: lineId, work_date: date, workstation_code: wsCode };
+        let data = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const r = await fetch(`${API_BASE}/supervisor/changeover/revert-workstation`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            data = await r.json();
+            if (data.error_code !== 'switch_time_required') break;
+            const picked = await _pickSwitchTime(wsCode, data);
+            if (!picked) return; // cancelled
+            body.switch_hour = picked.hour;
+            body.switch_minute = picked.minute;
+        }
         if (!data.success) {
             throw new Error(data.error || 'Failed to switch workstation back to primary');
         }
@@ -2486,7 +2623,7 @@ function coPickerSelect(optEl) {
     });
 }
 
-async function submitWsChangeoverStart(force = false, changeReason = null, confirmAbsent = false, hourOwner = null) {
+async function submitWsChangeoverStart(force = false, changeReason = null, confirmAbsent = false, hourOwner = null, switchTime = null) {
     const { wsCode, date } = coPromptState;
     const lineId = hourlyState.lineId;
     if (!lineId || !date || !wsCode) return;
@@ -2521,6 +2658,10 @@ async function submitWsChangeoverStart(force = false, changeReason = null, confi
         if (changeReason) body.change_reason = changeReason;
         if (confirmAbsent) body.confirm_absent_with_output = true;
         if (hourOwner) body.current_hour_owner = hourOwner;
+        if (switchTime) {
+            body.switch_hour = switchTime.hour;
+            body.switch_minute = switchTime.minute;
+        }
 
         const r = await fetch(`${API_BASE}/supervisor/changeover/activate-workstation`, {
             method: 'POST',
@@ -2531,26 +2672,32 @@ async function submitWsChangeoverStart(force = false, changeReason = null, confi
 
         if (data.target_warning) {
             if (confirm(`${data.message}\n\nProceed with changeover anyway?`)) {
-                await submitWsChangeoverStart(true, changeReason, confirmAbsent, hourOwner);
+                await submitWsChangeoverStart(true, changeReason, confirmAbsent, hourOwner, switchTime);
             }
+            return;
+        }
+        if (data.error_code === 'switch_time_required') {
+            const picked = await _pickSwitchTime(wsCode, data);
+            if (!picked) return; // cancelled
+            await submitWsChangeoverStart(force, changeReason, confirmAbsent, hourOwner, picked);
             return;
         }
 
         if (data.error_code === 'change_reason_required') {
             const reason = await _pickChangeReason(wsCode, data.occupant?.emp_name);
             if (!reason) return; // cancelled
-            await submitWsChangeoverStart(force, reason, confirmAbsent, hourOwner);
+            await submitWsChangeoverStart(force, reason, confirmAbsent, hourOwner, switchTime);
             return;
         }
         if (data.error_code === 'absent_output_warning') {
             if (!_confirmAbsentOutput(data.occupant?.emp_name, data.total_output || 0)) return;
-            await submitWsChangeoverStart(force, changeReason, true, hourOwner);
+            await submitWsChangeoverStart(force, changeReason, true, hourOwner, switchTime);
             return;
         }
         if (data.error_code === 'current_hour_owner_required') {
             const owner = await _pickCurrentHourOwner(wsCode, data);
             if (!owner) return; // cancelled
-            await submitWsChangeoverStart(force, changeReason, confirmAbsent, owner);
+            await submitWsChangeoverStart(force, changeReason, confirmAbsent, owner, switchTime);
             return;
         }
 
@@ -2813,7 +2960,10 @@ function buildPendingHoursBanner() {
         let anyEntered = false;
         for (const ws of workstations) {
             if (isSurplusClosedForHour(ws, h)) continue;
-            const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
+            // Either style counts: an hour entered on the old style before a CO switch is not
+            // missing just because the card now shows CO (this flagged ~40 stations on line 13).
+            const wsProcessIds = [...(ws.processes || []), ...(ws.primary_processes || []), ...(ws.co_processes || [])]
+                .map(p => parseInt(p.process_id || p.id, 10));
             if (!wsProcessIds.length) continue;
             const hasEntry = progress.some(d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === h);
             if (hasEntry) anyEntered = true;
@@ -2965,16 +3115,25 @@ function renderHourlySummary() {
 
         const cards = workstations.map(ws => {
             const isWsChangeover = !!ws.ws_changeover_active;
-            const wsHourlyTarget = getWorkstationHourlyTarget(ws);
             const wsEffectiveTarget = getWorkstationEffectiveTarget(ws);
 
-            const wsProcessIds = (ws.processes || []).map(p => p.process_id || p.id);
-            const progress = hourlyState.progressData.find(
-                d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour
-            );
-            const hasEntry = !!progress;
-            const output = hasEntry ? parseInt(progress.quantity || 0) : 0;
-            const reason = progress?.shortfall_reason || '';
+            // The style(s) this hour belongs to (history window), not the card's current style:
+            // hours before a CO switch show and save on the old style, a split hour on both.
+            const hourParts = resolveCardForHour(ws, hour).map(part => {
+                const progress = findPartProgress(part, hour);
+                return {
+                    ...part,
+                    hasEntry: !!progress,
+                    output: progress ? parseInt(progress.quantity || 0, 10) : 0,
+                    reason: progress?.shortfall_reason || ''
+                };
+            });
+            const isSplitHour = hourParts.length > 1;
+            const wsHourlyTarget = hourParts.reduce((sum, part) => sum + (part.target || 0), 0);
+            const hasEntry = hourParts.some(part => part.hasEntry);
+            const output = hourParts.reduce((sum, part) => sum + part.output, 0);
+            const reason = hourParts.map(part => part.reason).filter(Boolean).join('; ');
+            const partNeedsReason = hourParts.some(part => part.hasEntry && part.target > 0 && part.output < part.target && !part.reason);
 
             const wsStatus = ws.ws_status || 'active';
             // Resolve history-based employee for the selected hour
@@ -2996,11 +3155,13 @@ function renderHourlySummary() {
                         : '<span style="color:#dc2626;">Unassigned</span>';
             }
 
-            const processList = (ws.processes || []).map(p => p.operation_name).join(', ');
+            const processList = hourParts
+                .map(part => (part.processes || []).map(p => p.operation_name).join(', '))
+                .join(' | ');
             const coProcessList = (ws.co_processes || []).map(p => p.operation_name).join(', ');
             const showCoProcessList = !!(coProcessList && hasChangeover && (hourlyState.changeoverUiEnabled || hourlyState.changeoverActive || isWsChangeover));
             const workloadColor = ws.workload_pct >= 90 ? '#16a34a' : ws.workload_pct >= 80 ? '#d97706' : '#dc2626';
-            const needsReason = hasEntry && wsHourlyTarget > 0 && output < wsHourlyTarget && !reason;
+            const needsReason = partNeedsReason;
 
             // Block hourly input if no daily plan, no employee assigned, or employee not mapped
             const noDailyPlan = !hourlyState.hasDailyPlan;
@@ -3021,6 +3182,15 @@ function renderHourlySummary() {
                 surplusBadge += `<span style="background:#f3f4f6;color:#4b5563;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
                     title="Closed after ${supHourLabel(ws.surplus_closed_hour)}">${closedLabel} · ${String(ws.surplus_closed_hour).padStart(2, '0')}:00</span>`;
             }
+
+            // Says which style this hour is on when it differs from the card's current style.
+            const hourStyleBadge = isSplitHour
+                ? `<span style="background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
+                    title="The style changed part-way through this hour">Split hour</span>`
+                : hourParts[0].label
+                    ? `<span style="background:#f0f9ff;color:#075985;border:1px solid #bae6fd;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;"
+                        title="This hour was run on the ${hourParts[0].label === 'CO' ? 'changeover' : 'primary'} style">${hourParts[0].label} this hour</span>`
+                    : '';
 
             // Status badge for card header
             let statusBadge = '';
@@ -3056,7 +3226,11 @@ function renderHourlySummary() {
                         ? `<button class="btn ws-card-action" style="background:#fee2e2;color:#dc2626;border:1px solid #fecaca;cursor:not-allowed;" disabled title="No employee assigned — assign in Morning section">&#128683; Not Assigned</button>`
                         : notMapped
                             ? `<button class="btn ws-card-action" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:not-allowed;" disabled title="Employee assigned but not mapped — supervisor must link in Mapping section">&#128279; Map Employee</button>`
-                            : hasEntry
+                            : isSplitHour
+                                // Split hour: one entry per style, each against its own target.
+                                ? hourParts.map((part, idx) => `<button class="btn ${part.hasEntry ? 'btn-secondary' : 'btn-primary'} ws-card-action"
+                                        onclick="openWorkstationHourlyEntry(${ws.id}, ${idx})">${part.hasEntry ? '&#9998; ' : ''}${part.label} ${formatPartWindow(hour, part)}</button>`).join('')
+                                : hasEntry
                                 ? `<button class="btn btn-secondary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">&#9998; Edit</button>`
                                 : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
@@ -3167,7 +3341,7 @@ function renderHourlySummary() {
                 <div class="ws-card ${cardClass}" id="hourly-ws-card-${ws.id}">
                     <div class="ws-card-header">
                         <span class="ws-card-code">${ws.workstation_code} <span style="font-size:12px;font-weight:600;color:${workloadColor};">${parseFloat(ws.workload_pct||0).toFixed(0)}%</span></span>
-                        <div class="ws-card-badges">${surplusBadge}${statusBadge}</div>
+                        <div class="ws-card-badges">${hourStyleBadge}${surplusBadge}${statusBadge}</div>
                     </div>
                     <div class="ws-card-body">
                         <div class="ws-card-row">
@@ -3336,31 +3510,35 @@ function openQuickEntry() {
     const workstations = hourlyState.workstations || [];
     const progress = hourlyState.progressData || [];
 
-    const rows = workstations.filter(ws => !isSurplusClosedForHour(ws, hour)).map(ws => {
-        const wsProcessIds = (ws.processes || []).map(p => parseInt(p.process_id || p.id, 10));
-        const existing = progress.find(d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour);
+    // One row per style the station ran this hour: normally one, two for a split hour. Each row
+    // posts its own plan row, so entries land on the style the reports credit.
+    const rows = workstations.filter(ws => !isSurplusClosedForHour(ws, hour)).flatMap(ws => resolveCardForHour(ws, hour).map(part => {
+        const existing = findPartProgress(part, hour);
         const value = existing ? parseInt(existing.quantity || 0, 10) : '';
-        const target = getWorkstationHourlyTarget(ws);
+        const target = part.target;
         const emp = ws.assigned_emp_name || '';
         const filled = existing ? 'background:#f0fdf4;' : '';
+        const partLabel = part.label
+            ? `<div style="font-size:11px;font-weight:600;color:#9a3412;">${part.label}${part.minutes < 60 ? ` ${formatPartWindow(hour, part)}` : ''}</div>`
+            : '';
         return `
             <tr style="${filled}">
-                <td style="padding:6px 8px;font-weight:700;white-space:nowrap;">${ws.workstation_code}</td>
+                <td style="padding:6px 8px;font-weight:700;white-space:nowrap;">${ws.workstation_code}${partLabel}</td>
                 <td style="padding:6px 8px;color:#6b7280;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${emp}</td>
                 <td style="padding:6px 8px;color:#6b7280;font-size:12px;text-align:right;">${target || '–'}</td>
                 <td style="padding:6px 8px;">
                     <input type="number" min="0" inputmode="numeric"
-                           data-qe-plan-id="${ws.id}" data-qe-target="${target || 0}" value="${value}"
+                           data-qe-plan-id="${part.planId}" data-qe-target="${target || 0}" value="${value}"
                            style="width:86px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:15px;text-align:right;">
                 </td>
                 <td style="padding:6px 8px;">
-                    <select data-qe-reason-for="${ws.id}" style="padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;max-width:170px;">
+                    <select data-qe-reason-for="${part.planId}" style="padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;max-width:170px;">
                         <option value="">— reason if below target —</option>
                         ${SHORTFALL_REASONS.map(r => `<option value="${r}"${existing?.shortfall_reason === r ? ' selected' : ''}>${r}</option>`).join('')}
                     </select>
                 </td>
             </tr>`;
-    }).join('');
+    })).join('');
 
     panel.style.display = 'block';
     panel.innerHTML = `
@@ -3641,19 +3819,20 @@ function openHourlyEntry(processId) {
 }
 
 // New workstation-based entry (uses workstation_plan_id for fan-out)
-function openWorkstationHourlyEntry(workstationPlanId) {
+// partIndex picks one style of a split hour (see resolveCardForHour); 0 for every ordinary hour.
+function openWorkstationHourlyEntry(workstationPlanId, partIndex = 0) {
     const ws = hourlyState.workstations?.find(w => w.id === workstationPlanId);
     if (!ws) { showToast('Workstation not found', 'error'); return; }
     hourlyState.selectedWorkstation = ws;
     hourlyState.selectedProcess = null;
 
     const hour = parseInt(document.getElementById('hourly-hour')?.value || 0, 10);
-    const hourlyTarget = getWorkstationHourlyTarget(ws);
+    const hourParts = resolveCardForHour(ws, hour);
+    const part = hourParts[partIndex] || hourParts[0];
+    hourlyState.selectedPart = part;
+    const hourlyTarget = part.target;
 
-    const wsProcessIds = (ws.processes || []).map(p => p.process_id || p.id);
-    const existing = hourlyState.progressData.find(
-        d => wsProcessIds.includes(parseInt(d.process_id)) && parseInt(d.hour_slot) === hour
-    );
+    const existing = findPartProgress(part, hour);
     const existingOutput = existing ? parseInt(existing.quantity || 0) : 0;
     const isCombined = ws.coverage_type === 'combine';
     const existingReason = existing?.shortfall_reason || (isCombined ? 'WORKSTATION COMBINED' : '');
@@ -3666,7 +3845,10 @@ function openWorkstationHourlyEntry(workstationPlanId) {
     // Close any previously open inline hourly entry
     document.querySelectorAll('.hourly-inline-entry').forEach(el => el.remove());
 
-    const processList = (ws.processes || []).map(p => p.operation_name).join(' → ');
+    const processList = (part.processes || []).map(p => p.operation_name).join(' → ');
+    const partInfo = part.label
+        ? ` &nbsp;|&nbsp; <strong>${part.label}${hourParts.length > 1 ? ` ${formatPartWindow(hour, part)}` : ''}</strong>`
+        : '';
     const workerInfo = ws.assigned_emp_name
         ? `${ws.assigned_emp_code} – ${ws.assigned_emp_name}`
         : '<span style="color:#dc2626;">Unassigned</span>';
@@ -3695,7 +3877,7 @@ function openWorkstationHourlyEntry(workstationPlanId) {
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                 <div>
                     <div style="font-weight:700;font-size:14px;">${ws.workstation_code} — Enter Output</div>
-                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${formatHourlyRange(hour)} &nbsp;|&nbsp; Entry at: ${formatHourlyEntryTime(hour)} &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}/hr</div>
+                    <div style="font-size:12px;color:#6b7280;">${workerInfo} &nbsp;|&nbsp; Hour: ${formatHourlyRange(hour)}${partInfo} &nbsp;|&nbsp; Entry at: ${formatHourlyEntryTime(hour)} &nbsp;|&nbsp; Target: ${hourlyTarget || '–'}${part.minutes < 60 ? ` (${part.minutes} min)` : '/hr'}</div>
                 </div>
                 <button class="btn btn-secondary btn-sm" onclick="cancelHourlyEntry()">Cancel</button>
             </div>
@@ -3739,12 +3921,14 @@ function openWorkstationHourlyEntry(workstationPlanId) {
 async function saveWorkstationHourlyOutput() {
     const ws = hourlyState.selectedWorkstation;
     if (!ws) return;
+    // The style this hour belongs to, chosen when the form opened (resolveCardForHour).
+    const part = hourlyState.selectedPart || { planId: ws.id, target: getWorkstationHourlyTarget(ws) };
 
     const lineId = hourlyState.lineId;
     const date = document.getElementById('hourly-date')?.value;
     const hour = document.getElementById('hourly-hour')?.value;
     const output = parseInt(document.getElementById('hourly-output-qty')?.value || 0, 10);
-    const hourlyTarget = getWorkstationHourlyTarget(ws);
+    const hourlyTarget = part.target;
     const reason = getFinalReason();
     const warningEl = document.getElementById('hourly-reason-warning');
 
@@ -3765,7 +3949,7 @@ async function saveWorkstationHourlyOutput() {
 
     const payload = {
         line_id: lineId,
-        workstation_plan_id: ws.id,
+        workstation_plan_id: part.planId,
         work_date: date,
         hour_slot: parseInt(hour, 10),
         quantity: output,
