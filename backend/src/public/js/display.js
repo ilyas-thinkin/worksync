@@ -717,6 +717,9 @@ function hourCell(cell, hour, departedAfter, isCurrent) {
     if (departedAfter) return `<td class="c-hour${current}"><span class="tag tag-bad">n/a</span></td>`;
     if (!cell || !cell.entered) return `<td class="c-hour${current}"><span class="muted">–</span></td>`;
 
+    const split = splitHourCell(cell, current, isCurrent);
+    if (split) return split;
+
     const output = num(cell.output) || 0;
     const target = num(cell.target) || 0;
     const below = target > 0 && output < target;
@@ -725,6 +728,43 @@ function hourCell(cell, hour, departedAfter, isCurrent) {
     return `<td class="c-hour${current}${cell.is_changeover ? ' is-co' : ''}">
         <div class="h-out ${outCls}">${below ? '<span class="mark">▼</span>' : ''}${output}</div>
         <div class="h-eff ${effClass(eff)}">${pct(eff)}</div>
+    </td>`;
+}
+
+// The hour a station switched style mid-hour (:15/:30/:45): primary and CO are two entries, each
+// against a target prorated to its minutes. One summed figure read the entered primary part as a
+// shortfall against the whole hour while CO was still to come, so each part shows on its own.
+// While the hour is running and a part is still to be entered, the efficiency line says when CO
+// started instead of a figure against half an hour's entries.
+function splitHourCell(cell, current, isCurrent) {
+    const parts = Array.isArray(cell.parts) ? cell.parts.filter((p) => num(p.minutes) > 0) : [];
+    if (parts.length < 2 || !parts.some((p) => p.is_changeover) || parts.every((p) => p.is_changeover)) return null;
+    const partsHtml = parts.map((part) => {
+        const label = part.is_changeover ? 'CO' : 'P';
+        if (!part.entered) {
+            return `<span class="h-part"><small class="${part.is_changeover ? 'co' : ''}">${label}</small><span class="muted">–</span></span>`;
+        }
+        const output = num(part.output) || 0;
+        const target = num(part.target) || 0;
+        const cls = target > 0 ? (output < target ? 'bad' : 'good') : '';
+        return `<span class="h-part ${cls}"><small class="${part.is_changeover ? 'co' : ''}">${label}</small>${output}</span>`;
+    }).join('');
+    const coStart = (() => {
+        let minute = 0;
+        for (const part of parts) {
+            if (part.is_changeover) return minute;
+            minute += num(part.minutes) || 0;
+        }
+        return 0;
+    })();
+    const pending = isCurrent && !parts.every((p) => p.entered);
+    const eff = num(cell.efficiency_percent) ?? 0;
+    const effHtml = pending
+        ? `<div class="h-eff muted">CO :${String(coStart).padStart(2, '0')}</div>`
+        : `<div class="h-eff ${effClass(eff)}">${pct(eff)}</div>`;
+    return `<td class="c-hour${current} is-co is-split">
+        <div class="h-out h-split">${partsHtml}</div>
+        ${effHtml}
     </td>`;
 }
 

@@ -3962,6 +3962,20 @@ async function getEmployeeProgressForWindow(db, lineId, workDate, { exactHour = 
                ON wh.workstation_id = a.workstation_id
               AND wh.hour_slot >= a.effective_from_hour
               AND wh.hour_slot <= LEAST(a.effective_to_hour, $${windowEndIndex})
+              -- One operator with two windows on the same plan row inside one hour (a switch and
+              -- its revert, a 10:45 switch later undone) still made that hour's pieces once: the
+              -- earlier window owns the hour. Counting it per window doubled it on the TV.
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM assignments a_prev
+                  WHERE a_prev.employee_id = a.employee_id
+                    AND a_prev.workstation_id = a.workstation_id
+                    AND a_prev.history_id <> a.history_id
+                    AND wh.hour_slot >= a_prev.effective_from_hour
+                    AND wh.hour_slot <= LEAST(a_prev.effective_to_hour, $${windowEndIndex})
+                    AND (a_prev.effective_from_hour, a_prev.effective_from_minute, a_prev.history_id)
+                        < (a.effective_from_hour, a.effective_from_minute, a.history_id)
+              )
              GROUP BY a.history_id, a.employee_id, a.workstation_id, a.workstation_code, a.workstation_number, a.group_name, a.actual_sam_seconds, a.source_product_id, a.window_closed
          ),
          employee_reason_hours AS (
