@@ -2811,6 +2811,159 @@ async function classifyChangeoverWorkstations(db, {
     return result;
 }
 
+// The incoming (CO) stations a physical station can switch to, for the supervisor's CO picker.
+// Pairing everywhere else is by workstation code, so a CO row "belongs" to whichever physical
+// station carries its code. A row is taken once that station has switched, or — for a station only
+// the new style has — once somebody is staffed on it. A row with output or an operator window on it
+// is locked: re-coding it would move recorded work onto a different physical station.
+async function listCoStationOptions(db, { lineId, workDate, primaryProductId, incomingProductId, forUpdate = false }) {
+    if (!lineId || !workDate || !primaryProductId || !incomingProductId) return [];
+    const rowsResult = await db.query(
+        `SELECT id, product_id, workstation_code, workstation_number, ws_changeover_active
+         FROM line_plan_workstations
+         WHERE line_id = $1 AND work_date = $2 AND product_id = ANY($3::int[])
+         ORDER BY workstation_number`
+        + (forUpdate ? ' FOR UPDATE' : ''),
+        [lineId, workDate, [primaryProductId, incomingProductId]]
+    );
+    const primaryByKey = new Map();
+    const incoming = [];
+    for (const row of rowsResult.rows) {
+        if (parseInt(row.product_id, 10) === parseInt(primaryProductId, 10)) {
+            const key = normalizeWsCode(row.workstation_code);
+            if (!primaryByKey.has(key)) primaryByKey.set(key, row);
+        } else {
+            incoming.push(row);
+        }
+    }
+    if (!incoming.length) return [];
+    const incomingIds = incoming.map(row => row.id);
+
+    const [usedResult, staffedResult, opsResult] = await Promise.all([
+        db.query(
+            `SELECT lpwp.workstation_id AS id
+             FROM line_plan_workstation_processes lpwp
+             JOIN line_process_hourly_progress p
+               ON p.process_id = lpwp.product_process_id AND p.line_id = $2 AND p.work_date = $3
+             WHERE lpwp.workstation_id = ANY($1::int[])
+             UNION
+             SELECT line_plan_workstation_id
+             FROM employee_workstation_assignment_history
+             WHERE line_plan_workstation_id = ANY($1::int[])`,
+            [incomingIds, lineId, workDate]
+        ),
+        db.query(
+            `SELECT workstation_code
+             FROM employee_workstation_assignments
+             WHERE line_id = $1 AND work_date = $2 AND is_overtime = false AND employee_id IS NOT NULL`,
+            [lineId, workDate]
+        ),
+        db.query(
+            `SELECT lpwp.workstation_id, o.operation_name
+             FROM line_plan_workstation_processes lpwp
+             JOIN product_processes pp ON pp.id = lpwp.product_process_id
+             JOIN operations o ON o.id = pp.operation_id
+             WHERE lpwp.workstation_id = ANY($1::int[])
+             ORDER BY lpwp.workstation_id, lpwp.sequence_in_workstation`,
+            [incomingIds]
+        )
+    ]);
+    const usedIds = new Set(usedResult.rows.map(r => parseInt(r.id, 10)));
+    const staffedKeys = new Set(staffedResult.rows.map(r => normalizeWsCode(r.workstation_code)));
+    const opsById = new Map();
+    for (const r of opsResult.rows) {
+        if (!opsById.has(r.workstation_id)) opsById.set(r.workstation_id, []);
+        opsById.get(r.workstation_id).push(r.operation_name);
+    }
+
+    return incoming.map(row => {
+        const key = normalizeWsCode(row.workstation_code);
+        const primary = primaryByKey.get(key) || null;
+        let takenBy = null;
+        if (primary && primary.ws_changeover_active) takenBy = primary.workstation_code;
+        else if (!primary && staffedKeys.has(key)) takenBy = 'NEW';
+        return {
+            id: row.id,
+            workstation_code: row.workstation_code,
+            workstation_number: row.workstation_number,
+            key,
+            paired_primary_code: primary ? primary.workstation_code : null,
+            taken_by: takenBy,
+            locked_reason: !takenBy && usedIds.has(row.id) ? 'Output already recorded on this CO station' : null,
+            operations: opsById.get(row.id) || []
+        };
+    });
+}
+
+// Points a physical station at the CO station the supervisor chose for it, by re-coding the
+// incoming layout: the chosen row takes this station's code and number, and the row that held them
+// takes the chosen row's old ones. Board, gate, Convert and reports all pair by code, so they follow
+// without knowing a choice was made. Runs inside the caller's transaction.
+async function allocateCoWorkstation(db, { lineId, workDate, plan, workstationCode, coWorkstationId }) {
+    const fail = (status, message) => {
+        const err = new Error(message);
+        err.status = status;
+        throw err;
+    };
+    const key = normalizeWsCode(workstationCode);
+    const options = await listCoStationOptions(db, {
+        lineId,
+        workDate,
+        primaryProductId: plan.product_id,
+        incomingProductId: plan.incoming_product_id,
+        forUpdate: true
+    });
+    const target = options.find(o => o.id === parseInt(coWorkstationId, 10));
+    if (!target) fail(400, 'That workstation is not in the changeover plan');
+    if (target.key === key) return { changed: false };
+
+    const primaryResult = await db.query(
+        `SELECT id, workstation_code, workstation_number, ws_changeover_active
+         FROM line_plan_workstations
+         WHERE line_id = $1 AND work_date = $2 AND product_id = $3`,
+        [lineId, workDate, plan.product_id]
+    );
+    const primaryRow = primaryResult.rows.find(r => normalizeWsCode(r.workstation_code) === key);
+    if (!primaryRow) fail(404, `Workstation ${workstationCode} not found in primary product plan`);
+    if (primaryRow.ws_changeover_active) fail(400, 'Changeover already active for this workstation');
+    if (target.taken_by) {
+        fail(409, target.taken_by === 'NEW'
+            ? `CO ${target.workstation_code} is already staffed as a new station`
+            : `CO ${target.workstation_code} is already taken by ${target.taken_by}`);
+    }
+    if (target.locked_reason) fail(409, `CO ${target.workstation_code}: ${target.locked_reason}`);
+
+    const displaced = options.find(o => o.key === key) || null;
+    if (displaced && displaced.locked_reason) {
+        fail(409, `${primaryRow.workstation_code} already ran CO ${displaced.workstation_code} today — it can only switch back to that station`);
+    }
+    const newNumber = displaced ? displaced.workstation_number : primaryRow.workstation_number;
+    if (!displaced && options.some(o => o.id !== target.id && o.workstation_number === newNumber)) {
+        fail(409, `Changeover plan already has a workstation numbered ${newNumber}`);
+    }
+
+    const movedIds = [target.id, displaced?.id].filter(Boolean);
+    // workstation_number is unique per product: park both rows first so the swap cannot collide.
+    await db.query(`UPDATE line_plan_workstations SET workstation_number = -id WHERE id = ANY($1::int[])`, [movedIds]);
+    await db.query(
+        `UPDATE line_plan_workstations SET workstation_code = $2, workstation_number = $3, updated_at = NOW() WHERE id = $1`,
+        [target.id, primaryRow.workstation_code, newNumber]
+    );
+    if (displaced) {
+        await db.query(
+            `UPDATE line_plan_workstations SET workstation_code = $2, workstation_number = $3, updated_at = NOW() WHERE id = $1`,
+            [displaced.id, target.workstation_code, target.workstation_number]
+        );
+    }
+    return {
+        changed: true,
+        co_workstation_id: target.id,
+        from_code: target.workstation_code,
+        displaced_id: displaced ? displaced.id : null,
+        displaced_to_code: displaced ? target.workstation_code : null
+    };
+}
+
 // A surplus station is only in the way while somebody is still standing at it. Releasing one is not
 // a departure — the operator is still on shift and the supervisor will put them on another
 // workstation — so no worker_departures row is written. Two things have to happen: stop the clock
@@ -15140,7 +15293,15 @@ router.get('/supervisor/processes/:lineId', async (req, res) => {
                 changeover_ready_workstation_count: gateWorkstations.filter(ws => ws.ws_changeover_active).length,
                 can_finalize_primary: hasCoLayout && gateWorkstations.length > 0 && gateWorkstations.every(ws => ws.ws_changeover_active),
                 surplus_workstations: surplusWorkstations,
-                co_only_workstation_count: workstations.filter(ws => ws.is_co_only).length
+                co_only_workstation_count: workstations.filter(ws => ws.is_co_only).length,
+                co_station_options: hasCoLayout
+                    ? await listCoStationOptions(pool, {
+                        lineId,
+                        workDate: date,
+                        primaryProductId: primaryId,
+                        incomingProductId: incomingId
+                    })
+                    : []
             });
         }
 
@@ -15375,7 +15536,8 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         confirm_absent_with_output,
         current_hour_owner,
         switch_hour,
-        switch_minute
+        switch_minute,
+        co_workstation_id
     } = req.body;
     if (!line_id || !work_date || !workstation_code)
         return res.status(400).json({ success: false, error: 'line_id, work_date and workstation_code are required' });
@@ -15410,6 +15572,38 @@ router.post('/supervisor/changeover/activate-workstation', async (req, res) => {
         if (!plan) return res.status(404).json({ success: false, error: 'No daily plan found' });
         if (!plan.incoming_product_id) return res.status(400).json({ success: false, error: 'No changeover product configured for this line' });
         if (plan.is_locked) return res.status(403).json({ success: false, error: 'Daily plan is locked' });
+
+        // The supervisor chose which CO station this one takes over. Re-pair first (committed on its
+        // own: the prompts below re-post the same choice, which is then already in place).
+        if (co_workstation_id) {
+            const allocClient = await pool.connect();
+            try {
+                await allocClient.query('BEGIN');
+                const allocation = await allocateCoWorkstation(allocClient, {
+                    lineId: line_id,
+                    workDate: work_date,
+                    plan,
+                    workstationCode: workstation_code,
+                    coWorkstationId: co_workstation_id
+                });
+                await allocClient.query('COMMIT');
+                if (allocation.changed) {
+                    await logAudit('line_plan_workstations', allocation.co_workstation_id, 'co_ws_allocate', {
+                        workstation_code,
+                        co_workstation_id: allocation.co_workstation_id,
+                        co_from_code: allocation.from_code,
+                        displaced_id: allocation.displaced_id,
+                        displaced_to_code: allocation.displaced_to_code
+                    }, null, req);
+                }
+            } catch (allocErr) {
+                await allocClient.query('ROLLBACK').catch(() => {});
+                if (allocErr.status) return res.status(allocErr.status).json({ success: false, error: allocErr.message });
+                throw allocErr;
+            } finally {
+                allocClient.release();
+            }
+        }
 
         const wsResult = await pool.query(
             `SELECT

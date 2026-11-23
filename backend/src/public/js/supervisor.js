@@ -1985,6 +1985,7 @@ async function onHourlyLineChange() {
         hourlyState.canFinalizePrimary = result.can_finalize_primary === true;
         hourlyState.surplusWorkstations = Array.isArray(result.surplus_workstations) ? result.surplus_workstations : [];
         hourlyState.coOnlyWorkstationCount = result.co_only_workstation_count || 0;
+        hourlyState.coStationOptions = Array.isArray(result.co_station_options) ? result.co_station_options : [];
         hourlyState.finalizePrimaryBusy = false;
         if (!hourlyState.canFinalizePrimary) hourlyState.finalizePromptShown = false;
         // Restore changeoverUiEnabled from sessionStorage (survives reload, not cross-day)
@@ -2332,7 +2333,7 @@ async function revertWsChangeover(wsCode, date) {
 }
 
 // Employee reassignment for a workstation in changeover (same API as morning assign)
-async function openWsChangeoverEmployeeChange(wsCode, linePlanWsId) {
+async function openWsChangeoverEmployeeChange(wsCode, linePlanWsId, linkOnAssign = false) {
     const lineId = hourlyState.lineId;
     const date = document.getElementById('hourly-date')?.value || '';
     if (!lineId || !date) return;
@@ -2359,7 +2360,7 @@ async function openWsChangeoverEmployeeChange(wsCode, linePlanWsId) {
             : '';
         return `<div class="co-emp-opt" data-id="${eStr}" data-label="${label.replace(/"/g,'&quot;')}"
             data-taken="${takenWs || ''}"
-            onclick="coEmpOptSelect(this,'${wsCode}',${linePlanWsId || 'null'})"
+            onclick="coEmpOptSelect(this,'${wsCode}',${linePlanWsId || 'null'},${linkOnAssign})"
             style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6;${takenWs?'color:#9ca3af;':''}">
             <span>${label}</span>${takenBadge}
         </div>`;
@@ -2370,13 +2371,13 @@ async function openWsChangeoverEmployeeChange(wsCode, linePlanWsId) {
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:3000;display:flex;align-items:center;justify-content:center;';
     modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:24px;width:min(420px,95vw);box-shadow:0 20px 60px rgba(0,0,0,.3);">
-            <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;">Change Employee — ${wsCode} (Changeover)</h3>
+            <h3 style="margin:0 0 14px;font-size:15px;font-weight:700;">${linkOnAssign ? 'Enable CO' : 'Change Employee'} — ${wsCode} (Changeover)</h3>
             <input type="text" placeholder="Search by name or code…"
                 style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:8px;box-sizing:border-box;"
                 oninput="coEmpSearch(this)">
             <div id="co-emp-list" style="max-height:260px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;">
                 <div class="co-emp-opt" data-id="" data-label="— No employee —" data-taken=""
-                    onclick="coEmpOptSelect(this,'${wsCode}',${linePlanWsId || 'null'})"
+                    onclick="coEmpOptSelect(this,'${wsCode}',${linePlanWsId || 'null'},${linkOnAssign})"
                     style="padding:8px 10px;cursor:pointer;font-size:13px;color:#9ca3af;border-bottom:1px solid #f3f4f6;">
                     — No employee —
                 </div>
@@ -2399,7 +2400,7 @@ function coEmpSearch(input) {
     });
 }
 
-async function coEmpOptSelect(optEl, wsCode, linePlanWsId) {
+async function coEmpOptSelect(optEl, wsCode, linePlanWsId, linkOnAssign = false) {
     const empId = optEl.dataset.id || '';
     const label = optEl.dataset.label || '';
     const takenWs = optEl.dataset.taken || '';
@@ -2415,7 +2416,8 @@ async function coEmpOptSelect(optEl, wsCode, linePlanWsId) {
             work_date: date,
             workstation_code: wsCode,
             line_plan_workstation_id: linePlanWsId || null,
-            employee_id: empId ? parseInt(empId, 10) : null
+            employee_id: empId ? parseInt(empId, 10) : null,
+            ...(linkOnAssign && empId ? { is_linked: true } : {})
         }, wsCode);
         if (result === null) return; // cancelled at reason prompt
         if (!result.success) throw new Error(result.error || 'Assignment failed');
@@ -2433,6 +2435,7 @@ const coPromptState = {
     wsCode: null, wsId: null, date: null,
     origEmpId: null, origEmpCode: null, origEmpName: null,
     coSuggestedEmpId: null, coSuggestedEmpCode: null, coSuggestedEmpName: null,
+    coWorkstationId: null, coWorkstationCode: null, coWorkstationOps: [],
     scannedEmployee: null
 };
 
@@ -2470,9 +2473,94 @@ async function promptWsChangeover(btn) {
     coPromptState.coSuggestedEmpCode = coEmpCode;
     coPromptState.coSuggestedEmpName = coEmpName;
     coPromptState.scannedEmployee = null;
-    if (!confirm(`Start changeover for ${wsCode}?`)) {
+    coPromptState.coWorkstationId = null;
+    coPromptState.coWorkstationCode = null;
+    coPromptState.coWorkstationOps = [];
+    openCoStationPicker();
+}
+
+// Same key the server pairs stations on (normalizeWsCode): the trailing number, else the code.
+function coWsKey(code) {
+    const m = String(code || '').match(/(\d+)$/);
+    return m ? parseInt(m[1], 10) : String(code || '').toUpperCase().trim();
+}
+
+function coEsc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// Step 1 of a station's changeover: which incoming (CO) station is this one taking over? Layouts
+// rarely line up one-to-one, so the supervisor chooses from every CO station with its operations.
+// Stations another workstation already switched to (or a staffed new-in-CO station) are greyed out.
+function openCoStationPicker() {
+    const { wsCode } = coPromptState;
+    document.getElementById('co-station-picker')?.remove();
+    const myKey = coWsKey(wsCode);
+    const options = (hourlyState.coStationOptions || []).slice()
+        .sort((a, b) => (a.workstation_number || 0) - (b.workstation_number || 0));
+    if (!options.length) {
+        showToast('No changeover workstation plan found for this line', 'error');
         return;
     }
+
+    const rows = options.map(opt => {
+        const isOwn = opt.key === myKey;
+        const unavailable = !isOwn && (opt.taken_by || opt.locked_reason);
+        const note = isOwn
+            ? '<span style="font-size:11px;color:#5b21b6;font-weight:700;">Same number</span>'
+            : opt.taken_by
+                ? `<span style="font-size:11px;color:#b91c1c;">Taken${opt.taken_by === 'NEW' ? ' (new station)' : ` by ${coEsc(opt.taken_by)}`}</span>`
+                : opt.locked_reason
+                    ? `<span style="font-size:11px;color:#b91c1c;">${coEsc(opt.locked_reason)}</span>`
+                    : '';
+        const ops = (opt.operations || []).map(coEsc).join(', ') || '<em>No operations</em>';
+        return `<div class="co-station-opt" data-id="${opt.id}" data-search="${coEsc(`${opt.workstation_code} ${(opt.operations || []).join(' ')}`.toLowerCase())}"
+            ${unavailable ? '' : 'onclick="chooseCoStation(this)"'}
+            style="padding:10px 12px;border-bottom:1px solid #f3f4f6;${unavailable ? 'opacity:.45;cursor:not-allowed;background:#f9fafb;' : 'cursor:pointer;'}${isOwn ? 'background:#f5f3ff;' : ''}">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+                <strong style="font-size:14px;color:#111827;">CO ${coEsc(opt.workstation_code)}</strong>
+                ${note}
+            </div>
+            <div style="font-size:12px;color:#4b5563;margin-top:3px;">${ops}</div>
+        </div>`;
+    }).join('');
+
+    const modal = document.createElement('div');
+    modal.id = 'co-station-picker';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3100;display:flex;align-items:center;justify-content:center;padding:16px;';
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:14px;width:min(560px,96vw);max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,.28);overflow:hidden;">
+            <div style="padding:18px 20px 12px;border-bottom:1px solid #e5e7eb;">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+                    <div>
+                        <h3 style="margin:0;font-size:17px;font-weight:700;color:#111827;">Changeover for ${coEsc(wsCode)}</h3>
+                        <p style="margin:6px 0 0;color:#6b7280;font-size:13px;">Which changeover workstation will ${coEsc(wsCode)} run?</p>
+                    </div>
+                    <button onclick="document.getElementById('co-station-picker').remove()" style="background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:#6b7280;">&times;</button>
+                </div>
+                <input type="text" placeholder="Search workstation or operation…" oninput="filterCoStations(this)"
+                    style="width:100%;margin-top:10px;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;box-sizing:border-box;">
+            </div>
+            <div id="co-station-list" style="overflow-y:auto;flex:1;">${rows}</div>
+        </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+function filterCoStations(input) {
+    const q = (input.value || '').toLowerCase();
+    document.querySelectorAll('#co-station-list .co-station-opt').forEach(opt => {
+        opt.style.display = (opt.dataset.search || '').includes(q) ? '' : 'none';
+    });
+}
+
+async function chooseCoStation(optEl) {
+    const opt = (hourlyState.coStationOptions || []).find(o => String(o.id) === optEl.dataset.id);
+    if (!opt) return;
+    coPromptState.coWorkstationId = opt.id;
+    coPromptState.coWorkstationCode = opt.workstation_code;
+    coPromptState.coWorkstationOps = opt.operations || [];
+    document.getElementById('co-station-picker')?.remove();
     await openWsChangeoverModal();
 }
 
@@ -2521,6 +2609,7 @@ async function openWsChangeoverModal(warningMessage = '') {
                     <div>
                         <h3 style="margin:0;font-size:18px;font-weight:700;color:#111827;">Start Changeover</h3>
                         <p style="margin:6px 0 0;color:#6b7280;font-size:13px;">${wsCode} will switch from the primary product to the changeover product plan.</p>
+                        ${coPromptState.coWorkstationCode ? `<p style="margin:6px 0 0;font-size:13px;color:#5b21b6;"><strong>Runs CO ${coEsc(coPromptState.coWorkstationCode)}</strong>${coPromptState.coWorkstationOps.length ? ` — ${coPromptState.coWorkstationOps.map(coEsc).join(', ')}` : ''}</p>` : ''}
                     </div>
                     <button onclick="closeWsChangeoverModal()" style="background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:#6b7280;">&times;</button>
                 </div>
@@ -2655,6 +2744,7 @@ async function submitWsChangeoverStart(force = false, changeReason = null, confi
         if (employeeMode === 'change' && selectedEmployeeId) {
             body.employee_id = selectedEmployeeId;
         }
+        if (coPromptState.coWorkstationId) body.co_workstation_id = coPromptState.coWorkstationId;
         if (changeReason) body.change_reason = changeReason;
         if (confirmAbsent) body.confirm_absent_with_output = true;
         if (hourOwner) body.current_hour_owner = hourOwner;
@@ -3111,6 +3201,9 @@ function renderHourlySummary() {
         // no station has a CO counterpart and every one of them would look surplus — so the
         // release affordance stays hidden and the plain CO button behaviour is left alone.
         const coLayoutExists = (workstations || []).some(ws => ws.has_co_plan);
+        // CO stations nobody has switched to yet. Any unswitched station — surplus ones included —
+        // can take one of these, so a surplus card offers CO while at least one is left.
+        const freeCoStationCount = (hourlyState.coStationOptions || []).filter(o => !o.taken_by && !o.locked_reason).length;
         const flowMetrics = buildWorkstationFlowMetrics(workstations, hourlyState.progressData, { useChangeover: hourlyState.changeoverActive });
 
         const cards = workstations.map(ws => {
@@ -3234,40 +3327,9 @@ function renderHourlySummary() {
                                 ? `<button class="btn btn-secondary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">&#9998; Edit</button>`
                                 : `<button class="btn btn-primary ws-card-action" onclick="openWorkstationHourlyEntry(${ws.id})">Enter Output</button>`;
 
-            let coBtn = '';
-            if (ws.is_co_only) {
-                // Only exists in the incoming style, so there is no primary work here to switch
-                // away from — it just needs an operator before the new style goes primary.
-                coBtn = `<span class="ws-card-action" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
-                    title="This workstation only exists in the changeover style — assign an operator in the Morning section">&#10023; NEW IN CO</span>`;
-            } else if (ws.is_surplus && (ws.is_primary_tail || (canStartWorkstationChangeover && hasChangeover && coLayoutExists))) {
-                // Not part of the new style, so it can never switch to CO — but it still has primary
-                // work to finish, so output entry stays open. The supervisor closes it when done
-                // (Finish primary) or takes the operator off early (Release). Neither blocks Convert.
-                const empData = `data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
-                        data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
-                        data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"`;
-                if (surplusClosed) {
-                    coBtn = '';
-                } else if (ws.assigned_employee_id) {
-                    coBtn = `<button class="btn ws-card-action" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;"
-                        ${empData}
-                        title="Primary work on this station is done — close it and free the operator"
-                        onclick="promptFinishSurplusWs(this)">&#10003; Finish primary</button>
-                    <button class="btn ws-card-action" style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
-                        ${empData}
-                        title="Take the operator off this station with primary work still pending"
-                        onclick="promptReleaseSurplusWs(this)">&#8599; Release</button>`;
-                } else {
-                    coBtn = `<span class="ws-card-action" style="background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
-                        title="Not part of the changeover style">NOT IN CO</span>`;
-                }
-            } else if (isWsChangeover) {
-                coBtn = `<button class="btn ws-card-action" style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;"
-                    onclick="revertWsChangeover('${ws.workstation_code}', '${date}')">&#8617; Primary</button>`;
-            } else if (canStartWorkstationChangeover && hasChangeover) {
+            const startCoBtn = () => {
                 const _coHint = ws.co_suggested_emp_id ? ` <span style="font-size:10px;color:#7c3aed;">IE: ${ws.co_suggested_emp_code || ''}</span>` : '';
-                coBtn = `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
+                return `<button class="btn ws-card-action" style="background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd;"
                     data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
                     data-emp-id="${ws.assigned_employee_id || ''}"
                     data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
@@ -3276,6 +3338,47 @@ function renderHourlySummary() {
                     data-co-emp-code="${(ws.co_suggested_emp_code || '').replace(/"/g, '&quot;')}"
                     data-co-emp-name="${(ws.co_suggested_emp_name || '').replace(/"/g, '&quot;')}"
                     onclick="promptWsChangeover(this)">&#8652; CO${_coHint}</button>`;
+            };
+
+            let coBtn = '';
+            if (ws.is_co_only) {
+                // Only exists in the incoming style (the primary has fewer stations), so there is no
+                // primary work here to switch away from — it just needs an operator.
+                coBtn = !ws.assigned_employee_id && canStartWorkstationChangeover && hasChangeover
+                    ? `<button class="btn ws-card-action" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;"
+                        title="This workstation only exists in the changeover style — choose its operator"
+                        onclick="openWsChangeoverEmployeeChange('${ws.workstation_code}', ${ws.id}, true)">&#10023; Enable CO</button>`
+                    : `<span class="ws-card-action" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
+                        title="This workstation only exists in the changeover style">&#10023; NEW IN CO</span>`;
+            } else if (ws.is_surplus && (ws.is_primary_tail || (canStartWorkstationChangeover && hasChangeover && coLayoutExists))) {
+                // Not part of the new style, so it can never switch to CO — but it still has primary
+                // work to finish, so output entry stays open. The supervisor closes it when done
+                // (Finish primary) or takes the operator off early (Release). Neither blocks Convert.
+                const empData = `data-ws-code="${ws.workstation_code}" data-ws-id="${ws.id}" data-date="${date}"
+                        data-emp-code="${(ws.assigned_emp_code || '').replace(/"/g, '&quot;')}"
+                        data-emp-name="${(ws.assigned_emp_name || '').replace(/"/g, '&quot;')}"`;
+                // Still before Convert, it can take over a CO station nobody has claimed.
+                const surplusCoBtn = !ws.is_primary_tail && freeCoStationCount > 0 ? startCoBtn() : '';
+                if (surplusClosed) {
+                    coBtn = '';
+                } else if (ws.assigned_employee_id) {
+                    coBtn = surplusCoBtn + `<button class="btn ws-card-action" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;"
+                        ${empData}
+                        title="Primary work on this station is done — close it and free the operator"
+                        onclick="promptFinishSurplusWs(this)">&#10003; Finish primary</button>
+                    <button class="btn ws-card-action" style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
+                        ${empData}
+                        title="Take the operator off this station with primary work still pending"
+                        onclick="promptReleaseSurplusWs(this)">&#8599; Release</button>`;
+                } else {
+                    coBtn = surplusCoBtn || `<span class="ws-card-action" style="background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;"
+                        title="Not part of the changeover style">NOT IN CO</span>`;
+                }
+            } else if (isWsChangeover) {
+                coBtn = `<button class="btn ws-card-action" style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;"
+                    onclick="revertWsChangeover('${ws.workstation_code}', '${date}')">&#8617; Primary</button>`;
+            } else if (canStartWorkstationChangeover && hasChangeover) {
+                coBtn = startCoBtn();
             }
 
             const reasonLine = reason && hasEntry && output < wsHourlyTarget
