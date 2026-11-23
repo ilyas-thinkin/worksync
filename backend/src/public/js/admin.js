@@ -3383,13 +3383,14 @@ function exportProductExcel(productId) {
     window.location.href = `${API_BASE}/products/export/${productId}`;
 }
 
-async function handleProductExcelUpload(input) {
-    const file = input.files[0];
+async function handleProductExcelUpload(input, options = {}) {
+    const file = options.file || input?.files?.[0];
     if (!file) return;
-    input.value = ''; // Reset so same file can be re-uploaded
+    if (input) input.value = ''; // Reset so same file can be re-uploaded
 
     const formData = new FormData();
     formData.append('file', file);
+    if (options.overrideShared) formData.append('confirm_shared_processes', 'override');
 
     // Show loading overlay
     const content = document.getElementById('main-content');
@@ -3406,6 +3407,25 @@ async function handleProductExcelUpload(input) {
         });
         const result = await response.json();
         document.body.removeChild(overlay);
+
+        // A line is running this style today on processes the file would rename or switch off.
+        if (response.status === 409 && result.code === 'SHARED_PROCESSES_IN_USE') {
+            const lineList = (result.other_lines || []).map(l => {
+                const effects = [
+                    l.processes_changed ? `${l.processes_changed} renamed/re-timed` : '',
+                    l.processes_deactivated ? `${l.processes_deactivated} switched off` : ''
+                ].filter(Boolean).join(', ');
+                return `  • ${l.line_code}: ${(l.workstations || 0) + (l.ot_workstations || 0)} workstation(s), ${effects}`;
+            }).join('\n');
+            const proceed = confirm(
+                `${result.product_code} is running on these lines today:\n\n${lineList}\n\n`
+                + `This file would change processes they are using right now. Nothing has been changed yet.\n\n`
+                + `To give a line its own process list instead, upload its plan from Line Details and choose "Save as copy".\n\n`
+                + `Press OK only if you really want to change the process list on those lines too.`
+            );
+            if (proceed) await handleProductExcelUpload(null, { file, overrideShared: true });
+            return;
+        }
 
         if (result.success) {
             const d = result.data;
@@ -4750,6 +4770,8 @@ async function submitPlanUpload(options = {}) {
     if (options.confirm_product) fd.append('confirm_product', options.confirm_product);
     if (options.confirm_plan_product) fd.append('confirm_plan_product', options.confirm_plan_product);
     if (options.new_product_code) fd.append('new_product_code', options.new_product_code);
+    if (options.confirm_shared_processes) fd.append('confirm_shared_processes', options.confirm_shared_processes);
+    if (options.confirm_replace_carried) fd.append('confirm_replace_carried', 'true');
     if (options.extraFields && typeof options.extraFields === 'object') {
         Object.entries(options.extraFields).forEach(([key, value]) => {
             if (key === 'work_date') return;
@@ -4852,10 +4874,79 @@ async function submitPlanUpload(options = {}) {
             return;
         }
 
+        // --- Another line runs this style today on processes this file would change ---
+        if (r.status === 409 && data.code === 'SHARED_PROCESSES_IN_USE') {
+            btn.disabled = false;
+            btn.textContent = uploadButtonLabel;
+            const otherLines = Array.isArray(data.other_lines) ? data.other_lines : [];
+            const lineRows = otherLines.map(l => {
+                const stations = [
+                    l.workstations ? `${l.workstations} workstation(s)` : '',
+                    l.ot_workstations ? `${l.ot_workstations} OT workstation(s)` : ''
+                ].filter(Boolean).join(', ');
+                const effects = [
+                    l.processes_changed ? `${l.processes_changed} process(es) renamed or re-timed` : '',
+                    l.processes_deactivated ? `${l.processes_deactivated} process(es) switched off` : ''
+                ].filter(Boolean).join(', ');
+                return `<li><strong>${escHtml(l.line_code)}</strong>${l.line_name && l.line_name !== l.line_code ? ` (${escHtml(l.line_name)})` : ''}: ${escHtml(stations)} &mdash; ${escHtml(effects)}</li>`;
+            }).join('');
+            const suggestedCode = data.suggested_copy_code || `${data.product_code}-COPY`;
+            resultDiv.innerHTML = `
+                <div style="background:#fef2f2;color:#991b1b;border:1px solid #fca5a5;border-radius:8px;padding:14px 16px;font-size:13px;">
+                    <div style="font-weight:700;margin-bottom:6px;">&#9888; ${escHtml(data.product_code)} is also running on other lines on ${escHtml(data.work_date)}</div>
+                    <div style="margin-bottom:8px;">
+                        All lines share one process list for ${escHtml(data.product_code)}. Uploading this file as it is would change
+                        processes those lines are using right now:
+                    </div>
+                    <ul style="margin:0 0 12px 18px;padding:0;">${lineRows}</ul>
+                    <div style="background:#fff;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;margin-bottom:10px;color:#374151;">
+                        <div style="font-weight:600;margin-bottom:6px;">Recommended: save this file as a separate copy for ${escHtml(data.line_code)}</div>
+                        <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">${escHtml(data.line_code)} gets its own process list under a new code, and the other lines keep theirs.</div>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <input id="plan-upload-shared-copy-code" type="text" value="${escHtml(suggestedCode)}"
+                                style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;width:220px;">
+                            <button onclick="_planUploadSharedAsCopy()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;">Save as copy &amp; upload</button>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button onclick="_planUploadSharedOverride()" style="padding:6px 12px;background:#f3f4f6;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;font-size:12px;cursor:pointer;">Upload anyway (changes the lines above)</button>
+                        <button onclick="_planUploadCancel()" style="padding:6px 12px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
+                    </div>
+                </div>`;
+            return;
+        }
+
+        // --- Line is on the system's overnight copy, operators already linked, and the style changes ---
+        if (r.status === 409 && data.code === 'CARRIED_PLAN_STYLE_CHANGE') {
+            btn.disabled = false;
+            btn.textContent = uploadButtonLabel;
+            resultDiv.innerHTML = `
+                <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
+                    <div style="font-weight:600;margin-bottom:6px;">&#9888; Supervisors are already working on a copied plan</div>
+                    <div style="margin-bottom:12px;">
+                        <strong>${escHtml(data.line_code)}</strong> is running the plan the system copied automatically from
+                        <strong>${escHtml(data.carried_forward_from)}</strong> (${escHtml(data.carried_product_code || 'previous style')}).
+                        <strong>${Number(data.linked_operators) || 0}</strong> operator(s) are already linked on it.
+                        Uploading <strong>${escHtml(data.upload_product_code)}</strong> re-seats operators to the stations in this file.
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button onclick="_planUploadReplaceCarried()" style="padding:7px 16px;background:#d97706;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Upload and re-seat</button>
+                        <button onclick="_planUploadCancel()" style="padding:7px 16px;background:#f3f4f6;color:#374151;border:none;border-radius:6px;font-size:13px;cursor:pointer;">Cancel</button>
+                    </div>
+                </div>`;
+            return;
+        }
+
         // --- File's product code differs from the product already planned for this line/date ---
         if (r.status === 409 && data.code === 'PLAN_PRODUCT_MISMATCH') {
             btn.disabled = false;
             btn.textContent = uploadButtonLabel;
+            const carriedNote = data.carried_forward_from
+                ? `<div style="background:#fff;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-bottom:10px;">
+                        ${escHtml(data.plan_product_code)} is the plan the system copied automatically from <strong>${escHtml(data.carried_forward_from)}</strong>, not one the IE set for this day.
+                        ${Number(data.linked_operators) > 0 ? `<strong>${Number(data.linked_operators)}</strong> operator(s) are already linked on it; switching re-seats them to the stations in this file.` : ''}
+                   </div>`
+                : '';
             resultDiv.innerHTML = `
                 <div style="background:#fffbeb;color:#92400e;border:1px solid #fcd34d;border-radius:8px;padding:14px 16px;font-size:13px;">
                     <div style="font-weight:600;margin-bottom:6px;">&#9888; This file is for a different product</div>
@@ -4864,6 +4955,7 @@ async function submitPlanUpload(options = {}) {
                         ${data.line_code ? `<strong>${data.line_code}</strong> ` : ''}on <strong>${data.work_date}</strong>
                         is currently planned as <strong>${data.plan_product_code}</strong>.
                     </div>
+                    ${carriedNote}
                     <div style="background:#fff;border:1px solid #fcd34d;border-radius:6px;padding:10px 12px;margin-bottom:10px;">
                         <div style="font-weight:600;margin-bottom:6px;">Recommended: change this day's plan to ${data.upload_product_code}</div>
                         <div style="font-size:12px;color:#78716c;margin-bottom:8px;">The plan for this line and date switches to the uploaded style. ${data.plan_product_code} is left untouched.</div>
@@ -5020,7 +5112,37 @@ function _planUploadCreateNewLine() {
     submitPlanUpload({ ...window._pendingUploadOptions, confirm_new_line: true });
 }
 function _planUploadSwitchPlanProduct() {
-    submitPlanUpload({ ...window._pendingUploadOptions, confirm_plan_product: 'switch' });
+    // Choosing "switch" after being told operators are linked on a copied plan is the
+    // re-seat confirmation too, so it is not asked a second time.
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_plan_product: 'switch', confirm_replace_carried: true });
+}
+function _planUploadSharedAsCopy() {
+    const codeInput = document.getElementById('plan-upload-shared-copy-code');
+    const newCode = (codeInput?.value || '').trim().toUpperCase();
+    if (!newCode) {
+        codeInput?.focus();
+        codeInput?.style && (codeInput.style.borderColor = '#dc2626');
+        return;
+    }
+    const pending = window._pendingUploadOptions || {};
+    const extra = pending.extraFields || {};
+    const isDetailUpload = !!extra.line_id;
+    const isChangeoverUpload = String(extra.product_mode || '').toLowerCase() === 'changeover';
+    submitPlanUpload({
+        ...pending,
+        confirm_product: null,
+        new_product_code: newCode,
+        // On the line-details upload the day's plan must move to the new code; the changeover
+        // slot always takes the file's code, so it needs no extra choice.
+        confirm_plan_product: isDetailUpload && !isChangeoverUpload ? 'switch' : pending.confirm_plan_product,
+        confirm_shared_processes: null
+    });
+}
+function _planUploadSharedOverride() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_shared_processes: 'override' });
+}
+function _planUploadReplaceCarried() {
+    submitPlanUpload({ ...window._pendingUploadOptions, confirm_replace_carried: true });
 }
 function _planUploadKeepPlanProduct() {
     submitPlanUpload({ ...window._pendingUploadOptions, confirm_plan_product: 'keep' });
@@ -5357,6 +5479,8 @@ async function loadDailyPlanData() {
                                     <strong>${line.line_code}</strong>
                                     <div style="color: var(--secondary); font-size: 12px;">${line.line_name}</div>
                                     ${hasChangeover ? '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">CHANGEOVER</span>' : ''}
+                                    ${plan?.carried_forward_from ? `<div title="The system copied this plan, with its style and operators, from ${escHtml(plan.carried_forward_from)} because nothing was planned for this day. Save, upload or copy a plan to confirm it." style="background:#fff7ed;color:#9a3412;border:1px solid #fdba74;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:4px;">&#9888; COPIED FROM ${escHtml(plan.carried_forward_from)} &middot; NOT CONFIRMED</div>
+                                        <button class="btn btn-secondary btn-sm" style="margin-top:4px;font-size:11px;padding:2px 8px;" onclick="event.stopPropagation(); confirmCarriedPlan(${line.id}, '${escHtml(plan.carried_forward_from)}')" title="The copied plan is correct for today — keep it exactly as it is and remove this warning">&#10003; Mark verified</button>` : ''}
                                     ${!planExists ? '<div style="color:#b45309;font-size:11px;font-weight:600;margin-top:4px;">Save daily plan to open details</div>' : ''}
                                     ${primaryOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ OVER-PRODUCED +${(primaryCum - primaryOQ).toLocaleString()}</span>` : primaryComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ ORDER COMPLETE</span>' : ''}
                                     ${incomingOver ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">⚠ INCOMING OVER +${(incomingCum - incomingOQ).toLocaleString()}</span>` : incomingComplete ? '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;display:inline-block;margin-top:3px;">✓ INCOMING COMPLETE</span>' : ''}
@@ -8181,6 +8305,29 @@ async function lockDailyPlan(lineId) {
             return;
         }
         showToast('Plan locked', 'success');
+        loadDailyPlanData();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function confirmCarriedPlan(lineId, fromDate) {
+    const date = document.getElementById('plan-date').value;
+    if (!confirm(`This plan was copied automatically from ${fromDate}. Mark it as verified for ${date}?\n\nNothing in the plan, operators or output changes — only the warning is removed.`)) {
+        return;
+    }
+    try {
+        const response = await fetch('/api/daily-plans/confirm-carried', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_id: lineId, work_date: date })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            showToast(result.error, 'error');
+            return;
+        }
+        showToast('Plan marked as verified', 'success');
         loadDailyPlanData();
     } catch (err) {
         showToast(err.message, 'error');

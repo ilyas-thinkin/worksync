@@ -403,6 +403,10 @@ col.col-day-eff { width: 5.2rem; }
 .c-day.strong { font-weight: 800; }
 .h-out { font-size: 1.3rem; font-weight: 800; line-height: 1.05; white-space: nowrap; }
 .h-eff { font-size: 0.76rem; font-weight: 700; line-height: 1.15; white-space: nowrap; }
+/* Split hour: primary and CO side by side, each against its own part of the hour. */
+.h-split { display: flex; justify-content: center; align-items: baseline; gap: 0.3rem; font-size: 1rem; }
+.h-part small { font-size: 0.55rem; font-weight: 800; color: var(--muted); margin-right: 0.08rem; }
+.h-part small.co { color: var(--co); }
 .mark { margin-right: 0.1rem; font-size: 0.65em; vertical-align: 0.12em; }
 .c-reason { text-align: left !important; padding-left: 0.5rem !important; }
 .reason {
