@@ -3257,13 +3257,43 @@ function renderHourlySummary() {
                 statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">VACANT</span>`;
             } else if (needsReason) {
                 statusBadge = `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">&#9888; Needs Reason</span>`;
-            } else if (hasEntry && wsHourlyTarget > 0 && output < wsHourlyTarget) {
+            } else if (isSplitHour
+                ? hourParts.some(part => part.hasEntry && part.target > 0 && part.output < part.target)
+                : (hasEntry && wsHourlyTarget > 0 && output < wsHourlyTarget)) {
                 statusBadge = `<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">Below target</span>`;
-            } else if (hasEntry && output >= wsHourlyTarget) {
+            } else if (isSplitHour
+                ? hourParts.every(part => part.hasEntry && part.output >= part.target)
+                : (hasEntry && output >= wsHourlyTarget)) {
                 statusBadge = `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;">On track</span>`;
             }
 
             const outputColor = hasEntry ? (output >= wsHourlyTarget ? '#16a34a' : '#dc2626') : 'inherit';
+            // A split hour is two entries against two targets (each prorated to its minutes), so it
+            // shows one Target/Output pair per style. Summed, an entered primary part read as a
+            // shortfall against the whole hour while the CO part was still to be entered.
+            const kpiHtml = isSplitHour
+                ? hourParts.map(part => {
+                    const partColor = part.hasEntry ? (part.output >= part.target ? '#16a34a' : '#dc2626') : 'inherit';
+                    const windowLabel = `<div style="font-size:10px;color:#9ca3af;margin-top:1px;">${formatPartWindow(hour, part)}</div>`;
+                    return `<div class="ws-kpi-box">
+                                <div class="ws-kpi-label">${part.label} target</div>
+                                <div class="ws-kpi-val">${part.target || '–'}</div>
+                                ${windowLabel}
+                            </div>
+                            <div class="ws-kpi-box">
+                                <div class="ws-kpi-label">${part.label} output</div>
+                                <div class="ws-kpi-val" style="color:${partColor};">${part.hasEntry ? part.output : '–'}</div>
+                                ${windowLabel}
+                            </div>`;
+                }).join('')
+                : `<div class="ws-kpi-box">
+                                <div class="ws-kpi-label">Target/hr</div>
+                                <div class="ws-kpi-val">${wsHourlyTarget || '–'}</div>
+                            </div>
+                            <div class="ws-kpi-box">
+                                <div class="ws-kpi-label">Output</div>
+                                <div class="ws-kpi-val" style="color:${outputColor};">${hasEntry ? output : '–'}</div>
+                            </div>`;
 
             // Footer buttons — block if no daily plan, no employee, not mapped, or vacant
             const enterOutputBtn = noDailyPlan
@@ -3410,14 +3440,7 @@ function renderHourlySummary() {
                             <span style="font-size:12px;color:#6b7280;">${processList}</span>
                         </div>
                         <div class="ws-card-kpi">
-                            <div class="ws-kpi-box">
-                                <div class="ws-kpi-label">Target/hr</div>
-                                <div class="ws-kpi-val">${wsHourlyTarget || '–'}</div>
-                            </div>
-                            <div class="ws-kpi-box">
-                                <div class="ws-kpi-label">Output</div>
-                                <div class="ws-kpi-val" style="color:${outputColor};">${hasEntry ? output : '–'}</div>
-                            </div>
+                            ${kpiHtml}
                         </div>
                         ${flowLine}
                         ${changeoverTargetNote}
